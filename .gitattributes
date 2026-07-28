@@ -1,0 +1,31 @@
+# Cross-platform hygiene. We are a two-OS team (Windows + macOS).
+# Everything is LF in the repo; git checks out LF on both platforms.
+* text=auto eol=lf
+
+# Windows-only scripts must keep CRLF or they break under cmd/powershell.
+*.bat  text eol=crlf
+*.cmd  text eol=crlf
+*.ps1  text eol=crlf
+
+# Never touch these.
+*.png  binary
+*.jpg  binary
+*.jpeg binary
+*.gif  binary
+*.webp binary
+*.avif binary
+*.ico  binary
+*.icns binary
+*.woff binary
+*.woff2 binary
+*.ttf  binary
+*.otf  binary
+*.mp4  binary
+*.pdf  binary
+*.node binary
+*.dll  binary
+*.dylib binary
+*.wasm binary
+
+# Lockfiles: keep diffs collapsed in PR review.
+pnpm-lock.yaml -diff linguist-generated

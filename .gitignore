@@ -1,0 +1,54 @@
+# Dependencies
+node_modules/
+.pnpm-store/
+
+# Build output
+dist/
+dist-electron/
+out/
+build/
+release/
+*.tsbuildinfo
+
+# Rust (if/when we add native sidecars)
+target/
+
+# Environment & secrets — NEVER commit
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+*.pfx
+auth.json
+credentials.json
+
+# Local app data produced during dev
+.harness/
+*.sqlite
+*.sqlite-wal
+*.sqlite-shm
+*.db
+
+# Editors / OS
+.DS_Store
+Thumbs.db
+desktop.ini
+.idea/
+*.swp
+
+# Logs
+*.log
+npm-debug.log*
+pnpm-debug.log*
+logs/
+
+# Test / coverage
+coverage/
+.nyc_output/
+playwright-report/
+test-results/
+
+# Local scratch — anything here is yours alone
+scratch/
