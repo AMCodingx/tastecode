@@ -1,5 +1,5 @@
 {
-  "name": "@harness/adapter-codex",
+  "name": "@harness/adapter-acp",
   "version": "0.0.0",
   "private": true,
   "type": "module",
@@ -14,8 +14,7 @@
   "scripts": {
     "build": "tsc -b",
     "typecheck": "tsc -b",
-    "test": "vitest run --passWithNoTests",
-    "generate": "codex app-server generate-ts --out src/generated"
+    "test": "vitest run --passWithNoTests"
   },
   "dependencies": {
     "@harness/contracts": "workspace:*",
