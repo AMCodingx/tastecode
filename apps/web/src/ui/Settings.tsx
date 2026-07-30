@@ -11,6 +11,9 @@ export function Settings(props: {
   providerName: string
   account: Account | undefined
   projectCount: number
+  showMacOSFontSmoothing: boolean
+  macOSFontSmoothing: boolean
+  onMacOSFontSmoothingChange: (enabled: boolean) => void
   onSignOut: () => void
   onReset: () => void
   onClose: () => void
@@ -49,6 +52,28 @@ export function Settings(props: {
             credential to discard.
           </p>
         </section>
+
+        {props.showMacOSFontSmoothing ? (
+          <section className="sheet__section">
+            <h3 className="sheet__label">Appearance</h3>
+            <div className="row-between">
+              <div>
+                <p className="row__title">Font smoothing</p>
+                <p className="row__note">Use macOS antialiasing for lighter, crisper text.</p>
+              </div>
+              <button
+                className={`switch${props.macOSFontSmoothing ? ' is-on' : ''}`}
+                type="button"
+                role="switch"
+                aria-label="Font smoothing"
+                aria-checked={props.macOSFontSmoothing}
+                onClick={() => props.onMacOSFontSmoothingChange(!props.macOSFontSmoothing)}
+              >
+                <span className="switch__thumb" />
+              </button>
+            </div>
+          </section>
+        ) : null}
 
         <section className="sheet__section">
           <h3 className="sheet__label">Data</h3>

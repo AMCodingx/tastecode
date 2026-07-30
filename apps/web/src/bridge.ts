@@ -15,6 +15,10 @@ const bridge = (globalThis as { harness?: Bridge }).harness
 
 export const isDesktop = bridge?.isDesktop === true
 
+export function isMacOS(): boolean {
+  return navigator.platform.startsWith('Mac')
+}
+
 export async function pickFolder(): Promise<string | undefined> {
   if (bridge) return bridge.pickFolder()
   return window.prompt('Folder to work in')?.trim() || undefined

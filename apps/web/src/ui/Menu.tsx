@@ -6,7 +6,8 @@ type Drop = 'up' | 'down'
 
 type MenuPosition = {
   left: number
-  top: number
+  top?: number
+  bottom?: number
   drop: Drop
 }
 
@@ -89,10 +90,16 @@ export function Menu(props: {
         window.innerHeight - menuBounds.height - VIEWPORT_GUTTER,
       )
       const top = Math.min(Math.max(preferredTop, VIEWPORT_GUTTER), maxTop)
-      const next = { left, top, drop }
+      const next =
+        drop === 'up'
+          ? { left, bottom: window.innerHeight - top - menuBounds.height, drop }
+          : { left, top, drop }
 
       setPosition((current) =>
-        current?.left === next.left && current.top === next.top && current.drop === next.drop
+        current?.left === next.left &&
+        current.top === next.top &&
+        current.bottom === next.bottom &&
+        current.drop === next.drop
           ? current
           : next,
       )
@@ -137,7 +144,12 @@ export function Menu(props: {
               {...(props.panelLabel ? { 'aria-label': props.panelLabel } : {})}
               style={
                 position
-                  ? { left: position.left, top: position.top }
+                  ? {
+                      left: position.left,
+                      ...(position.drop === 'up'
+                        ? { bottom: position.bottom }
+                        : { top: position.top }),
+                    }
                   : { left: 0, top: 0, visibility: 'hidden' }
               }
             >

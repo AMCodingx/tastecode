@@ -24,6 +24,11 @@ vi.mock('./ui/highlighter.js', () => ({
   warmHighlighter: () => {},
 }))
 
+vi.mock('./bridge.js', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('./bridge.js')>()),
+  isMacOS: () => true,
+}))
+
 beforeEach(() => {
   localStorage.clear()
   localStorage.setItem('harness.provider', 'codex')
@@ -60,6 +65,49 @@ afterEach(() => {
 })
 
 describe('new chats', () => {
+  it('persists the macOS font smoothing setting', async () => {
+    render(<App />)
+
+    expect(document.documentElement.classList.contains('is-macos-font-smoothing')).toBe(true)
+
+    fireEvent.click(screen.getByRole('button', { name: 'Account' }))
+    fireEvent.click(screen.getByRole('menuitem', { name: /Settings/ }))
+
+    const toggle = screen.getByRole('switch', { name: 'Font smoothing' })
+    expect(toggle.getAttribute('aria-checked')).toBe('true')
+    fireEvent.click(toggle)
+
+    await waitFor(() => {
+      expect(localStorage.getItem('harness.macosFontSmoothing')).toBe('false')
+      expect(document.documentElement.classList.contains('is-macos-font-smoothing')).toBe(false)
+    })
+  })
+
+  it('switches the new chat project from the prompt', () => {
+    localStorage.setItem(
+      'harness.projects',
+      JSON.stringify([
+        { path: '/work/project', name: 'Personal Harness', sessions: [] },
+        { path: '/work/another-project', name: 'Another Project', sessions: [] },
+      ]),
+    )
+
+    render(<App />)
+
+    expect(screen.getByRole('heading').textContent).toContain(
+      'What should we build in Personal Harness?',
+    )
+
+    fireEvent.click(screen.getByRole('button', { name: 'Choose project' }))
+    expect(screen.getAllByRole('menuitem')).toHaveLength(2)
+    fireEvent.click(screen.getByRole('menuitem', { name: /Another Project/ }))
+
+    expect(screen.getByRole('heading').textContent).toContain(
+      'What should we build in Another Project?',
+    )
+    expect(document.querySelector('.chip__label')?.textContent).toBe('another-project')
+  })
+
   it('keeps an untouched session out of the sidebar until the first prompt', async () => {
     render(<App />)
 
@@ -102,6 +150,11 @@ describe('new chats', () => {
                 defaultReasoningEffort: 'low',
                 serviceTiers: [
                   {
+                    id: 'standard',
+                    name: 'Balanced',
+                    description: '1x speed, standard usage',
+                  },
+                  {
                     id: 'priority',
                     name: 'Fast',
                     description: '1.5x speed, increased usage',
@@ -126,10 +179,23 @@ describe('new chats', () => {
     render(<App />)
 
     fireEvent.click(await screen.findByRole('button', { name: 'Model and reasoning' }))
-    fireEvent.click(screen.getByRole('button', { name: 'Enable fast mode' }))
-    fireEvent.keyDown(screen.getByRole('slider', { name: 'Reasoning effort' }), { key: 'End' })
+    const speed = screen.getByRole('slider', { name: 'Speed' })
+    vi.spyOn(speed, 'getBoundingClientRect').mockReturnValue({
+      x: 0,
+      y: 0,
+      left: 100,
+      top: 20,
+      width: 280,
+      height: 58,
+      right: 380,
+      bottom: 78,
+      toJSON: () => ({}),
+    })
+    fireEvent.pointerDown(speed, { clientX: 350, pointerId: 7 })
+    fireEvent.pointerUp(speed, { clientX: 350, pointerId: 7 })
 
-    await screen.findByRole('button', { name: 'Disable fast mode' })
+    fireEvent.keyDown(screen.getByRole('slider', { name: 'Effort' }), { key: 'End' })
+
     const composer = screen.getByPlaceholderText('Do anything')
     fireEvent.change(composer, { target: { value: 'Use the fast lane' } })
     fireEvent.keyDown(composer, { key: 'Enter' })

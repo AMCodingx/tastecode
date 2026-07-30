@@ -1,6 +1,6 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import type { Account, ApprovalMode, Model, ProviderId } from '@harness/contracts'
-import { pickFolder } from './bridge.js'
+import { isMacOS, pickFolder } from './bridge.js'
 import { warmHighlighter } from './ui/highlighter.js'
 import { Transport } from './transport.js'
 import { appendUserMessage, emptyThread, reduce, type ThreadState } from './thread-store.js'
@@ -11,6 +11,7 @@ import { Sidebar, type Project } from './ui/Sidebar.js'
 import { StageHeader } from './ui/StageHeader.js'
 import { Thread } from './ui/Thread.js'
 import { TitleBar } from './ui/TitleBar.js'
+import { Menu, MenuItem } from './ui/Menu.js'
 
 const SERVER_URL = 'ws://127.0.0.1:4311'
 const SETUP_KEY = 'harness.provider'
@@ -21,6 +22,7 @@ const PROJECTS_KEY = 'harness.projects'
 const MODEL_KEY = 'harness.model'
 const EFFORT_KEY = 'harness.effort'
 const SERVICE_TIER_KEY = 'harness.serviceTier'
+const MACOS_FONT_SMOOTHING_KEY = 'harness.macosFontSmoothing'
 
 /**
  * Projects and sessions live in localStorage for now. The server takes
@@ -72,10 +74,26 @@ export function App() {
   const [account, setAccount] = useState<Account | undefined>()
   const [settingsOpen, setSettingsOpen] = useState(false)
   const [notice, setNotice] = useState<string | undefined>()
+  const macOS = isMacOS()
+  const [macOSFontSmoothing, setMacOSFontSmoothing] = useState(
+    () => localStorage.getItem(MACOS_FONT_SMOOTHING_KEY) !== 'false',
+  )
 
   // Syntax grammars load in the background from the first frame, so the first
   // code block an agent produces is already coloured.
   useEffect(warmHighlighter, [])
+
+  useLayoutEffect(() => {
+    document.documentElement.classList.toggle(
+      'is-macos-font-smoothing',
+      macOS && macOSFontSmoothing,
+    )
+    return () => document.documentElement.classList.remove('is-macos-font-smoothing')
+  }, [macOS, macOSFontSmoothing])
+
+  useEffect(() => {
+    if (macOS) localStorage.setItem(MACOS_FONT_SMOOTHING_KEY, String(macOSFontSmoothing))
+  }, [macOS, macOSFontSmoothing])
 
   const activeIdRef = useRef(activeId)
   activeIdRef.current = activeId
@@ -404,11 +422,7 @@ export function App() {
               }}
             />
           ) : (
-            <Empty
-              hasProjects={projects.length > 0}
-              onAddProject={() => void addProject()}
-              onStart={() => activePath && beginSession(activePath)}
-            />
+            <Empty projects={projects} activePath={activePath} onSelectProject={setActivePath} />
           )}
 
           <Composer
@@ -438,6 +452,9 @@ export function App() {
           providerName={providerName(provider, acpAgentName)}
           account={account}
           projectCount={projects.length}
+          showMacOSFontSmoothing={macOS}
+          macOSFontSmoothing={macOSFontSmoothing}
+          onMacOSFontSmoothingChange={setMacOSFontSmoothing}
           onSignOut={() => {
             void transport.request('auth.signOut', { provider }).then(() => {
               setAccount({ signedIn: false })
@@ -463,15 +480,53 @@ export function App() {
   )
 }
 
-function Empty(props: { hasProjects: boolean; onAddProject: () => void; onStart: () => void }) {
+function Empty(props: {
+  projects: Project[]
+  activePath: string | undefined
+  onSelectProject: (path: string) => void
+}) {
+  const activeProject = props.projects.find((project) => project.path === props.activePath)
+
+  if (props.projects.length === 0) {
+    return (
+      <div className="empty">
+        <div className="empty__prompt" role="heading" aria-level={1}>
+          Add a project to start building.
+        </div>
+      </div>
+    )
+  }
+
   return (
     <div className="empty">
-      <p className="empty__text">
-        {props.hasProjects ? 'No chat open.' : 'Add a folder to get started.'}
-      </p>
-      <button className="btn" onClick={props.hasProjects ? props.onStart : props.onAddProject}>
-        {props.hasProjects ? 'Start a chat' : 'New project'}
-      </button>
+      <div className="empty__prompt" role="heading" aria-level={1}>
+        What should we build in{' '}
+        <Menu
+          label="Choose project"
+          drop="up"
+          triggerClassName="empty__project-trigger"
+          panelClassName="empty__project-menu"
+          trigger={() => <span>{activeProject ? displayName(activeProject) : 'a project'}</span>}
+        >
+          {(close) => (
+            <>
+              {props.projects.map((project) => (
+                <MenuItem
+                  key={project.path}
+                  title={displayName(project)}
+                  detail={project.path}
+                  active={project.path === props.activePath}
+                  onClick={() => {
+                    props.onSelectProject(project.path)
+                    close()
+                  }}
+                />
+              ))}
+            </>
+          )}
+        </Menu>
+        ?
+      </div>
     </div>
   )
 }
@@ -515,6 +570,10 @@ function markStatus(projects: Project[], threadId: string, running: boolean): Pr
 function basename(path: string): string {
   const parts = path.split(/[\\/]/).filter(Boolean)
   return parts[parts.length - 1] ?? path
+}
+
+function displayName(project: Project): string {
+  return project.name ?? basename(project.path)
 }
 
 /** The first thing a user types is the best title we get for free. */

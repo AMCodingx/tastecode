@@ -44,6 +44,7 @@ import {
   ModelSelector,
   getCompactModelName,
   getEffortIndexFromPointer,
+  getEffortProgressFromPointer,
   getFastModeOffValue,
   getFriendlyEffortLabel,
 } from './ModelSelector.js'
@@ -136,8 +137,25 @@ describe('ModelSelector', () => {
 
     expect(trigger.textContent).toContain('5.6 Sol')
     expect(trigger.textContent).toContain('Extra High')
+    expect(trigger.querySelector('.model-selector__trigger-fast')).toBeNull()
     expect(getCompactModelName('GPT-5.6 Sol')).toBe('5.6 Sol')
     expect(getFriendlyEffortLabel('xhigh')).toBe('Extra High')
+  })
+
+  it('shows active fast mode in the compact trigger', () => {
+    renderSelector({ serviceTier: 'priority' })
+
+    const trigger = screen.getByRole('button', { name: 'Model and reasoning' })
+    expect(trigger.querySelector('.model-selector__trigger-fast')).not.toBeNull()
+    expect(
+      Array.from(trigger.querySelector('.model-selector__trigger')?.children ?? []).map(
+        (element) => element.className,
+      ),
+    ).toEqual([
+      'model-selector__trigger-fast',
+      'model-selector__trigger-copy',
+      'model-selector__trigger-chevron',
+    ])
   })
 
   it('opens a dialog panel, toggles fast mode, and falls back to undefined when default fast would keep it on', () => {
@@ -186,15 +204,19 @@ describe('ModelSelector', () => {
       left: 100,
       top: 20,
       width: 280,
-      height: 28,
+      height: 44,
       right: 380,
-      bottom: 48,
+      bottom: 64,
       toJSON: () => ({}),
     })
 
     fireEvent.pointerDown(slider, { clientX: 110, pointerId: 4 })
     fireEvent.pointerMove(slider, { clientX: 350, pointerId: 4 })
     expect(slider.getAttribute('aria-valuetext')).toBe('Extra High')
+    expect(slider.querySelector('.model-selector__slider-value')?.textContent).toBe('Extra High')
+    expect(onEffortChange).not.toHaveBeenCalled()
+    expect(slider.querySelectorAll('canvas')).toHaveLength(2)
+    expect(slider.querySelector('.model-selector__slider-thumb')).toBeNull()
 
     fireEvent.pointerUp(slider, { clientX: 350, pointerId: 4 })
     expect(onEffortChange).toHaveBeenCalledWith('xhigh')
@@ -222,6 +244,19 @@ describe('ModelSelector', () => {
     })
 
     fireEvent.click(screen.getByRole('button', { name: 'Model and reasoning' }))
+    const advancedToggle = screen.getByRole('button', { name: 'Show advanced model list' })
+    const modelsPanel = document.getElementById(advancedToggle.getAttribute('aria-controls') ?? '')
+    expect(modelsPanel?.getAttribute('aria-hidden')).toBe('true')
+    expect(modelsPanel?.hasAttribute('inert')).toBe(true)
+
+    fireEvent.click(advancedToggle)
+    expect(modelsPanel?.getAttribute('aria-hidden')).toBe('false')
+    expect(modelsPanel?.hasAttribute('inert')).toBe(false)
+
+    fireEvent.click(screen.getByRole('button', { name: 'Hide advanced model list' }))
+    expect(modelsPanel?.getAttribute('aria-hidden')).toBe('true')
+    expect(modelsPanel?.hasAttribute('inert')).toBe(true)
+
     fireEvent.click(screen.getByRole('button', { name: 'Show advanced model list' }))
     fireEvent.click(screen.getByRole('button', { name: 'Use GPT-5.6 Mini' }))
 
@@ -248,5 +283,13 @@ describe('ModelSelector', () => {
         stopCount: 4,
       }),
     ).toBe(3)
+
+    expect(
+      getEffortProgressFromPointer({
+        clientX: 240,
+        left: 100,
+        width: 280,
+      }),
+    ).toBeCloseTo(0.407, 3)
   })
 })

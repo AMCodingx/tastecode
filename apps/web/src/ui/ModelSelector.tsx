@@ -8,12 +8,13 @@ import {
 } from 'react'
 import type { Model } from '@harness/contracts'
 import { ChevronDown, ChevronRight, Zap } from 'lucide-react'
+import { DitherSlider } from './dither-kit/DitherSlider.js'
 import { Menu } from './Menu.js'
 
-const SLIDER_THUMB_SIZE = 28
+const SLIDER_DITHER_MIN_WIDTH = 44
+const SLIDER_DITHER_INSET = 1
 const TRIGGER_LABEL = 'Model and reasoning'
 const DIALOG_LABEL = 'Model and reasoning'
-const SLIDER_LABEL = 'Reasoning effort'
 
 type ModelSelectorProps = {
   models: Model[]
@@ -50,13 +51,22 @@ export function getEffortIndexFromPointer(input: {
   width: number
   stopCount: number
 }): number {
-  if (input.stopCount <= 1 || input.width <= SLIDER_THUMB_SIZE) {
+  if (input.stopCount <= 1) {
     return 0
   }
-  const travelWidth = input.width - SLIDER_THUMB_SIZE
-  const relativeX = input.clientX - input.left - SLIDER_THUMB_SIZE / 2
-  const progress = Math.min(1, Math.max(0, relativeX / travelWidth))
+  const progress = getEffortProgressFromPointer(input)
   return Math.round(progress * (input.stopCount - 1))
+}
+
+export function getEffortProgressFromPointer(input: {
+  clientX: number
+  left: number
+  width: number
+}): number {
+  if (input.width <= SLIDER_DITHER_MIN_WIDTH) return 0
+  const travelWidth = input.width - SLIDER_DITHER_MIN_WIDTH
+  const relativeX = input.clientX - input.left - SLIDER_DITHER_MIN_WIDTH
+  return Math.min(1, Math.max(0, relativeX / travelWidth))
 }
 
 export function getFastServiceTier(
@@ -131,92 +141,168 @@ function hasPointerCaptureSafe(target: HTMLDivElement, pointerId: number): boole
   return typeof target.hasPointerCapture === 'function' ? target.hasPointerCapture(pointerId) : true
 }
 
-function EffortGauge({ effort, options }: { effort: string | undefined; options: string[] }) {
-  const selectedIndex = effort === undefined ? -1 : options.indexOf(effort)
-  const progress =
-    selectedIndex < 0 || options.length < 2 ? 0.5 : selectedIndex / (options.length - 1)
-  const needleRotation = -60 + progress * 120
-
-  return (
-    <svg
-      width="13"
-      height="13"
-      viewBox="0 0 24 24"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth="2"
-      strokeLinecap="round"
-      strokeLinejoin="round"
-      aria-hidden
-    >
-      <path d="M3.34 19a10 10 0 1 1 17.32 0" />
-      <path d="M12 14V8" transform={`rotate(${needleRotation} 12 14)`} />
-    </svg>
-  )
-}
-
-export function ModelSelector(props: ModelSelectorProps) {
-  const [advancedOpen, setAdvancedOpen] = useState(false)
+function DitherChoiceRow(props: {
+  label: string
+  ariaLabel?: string
+  optionLabels: string[]
+  selectedIndex: number
+  disabled: boolean
+  onCommitIndex: (index: number) => void
+}) {
   const [pointerIndex, setPointerIndex] = useState<number | null>(null)
+  const [pointerProgress, setPointerProgress] = useState<number | null>(null)
   const pointerIndexRef = useRef<number | null>(null)
-  const modelsPanelId = useId()
 
-  const model = getSelectedModel(props.models, props.modelId)
-  const selectedEffort = getSelectedEffort(model, props.effort)
-  const effortOptions = model?.reasoningEfforts ?? []
-  const selectedIndex =
-    selectedEffort === undefined ? -1 : Math.max(0, effortOptions.indexOf(selectedEffort))
-  const displayIndex = pointerIndex ?? selectedIndex
-  const displayedEffort = effortOptions[displayIndex] ?? selectedEffort
-  const effortLabel = getFriendlyEffortLabel(displayedEffort)
-  const fastTier = getFastServiceTier(model)
-  const fastEnabled = isFastModeEnabled(model, props.serviceTier)
-  const sliderDisabled = props.disabled || effortOptions.length <= 1
-  const progress =
-    displayIndex < 0 || effortOptions.length < 2 ? 0.5 : displayIndex / (effortOptions.length - 1)
-  const thumbOffset = (0.5 - progress) * SLIDER_THUMB_SIZE
-  const thumbLeft = `calc(${progress * 100}% + ${thumbOffset}px)`
+  const displayIndex = pointerIndex ?? props.selectedIndex
+  const displayedLabel =
+    props.optionLabels[displayIndex] ?? props.optionLabels[props.selectedIndex] ?? 'Automatic'
+  const selectedProgress =
+    displayIndex < 0 || props.optionLabels.length < 2
+      ? 0.5
+      : displayIndex / (props.optionLabels.length - 1)
+  const visualProgress = pointerProgress ?? selectedProgress
+  const ditherWidth = `calc(${visualProgress * 100}% + ${(1 - visualProgress) * SLIDER_DITHER_MIN_WIDTH}px)`
   const sliderVars = {
-    '--model-selector-slider-progress': String(progress),
-    '--model-selector-slider-left': thumbLeft,
+    '--model-selector-slider-width': ditherWidth,
+    '--model-selector-slider-inset': `${SLIDER_DITHER_INSET}px`,
   } as CSSProperties
 
   const previewFromPointer = (event: PointerEvent<HTMLDivElement>) => {
     const rect = event.currentTarget.getBoundingClientRect()
+    const nextProgress = getEffortProgressFromPointer({
+      clientX: event.clientX,
+      left: rect.left,
+      width: rect.width,
+    })
     const nextIndex = getEffortIndexFromPointer({
       clientX: event.clientX,
       left: rect.left,
       width: rect.width,
-      stopCount: effortOptions.length,
+      stopCount: props.optionLabels.length,
     })
+    setPointerProgress(nextProgress)
     if (pointerIndexRef.current !== nextIndex) {
       pointerIndexRef.current = nextIndex
       setPointerIndex(nextIndex)
     }
   }
 
-  const commitEffortIndex = (nextIndex: number) => {
-    const nextValue = effortOptions[nextIndex]
-    if (!nextValue || nextValue === selectedEffort) return
-    props.onEffortChange(nextValue)
+  const commitIndex = (nextIndex: number) => {
+    if (nextIndex === props.selectedIndex) return
+    props.onCommitIndex(nextIndex)
   }
 
-  const handleSliderKeyDown = (event: KeyboardEvent<HTMLDivElement>) => {
-    if (sliderDisabled || effortOptions.length === 0) return
-    let nextIndex = selectedIndex < 0 ? 0 : selectedIndex
+  const handleKeyDown = (event: KeyboardEvent<HTMLDivElement>) => {
+    if (props.disabled || props.optionLabels.length === 0) return
+    let nextIndex = props.selectedIndex < 0 ? 0 : props.selectedIndex
     if (event.key === 'ArrowLeft' || event.key === 'ArrowDown') {
       nextIndex = Math.max(0, nextIndex - 1)
     } else if (event.key === 'ArrowRight' || event.key === 'ArrowUp') {
-      nextIndex = Math.min(effortOptions.length - 1, nextIndex + 1)
+      nextIndex = Math.min(props.optionLabels.length - 1, nextIndex + 1)
     } else if (event.key === 'Home') {
       nextIndex = 0
     } else if (event.key === 'End') {
-      nextIndex = effortOptions.length - 1
+      nextIndex = props.optionLabels.length - 1
     } else {
       return
     }
     event.preventDefault()
-    commitEffortIndex(nextIndex)
+    commitIndex(nextIndex)
+  }
+
+  return (
+    <div
+      role="slider"
+      tabIndex={props.disabled ? -1 : 0}
+      aria-label={props.ariaLabel ?? props.label}
+      aria-disabled={props.disabled}
+      aria-valuemin={0}
+      aria-valuemax={Math.max(0, props.optionLabels.length - 1)}
+      aria-valuenow={Math.max(0, displayIndex)}
+      aria-valuetext={displayedLabel}
+      className={`model-selector__slider${props.disabled ? ' is-disabled' : ''}${pointerIndex !== null ? ' is-dragging' : ''}`}
+      style={sliderVars}
+      onClick={(event) => {
+        event.preventDefault()
+        event.stopPropagation()
+      }}
+      onKeyDown={handleKeyDown}
+      onPointerDown={(event) => {
+        if (props.disabled) return
+        event.preventDefault()
+        event.stopPropagation()
+        setPointerCaptureSafe(event.currentTarget, event.pointerId)
+        previewFromPointer(event)
+      }}
+      onPointerMove={(event) => {
+        if (!props.disabled && hasPointerCaptureSafe(event.currentTarget, event.pointerId)) {
+          previewFromPointer(event)
+        }
+      }}
+      onPointerUp={(event) => {
+        if (props.disabled || !hasPointerCaptureSafe(event.currentTarget, event.pointerId)) {
+          return
+        }
+        event.preventDefault()
+        event.stopPropagation()
+        const rect = event.currentTarget.getBoundingClientRect()
+        const nextIndex = getEffortIndexFromPointer({
+          clientX: event.clientX,
+          left: rect.left,
+          width: rect.width,
+          stopCount: props.optionLabels.length,
+        })
+        releasePointerCaptureSafe(event.currentTarget, event.pointerId)
+        pointerIndexRef.current = null
+        requestAnimationFrame(() => {
+          commitIndex(nextIndex)
+          setPointerIndex(null)
+          setPointerProgress(null)
+        })
+      }}
+      onPointerCancel={(event) => {
+        if (hasPointerCaptureSafe(event.currentTarget, event.pointerId)) {
+          releasePointerCaptureSafe(event.currentTarget, event.pointerId)
+        }
+        pointerIndexRef.current = null
+        setPointerIndex(null)
+        setPointerProgress(null)
+      }}
+    >
+      <div className="model-selector__slider-track">
+        <div className="model-selector__slider-fill">
+          <DitherSlider active={!props.disabled && pointerProgress !== null} />
+        </div>
+      </div>
+
+      <span className="model-selector__slider-label" aria-hidden>
+        {props.label}
+      </span>
+      <span className="model-selector__slider-value" aria-hidden>
+        {displayedLabel}
+      </span>
+    </div>
+  )
+}
+
+export function ModelSelector(props: ModelSelectorProps) {
+  const [advancedOpen, setAdvancedOpen] = useState(false)
+  const modelsPanelId = useId()
+
+  const model = getSelectedModel(props.models, props.modelId)
+  const selectedEffort = getSelectedEffort(model, props.effort)
+  const effortOptions = model?.reasoningEfforts ?? []
+  const effortLabel = getFriendlyEffortLabel(selectedEffort)
+  const effortLabels = effortOptions.map((value) => getFriendlyEffortLabel(value))
+  const selectedEffortIndex =
+    selectedEffort === undefined ? -1 : Math.max(0, effortOptions.indexOf(selectedEffort))
+  const fastTier = getFastServiceTier(model)
+  const fastEnabled = isFastModeEnabled(model, props.serviceTier)
+
+  const commitEffortIndex = (nextIndex: number) => {
+    const nextValue = effortOptions[nextIndex]
+    if (!nextValue || nextValue === selectedEffort) return
+    props.onEffortChange(nextValue)
   }
 
   const handleModelSelect = (nextModel: Model) => {
@@ -255,9 +341,11 @@ export function ModelSelector(props: ModelSelectorProps) {
       panelClassName="model-selector__menu"
       trigger={(open) => (
         <span className={`model-selector__trigger${open ? ' is-open' : ''}`}>
-          <span className="model-selector__trigger-gauge">
-            <EffortGauge effort={selectedEffort} options={effortOptions} />
-          </span>
+          {fastEnabled ? (
+            <span className="model-selector__trigger-fast" aria-hidden>
+              <Zap size={13} fill="currentColor" />
+            </span>
+          ) : null}
           <span className="model-selector__trigger-copy">
             <span className="model-selector__trigger-model">
               {getCompactModelName(model?.displayName)}
@@ -307,111 +395,51 @@ export function ModelSelector(props: ModelSelectorProps) {
 
           {effortOptions.length > 0 ? (
             <div className="model-selector__section">
-              <div
-                role="slider"
-                tabIndex={sliderDisabled ? -1 : 0}
-                aria-label={SLIDER_LABEL}
-                aria-disabled={sliderDisabled}
-                aria-valuemin={0}
-                aria-valuemax={Math.max(0, effortOptions.length - 1)}
-                aria-valuenow={Math.max(0, displayIndex)}
-                aria-valuetext={effortLabel}
-                className={`model-selector__slider${sliderDisabled ? ' is-disabled' : ''}${pointerIndex !== null ? ' is-dragging' : ''}`}
-                style={sliderVars}
-                onClick={(event) => {
-                  event.preventDefault()
-                  event.stopPropagation()
-                }}
-                onKeyDown={handleSliderKeyDown}
-                onPointerDown={(event) => {
-                  if (sliderDisabled) return
-                  event.preventDefault()
-                  event.stopPropagation()
-                  setPointerCaptureSafe(event.currentTarget, event.pointerId)
-                  previewFromPointer(event)
-                }}
-                onPointerMove={(event) => {
-                  if (
-                    !sliderDisabled &&
-                    hasPointerCaptureSafe(event.currentTarget, event.pointerId)
-                  ) {
-                    previewFromPointer(event)
-                  }
-                }}
-                onPointerUp={(event) => {
-                  if (
-                    sliderDisabled ||
-                    !hasPointerCaptureSafe(event.currentTarget, event.pointerId)
-                  ) {
-                    return
-                  }
-                  event.preventDefault()
-                  event.stopPropagation()
-                  const nextIndex = pointerIndexRef.current ?? selectedIndex
-                  releasePointerCaptureSafe(event.currentTarget, event.pointerId)
-                  pointerIndexRef.current = null
-                  setPointerIndex(null)
-                  if (nextIndex >= 0) {
-                    requestAnimationFrame(() => commitEffortIndex(nextIndex))
-                  }
-                }}
-                onPointerCancel={(event) => {
-                  if (hasPointerCaptureSafe(event.currentTarget, event.pointerId)) {
-                    releasePointerCaptureSafe(event.currentTarget, event.pointerId)
-                  }
-                  pointerIndexRef.current = null
-                  setPointerIndex(null)
-                }}
-              >
-                <div className="model-selector__slider-track">
-                  <div className="model-selector__slider-fill" />
-                </div>
-
-                <div className="model-selector__slider-stops" aria-hidden>
-                  {effortOptions.map((option, index) => (
-                    <span
-                      key={option}
-                      className={`model-selector__slider-stop${index <= displayIndex ? ' is-on' : ''}`}
-                    />
-                  ))}
-                </div>
-
-                <span className="model-selector__slider-thumb" aria-hidden />
-              </div>
+              <DitherChoiceRow
+                label="Effort"
+                ariaLabel="Reasoning effort"
+                optionLabels={effortLabels}
+                selectedIndex={selectedEffortIndex}
+                disabled={props.disabled || effortOptions.length <= 1}
+                onCommitIndex={commitEffortIndex}
+              />
             </div>
           ) : null}
 
           <div
             id={modelsPanelId}
             className={`model-selector__models${advancedOpen ? ' is-open' : ''}`}
-            hidden={!advancedOpen}
+            aria-hidden={!advancedOpen}
+            inert={advancedOpen ? undefined : true}
           >
-            <div className="model-selector__section" role="group" aria-label="Models">
-              {props.models.map((entry) => {
-                const selected = entry.id === model?.id
-                return (
-                  <button
-                    key={entry.id}
-                    type="button"
-                    className={`model-selector__model${selected ? ' is-selected' : ''}`}
-                    aria-pressed={selected}
-                    aria-label={`Use ${entry.displayName}`}
-                    onClick={() => {
-                      handleModelSelect(entry)
-                      close()
-                    }}
-                  >
-                    <span className="model-selector__model-copy">
-                      <span className="model-selector__model-name">{entry.displayName}</span>
-                      {entry.description ? (
-                        <span className="model-selector__model-description">
-                          {entry.description}
-                        </span>
-                      ) : null}
-                    </span>
-                  </button>
-                )
-              })}
+            <div className="model-selector__models-reveal">
+              <div className="model-selector__section" role="group" aria-label="Models">
+                {props.models.map((entry) => {
+                  const selected = entry.id === model?.id
+                  return (
+                    <button
+                      key={entry.id}
+                      type="button"
+                      className={`model-selector__model${selected ? ' is-selected' : ''}`}
+                      aria-pressed={selected}
+                      aria-label={`Use ${entry.displayName}`}
+                      onClick={() => {
+                        handleModelSelect(entry)
+                        close()
+                      }}
+                    >
+                      <span className="model-selector__model-copy">
+                        <span className="model-selector__model-name">{entry.displayName}</span>
+                        {entry.description ? (
+                          <span className="model-selector__model-description">
+                            {entry.description}
+                          </span>
+                        ) : null}
+                      </span>
+                    </button>
+                  )
+                })}
+              </div>
             </div>
           </div>
         </div>

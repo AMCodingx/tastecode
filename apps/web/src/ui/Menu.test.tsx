@@ -49,7 +49,8 @@ describe('Menu', () => {
     expect(menu.parentElement).toBe(document.body)
     expect(menu.classList.contains('menu--up')).toBe(true)
     expect(menu.style.left).toBe('8px')
-    expect(menu.style.top).toBe('22px')
+    expect(menu.style.top).toBe('')
+    expect(menu.style.bottom).toBe('36px')
 
     fireEvent.mouseDown(menu)
     expect(screen.getByRole('menu')).toBeTruthy()

@@ -87,8 +87,11 @@ body {
   font-size: var(--t-md);
   line-height: 1.55;
   font-optical-sizing: auto;
-  -webkit-font-smoothing: antialiased;
   overflow: hidden;
+}
+
+html.is-macos-font-smoothing {
+  -webkit-font-smoothing: antialiased;
 }
 
 /* Section heading in the rail. Sentence case, small, quiet — a label, not a

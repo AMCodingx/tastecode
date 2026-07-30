@@ -383,7 +383,7 @@ export function Composer(props: {
 
           {canDictate ? (
             <button
-              className={`icon-btn icon-btn--always ${dictating ? 'is-live' : ''}`}
+              className={`icon-btn icon-btn--always composer__dictation ${dictating ? 'is-live' : ''}`}
               onClick={toggleDictation}
               disabled={props.disabled}
               title={dictating ? 'Stop dictation' : 'Dictate'}
