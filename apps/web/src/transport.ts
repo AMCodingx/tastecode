@@ -99,6 +99,7 @@ export class Transport {
     }
 
     socket.onclose = () => {
+      if (this.#socket !== socket) return
       if (this.#closedByUs) return
       this.#setState('reconnecting')
       // Fixed backoff is fine for a loopback connection to a server we own.

@@ -141,6 +141,7 @@ export const methods = {
       agent: z.string().optional(),
       workspacePath: z.string(),
       model: z.string().optional(),
+      serviceTier: z.string().optional(),
       effort: z.string().optional(),
       approval: ApprovalModeSchema.optional(),
     }),
@@ -152,6 +153,9 @@ export const methods = {
       text: z.string(),
       /** Absolute paths the user attached. The agent reads them itself. */
       attachments: z.array(z.string()).optional(),
+      model: z.string().optional(),
+      effort: z.string().optional(),
+      serviceTier: z.string().optional(),
     }),
     result: z.object({ turnId: z.string() }),
   },

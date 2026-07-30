@@ -25,6 +25,10 @@ export function Menu(props: {
   drop?: 'up' | 'down'
   disabled?: boolean
   label?: string
+  triggerClassName?: string
+  panelRole?: 'menu' | 'dialog'
+  panelLabel?: string
+  panelClassName?: string
 }) {
   const [open, setOpen] = useState(false)
   const [position, setPosition] = useState<MenuPosition>()
@@ -95,11 +99,15 @@ export function Menu(props: {
     }
 
     updatePosition()
+    const resizeObserver =
+      typeof ResizeObserver === 'undefined' ? undefined : new ResizeObserver(updatePosition)
+    if (panel.current) resizeObserver?.observe(panel.current)
     window.addEventListener('resize', updatePosition)
     document.addEventListener('scroll', updatePosition, true)
     return () => {
       window.removeEventListener('resize', updatePosition)
       document.removeEventListener('scroll', updatePosition, true)
+      resizeObserver?.disconnect()
     }
   }, [open, props.align, props.drop])
 
@@ -107,14 +115,14 @@ export function Menu(props: {
     <div className="menuwrap" ref={wrap}>
       <button
         ref={trigger}
-        className="menutrigger"
+        className={`menutrigger${props.triggerClassName ? ` ${props.triggerClassName}` : ''}`}
         onClick={() => {
           setPosition(undefined)
           setOpen((current) => !current)
         }}
         disabled={props.disabled}
         aria-expanded={open}
-        aria-haspopup="menu"
+        aria-haspopup={props.panelRole ?? 'menu'}
         {...(props.label ? { 'aria-label': props.label } : {})}
       >
         {props.trigger(open)}
@@ -124,8 +132,9 @@ export function Menu(props: {
         ? createPortal(
             <div
               ref={panel}
-              className={`menu menu--${position?.drop ?? props.drop ?? 'up'}${position ? ' is-positioned' : ''}`}
-              role="menu"
+              className={`menu menu--${position?.drop ?? props.drop ?? 'up'}${position ? ' is-positioned' : ''}${props.panelClassName ? ` ${props.panelClassName}` : ''}`}
+              role={props.panelRole ?? 'menu'}
+              {...(props.panelLabel ? { 'aria-label': props.panelLabel } : {})}
               style={
                 position
                   ? { left: position.left, top: position.top }

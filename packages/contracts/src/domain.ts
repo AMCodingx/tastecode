@@ -181,6 +181,17 @@ export const ModelSchema = z.object({
   /** e.g. low / medium / high. Empty when the model has no effort setting. */
   reasoningEfforts: z.array(z.string()),
   defaultReasoningEffort: z.string().optional(),
+  /** Provider-advertised routing tiers, such as Codex's priority/Fast tier. */
+  serviceTiers: z
+    .array(
+      z.object({
+        id: z.string(),
+        name: z.string(),
+        description: z.string(),
+      }),
+    )
+    .default([]),
+  defaultServiceTier: z.string().nullable().optional(),
 })
 export type Model = z.infer<typeof ModelSchema>
 

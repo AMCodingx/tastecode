@@ -21,15 +21,23 @@ import type {
  */
 export type StartOptions = {
   model?: string | undefined
+  serviceTier?: string | undefined
   effort?: string | undefined
   approval?: ApprovalMode | undefined
   /** Which ACP agent to launch. Ignored by providers that are one engine. */
   agent?: string | undefined
 }
 
+export type TurnOptions = Pick<StartOptions, 'model' | 'serviceTier' | 'effort'>
+
 export interface AgentSession {
   readonly capabilities: Capabilities
-  sendTurn(threadId: string, text: string, attachments?: string[]): Promise<string>
+  sendTurn(
+    threadId: string,
+    text: string,
+    attachments?: string[],
+    options?: TurnOptions,
+  ): Promise<string>
   interrupt(threadId: string): Promise<void>
   respondToApproval(approvalId: string, decision: ApprovalDecision): void
   dispose(): void

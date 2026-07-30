@@ -50,5 +50,7 @@ coverage/
 playwright-report/
 test-results/
 
+.osaku/
+
 # Local scratch — anything here is yours alone
 scratch/

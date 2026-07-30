@@ -69,9 +69,12 @@ export const CODEX_CAPABILITIES: Capabilities = {
 
 export type StartOptions = {
   model?: string | undefined
+  serviceTier?: string | undefined
   effort?: string | undefined
   approval?: ApprovalMode | undefined
 }
+
+export type TurnOptions = Pick<StartOptions, 'model' | 'serviceTier' | 'effort'>
 
 /**
  * Our three user-facing modes onto Codex's approval policy and sandbox.
@@ -263,6 +266,14 @@ export class CodexAdapter extends EventEmitter<CodexAdapterEvents> {
         ...(model.defaultReasoningEffort
           ? { defaultReasoningEffort: String(model.defaultReasoningEffort) }
           : {}),
+        serviceTiers: model.serviceTiers.map((tier) => ({
+          id: String(tier.id),
+          name: String(tier.name),
+          description: String(tier.description),
+        })),
+        ...(model.defaultServiceTier
+          ? { defaultServiceTier: String(model.defaultServiceTier) }
+          : {}),
       }))
   }
 
@@ -270,6 +281,7 @@ export class CodexAdapter extends EventEmitter<CodexAdapterEvents> {
     const response = await this.#call<ThreadStartResponse>('thread/start', {
       cwd: workspacePath,
       ...(options.model ? { model: options.model } : {}),
+      ...(options.serviceTier ? { serviceTier: options.serviceTier } : {}),
       ...(options.effort ? { config: { model_reasoning_effort: options.effort } } : {}),
       ...(options.approval ? APPROVAL[options.approval] : {}),
     })
@@ -281,9 +293,17 @@ export class CodexAdapter extends EventEmitter<CodexAdapterEvents> {
     }
   }
 
-  async sendTurn(threadId: string, text: string, attachments: string[] = []): Promise<string> {
+  async sendTurn(
+    threadId: string,
+    text: string,
+    attachments: string[] = [],
+    options: TurnOptions = {},
+  ): Promise<string> {
     const response = await this.#call<TurnStartResponse>('turn/start', {
       threadId,
+      ...(options.model ? { model: options.model } : {}),
+      ...(options.serviceTier ? { serviceTier: options.serviceTier } : {}),
+      ...(options.effort ? { effort: options.effort } : {}),
       input: [
         { type: 'text', text, text_elements: [] },
         // Images go in as images so the model can actually see them; anything

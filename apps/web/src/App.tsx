@@ -19,6 +19,8 @@ const AGENT_KEY = 'harness.acpAgent'
 const AGENT_NAME_KEY = 'harness.acpAgentName'
 const PROJECTS_KEY = 'harness.projects'
 const MODEL_KEY = 'harness.model'
+const EFFORT_KEY = 'harness.effort'
+const SERVICE_TIER_KEY = 'harness.serviceTier'
 
 /**
  * Projects and sessions live in localStorage for now. The server takes
@@ -56,7 +58,12 @@ export function App() {
   const [modelId, setModelId] = useState<string | undefined>(
     () => localStorage.getItem(MODEL_KEY) ?? undefined,
   )
-  const [effort, setEffort] = useState<string | undefined>()
+  const [effort, setEffort] = useState<string | undefined>(
+    () => localStorage.getItem(EFFORT_KEY) ?? undefined,
+  )
+  const [serviceTier, setServiceTier] = useState<string | undefined>(
+    () => localStorage.getItem(SERVICE_TIER_KEY) ?? undefined,
+  )
   // Never restored from storage. Full access is genuinely dangerous, and a
   // permission level that quietly survives a restart is how people get burned.
   const [approval, setApproval] = useState<ApprovalMode>('ask')
@@ -98,9 +105,22 @@ export function App() {
         if (cancelled) return
         setModels(list)
         setModelsLoaded(true)
-        const chosen = list.find((m) => m.isDefault) ?? list[0]
-        setModelId((current) => current ?? chosen?.id)
-        setEffort((current) => current ?? chosen?.defaultReasoningEffort)
+        const storedModel = localStorage.getItem(MODEL_KEY)
+        const chosen =
+          list.find((model) => model.id === storedModel) ?? list.find((m) => m.isDefault)
+        const selected = chosen ?? list[0]
+        if (!selected) return
+        setModelId(selected.id)
+        setEffort((current) =>
+          current && selected.reasoningEfforts.includes(current)
+            ? current
+            : (selected.defaultReasoningEffort ?? selected.reasoningEfforts[0]),
+        )
+        setServiceTier((current) =>
+          current && selected.serviceTiers.some((tier) => tier.id === current)
+            ? current
+            : (selected.defaultServiceTier ?? undefined),
+        )
       })
       .catch(() => {
         // A provider that cannot list models is a normal case, not an error.
@@ -146,6 +166,41 @@ export function App() {
     if (modelId) localStorage.setItem(MODEL_KEY, modelId)
   }, [modelId])
 
+  useEffect(() => {
+    if (effort) {
+      localStorage.setItem(EFFORT_KEY, effort)
+    } else {
+      localStorage.removeItem(EFFORT_KEY)
+    }
+  }, [effort])
+
+  useEffect(() => {
+    if (serviceTier) {
+      localStorage.setItem(SERVICE_TIER_KEY, serviceTier)
+    } else {
+      localStorage.removeItem(SERVICE_TIER_KEY)
+    }
+  }, [serviceTier])
+
+  const selectModel = useCallback(
+    (id: string) => {
+      const selected = models.find((model) => model.id === id)
+      if (!selected) return
+      setModelId(id)
+      setEffort((current) =>
+        current && selected.reasoningEfforts.includes(current)
+          ? current
+          : (selected.defaultReasoningEffort ?? selected.reasoningEfforts[0]),
+      )
+      setServiceTier((current) =>
+        current && selected.serviceTiers.some((tier) => tier.id === current)
+          ? current
+          : (selected.defaultServiceTier ?? undefined),
+      )
+    },
+    [models],
+  )
+
   const addProject = useCallback(async () => {
     const path = await pickFolder()
     if (!path) return
@@ -167,6 +222,7 @@ export function App() {
           approval,
           ...(provider === 'acp' && acpAgent ? { agent: acpAgent } : {}),
           ...(modelId ? { model: modelId } : {}),
+          ...(serviceTier ? { serviceTier } : {}),
           ...(effort ? { effort } : {}),
         })
         setProjects((current) =>
@@ -190,33 +246,7 @@ export function App() {
         return undefined
       }
     },
-    [transport, provider, acpAgent, modelId, effort, approval],
-  )
-
-  const beginSession = useCallback(
-    (projectPath: string) => {
-      const untouched = projects
-        .find((project) => project.path === projectPath)
-        ?.sessions.filter((session) => session.title === 'New session')
-      for (const session of untouched ?? []) {
-        void transport.request('thread.close', { threadId: session.id })
-      }
-      setProjects((current) =>
-        current.map((project) =>
-          project.path === projectPath
-            ? {
-                ...project,
-                sessions: project.sessions.filter((session) => session.title !== 'New session'),
-              }
-            : project,
-        ),
-      )
-      setNotice(undefined)
-      setActivePath(projectPath)
-      setActiveId(undefined)
-      setThread(emptyThread)
-    },
-    [projects, transport],
+    [transport, provider, acpAgent, modelId, serviceTier, effort, approval],
   )
 
   const beginSession = useCallback(
@@ -264,12 +294,15 @@ export function App() {
           threadId,
           text,
           ...(attachments.length > 0 ? { attachments } : {}),
+          ...(modelId ? { model: modelId } : {}),
+          ...(effort ? { effort } : {}),
+          ...(serviceTier ? { serviceTier } : {}),
         })
       } catch (error) {
         setNotice(error instanceof Error ? error.message : String(error))
       }
     },
-    [transport, activeId, activePath, createSession],
+    [transport, activeId, activePath, createSession, modelId, effort, serviceTier],
   )
 
   const interrupt = useCallback(() => {
@@ -385,11 +418,13 @@ export function App() {
             modelsLoaded={modelsLoaded}
             modelId={modelId}
             effort={effort}
+            serviceTier={serviceTier}
             approval={approval}
             disabled={!activePath}
             running={thread.running}
-            onModelChange={setModelId}
+            onModelChange={selectModel}
             onEffortChange={setEffort}
+            onServiceTierChange={setServiceTier}
             onApprovalChange={setApproval}
             onSend={(t, files) => void send(t, files)}
             onInterrupt={interrupt}

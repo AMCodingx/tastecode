@@ -43,7 +43,20 @@ describe('protocol envelopes', () => {
 
   it('validates params for every declared method', () => {
     expect(
-      methods['thread.start'].params.parse({ provider: 'codex', workspacePath: 'D:\\x' }),
+      methods['thread.start'].params.parse({
+        provider: 'codex',
+        workspacePath: 'D:\\x',
+        serviceTier: 'priority',
+      }),
+    ).toBeTruthy()
+    expect(
+      methods['thread.sendTurn'].params.parse({
+        threadId: 'th1',
+        text: 'hello',
+        model: 'gpt-5.6-sol',
+        effort: 'xhigh',
+        serviceTier: 'priority',
+      }),
     ).toBeTruthy()
     expect(() => methods['thread.start'].params.parse({ provider: 'nope' })).toThrow()
   })

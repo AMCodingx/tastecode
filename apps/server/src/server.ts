@@ -175,11 +175,13 @@ export function startServer(port = DEFAULT_PORT) {
           agent?: string
           workspacePath: string
           model?: string
+          serviceTier?: string
           effort?: string
           approval?: 'ask' | 'auto' | 'full'
         }
         const thread = await orchestrator.startThread(p.provider, p.workspacePath, {
           model: p.model,
+          serviceTier: p.serviceTier,
           effort: p.effort,
           approval: p.approval,
           agent: p.agent,
@@ -188,8 +190,21 @@ export function startServer(port = DEFAULT_PORT) {
       }
 
       case 'thread.sendTurn': {
-        const p = params as { threadId: string; text: string; attachments?: string[] }
-        return { turnId: await orchestrator.sendTurn(p.threadId, p.text, p.attachments) }
+        const p = params as {
+          threadId: string
+          text: string
+          attachments?: string[]
+          model?: string
+          effort?: string
+          serviceTier?: string
+        }
+        return {
+          turnId: await orchestrator.sendTurn(p.threadId, p.text, p.attachments, {
+            model: p.model,
+            effort: p.effort,
+            serviceTier: p.serviceTier,
+          }),
+        }
       }
 
       case 'thread.respondToApproval': {

@@ -87,4 +87,69 @@ describe('new chats', () => {
       expect(screen.getByRole('button', { name: 'Fix the sidebar' })).toBeTruthy()
     })
   })
+
+  it('forwards model, effort, and the provider fast tier on every turn', async () => {
+    transport.request.mockImplementation((method: string) => {
+      switch (method) {
+        case 'models.list':
+          return Promise.resolve({
+            models: [
+              {
+                id: 'gpt-5.6-sol',
+                displayName: 'GPT-5.6-Sol',
+                isDefault: true,
+                reasoningEfforts: ['low', 'medium', 'high', 'xhigh'],
+                defaultReasoningEffort: 'low',
+                serviceTiers: [
+                  {
+                    id: 'priority',
+                    name: 'Fast',
+                    description: '1.5x speed, increased usage',
+                  },
+                ],
+              },
+            ],
+          })
+        case 'workspace.info':
+          return Promise.resolve({ added: 0, removed: 0, dirtyFiles: 0 })
+        case 'auth.status':
+          return Promise.resolve({ signedIn: true })
+        case 'thread.start':
+          return Promise.resolve({ threadId: 'thread-1' })
+        case 'thread.sendTurn':
+          return Promise.resolve({ turnId: 'turn-1' })
+        default:
+          return Promise.resolve({})
+      }
+    })
+
+    render(<App />)
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Model and reasoning' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Enable fast mode' }))
+    fireEvent.keyDown(screen.getByRole('slider', { name: 'Reasoning effort' }), { key: 'End' })
+
+    await screen.findByRole('button', { name: 'Disable fast mode' })
+    const composer = screen.getByPlaceholderText('Do anything')
+    fireEvent.change(composer, { target: { value: 'Use the fast lane' } })
+    fireEvent.keyDown(composer, { key: 'Enter' })
+
+    await waitFor(() => {
+      expect(transport.request).toHaveBeenCalledWith('thread.start', {
+        provider: 'codex',
+        workspacePath: '/work/project',
+        approval: 'ask',
+        model: 'gpt-5.6-sol',
+        effort: 'xhigh',
+        serviceTier: 'priority',
+      })
+      expect(transport.request).toHaveBeenCalledWith('thread.sendTurn', {
+        threadId: 'thread-1',
+        text: 'Use the fast lane',
+        model: 'gpt-5.6-sol',
+        effort: 'xhigh',
+        serviceTier: 'priority',
+      })
+    })
+  })
 })

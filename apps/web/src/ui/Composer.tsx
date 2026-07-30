@@ -13,10 +13,10 @@ import {
   Square,
   type LucideIcon,
   X,
-  Zap,
 } from 'lucide-react'
 import { canDictate, pickFiles, startDictation } from '../bridge.js'
 import { Menu, MenuItem } from './Menu.js'
+import { ModelSelector } from './ModelSelector.js'
 
 /**
  * Prompt bar.
@@ -94,30 +94,6 @@ const SLASH_COMMANDS: { name: string; detail: string; text: string }[] = [
 
 const IMAGE_RE = /\.(png|jpe?g|gif|webp|bmp|svg)$/i
 
-function EffortGauge({ effort, options }: { effort: string | undefined; options: string[] }) {
-  const selectedIndex = effort === undefined ? -1 : options.indexOf(effort)
-  const progress =
-    selectedIndex < 0 || options.length < 2 ? 0.5 : selectedIndex / (options.length - 1)
-  const needleRotation = -60 + progress * 120
-
-  return (
-    <svg
-      width="13"
-      height="13"
-      viewBox="0 0 24 24"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth="2"
-      strokeLinecap="round"
-      strokeLinejoin="round"
-      aria-hidden
-    >
-      <path d="M4 18a8 8 0 0 1 16 0" />
-      <path d="M12 18v-6" transform={`rotate(${needleRotation} 12 18)`} />
-    </svg>
-  )
-}
-
 export function Composer(props: {
   projectName: string | undefined
   workspace: WorkspaceInfo | undefined
@@ -126,11 +102,13 @@ export function Composer(props: {
   modelsLoaded: boolean
   modelId: string | undefined
   effort: string | undefined
+  serviceTier: string | undefined
   approval: ApprovalMode
   disabled: boolean
   running: boolean
   onModelChange: (id: string) => void
   onEffortChange: (effort: string) => void
+  onServiceTierChange: (serviceTier: string | undefined) => void
   onApprovalChange: (mode: ApprovalMode) => void
   onSend: (text: string, attachments: string[]) => void
   onInterrupt: () => void
@@ -145,13 +123,11 @@ export function Composer(props: {
 
   useEffect(() => () => stopDictation.current?.(), [])
 
-  const model = props.models.find((m) => m.id === props.modelId)
   // A provider that cannot enumerate models shows nothing. Sitting on
   // "Loading models…" forever is the UI lying about what it is doing.
   const showModelPlaceholder = props.models.length === 0 && !props.modelsLoaded
   const approval = APPROVAL_MODES.find((m) => m.id === props.approval) ?? APPROVAL_MODES[0]!
   const ApprovalIcon = approval.icon
-  const efforts = model?.reasoningEfforts ?? []
 
   const matches = slashOpen
     ? SLASH_COMMANDS.filter((c) => c.name.startsWith(text.trim().toLowerCase()))
@@ -390,83 +366,17 @@ export function Composer(props: {
 
           <span className="tools__spacer" />
 
-          {/* Effort is changed far more often than the model, so it stays at the
-              top level. Segments while they fit; past four options they would
-              push the send button off a narrow window, so it becomes a menu. */}
-          {efforts.length > 1 && efforts.length <= 4 ? (
-            <div className="segments" role="group" aria-label="Reasoning effort">
-              {efforts.map((entry) => (
-                <button
-                  key={entry}
-                  className={`segment ${entry === props.effort ? 'is-on' : ''}`}
-                  onClick={() => props.onEffortChange(entry)}
-                  disabled={props.running}
-                  title={`Reasoning: ${entry}`}
-                >
-                  {entry}
-                </button>
-              ))}
-            </div>
-          ) : efforts.length > 1 ? (
-            <Menu
-              label="Reasoning effort"
-              align="right"
-              disabled={props.running}
-              trigger={() => (
-                <span className="tool tool--compact">
-                  <EffortGauge effort={props.effort} options={efforts} />
-                  <span>{props.effort ?? 'effort'}</span>
-                </span>
-              )}
-            >
-              {(close) => (
-                <>
-                  <p className="menu__group">Reasoning effort</p>
-                  {efforts.map((entry) => (
-                    <MenuItem
-                      key={entry}
-                      title={entry}
-                      active={entry === props.effort}
-                      onClick={() => {
-                        props.onEffortChange(entry)
-                        close()
-                      }}
-                    />
-                  ))}
-                </>
-              )}
-            </Menu>
-          ) : null}
-
           {props.models.length > 0 ? (
-            <Menu
-              label="Model"
-              align="right"
+            <ModelSelector
+              models={props.models}
+              modelId={props.modelId}
+              effort={props.effort}
+              serviceTier={props.serviceTier}
               disabled={props.running}
-              trigger={() => (
-                <span className="tool">
-                  <Zap size={13} aria-hidden />
-                  <span>{model?.displayName ?? 'Model'}</span>
-                </span>
-              )}
-            >
-              {(close) => (
-                <>
-                  {props.models.map((entry) => (
-                    <MenuItem
-                      key={entry.id}
-                      title={entry.displayName}
-                      detail={entry.description}
-                      active={entry.id === props.modelId}
-                      onClick={() => {
-                        props.onModelChange(entry.id)
-                        close()
-                      }}
-                    />
-                  ))}
-                </>
-              )}
-            </Menu>
+              onModelChange={props.onModelChange}
+              onEffortChange={props.onEffortChange}
+              onServiceTierChange={props.onServiceTierChange}
+            />
           ) : showModelPlaceholder ? (
             <span className="tool tool--quiet">Loading models…</span>
           ) : null}

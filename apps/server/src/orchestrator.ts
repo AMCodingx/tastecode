@@ -1,5 +1,10 @@
 import { CodexAdapter } from '@harness/adapter-codex'
-import { providerRuntime, type AgentSession, type StartOptions } from './adapters.js'
+import {
+  providerRuntime,
+  type AgentSession,
+  type StartOptions,
+  type TurnOptions,
+} from './adapters.js'
 import type {
   Account,
   ApprovalDecision,
@@ -102,8 +107,13 @@ export class Orchestrator {
     return thread
   }
 
-  async sendTurn(threadId: string, text: string, attachments: string[] = []): Promise<string> {
-    return this.#get(threadId).session.sendTurn(threadId, text, attachments)
+  async sendTurn(
+    threadId: string,
+    text: string,
+    attachments: string[] = [],
+    options: TurnOptions = {},
+  ): Promise<string> {
+    return this.#get(threadId).session.sendTurn(threadId, text, attachments, options)
   }
 
   respondToApproval(threadId: string, approvalId: string, decision: ApprovalDecision): void {
