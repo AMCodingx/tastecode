@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
 import type { Account, ProviderId } from '@harness/contracts'
+import { LoaderCircle } from 'lucide-react'
 import type { Transport } from '../transport.js'
 
 /**
@@ -254,7 +255,7 @@ function SignIn(props: {
 
       {phase === 'waiting' ? (
         <div className="waiting">
-          <span className="spinner" />
+          <LoaderCircle className="spinner" aria-hidden />
           <div>
             <p className="waiting__title">Waiting for your browser…</p>
             <p className="waiting__note">
