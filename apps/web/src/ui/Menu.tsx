@@ -1,6 +1,7 @@
 import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from 'react'
 import { createPortal } from 'react-dom'
 import { Check } from 'lucide-react'
+import { ShortcutHint } from './ShortcutHint.js'
 
 type Drop = 'up' | 'down'
 
@@ -30,6 +31,7 @@ export function Menu(props: {
   panelRole?: 'menu' | 'dialog'
   panelLabel?: string
   panelClassName?: string
+  shortcutAria?: string
 }) {
   const [open, setOpen] = useState(false)
   const [position, setPosition] = useState<MenuPosition>()
@@ -130,6 +132,7 @@ export function Menu(props: {
         disabled={props.disabled}
         aria-expanded={open}
         aria-haspopup={props.panelRole ?? 'menu'}
+        aria-keyshortcuts={props.shortcutAria}
         {...(props.label ? { 'aria-label': props.label } : {})}
       >
         {props.trigger(open)}
@@ -169,16 +172,22 @@ export function MenuItem(props: {
   active?: boolean
   title: string
   detail?: string | undefined
+  shortcut?: string
+  shortcutAria?: string
 }) {
   return (
     <button
       className={`menu__item ${props.active ? 'is-active' : ''}`}
       onClick={props.onClick}
       role="menuitem"
+      aria-keyshortcuts={props.shortcutAria}
     >
       <span className="menu__name">
-        {props.title}
-        {props.active ? <Check size={13} aria-hidden /> : null}
+        <span>{props.title}</span>
+        <span className="menu__meta">
+          {props.active ? <Check size={13} aria-hidden /> : null}
+          {props.shortcut ? <ShortcutHint>{props.shortcut}</ShortcutHint> : null}
+        </span>
       </span>
       {props.detail ? <span className="menu__desc">{props.detail}</span> : null}
     </button>
