@@ -1799,28 +1799,14 @@
 }
 
 .dither-slider__texture {
-  opacity: 0.12;
-  transition: opacity 90ms var(--ease-out);
-}
-
-.dither-slider__bloom {
-  opacity: 0;
-  filter: blur(3px) brightness(1.35);
-  image-rendering: auto;
-  mix-blend-mode: plus-lighter;
-  transition: opacity 90ms var(--ease-out);
-}
-
-.model-selector__slider-fill:hover .dither-slider__texture,
-.model-selector__slider:focus-visible .dither-slider__texture,
-.dither-slider.is-active .dither-slider__texture {
   opacity: 1;
 }
 
-.model-selector__slider-fill:hover .dither-slider__bloom,
-.model-selector__slider:focus-visible .dither-slider__bloom,
-.dither-slider.is-active .dither-slider__bloom {
-  opacity: 0.62;
+.dither-slider__bloom {
+  opacity: 0.44;
+  filter: blur(1.75px) brightness(1.2);
+  image-rendering: auto;
+  mix-blend-mode: plus-lighter;
 }
 
 .model-selector__slider-label,
