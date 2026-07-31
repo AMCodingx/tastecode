@@ -5,7 +5,7 @@
  * and a .sh here would break one of us. See rules/code.md.
  */
 import { execFile, spawn } from 'node:child_process'
-import { randomBytes } from 'node:crypto'
+import { createHash, randomBytes } from 'node:crypto'
 import { fileURLToPath } from 'node:url'
 import { promisify } from 'node:util'
 import path from 'node:path'
@@ -17,6 +17,10 @@ const isWin = process.platform === 'win32'
 const mobile = process.argv.includes('--mobile')
 const children = []
 const execFileAsync = promisify(execFile)
+const launcherId = createHash('sha256').update(root).digest('hex')
+const launcherControlPort = 20_000 + (Number.parseInt(launcherId.slice(0, 4), 16) % 20_000)
+let shuttingDown = false
+let launcherControlServer
 
 function run(name, packageDir, args, env = {}) {
   // npm/pnpm shims are .cmd files on Windows, which must go through cmd.exe.
@@ -35,8 +39,11 @@ function run(name, packageDir, args, env = {}) {
   const prefix = `[${name}]`
   child.stdout.on('data', (d) => process.stdout.write(prefixLines(prefix, d.toString())))
   child.stderr.on('data', (d) => process.stderr.write(prefixLines(prefix, d.toString())))
-  child.on('exit', (code) => {
-    if (code !== 0 && code !== null) console.error(`${prefix} exited with ${code}`)
+  child.on('exit', (code, signal) => {
+    if (shuttingDown) return
+    const reason = code === null ? `signal ${signal ?? 'unknown'}` : `code ${code}`
+    console.error(`${prefix} exited with ${reason}`)
+    shutdown(code ?? 1)
   })
   children.push(child)
   return child
@@ -69,6 +76,107 @@ function waitForPort(port, host = '127.0.0.1', timeoutMs = 30_000) {
   })
 }
 
+function portIsOpen(port, host) {
+  return new Promise((resolve) => {
+    const socket = net.connect(port, host)
+    let settled = false
+    const finish = (open) => {
+      if (settled) return
+      settled = true
+      socket.destroy()
+      resolve(open)
+    }
+    socket.once('connect', () => finish(true))
+    socket.once('error', () => finish(false))
+    socket.setTimeout(1_000, () => finish(false))
+  })
+}
+
+async function requireFreePorts(host) {
+  const ports = [4311, 5183]
+  const states = await Promise.all(ports.map((port) => portIsOpen(port, host)))
+  const occupied = ports.filter((_, index) => states[index])
+  if (occupied.length === 0) return
+
+  console.error(
+    `[dev] port${occupied.length === 1 ? '' : 's'} ${occupied.join(', ')} already in use. ` +
+      'Another application owns the port, so Personal Harness will not stop it.',
+  )
+  process.exit(1)
+}
+
+function requestLauncherShutdown() {
+  return new Promise((resolve, reject) => {
+    const socket = net.connect(launcherControlPort, '127.0.0.1')
+    let response = ''
+    let settled = false
+    const timeout = setTimeout(() => finish(new Error('shutdown request timed out')), 3_000)
+
+    const finish = (error) => {
+      if (settled) return
+      settled = true
+      clearTimeout(timeout)
+      socket.destroy()
+      if (error) reject(error)
+      else resolve()
+    }
+
+    socket.setEncoding('utf8')
+    socket.once('connect', () => socket.end(`stop:${launcherId}\n`))
+    socket.on('data', (chunk) => {
+      response += chunk
+    })
+    socket.once('end', () => {
+      if (response.trim() === `stopping:${launcherId}`) finish()
+      else finish(new Error('shutdown request was rejected'))
+    })
+    socket.once('error', finish)
+  })
+}
+
+function createLauncherControlServer() {
+  const server = net.createServer((socket) => {
+    socket.setEncoding('utf8')
+    let command = ''
+    socket.on('data', (chunk) => {
+      command += chunk
+      if (command.length > 1_000) socket.destroy()
+    })
+    socket.on('end', () => {
+      if (command.trim() !== `stop:${launcherId}`) {
+        socket.end('denied')
+        return
+      }
+      socket.end(`stopping:${launcherId}`, () => void shutdown(0))
+    })
+  })
+  return server
+}
+
+async function claimLauncher() {
+  while (true) {
+    const server = createLauncherControlServer()
+    try {
+      await new Promise((resolve, reject) => {
+        server.once('error', reject)
+        server.listen(launcherControlPort, '127.0.0.1', resolve)
+      })
+      launcherControlServer = server
+      return
+    } catch (error) {
+      if (error?.code !== 'EADDRINUSE') throw error
+    }
+
+    try {
+      await requestLauncherShutdown()
+    } catch (error) {
+      throw new Error(`launcher control port is owned by another application: ${error.message}`)
+    }
+    console.log('[dev] stopping previous Personal Harness dev process')
+    await new Promise((resolve) => setTimeout(resolve, 100))
+  }
+}
+
 async function tailscaleIPv4() {
   const candidates = ['tailscale']
   if (process.platform === 'darwin') {
@@ -93,15 +201,47 @@ async function tailscaleIPv4() {
   )
 }
 
-function shutdown() {
-  for (const child of children) child.kill()
-  process.exit(0)
+function stopChild(child) {
+  if (!child.pid || child.exitCode !== null || child.signalCode !== null) return Promise.resolve()
+
+  return new Promise((resolve) => {
+    let settled = false
+    const finish = () => {
+      if (settled) return
+      settled = true
+      resolve()
+    }
+    child.once('exit', finish)
+
+    if (isWin) {
+      const killer = spawn('taskkill.exe', ['/pid', String(child.pid), '/T', '/F'], {
+        stdio: 'ignore',
+        windowsHide: true,
+      })
+      killer.once('error', finish)
+      killer.once('exit', finish)
+    } else {
+      child.kill()
+    }
+    setTimeout(finish, 5_000).unref()
+  })
 }
-process.on('SIGINT', shutdown)
-process.on('SIGTERM', shutdown)
+
+async function shutdown(exitCode = 0) {
+  if (shuttingDown) return
+  shuttingDown = true
+  launcherControlServer?.close()
+  await Promise.all(children.map(stopChild))
+  process.exit(exitCode)
+}
+process.on('SIGINT', () => void shutdown(0))
+process.on('SIGTERM', () => void shutdown(0))
+
+await claimLauncher()
 
 if (mobile) {
   const host = await tailscaleIPv4()
+  await requireFreePorts(host)
   const accessToken = randomBytes(24).toString('base64url')
   const serverUrl = `ws://${host}:4311`
   const webUrl = `http://${host}:5183/#access_token=${accessToken}`
@@ -114,9 +254,10 @@ if (mobile) {
     VITE_HARNESS_SERVER_URL: serverUrl,
   })
 
-  await waitForPort(5183, host)
+  await Promise.all([waitForPort(4311, host), waitForPort(5183, host)])
   console.log(`\nOpen on your Tailscale-connected phone:\n${webUrl}\n`)
 } else {
+  await requireFreePorts('127.0.0.1')
   run('server', 'apps/server', ['run', 'dev'])
   run('web', 'apps/web', ['run', 'dev'])
 
