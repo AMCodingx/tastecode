@@ -26,6 +26,11 @@ export type StartOptions = {
   approval?: ApprovalMode | undefined
   /** Which ACP agent to launch. Ignored by providers that are one engine. */
   agent?: string | undefined
+  /**
+   * Run this session in a private git worktree rather than in the project
+   * folder itself, so two agents cannot overwrite each other.
+   */
+  isolate?: boolean | undefined
 }
 
 export type TurnOptions = Pick<StartOptions, 'model' | 'serviceTier' | 'effort'>

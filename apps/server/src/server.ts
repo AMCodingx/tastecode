@@ -1,3 +1,5 @@
+import os from 'node:os'
+import path from 'node:path'
 import { WebSocketServer, type WebSocket } from 'ws'
 import { detectAgents } from '@harness/adapter-acp'
 import {
@@ -9,11 +11,36 @@ import {
   type ProviderId,
 } from '@harness/contracts'
 import { Orchestrator } from './orchestrator.js'
+import { detectProviders } from './providers.js'
 import { PushBus } from './push-bus.js'
+import { Store } from './store.js'
 import { readWorkspace } from './workspace.js'
 
 export const SERVER_VERSION = '0.0.0'
 export const DEFAULT_PORT = 4311
+
+/**
+ * Where the database lives.
+ *
+ * Under the platform's own per-user data directory rather than beside the
+ * binary, so an update or a reinstall does not take someone's history with it.
+ * `HARNESS_DATA_DIR` overrides it, which is what the tests and a portable
+ * install use.
+ */
+function storeLocation(): string {
+  const override = process.env['HARNESS_DATA_DIR']
+  if (override) return path.join(override, 'harness.db')
+
+  const home = os.homedir()
+  const base =
+    process.platform === 'win32'
+      ? (process.env['APPDATA'] ?? path.join(home, 'AppData', 'Roaming'))
+      : process.platform === 'darwin'
+        ? path.join(home, 'Library', 'Application Support')
+        : (process.env['XDG_DATA_HOME'] ?? path.join(home, '.local', 'share'))
+
+  return path.join(base, 'PersonalHarness', 'harness.db')
+}
 
 /**
  * The local core server. Owns all state; clients are thin renderers.
@@ -41,11 +68,17 @@ export function startServer(port = DEFAULT_PORT) {
     process.exit(1)
   })
 
-  const orchestrator = new Orchestrator({
+  const store = new Store(storeLocation())
+  const orchestrator = new Orchestrator(store, {
     onEvent: (threadId, event) => push.broadcast('thread.event', { threadId, event }),
     onLog: (line) => console.log(`[agent] ${line}`),
     onLogin: (provider, result) => push.broadcast('auth.event', { provider, ...result }),
   })
+
+  // A previous run killed mid-session leaves git believing in checkouts that
+  // are gone. Clearing that up at startup means the next session on that path
+  // starts instead of failing with a message about our own leftovers.
+  void orchestrator.recoverWorktrees().catch(() => undefined)
 
   wss.on('connection', (socket) => {
     push.add(socket)
@@ -111,13 +144,7 @@ export function startServer(port = DEFAULT_PORT) {
         }
 
       case 'providers.list':
-        // Real detection lands with the setup wizard in M2. Until then this
-        // reports only what M0 actually implements, rather than pretending.
-        return {
-          providers: [
-            { id: 'codex', displayName: 'Codex', installed: true, auth: 'unknown' as const },
-          ],
-        }
+        return { providers: await detectProviders() }
 
       case 'auth.status': {
         const p = params as { provider: ProviderId }
@@ -169,6 +196,69 @@ export function startServer(port = DEFAULT_PORT) {
         }
       }
 
+      case 'projects.list':
+        return {
+          projects: store.projects().map((project) => ({
+            ...project,
+            sessions: store.threads(project.path).map((thread) => ({
+              id: thread.id,
+              title: thread.title,
+              provider: thread.provider,
+              ...(thread.agent === undefined ? {} : { agent: thread.agent }),
+              createdAt: thread.createdAt,
+              running: orchestrator.isRunning(thread.id),
+              ...(thread.closedAt === undefined ? {} : { closedAt: thread.closedAt }),
+            })),
+          })),
+        }
+
+      case 'projects.add': {
+        const p = params as { path: string; name?: string }
+        return store.addProject(p.path, p.name)
+      }
+
+      case 'projects.pin': {
+        const p = params as { path: string; pinned: boolean }
+        store.setPinned(p.path, p.pinned)
+        return {}
+      }
+
+      case 'projects.rename': {
+        const p = params as { path: string; name: string }
+        store.renameProject(p.path, p.name)
+        return {}
+      }
+
+      case 'projects.remove': {
+        const p = params as { path: string }
+        // Close anything still running under it first, or the processes
+        // outlive the thing that owned them.
+        for (const thread of store.threads(p.path)) orchestrator.close(thread.id)
+        store.removeProject(p.path)
+        return {}
+      }
+
+      case 'thread.rename': {
+        const p = params as { threadId: string; title: string }
+        store.renameThread(p.threadId, p.title)
+        return {}
+      }
+
+      case 'thread.delete': {
+        const p = params as { threadId: string }
+        orchestrator.close(p.threadId)
+        store.deleteThread(p.threadId)
+        return {}
+      }
+
+      case 'thread.history': {
+        const p = params as { threadId: string; afterSeq?: number }
+        return {
+          events: orchestrator.history(p.threadId, p.afterSeq ?? 0),
+          running: orchestrator.isRunning(p.threadId),
+        }
+      }
+
       case 'thread.start': {
         const p = params as {
           provider: ProviderId
@@ -178,6 +268,7 @@ export function startServer(port = DEFAULT_PORT) {
           serviceTier?: string
           effort?: string
           approval?: 'ask' | 'auto' | 'full'
+          isolate?: boolean
         }
         const thread = await orchestrator.startThread(p.provider, p.workspacePath, {
           model: p.model,
@@ -185,8 +276,46 @@ export function startServer(port = DEFAULT_PORT) {
           effort: p.effort,
           approval: p.approval,
           agent: p.agent,
+          isolate: p.isolate,
         })
         return { threadId: thread.id }
+      }
+
+      case 'thread.checkpoints': {
+        const p = params as { threadId: string }
+        return {
+          checkpoints: orchestrator.checkpoints(p.threadId).map((entry) => ({
+            id: entry.id,
+            seq: entry.seq,
+            label: entry.label,
+            createdAt: entry.createdAt,
+          })),
+        }
+      }
+
+      case 'thread.changedSince': {
+        const p = params as { threadId: string; checkpointId: number }
+        return { files: await orchestrator.changedSinceCheckpoint(p.threadId, p.checkpointId) }
+      }
+
+      case 'thread.restore': {
+        const p = params as { threadId: string; checkpointId: number }
+        return orchestrator.restoreCheckpoint(p.threadId, p.checkpointId)
+      }
+
+      case 'thread.unsavedWork': {
+        const p = params as { threadId: string }
+        const stored = store.thread(p.threadId)
+        return {
+          isolated: stored?.worktreePath !== undefined,
+          uncommitted: await orchestrator.hasUnsavedWork(p.threadId),
+        }
+      }
+
+      case 'thread.discardWorktree': {
+        const p = params as { threadId: string; force?: boolean }
+        await orchestrator.discardWorktree(p.threadId, p.force ?? false)
+        return {}
       }
 
       case 'thread.sendTurn': {
@@ -247,6 +376,7 @@ export function startServer(port = DEFAULT_PORT) {
     port,
     close: () => {
       orchestrator.disposeAll()
+      store.close()
       wss.close()
     },
   }

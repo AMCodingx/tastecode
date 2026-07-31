@@ -130,6 +130,76 @@ export const methods = {
       ),
     }),
   },
+  /**
+   * Projects and sessions the server knows about. These replace what the
+   * renderer used to keep in localStorage, where a reload could destroy it.
+   */
+  'projects.list': {
+    params: z.object({}),
+    result: z.object({
+      projects: z.array(
+        z.object({
+          path: z.string(),
+          name: z.string(),
+          pinned: z.boolean(),
+          createdAt: z.number(),
+          sessions: z.array(
+            z.object({
+              id: z.string(),
+              title: z.string(),
+              provider: ProviderIdSchema,
+              agent: z.string().optional(),
+              createdAt: z.number(),
+              /** True while a process is alive for it, not merely on record. */
+              running: z.boolean(),
+              closedAt: z.number().optional(),
+            }),
+          ),
+        }),
+      ),
+    }),
+  },
+  'projects.add': {
+    params: z.object({ path: z.string(), name: z.string().optional() }),
+    result: z.object({
+      path: z.string(),
+      name: z.string(),
+      pinned: z.boolean(),
+      createdAt: z.number(),
+    }),
+  },
+  'projects.pin': {
+    params: z.object({ path: z.string(), pinned: z.boolean() }),
+    result: z.object({}),
+  },
+  'projects.rename': {
+    params: z.object({ path: z.string(), name: z.string() }),
+    result: z.object({}),
+  },
+  'projects.remove': {
+    params: z.object({ path: z.string() }),
+    result: z.object({}),
+  },
+  'thread.rename': {
+    params: z.object({ threadId: z.string(), title: z.string() }),
+    result: z.object({}),
+  },
+  'thread.delete': {
+    params: z.object({ threadId: z.string() }),
+    result: z.object({}),
+  },
+  /**
+   * Everything that has happened in a thread, so reopening it shows the
+   * conversation rather than an empty pane. `afterSeq` asks only for the tail,
+   * which is what a client that fell behind needs.
+   */
+  'thread.history': {
+    params: z.object({ threadId: z.string(), afterSeq: z.number().optional() }),
+    result: z.object({
+      events: z.array(z.object({ seq: z.number(), event: DomainEventSchema })),
+      running: z.boolean(),
+    }),
+  },
   'thread.start': {
     params: z.object({
       provider: ProviderIdSchema,
@@ -144,8 +214,57 @@ export const methods = {
       serviceTier: z.string().optional(),
       effort: z.string().optional(),
       approval: ApprovalModeSchema.optional(),
+      /**
+       * Give this session a private git worktree instead of the project folder
+       * itself. Two agents in one directory overwrite each other, and the
+       * second to write wins silently.
+       */
+      isolate: z.boolean().optional(),
     }),
     result: z.object({ threadId: z.string() }),
+  },
+  /**
+   * Points this session can be returned to. One is taken before every turn
+   * that could write, so going back is possible without having planned for it.
+   */
+  'thread.checkpoints': {
+    params: z.object({ threadId: z.string() }),
+    result: z.object({
+      checkpoints: z.array(
+        z.object({
+          id: z.number(),
+          seq: z.number(),
+          label: z.string(),
+          createdAt: z.number(),
+        }),
+      ),
+    }),
+  },
+  /** What the agent has changed since a checkpoint, so a restore is informed. */
+  'thread.changedSince': {
+    params: z.object({ threadId: z.string(), checkpointId: z.number() }),
+    result: z.object({ files: z.array(z.string()) }),
+  },
+  /**
+   * Put files and conversation back to a checkpoint. Whatever is replaced is
+   * itself saved first, so no restore reaches a state nobody can get back to.
+   */
+  'thread.restore': {
+    params: z.object({ threadId: z.string(), checkpointId: z.number() }),
+    result: z.object({ undo: z.string() }),
+  },
+  /** Whether a session's private checkout holds work nobody has committed. */
+  'thread.unsavedWork': {
+    params: z.object({ threadId: z.string() }),
+    result: z.object({ isolated: z.boolean(), uncommitted: z.boolean() }),
+  },
+  /**
+   * Remove a session's private checkout. Fails when it holds uncommitted work
+   * unless `force`, which is the user saying to discard it.
+   */
+  'thread.discardWorktree': {
+    params: z.object({ threadId: z.string(), force: z.boolean().optional() }),
+    result: z.object({}),
   },
   'thread.sendTurn': {
     params: z.object({
