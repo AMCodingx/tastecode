@@ -27,6 +27,7 @@ export type Session = {
   id: string
   title: string
   status: 'running' | 'attention' | 'idle' | 'failed'
+  worktreeBranch?: string | undefined
 }
 
 export type Project = {
@@ -48,6 +49,7 @@ export function Sidebar(props: {
   account: Account | undefined
   providerName: string
   collapsed: boolean
+  onClose: () => void
   onAddProject: () => void
   onNewSession: (projectPath: string) => void
   onSelectSession: (id: string) => void
@@ -97,6 +99,16 @@ export function Sidebar(props: {
     >
       {props.collapsed ? (
         <div className="rail__edge" aria-hidden onMouseEnter={() => setEdgeRevealed(true)} />
+      ) : null}
+
+      {!props.collapsed ? (
+        <button
+          type="button"
+          className="rail__backdrop"
+          aria-label="Close sidebar"
+          tabIndex={-1}
+          onPointerDown={props.onClose}
+        />
       ) : null}
 
       <nav className="rail" inert={props.collapsed && !edgeRevealed ? true : undefined}>
@@ -474,15 +486,16 @@ function SessionStatus(props: { status: Session['status'] }) {
 }
 
 function sessionLabel(session: Session): string {
+  const branch = session.worktreeBranch ? `, isolated on ${session.worktreeBranch}` : ''
   switch (session.status) {
     case 'running':
-      return `${session.title}, working`
+      return `${session.title}, working${branch}`
     case 'attention':
-      return `${session.title}, needs attention`
+      return `${session.title}, needs attention${branch}`
     case 'failed':
-      return `${session.title}, failed`
+      return `${session.title}, failed${branch}`
     default:
-      return session.title
+      return `${session.title}${branch}`
   }
 }
 

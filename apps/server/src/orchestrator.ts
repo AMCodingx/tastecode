@@ -41,6 +41,7 @@ import type {
  */
 export class Orchestrator {
   #threads = new Map<string, { thread: Thread; session: AgentSession; worktree?: Worktree }>()
+  #activeTurns = new Set<string>()
   #store: Store
   #worktreeRoot: string
   #onEvent: (threadId: string, event: DomainEvent, seq: number) => void
@@ -108,6 +109,13 @@ export class Orchestrator {
   async account(provider: ProviderId): Promise<Account> {
     if (provider !== 'codex') return { signedIn: false }
     return (await this.#controlAdapter()).account()
+  }
+
+  async usageLimits(
+    provider: ProviderId,
+  ): Promise<Array<{ label: string; usedPercent: number; resetsAt?: number | undefined }>> {
+    if (provider !== 'codex') return []
+    return (await this.#controlAdapter()).rateLimits()
   }
 
   async startLogin(provider: ProviderId): Promise<{ loginId: string; authUrl: string }> {
@@ -194,6 +202,10 @@ export class Orchestrator {
    * write has to happen first even though it is the slower half.
    */
   #record(threadId: string, event: DomainEvent): void {
+    if (event.type === 'turn.started') this.#activeTurns.add(threadId)
+    if (event.type === 'turn.completed' || event.type === 'thread.error') {
+      this.#activeTurns.delete(threadId)
+    }
     const seq = this.#store.append(threadId, event)
     this.#onEvent(threadId, event, seq)
   }
@@ -239,25 +251,48 @@ export class Orchestrator {
    * action someone can regret. Nothing reachable this way is unrecoverable.
    */
   async restoreCheckpoint(threadId: string, checkpointId: number): Promise<{ undo: string }> {
+    if (this.#activeTurns.has(threadId)) throw new Error('cannot restore during a running turn')
     const stored = this.#store.thread(threadId)
     const checkpoint = this.#store.checkpoint(checkpointId)
-    if (!stored || !checkpoint) throw new Error('no such checkpoint')
+    if (!stored || !checkpoint || checkpoint.threadId !== threadId) {
+      throw new Error('no such checkpoint')
+    }
 
     const repoPath = stored.worktreePath ?? stored.projectPath
     const replaced = await restoreSnapshot(repoPath, checkpoint.commit)
 
     // Rolling the files back without this would leave the transcript
     // describing work that no longer exists on disk.
-    this.#store.truncateAfter(threadId, checkpoint.seq)
+    try {
+      return { undo: this.#store.saveRestoreUndo(threadId, checkpoint.seq, replaced.commit) }
+    } catch (error) {
+      await restoreSnapshot(repoPath, replaced.commit)
+      throw error
+    }
+  }
 
-    return { undo: replaced.commit }
+  /** Reverse the latest restore, including both files and conversation. */
+  async undoRestore(threadId: string, token: string): Promise<void> {
+    if (this.#activeTurns.has(threadId)) throw new Error('cannot restore during a running turn')
+    const stored = this.#store.thread(threadId)
+    const undo = this.#store.restoreUndo(threadId, token)
+    if (!stored || !undo) throw new Error('restore can no longer be undone')
+
+    const repoPath = stored.worktreePath ?? stored.projectPath
+    const replaced = await restoreSnapshot(repoPath, undo.commit)
+    try {
+      this.#store.applyRestoreUndo(threadId, token)
+    } catch (error) {
+      await restoreSnapshot(repoPath, replaced.commit)
+      throw error
+    }
   }
 
   /** What the agent has changed since a checkpoint, so a restore is informed. */
   async changedSinceCheckpoint(threadId: string, checkpointId: number): Promise<string[]> {
     const stored = this.#store.thread(threadId)
     const checkpoint = this.#store.checkpoint(checkpointId)
-    if (!stored || !checkpoint) return []
+    if (!stored || !checkpoint || checkpoint.threadId !== threadId) return []
     return changedSince(stored.worktreePath ?? stored.projectPath, checkpoint.commit).catch(
       () => [],
     )
@@ -276,6 +311,7 @@ export class Orchestrator {
     if (!entry) return
     entry.session.dispose()
     this.#threads.delete(threadId)
+    this.#activeTurns.delete(threadId)
     // Marked closed, not deleted. Ending the process is not the same as
     // wanting the transcript gone.
     //
@@ -337,6 +373,7 @@ export class Orchestrator {
   disposeAll(): void {
     for (const [, entry] of this.#threads) entry.session.dispose()
     this.#threads.clear()
+    this.#activeTurns.clear()
     this.#control?.dispose()
     this.#control = undefined
   }

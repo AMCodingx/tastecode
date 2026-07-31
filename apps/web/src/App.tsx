@@ -1,13 +1,22 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
-import type { Account, ApprovalMode, DomainEvent, Model, ProviderId } from '@harness/contracts'
+import type {
+  Account,
+  ApprovalMode,
+  DomainEvent,
+  Model,
+  ProviderId,
+  ResultOf,
+} from '@harness/contracts'
 import { isMacOS, pickFolder } from './bridge.js'
 import { isEditableTarget, matchesShortcut, SHORTCUTS, shortcutLabel } from './shortcuts.js'
 import { warmHighlighter } from './ui/highlighter.js'
 import { Transport } from './transport.js'
 import { appendUserMessage, emptyThread, reduce, type ThreadState } from './thread-store.js'
 import { CommandPalette, type CommandScope, type PaletteCommand } from './ui/CommandPalette.js'
+import { CheckoutDiscardDialog } from './ui/CheckoutDiscardDialog.js'
 import { Composer, type WorkspaceInfo } from './ui/Composer.js'
 import { Onboarding } from './ui/Onboarding.js'
+import { RollbackDialog, type Checkpoint } from './ui/RollbackDialog.js'
 import { Settings } from './ui/Settings.js'
 import { Sidebar, type Project } from './ui/Sidebar.js'
 import { StageHeader } from './ui/StageHeader.js'
@@ -66,6 +75,7 @@ export function App() {
   const [activeId, setActiveId] = useState<string | undefined>()
   const [activePath, setActivePath] = useState<string | undefined>()
   const [thread, setThread] = useState<ThreadState>(emptyThread)
+  const [usageSummary, setUsageSummary] = useState<ResultOf<'usage.summary'> | undefined>()
   // Every live session keeps reducing events while it is off screen. A ref is
   // intentional: streamed deltas for a background session should not rerender
   // the active thread, while selecting it still gets the latest state at once.
@@ -94,6 +104,19 @@ export function App() {
   const [paletteScope, setPaletteScope] = useState<CommandScope | null>(null)
   const [composerFocusRequest, setComposerFocusRequest] = useState(0)
   const [notice, setNotice] = useState<string | undefined>()
+  const [checkpoints, setCheckpoints] = useState<Checkpoint[]>([])
+  const [rollbackOpen, setRollbackOpen] = useState(false)
+  const [rollbackInspection, setRollbackInspection] = useState<
+    { checkpoint: Checkpoint; files: string[] } | undefined
+  >()
+  const [rollbackLoadingId, setRollbackLoadingId] = useState<number | undefined>()
+  const [rollbackRestoring, setRollbackRestoring] = useState(false)
+  const [undoRestore, setUndoRestore] = useState<{ threadId: string; token: string } | undefined>()
+  const [isolateSession, setIsolateSession] = useState(false)
+  const [checkoutDelete, setCheckoutDelete] = useState<
+    { id: string; title: string; branch: string } | undefined
+  >()
+  const [checkoutDeleteBusy, setCheckoutDeleteBusy] = useState(false)
   const macOS = isMacOS()
   const [macOSFontSmoothing, setMacOSFontSmoothing] = useState(
     () => localStorage.getItem(MACOS_FONT_SMOOTHING_KEY) !== 'false',
@@ -217,6 +240,7 @@ export function App() {
             id: session.id,
             title: session.title,
             status: session.running ? ('running' as const) : ('idle' as const),
+            ...(session.worktreeBranch ? { worktreeBranch: session.worktreeBranch } : {}),
           })),
           savedOrder,
         ),
@@ -224,6 +248,51 @@ export function App() {
     )
     setActivePath((current) => current ?? list[0]?.path)
   }, [transport])
+
+  const refreshCheckpoints = useCallback(
+    async (threadId: string) => {
+      const result = await transport.request('thread.checkpoints', { threadId })
+      if (activeIdRef.current === threadId) setCheckpoints(result.checkpoints)
+    },
+    [transport],
+  )
+
+  const loadHistory = useCallback(
+    async (threadId: string) => {
+      const { events } = await transport.request('thread.history', { threadId })
+      const restored = events.reduce((state, entry) => reduce(state, entry.event), emptyThread)
+      threadStates.current.set(threadId, restored)
+      if (activeIdRef.current === threadId) setThread(restored)
+    },
+    [transport],
+  )
+
+  useEffect(() => {
+    if (!activeId || thread.running) {
+      if (!activeId) setCheckpoints([])
+      return
+    }
+    void refreshCheckpoints(activeId).catch(() => setCheckpoints([]))
+  }, [activeId, thread.running, refreshCheckpoints])
+
+  useEffect(() => {
+    if (!activeId) {
+      setUsageSummary(undefined)
+      return
+    }
+    let cancelled = false
+    void transport
+      .request('usage.summary', { threadId: activeId })
+      .then((summary) => {
+        if (!cancelled) setUsageSummary(summary)
+      })
+      .catch(() => {
+        if (!cancelled) setUsageSummary(undefined)
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [transport, activeId, thread.running])
 
   // First load, plus the one-time handover from localStorage. Anything found
   // there is given to the server and the key removed, so it happens once.
@@ -304,6 +373,8 @@ export function App() {
     async (projectPath: string): Promise<string | undefined> => {
       if (!provider) return undefined
       setNotice(undefined)
+      setUndoRestore(undefined)
+      setRollbackOpen(false)
       setActivePath(projectPath)
       try {
         const { threadId } = await transport.request('thread.start', {
@@ -314,6 +385,7 @@ export function App() {
           ...(modelId ? { model: modelId } : {}),
           ...(serviceTier ? { serviceTier } : {}),
           ...(effort ? { effort } : {}),
+          ...(isolateSession ? { isolate: true } : {}),
         })
         threadStates.current.set(threadId, emptyThread)
         activeIdRef.current = threadId
@@ -328,7 +400,17 @@ export function App() {
         return undefined
       }
     },
-    [transport, provider, acpAgent, modelId, serviceTier, effort, approval, refreshProjects],
+    [
+      transport,
+      provider,
+      acpAgent,
+      modelId,
+      serviceTier,
+      effort,
+      approval,
+      isolateSession,
+      refreshProjects,
+    ],
   )
 
   const beginSession = useCallback(
@@ -380,6 +462,9 @@ export function App() {
         justCreated = true
       }
 
+      setNotice(undefined)
+      setUndoRestore(undefined)
+
       const next = appendUserMessage(threadStates.current.get(threadId) ?? emptyThread, text)
       threadStates.current.set(threadId, next)
       if (threadId === activeIdRef.current) setThread(next)
@@ -424,12 +509,17 @@ export function App() {
       activeIdRef.current = undefined
       setActiveId(undefined)
       setThread(emptyThread)
+      setUndoRestore(undefined)
+      setRollbackOpen(false)
     },
     [activePath],
   )
 
   const selectSession = useCallback(
     async (id: string) => {
+      setNotice(undefined)
+      setUndoRestore(undefined)
+      setRollbackOpen(false)
       activeIdRef.current = id
       setActiveId(id)
       setActivePath(findSession(projects, id)?.project.path)
@@ -441,16 +531,136 @@ export function App() {
 
       setThread(emptyThread)
       try {
-        const { events } = await transport.request('thread.history', { threadId: id })
-        const restored = events.reduce((state, entry) => reduce(state, entry.event), emptyThread)
-        threadStates.current.set(id, restored)
-        if (activeIdRef.current === id) setThread(restored)
+        await loadHistory(id)
       } catch (error) {
         setNotice(error instanceof Error ? error.message : String(error))
       }
     },
-    [transport, projects],
+    [projects, loadHistory],
   )
+
+  const inspectCheckpoint = useCallback(
+    async (checkpoint: Checkpoint) => {
+      if (!activeId) return
+      setRollbackLoadingId(checkpoint.id)
+      try {
+        const { files } = await transport.request('thread.changedSince', {
+          threadId: activeId,
+          checkpointId: checkpoint.id,
+        })
+        setRollbackInspection({ checkpoint, files })
+      } catch (error) {
+        setNotice(error instanceof Error ? error.message : String(error))
+      } finally {
+        setRollbackLoadingId(undefined)
+      }
+    },
+    [transport, activeId],
+  )
+
+  const restoreCheckpoint = useCallback(async () => {
+    if (!activeId || !rollbackInspection) return
+    setRollbackRestoring(true)
+    try {
+      const { undo } = await transport.request('thread.restore', {
+        threadId: activeId,
+        checkpointId: rollbackInspection.checkpoint.id,
+      })
+      await loadHistory(activeId)
+      await refreshCheckpoints(activeId)
+      if (activePath) setWorkspace(await transport.request('workspace.info', { path: activePath }))
+      setUndoRestore({ threadId: activeId, token: undo })
+      setNotice(`Restored to before “${rollbackInspection.checkpoint.label}”.`)
+      setRollbackOpen(false)
+      setRollbackInspection(undefined)
+    } catch (error) {
+      setNotice(error instanceof Error ? error.message : String(error))
+    } finally {
+      setRollbackRestoring(false)
+    }
+  }, [transport, activeId, activePath, rollbackInspection, loadHistory, refreshCheckpoints])
+
+  const reverseRestore = useCallback(async () => {
+    if (!undoRestore) return
+    try {
+      await transport.request('thread.undoRestore', {
+        threadId: undoRestore.threadId,
+        undo: undoRestore.token,
+      })
+      await loadHistory(undoRestore.threadId)
+      await refreshCheckpoints(undoRestore.threadId)
+      if (activePath) setWorkspace(await transport.request('workspace.info', { path: activePath }))
+      setUndoRestore(undefined)
+      setNotice('Restore undone.')
+    } catch (error) {
+      setNotice(error instanceof Error ? error.message : String(error))
+    }
+  }, [transport, undoRestore, activePath, loadHistory, refreshCheckpoints])
+
+  const deleteSession = useCallback(
+    async (id: string) => {
+      await transport.request('thread.delete', { threadId: id })
+      threadStates.current.delete(id)
+      setProjects((current) =>
+        current.map((project) => ({
+          ...project,
+          sessions: project.sessions.filter((session) => session.id !== id),
+        })),
+      )
+      if (activeIdRef.current === id) {
+        activeIdRef.current = undefined
+        setActiveId(undefined)
+        setThread(emptyThread)
+      }
+    },
+    [transport],
+  )
+
+  const archiveSession = useCallback(
+    async (id: string) => {
+      const found = findSession(projects, id)
+      if (!found) return
+      try {
+        const work = await transport.request('thread.unsavedWork', { threadId: id })
+        if (work.isolated && work.uncommitted) {
+          setCheckoutDelete({
+            id,
+            title: found.session.title,
+            branch: found.session.worktreeBranch ?? 'isolated checkout',
+          })
+          return
+        }
+        if (work.isolated) {
+          await transport.request('thread.close', { threadId: id })
+          await transport.request('thread.discardWorktree', { threadId: id })
+        }
+        await deleteSession(id)
+      } catch (error) {
+        setNotice(error instanceof Error ? error.message : String(error))
+        await refreshProjects().catch(() => undefined)
+      }
+    },
+    [transport, projects, deleteSession, refreshProjects],
+  )
+
+  const discardAndArchive = useCallback(async () => {
+    if (!checkoutDelete) return
+    setCheckoutDeleteBusy(true)
+    try {
+      await transport.request('thread.close', { threadId: checkoutDelete.id })
+      await transport.request('thread.discardWorktree', {
+        threadId: checkoutDelete.id,
+        force: true,
+      })
+      await deleteSession(checkoutDelete.id)
+      setCheckoutDelete(undefined)
+    } catch (error) {
+      setNotice(error instanceof Error ? error.message : String(error))
+      await refreshProjects().catch(() => undefined)
+    } finally {
+      setCheckoutDeleteBusy(false)
+    }
+  }, [transport, checkoutDelete, deleteSession, refreshProjects])
 
   const startNewChat = useCallback(() => {
     const path = activePath ?? projects[0]?.path
@@ -633,6 +843,7 @@ export function App() {
           providerName={providerName(provider, acpAgentName)}
           collapsed={collapsed}
           account={account}
+          onClose={() => setCollapsed(true)}
           onAddProject={() => void addProject()}
           onNewSession={beginSession}
           onSelectSession={(id) => void selectSession(id)}
@@ -646,7 +857,10 @@ export function App() {
             void transport
               .request('projects.remove', { path })
               .then(refreshProjects)
-              .catch(() => undefined)
+              .catch((error) => {
+                setNotice(error instanceof Error ? error.message : String(error))
+                void refreshProjects().catch(() => undefined)
+              })
           }}
           onTogglePin={(path) => {
             const pinned = !projects.find((p) => p.path === path)?.pinned
@@ -657,18 +871,7 @@ export function App() {
             setProjects((c) => renameSession(c, id, title))
             void transport.request('thread.rename', { threadId: id, title }).catch(() => undefined)
           }}
-          onDeleteSession={(id) => {
-            threadStates.current.delete(id)
-            setProjects((c) =>
-              c.map((p) => ({ ...p, sessions: p.sessions.filter((s) => s.id !== id) })),
-            )
-            if (activeId === id) {
-              activeIdRef.current = undefined
-              setActiveId(undefined)
-              setThread(emptyThread)
-            }
-            void transport.request('thread.delete', { threadId: id }).catch(() => undefined)
-          }}
+          onDeleteSession={(id) => void archiveSession(id)}
           onReorderSession={(projectPath, sourceId, targetId, position) =>
             setProjects((current) =>
               current.map((project) => {
@@ -694,7 +897,14 @@ export function App() {
             activePath={activePath}
             title={active?.session.title}
             usage={thread.usage}
+            usageSummary={usageSummary}
+            checkpointCount={thread.running ? 0 : checkpoints.length}
+            worktreeBranch={active?.session.worktreeBranch}
             onSelectProject={selectProject}
+            onOpenRollback={() => {
+              setRollbackInspection(undefined)
+              setRollbackOpen(true)
+            }}
           />
 
           {active ? (
@@ -720,7 +930,7 @@ export function App() {
 
           <Composer
             projectName={activePath ? basename(activePath) : undefined}
-            workspace={workspace}
+            workspace={active?.session.worktreeBranch ? undefined : workspace}
             models={models}
             modelsLoaded={modelsLoaded}
             modelId={modelId}
@@ -729,11 +939,14 @@ export function App() {
             approval={approval}
             disabled={!activePath}
             running={thread.running}
+            newSession={!activeId}
+            isolate={isolateSession}
             focusRequest={composerFocusRequest}
             onModelChange={selectModel}
             onEffortChange={setEffort}
             onServiceTierChange={setServiceTier}
             onApprovalChange={setApproval}
+            onIsolateChange={setIsolateSession}
             onSend={(t, files) => void send(t, files)}
             onInterrupt={interrupt}
           />
@@ -770,10 +983,49 @@ export function App() {
         />
       ) : null}
 
+      {rollbackOpen ? (
+        <RollbackDialog
+          checkpoints={checkpoints}
+          inspection={rollbackInspection}
+          loadingId={rollbackLoadingId}
+          restoring={rollbackRestoring}
+          onInspect={(checkpoint) => void inspectCheckpoint(checkpoint)}
+          onRestore={() => void restoreCheckpoint()}
+          onClose={() => {
+            setRollbackOpen(false)
+            setRollbackInspection(undefined)
+          }}
+        />
+      ) : null}
+
+      {checkoutDelete ? (
+        <CheckoutDiscardDialog
+          title={checkoutDelete.title}
+          branch={checkoutDelete.branch}
+          busy={checkoutDeleteBusy}
+          onDiscard={() => void discardAndArchive()}
+          onClose={() => setCheckoutDelete(undefined)}
+        />
+      ) : null}
+
       {notice ? (
-        <div className="notice" role="alert">
+        <div
+          className={`notice${undoRestore || notice === 'Restore undone.' ? ' notice--success' : ''}`}
+          role="alert"
+        >
           <span className="notice__text">{notice}</span>
-          <button className="ghost" onClick={() => setNotice(undefined)}>
+          {undoRestore ? (
+            <button className="ghost" onClick={() => void reverseRestore()}>
+              Undo restore
+            </button>
+          ) : null}
+          <button
+            className="ghost"
+            onClick={() => {
+              setNotice(undefined)
+              setUndoRestore(undefined)
+            }}
+          >
             Dismiss
           </button>
         </div>

@@ -1,7 +1,8 @@
-import { DatabaseSync } from 'node:sqlite'
+import { randomUUID } from 'node:crypto'
 import { mkdirSync } from 'node:fs'
 import path from 'node:path'
-import type { DomainEvent, ProviderId } from '@harness/contracts'
+import { DatabaseSync } from 'node:sqlite'
+import type { DomainEvent, ProviderId, Usage } from '@harness/contracts'
 
 /**
  * Everything that has to survive a restart.
@@ -94,6 +95,15 @@ CREATE TABLE IF NOT EXISTS checkpoints (
   commit_sha TEXT NOT NULL,
   label      TEXT NOT NULL,
   created_at INTEGER NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS restore_undos (
+  token            TEXT PRIMARY KEY,
+  thread_id        TEXT NOT NULL UNIQUE,
+  checkpoint_seq   INTEGER NOT NULL,
+  snapshot_commit  TEXT NOT NULL,
+  events_json      TEXT NOT NULL,
+  checkpoints_json TEXT NOT NULL
 );
 
 CREATE INDEX IF NOT EXISTS checkpoints_by_thread ON checkpoints (thread_id, seq);
@@ -194,6 +204,9 @@ export class Store {
       .prepare(`SELECT id FROM threads WHERE project_path = ?`)
       .all(projectPath)
       .map((row) => String((row as { id: unknown }).id))
+    if (ids.some((id) => this.thread(id)?.worktreePath)) {
+      throw new Error('discard isolated session checkouts before removing the project')
+    }
     for (const id of ids) this.deleteThread(id)
     this.#db.prepare(`DELETE FROM projects WHERE path = ?`).run(projectPath)
   }
@@ -284,8 +297,12 @@ export class Store {
   }
 
   deleteThread(id: string): void {
+    if (this.thread(id)?.worktreePath) {
+      throw new Error('discard the isolated session checkout before deleting it')
+    }
     this.#db.prepare(`DELETE FROM events WHERE thread_id = ?`).run(id)
     this.#db.prepare(`DELETE FROM checkpoints WHERE thread_id = ?`).run(id)
+    this.#db.prepare(`DELETE FROM restore_undos WHERE thread_id = ?`).run(id)
     this.#db.prepare(`DELETE FROM threads WHERE id = ?`).run(id)
   }
 
@@ -313,6 +330,39 @@ export class Store {
         const { seq, payload } = row as { seq: number; payload: string }
         return { seq: Number(seq), event: JSON.parse(payload) as DomainEvent }
       })
+  }
+
+  /** Persistent totals derived from the event log that already owns usage. */
+  usageSummary(threadId: string, since: number): { session: UsageTotal; today: UsageTotal } {
+    const thread = this.thread(threadId)
+    if (!thread) return { session: emptyUsage(), today: emptyUsage() }
+
+    const rows = this.#db
+      .prepare(
+        `SELECT events.thread_id, events.at, events.payload
+         FROM events JOIN threads ON threads.id = events.thread_id
+         WHERE threads.provider = ? ORDER BY events.thread_id, events.seq`,
+      )
+      .all(thread.provider) as Array<{ thread_id: string; at: number; payload: string }>
+    const previous = new Map<string, UsageTotal>()
+    let session = emptyUsage()
+    let today = emptyUsage()
+
+    for (const row of rows) {
+      const event = JSON.parse(row.payload) as DomainEvent
+      if (event.type !== 'usage.updated') continue
+      const current = withoutContext(event.usage)
+      // Codex reports a running thread total. Claude reports one completed turn.
+      const increment =
+        thread.provider === 'claude-code'
+          ? current
+          : usageIncrement(current, previous.get(row.thread_id))
+      previous.set(row.thread_id, current)
+      if (row.thread_id === threadId) session = addUsage(session, increment)
+      if (Number(row.at) >= since) today = addUsage(today, increment)
+    }
+
+    return { session, today }
   }
 
   // ---- checkpoints -------------------------------------------------------
@@ -375,9 +425,106 @@ export class Store {
    * that no longer exists on disk — the transcript and the repository telling
    * two different stories.
    */
-  truncateAfter(threadId: string, seq: number): void {
+  #truncateAfter(threadId: string, seq: number): void {
     this.#db.prepare(`DELETE FROM events WHERE thread_id = ? AND seq > ?`).run(threadId, seq)
     this.#db.prepare(`DELETE FROM checkpoints WHERE thread_id = ? AND seq > ?`).run(threadId, seq)
+  }
+
+  /** Save and remove the conversation tail so a restore remains reversible. */
+  saveRestoreUndo(threadId: string, seq: number, commit: string): string {
+    const token = randomUUID()
+    const events = this.#db
+      .prepare(`SELECT * FROM events WHERE thread_id = ? AND seq > ? ORDER BY seq`)
+      .all(threadId, seq)
+    const checkpoints = this.#db
+      .prepare(`SELECT * FROM checkpoints WHERE thread_id = ? AND seq > ? ORDER BY seq`)
+      .all(threadId, seq)
+
+    this.#db.exec('BEGIN IMMEDIATE')
+    try {
+      this.#db.prepare(`DELETE FROM restore_undos WHERE thread_id = ?`).run(threadId)
+      this.#db
+        .prepare(
+          `INSERT INTO restore_undos
+             (token, thread_id, checkpoint_seq, snapshot_commit, events_json, checkpoints_json)
+           VALUES (?, ?, ?, ?, ?, ?)`,
+        )
+        .run(token, threadId, seq, commit, JSON.stringify(events), JSON.stringify(checkpoints))
+      this.#truncateAfter(threadId, seq)
+      this.#db.exec('COMMIT')
+      return token
+    } catch (error) {
+      this.#db.exec('ROLLBACK')
+      throw error
+    }
+  }
+
+  restoreUndo(threadId: string, token: string): { commit: string } | undefined {
+    const row = this.#db
+      .prepare(`SELECT snapshot_commit FROM restore_undos WHERE thread_id = ? AND token = ?`)
+      .get(threadId, token) as { snapshot_commit: string } | undefined
+    return row ? { commit: row.snapshot_commit } : undefined
+  }
+
+  /** Put back the exact event/checkpoint rows removed by the latest restore. */
+  applyRestoreUndo(threadId: string, token: string): void {
+    const row = this.#db
+      .prepare(`SELECT * FROM restore_undos WHERE thread_id = ? AND token = ?`)
+      .get(threadId, token) as
+      | {
+          checkpoint_seq: number
+          events_json: string
+          checkpoints_json: string
+        }
+      | undefined
+    if (!row) throw new Error('restore can no longer be undone')
+    if (this.lastSeq(threadId) > Number(row.checkpoint_seq)) {
+      throw new Error('restore can only be undone before the session continues')
+    }
+
+    const events = JSON.parse(row.events_json) as Array<{
+      seq: number
+      thread_id: string
+      at: number
+      payload: string
+    }>
+    const checkpoints = JSON.parse(row.checkpoints_json) as Array<{
+      id: number
+      thread_id: string
+      seq: number
+      commit_sha: string
+      label: string
+      created_at: number
+    }>
+
+    this.#db.exec('BEGIN IMMEDIATE')
+    try {
+      const insertEvent = this.#db.prepare(
+        `INSERT INTO events (seq, thread_id, at, payload) VALUES (?, ?, ?, ?)`,
+      )
+      for (const event of events) {
+        insertEvent.run(event.seq, event.thread_id, event.at, event.payload)
+      }
+      const insertCheckpoint = this.#db.prepare(
+        `INSERT INTO checkpoints (id, thread_id, seq, commit_sha, label, created_at)
+         VALUES (?, ?, ?, ?, ?, ?)`,
+      )
+      for (const checkpoint of checkpoints) {
+        insertCheckpoint.run(
+          checkpoint.id,
+          checkpoint.thread_id,
+          checkpoint.seq,
+          checkpoint.commit_sha,
+          checkpoint.label,
+          checkpoint.created_at,
+        )
+      }
+      this.#db.prepare(`DELETE FROM restore_undos WHERE token = ?`).run(token)
+      this.#db.exec('COMMIT')
+    } catch (error) {
+      this.#db.exec('ROLLBACK')
+      throw error
+    }
   }
 
   lastSeq(threadId: string): number {
@@ -386,6 +533,49 @@ export class Store {
       .get(threadId)
     const seq = (row as { seq: number | null } | undefined)?.seq
     return seq ? Number(seq) : 0
+  }
+}
+
+type UsageTotal = Omit<Usage, 'contextWindow'>
+
+function emptyUsage(): UsageTotal {
+  return {
+    inputTokens: 0,
+    cachedInputTokens: 0,
+    outputTokens: 0,
+    reasoningTokens: 0,
+    totalTokens: 0,
+  }
+}
+
+function withoutContext(usage: Usage): UsageTotal {
+  const { contextWindow: _contextWindow, ...total } = usage
+  return total
+}
+
+function addUsage(left: UsageTotal, right: UsageTotal): UsageTotal {
+  const hasCost = left.costUsd !== undefined || right.costUsd !== undefined
+  return {
+    inputTokens: left.inputTokens + right.inputTokens,
+    cachedInputTokens: left.cachedInputTokens + right.cachedInputTokens,
+    outputTokens: left.outputTokens + right.outputTokens,
+    reasoningTokens: left.reasoningTokens + right.reasoningTokens,
+    totalTokens: left.totalTokens + right.totalTokens,
+    ...(hasCost ? { costUsd: (left.costUsd ?? 0) + (right.costUsd ?? 0) } : {}),
+  }
+}
+
+function usageIncrement(current: UsageTotal, previous = emptyUsage()): UsageTotal {
+  const delta = (now: number, before: number) => (now >= before ? now - before : now)
+  const costUsd =
+    current.costUsd === undefined ? undefined : delta(current.costUsd, previous.costUsd ?? 0)
+  return {
+    inputTokens: delta(current.inputTokens, previous.inputTokens),
+    cachedInputTokens: delta(current.cachedInputTokens, previous.cachedInputTokens),
+    outputTokens: delta(current.outputTokens, previous.outputTokens),
+    reasoningTokens: delta(current.reasoningTokens, previous.reasoningTokens),
+    totalTokens: delta(current.totalTokens, previous.totalTokens),
+    ...(costUsd === undefined ? {} : { costUsd }),
   }
 }
 

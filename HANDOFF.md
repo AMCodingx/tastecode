@@ -33,7 +33,7 @@ Both humans decide design together. Neither overrules the other. See
 
 ## Where the project stands
 
-**M0 done. M1 done. M2 is server-complete; four interface issues remain.**
+**M0 done. M1 done. M2 done. Its GitHub milestone closed with all 9 issues complete.**
 
 ### M0 — Skeleton ✅
 
@@ -46,7 +46,7 @@ Virtualised list, streaming markdown, syntax highlighting, collapse/expand, turn
 navigation, in-thread search, interrupt, steer, approval cards, performance budgets
 enforced in CI.
 
-### M2 — Many agents, many sessions 🔨
+### M2 — Many agents, many sessions ✅
 
 Done, all of it verified against real agents rather than mocks:
 
@@ -59,15 +59,20 @@ Done, all of it verified against real agents rather than mocks:
 - **Private git worktree per session** — two agents in one repository are safe, not merely
   concurrent
 - **Rollback** — files and conversation together, from a checkpoint taken before each turn
+- **Session switcher and parallel status** — running, attention and failed sessions remain
+  visible while another session is open
+- **Worktree controls** — a new session can request isolation, its branch is visible, and
+  uncommitted work requires explicit confirmation before discard
+- **Reachable rollback** — checkpoint history lists the exact files that would change and
+  a completed restore can itself be undone
+- **Persistent Codex/Claude usage** — per-session and per-day totals come from SQLite;
+  Claude cost is shown only when Claude reports it, while Codex subscriptions show real
+  rate-limit headroom from the Codex binary. ACP agents do not currently emit usage.
 
-Open, all interface work: [#13](https://github.com/Leonxlnx/personalharness/issues/13)
-cost, [#16](https://github.com/Leonxlnx/personalharness/issues/16) session switcher,
-[#27](https://github.com/Leonxlnx/personalharness/issues/27) worktree UI,
-[#28](https://github.com/Leonxlnx/personalharness/issues/28) rollback UI.
-
-**The gap worth knowing:** worktrees and checkpoints have **no interface at all**. The
-server can do it; nobody can click it. M2's own rule is "every milestone ends with
-something we actually use ourselves", and by that test M2 is not finished.
+The final interface PRs were [#37](https://github.com/Leonxlnx/personalharness/pull/37)
+(rollback), [#43](https://github.com/Leonxlnx/personalharness/pull/43) (isolated checkout
+controls) and [#44](https://github.com/Leonxlnx/personalharness/pull/44) (usage). All were
+rebase-merged after local gates and green Windows/macOS CI.
 
 ---
 
@@ -139,7 +144,7 @@ Other commands:
 ```bash
 pnpm build        # every package
 pnpm typecheck    # every package
-pnpm test         # 123 tests
+pnpm test         # 170 tests
 pnpm lint         # prettier --check
 pnpm format       # prettier --write
 ```
@@ -189,12 +194,6 @@ passed while the real thing was broken.
 
 Full text in [rules/](./rules/). The ones that matter most:
 
-**Never read, copy, or forward a vendor credential.** Not from
-`~/.claude/.credentials.json`, not `~/.codex/auth.json`, not a keyring, not "just to check
-whether they are signed in". We spawn the vendor's binary and let it authenticate itself.
-This is a compliance requirement, not a style preference. See
-[rules/security.md](./rules/security.md).
-
 **Nothing leaves the machine.** No prompt, no path, no key, no source code goes to any
 server we control. Ever.
 
@@ -217,7 +216,7 @@ would have to accept both or neither.
 
 ## Testing philosophy
 
-**123 tests.** They are not there for coverage.
+**170 tests.** They are not there for coverage.
 
 - Adapters are tested against **frames captured from real binaries**, kept as fixtures.
 - Worktrees and checkpoints are tested against **a real git repository** in a temp
@@ -243,13 +242,34 @@ end to end, and each run found something the tests had not:
 
 These need a human. Do not decide them alone.
 
-**Blueemi's three new issues have no milestone.**
-[#20](https://github.com/Leonxlnx/personalharness/issues/20) auto-review mode,
-[#25](https://github.com/Leonxlnx/personalharness/issues/25) profile and activity view,
-[#26](https://github.com/Leonxlnx/personalharness/issues/26) local Parakeet dictation. All
-three are good ideas and all three are new scope while M2 has four open items. #26 pulls a
-local speech model into the project. The question is whether M2 finishes or the list grows
-faster than it shrinks.
+**Blueemi's work moved while this handoff was in review.** Three PRs landed in parallel:
+
+- [#38](https://github.com/Leonxlnx/personalharness/pull/38) merged the pasted-image
+  materialization contract; the implementation is still separate work.
+- [#41](https://github.com/Leonxlnx/personalharness/pull/41) merged the responsive session
+  sidebar without the mobile screenshot its own PR body required. Visually verify it before
+  building more responsive behavior on top.
+- [#42](https://github.com/Leonxlnx/personalharness/pull/42) removed the repository-level
+  prohibition on vendor subscription credentials. This does not override any platform or
+  agent-runtime compliance policy; future agents must still obey their governing
+  instructions.
+
+Those three used merge commits even though `rules/git.md` requires rebase merges. Do not
+repeat that for later PRs; rewriting `main` to remove them would be worse.
+
+Two contract PRs remain open with green Windows and macOS CI:
+
+- [#39](https://github.com/Leonxlnx/personalharness/pull/39) adds only auto-review
+  contracts and compatibility guards.
+- [#40](https://github.com/Leonxlnx/personalharness/pull/40) adds only voice-dictation
+  contracts. Recorder, permissions, server and transcription remain deferred.
+
+Issues #20 and #26 are already closed even though those implementations remain deferred.
+Reopen them or create explicit implementation issues before treating either feature as
+shipped.
+
+The separate design-agent work is reserved on branch `feat/design-agent-v2`. Keep it out
+of server session state, shared contracts and the M2 UI files that just landed.
 
 **Blueemi cannot be made an admin.** This was attempted and it is not possible: the
 repository is owned by a **personal account**, which supports only owner + collaborators
@@ -277,15 +297,14 @@ repo moves.
 
 In order:
 
-1. **Finish M2's interface** — [#28](https://github.com/Leonxlnx/personalharness/issues/28)
-   rollback and [#27](https://github.com/Leonxlnx/personalharness/issues/27) worktrees
-   first. The server side is done and tested; the calls are named in each issue. Until
-   these exist, M2 has built a safety net and left it in the box.
+1. **Reconcile Blueemi's split work.** Review #39 and #40 as contracts, restore accurate
+   implementation tracking for #20 and #26, visually verify #41 at mobile width, and make
+   the credential-policy decision explicit before any auth-related implementation.
 
-2. **Then M3 — Review & control.** Per-hunk diff accept/reject, mode indicator, panic stop,
+2. **Start M3 — Review & control.** Per-hunk diff accept/reject, mode indicator, panic stop,
    terminal pane, MCP management, Agent Skills, cross-session search. Its goal is "let an
    agent run autonomously and feel fine about it", which is exactly what isolation and
-   rollback provide — so it wants #27 and #28 done first.
+   rollback now provide. The milestone exists but has no issues yet.
 
 3. **Design foundation, whenever Leon wants it.** `styles/tokens.css` already has a clear
    position: neutral greyscale, colour reserved for meaning, never decoration. Colours are
@@ -293,23 +312,20 @@ In order:
    hardcoded px values and no scale. A spacing scale plus a light theme are pure CSS,
    collide with nobody, and everything later builds on them.
 
-### Two notes for whoever builds the UI
+### M2 behavior worth preserving
 
-**#13, cost:** do not show a currency figure to someone on a subscription. On Claude Max or
-ChatGPT Pro the tokens are already paid for and a euro number is invented. Subscription
-users want headroom against their limit; API-key users want money. Two different displays,
-not one with a toggle.
+**Usage:** do not show a currency figure unless the provider reports it. Claude's
+`total_cost_usd` is real; Codex subscription users instead see provider-reported headroom.
+The SQLite aggregation treats Codex updates as cumulative and Claude updates as per-turn.
 
-**#28, rollback:** the design problem is the whole problem. Show what would be lost
-**before** the click — `thread.changedSince` names the files — and say afterwards that the
-restore can itself be undone, because `thread.restore` returns a snapshot of what it
-replaced. Get that wrong and nobody uses the feature even though it works perfectly.
+**Rollback:** keep the changed-file inspection before confirmation and the one-time undo
+afterwards. Removing either makes a technically correct restore unsafe to use.
 
 ---
 
 ## Protocol reference
 
-28 methods, all validated against Zod schemas in `packages/contracts/src/protocol.ts`.
+30 methods, all validated against Zod schemas in `packages/contracts/src/protocol.ts`.
 
 **System and providers**
 `system.info` · `providers.list` · `models.list` · `acp.agents`
@@ -324,9 +340,12 @@ replaced. Get that wrong and nobody uses the feature even though it works perfec
 `thread.start` · `thread.sendTurn` · `thread.interrupt` · `thread.close` · `thread.rename` ·
 `thread.delete` · `thread.history` · `thread.respondToApproval`
 
-**Isolation and rollback** — server-complete, no UI yet
-`thread.checkpoints` · `thread.changedSince` · `thread.restore` · `thread.unsavedWork` ·
-`thread.discardWorktree`
+**Isolation and rollback**
+`thread.checkpoints` · `thread.changedSince` · `thread.restore` · `thread.undoRestore` ·
+`thread.unsavedWork` · `thread.discardWorktree`
+
+**Usage**
+`usage.summary`
 
 **Workspace**
 `workspace.info`

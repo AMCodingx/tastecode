@@ -359,18 +359,27 @@ describe('rolling a session back', () => {
     expect(texts).toEqual(['did the first thing'])
   })
 
-  it('saves what it replaced, so a restore can itself be undone', async () => {
-    const { orchestrator } = harness()
+  it('restores files and conversation when a restore is undone', async () => {
+    const { orchestrator, sessions, store } = harness()
 
     const thread = await orchestrator.startThread('codex', repo)
     await orchestrator.sendTurn(thread.id, 'a task')
     writeFileSync(path.join(repo, 'file.txt'), 'work the user might want\n')
+    sessions[0]!.emit(message('work the user might want'))
 
     const first = orchestrator.checkpoints(thread.id)[0]!
     const { undo } = await orchestrator.restoreCheckpoint(thread.id, first.id)
 
     expect(readFileSync(path.join(repo, 'file.txt'), 'utf8')).toBe('original\n')
-    expect(undo).toMatch(/^[0-9a-f]{40}$/)
+    expect(store.history(thread.id)).toEqual([])
+
+    await orchestrator.undoRestore(thread.id, undo)
+
+    expect(readFileSync(path.join(repo, 'file.txt'), 'utf8')).toBe('work the user might want\n')
+    expect(text(store.history(thread.id))).toEqual(['work the user might want'])
+    await expect(orchestrator.undoRestore(thread.id, undo)).rejects.toThrow(
+      'restore can no longer be undone',
+    )
   })
 
   it('names what changed since a checkpoint', async () => {
@@ -384,6 +393,22 @@ describe('rolling a session back', () => {
     const first = orchestrator.checkpoints(thread.id)[0]!
     const files = await orchestrator.changedSinceCheckpoint(thread.id, first.id)
     expect(files.sort()).toEqual(['file.txt', 'new.txt'])
+  })
+
+  it('refuses to restore while the agent is still writing', async () => {
+    const { orchestrator, sessions } = harness()
+
+    const thread = await orchestrator.startThread('codex', repo)
+    await orchestrator.sendTurn(thread.id, 'a task')
+    sessions[0]!.emit({
+      type: 'turn.started',
+      turn: { id: 'turn-1', threadId: thread.id, status: 'running', createdAt: 0 },
+    })
+
+    const checkpoint = orchestrator.checkpoints(thread.id)[0]!
+    await expect(orchestrator.restoreCheckpoint(thread.id, checkpoint.id)).rejects.toThrow(
+      'cannot restore during a running turn',
+    )
   })
 
   it('does not fail a turn just because the folder is not a repository', async () => {

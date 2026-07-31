@@ -4,9 +4,9 @@ For any coding agent working in this repo — Claude Code, Codex, Cursor, an ACP
 
 `pnpm dev` starts the server, renderer and desktop shell together.
 
-**Where the project is:** M0 and M1 are done. M2 is in progress — Codex, Claude Code and
-any ACP agent (Gemini, Kimi, Qwen) all run. What is left of M2 is parallel sessions,
-worktrees, checkpoints and moving state out of the renderer. See
+**Where the project is:** M0, M1 and M2 are done — Codex, Claude Code and any ACP agent
+(Gemini, Kimi, Qwen) all run with parallel sessions, isolated worktrees and rollback;
+Codex and Claude also expose persistent usage. M3 (review and control) is next. See
 [docs/ROADMAP.md](./docs/ROADMAP.md) and the open issues.
 
 ## Read first
@@ -22,11 +22,6 @@ worktrees, checkpoints and moving state out of the renderer. See
 
 - **Everything in the repo is English** — code, comments, commit messages, PR text, issues.
   The humans chat in German and English; none of that reaches the repo.
-- **Never read, copy, or forward a vendor's subscription credential.** Not from
-  `~/.claude/.credentials.json`, not from `~/.codex/auth.json`, not from a keyring, not "just
-  to check whether they are signed in". We spawn vendor binaries and let them authenticate
-  themselves. Compliance requirement, not a preference —
-  [rules/security.md](./rules/security.md).
 - **Never commit a secret**, including in fixtures and examples.
 - **Never write a `.sh` script.** Node/TypeScript only — we are a Windows + macOS team.
 - **Never assume POSIX paths.** Use `node:path`.

@@ -10,6 +10,7 @@ import type {
   Thread,
 } from '@harness/contracts'
 import type { LoginAccountResponse } from './generated/v2/LoginAccountResponse'
+import type { GetAccountRateLimitsResponse } from './generated/v2/GetAccountRateLimitsResponse'
 import type { ModelListResponse } from './generated/v2/ModelListResponse'
 import { mapThreadItem } from './map-item.js'
 import { spawnCli, StdioJsonRpc } from '@harness/proc'
@@ -82,7 +83,7 @@ export type TurnOptions = Pick<StartOptions, 'model' | 'serviceTier' | 'effort'>
  * `full` is genuinely dangerous, which is why the UI never makes it the quiet
  * default and never remembers it silently across sessions.
  */
-const APPROVAL: Record<ApprovalMode, { approvalPolicy: string; sandbox: string }> = {
+const APPROVAL: Partial<Record<ApprovalMode, { approvalPolicy: string; sandbox: string }>> = {
   ask: { approvalPolicy: 'untrusted', sandbox: 'read-only' },
   auto: { approvalPolicy: 'on-request', sandbox: 'workspace-write' },
   full: { approvalPolicy: 'never', sandbox: 'danger-full-access' },
@@ -220,6 +221,34 @@ export class CodexAdapter extends EventEmitter<CodexAdapterEvents> {
     }
   }
 
+  /** Subscription headroom as reported by Codex itself. */
+  async rateLimits(): Promise<
+    Array<{ label: string; usedPercent: number; resetsAt?: number | undefined }>
+  > {
+    try {
+      const response = await this.#call<GetAccountRateLimitsResponse>('account/rateLimits/read', {})
+      const snapshot = response.rateLimitsByLimitId?.['codex'] ?? response.rateLimits
+      return [snapshot.primary, snapshot.secondary].flatMap((window, index) => {
+        if (!window) return []
+        const resetsAt =
+          window.resetsAt === null
+            ? undefined
+            : window.resetsAt < 1_000_000_000_000
+              ? window.resetsAt * 1000
+              : window.resetsAt
+        return [
+          {
+            label: rateLimitLabel(window.windowDurationMins, index === 0 ? 'Primary' : 'Secondary'),
+            usedPercent: Math.max(0, Math.min(100, window.usedPercent)),
+            ...(resetsAt === undefined ? {} : { resetsAt }),
+          },
+        ]
+      })
+    } catch {
+      return []
+    }
+  }
+
   /**
    * Starts the vendor's own OAuth flow. Returns the URL to open in a browser —
    * the user authenticates on OpenAI's site, not in our window, and we are
@@ -278,12 +307,16 @@ export class CodexAdapter extends EventEmitter<CodexAdapterEvents> {
   }
 
   async startThread(workspacePath: string, options: StartOptions = {}): Promise<Thread> {
+    const approval = options.approval ? APPROVAL[options.approval] : undefined
+    if (options.approval && !approval) {
+      throw new Error('Codex automatic approval review is not implemented')
+    }
     const response = await this.#call<ThreadStartResponse>('thread/start', {
       cwd: workspacePath,
       ...(options.model ? { model: options.model } : {}),
       ...(options.serviceTier ? { serviceTier: options.serviceTier } : {}),
       ...(options.effort ? { config: { model_reasoning_effort: options.effort } } : {}),
-      ...(options.approval ? APPROVAL[options.approval] : {}),
+      ...(approval ?? {}),
     })
     return {
       id: response.thread.id,
@@ -544,4 +577,11 @@ export class CodexAdapter extends EventEmitter<CodexAdapterEvents> {
         this.emit('log', `unmapped notification: ${method}`)
     }
   }
+}
+
+function rateLimitLabel(minutes: number | null, fallback: string): string {
+  if (minutes === null) return `${fallback} limit`
+  if (minutes % 1440 === 0) return `${minutes / 1440} day${minutes === 1440 ? '' : 's'}`
+  if (minutes % 60 === 0) return `${minutes / 60} hour${minutes === 60 ? '' : 's'}`
+  return `${minutes} minutes`
 }

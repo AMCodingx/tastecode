@@ -222,6 +222,9 @@ export function startServer(
               ...(thread.agent === undefined ? {} : { agent: thread.agent }),
               createdAt: thread.createdAt,
               running: orchestrator.isRunning(thread.id),
+              ...(thread.worktreeBranch === undefined
+                ? {}
+                : { worktreeBranch: thread.worktreeBranch }),
               ...(thread.closedAt === undefined ? {} : { closedAt: thread.closedAt }),
             })),
           })),
@@ -261,6 +264,9 @@ export function startServer(
 
       case 'thread.delete': {
         const p = params as { threadId: string }
+        if (store.thread(p.threadId)?.worktreePath) {
+          throw new Error('discard the isolated session checkout before deleting it')
+        }
         orchestrator.close(p.threadId)
         store.deleteThread(p.threadId)
         return {}
@@ -271,6 +277,18 @@ export function startServer(
         return {
           events: orchestrator.history(p.threadId, p.afterSeq ?? 0),
           running: orchestrator.isRunning(p.threadId),
+        }
+      }
+
+      case 'usage.summary': {
+        const p = params as { threadId: string }
+        const thread = store.thread(p.threadId)
+        if (!thread) throw new Error('thread not found')
+        const startOfToday = new Date()
+        startOfToday.setHours(0, 0, 0, 0)
+        return {
+          ...store.usageSummary(p.threadId, startOfToday.getTime()),
+          limits: await orchestrator.usageLimits(thread.provider),
         }
       }
 
@@ -316,6 +334,12 @@ export function startServer(
       case 'thread.restore': {
         const p = params as { threadId: string; checkpointId: number }
         return orchestrator.restoreCheckpoint(p.threadId, p.checkpointId)
+      }
+
+      case 'thread.undoRestore': {
+        const p = params as { threadId: string; undo: string }
+        await orchestrator.undoRestore(p.threadId, p.undo)
+        return {}
       }
 
       case 'thread.unsavedWork': {
