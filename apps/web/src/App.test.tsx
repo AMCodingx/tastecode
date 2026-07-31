@@ -7,12 +7,22 @@ import { App } from './App.js'
 const transport = vi.hoisted(() => ({
   request: vi.fn(),
   listeners: new Map<string, (data: unknown) => void>(),
+  urls: [] as string[],
+  connect: vi.fn(),
+  close: vi.fn(),
 }))
 
 vi.mock('./transport.js', () => ({
   Transport: class {
-    connect() {}
-    close() {}
+    constructor(url: string) {
+      transport.urls.push(url)
+    }
+    connect() {
+      transport.connect()
+    }
+    close() {
+      transport.close()
+    }
     on(channel: string, listener: (data: unknown) => void) {
       transport.listeners.set(channel, listener)
       return () => {
@@ -52,6 +62,8 @@ let serverUnsavedWork = { isolated: false, uncommitted: false }
 
 beforeEach(() => {
   transport.listeners.clear()
+  transport.urls.length = 0
+  window.location.hash = ''
   localStorage.clear()
   localStorage.setItem('harness.provider', 'codex')
   serverProjects = [
@@ -175,6 +187,39 @@ afterEach(() => {
   vi.clearAllMocks()
 })
 
+describe('web client', () => {
+  it('reconnects when a newly opened mobile link changes the access token', async () => {
+    window.location.hash = '#access_token=first-token'
+    render(<App />)
+
+    expect(transport.urls.at(-1)).toBe('ws://127.0.0.1:4311/?token=first-token')
+    await waitFor(() => {
+      expect(
+        transport.request.mock.calls.filter(([method]) => method === 'projects.list'),
+      ).toHaveLength(1)
+      expect(
+        transport.request.mock.calls.filter(([method]) => method === 'models.list'),
+      ).toHaveLength(1)
+    })
+
+    await act(async () => {
+      window.location.hash = '#access_token=second-token'
+      window.dispatchEvent(new HashChangeEvent('hashchange'))
+    })
+
+    await waitFor(() => {
+      expect(transport.urls.at(-1)).toBe('ws://127.0.0.1:4311/?token=second-token')
+      expect(
+        transport.request.mock.calls.filter(([method]) => method === 'projects.list'),
+      ).toHaveLength(2)
+      expect(
+        transport.request.mock.calls.filter(([method]) => method === 'models.list'),
+      ).toHaveLength(2)
+    })
+    expect(transport.close).toHaveBeenCalled()
+    expect(transport.connect).toHaveBeenCalledTimes(2)
+  })
+})
 describe('new chats', () => {
   it('starts a new session in an isolated checkout when selected', async () => {
     serverProjects = [
