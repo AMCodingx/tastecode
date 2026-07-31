@@ -25,7 +25,7 @@ import { TitleBar } from './ui/TitleBar.js'
 import { Menu, MenuItem } from './ui/Menu.js'
 import { serverUrl } from './server-url.js'
 
-const SERVER_URL = serverUrl(import.meta.env.VITE_HARNESS_SERVER_URL ?? 'ws://127.0.0.1:4311')
+const SERVER_BASE_URL = import.meta.env.VITE_HARNESS_SERVER_URL ?? 'ws://127.0.0.1:4311'
 const SETUP_KEY = 'harness.provider'
 /** Which ACP agent was chosen. Meaningless unless the provider is `acp`. */
 const AGENT_KEY = 'harness.acpAgent'
@@ -57,7 +57,8 @@ function takeLegacyProjects(): Array<{ path: string; name?: string }> {
 }
 
 export function App() {
-  const transport = useMemo(() => new Transport(SERVER_URL), [])
+  const [connectionUrl, setConnectionUrl] = useState(() => serverUrl(SERVER_BASE_URL))
+  const transport = useMemo(() => new Transport(connectionUrl), [connectionUrl])
   const [provider, setProvider] = useState<ProviderId | null>(
     () => localStorage.getItem(SETUP_KEY) as ProviderId | null,
   )
@@ -125,6 +126,12 @@ export function App() {
   // Syntax grammars load in the background from the first frame, so the first
   // code block an agent produces is already coloured.
   useEffect(warmHighlighter, [])
+
+  useEffect(() => {
+    const reconnectWithCurrentToken = () => setConnectionUrl(serverUrl(SERVER_BASE_URL))
+    window.addEventListener('hashchange', reconnectWithCurrentToken)
+    return () => window.removeEventListener('hashchange', reconnectWithCurrentToken)
+  }, [])
 
   useLayoutEffect(() => {
     document.documentElement.classList.toggle(
