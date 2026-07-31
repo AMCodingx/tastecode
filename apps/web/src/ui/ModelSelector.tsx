@@ -12,7 +12,7 @@ import { DitherSlider } from './dither-kit/DitherSlider.js'
 import { Menu } from './Menu.js'
 
 const SLIDER_DITHER_MIN_WIDTH = 44
-const SLIDER_DITHER_INSET = 1
+const SLIDER_DITHER_INSET = 2
 const TRIGGER_LABEL = 'Model and reasoning'
 const DIALOG_LABEL = 'Model and reasoning'
 
@@ -63,9 +63,10 @@ export function getEffortProgressFromPointer(input: {
   left: number
   width: number
 }): number {
-  if (input.width <= SLIDER_DITHER_MIN_WIDTH) return 0
-  const travelWidth = input.width - SLIDER_DITHER_MIN_WIDTH
-  const relativeX = input.clientX - input.left - SLIDER_DITHER_MIN_WIDTH
+  const innerWidth = input.width - SLIDER_DITHER_INSET * 2
+  if (innerWidth <= SLIDER_DITHER_MIN_WIDTH) return 0
+  const travelWidth = innerWidth - SLIDER_DITHER_MIN_WIDTH
+  const relativeX = input.clientX - input.left - SLIDER_DITHER_INSET - SLIDER_DITHER_MIN_WIDTH
   return Math.min(1, Math.max(0, relativeX / travelWidth))
 }
 
@@ -161,7 +162,9 @@ function DitherChoiceRow(props: {
       ? 0.5
       : displayIndex / (props.optionLabels.length - 1)
   const visualProgress = pointerProgress ?? selectedProgress
-  const ditherWidth = `calc(${visualProgress * 100}% + ${(1 - visualProgress) * SLIDER_DITHER_MIN_WIDTH}px)`
+  const ditherWidthOffset =
+    (1 - visualProgress) * SLIDER_DITHER_MIN_WIDTH - visualProgress * SLIDER_DITHER_INSET * 2
+  const ditherWidth = `calc(${visualProgress * 100}% + ${ditherWidthOffset}px)`
   const sliderVars = {
     '--model-selector-slider-width': ditherWidth,
     '--model-selector-slider-inset': `${SLIDER_DITHER_INSET}px`,

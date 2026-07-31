@@ -290,6 +290,6 @@ describe('ModelSelector', () => {
         left: 100,
         width: 280,
       }),
-    ).toBeCloseTo(0.407, 3)
+    ).toBeCloseTo(0.405, 3)
   })
 })
