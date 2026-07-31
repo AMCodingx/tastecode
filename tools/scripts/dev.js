@@ -17,6 +17,7 @@ const isWin = process.platform === 'win32'
 const mobile = process.argv.includes('--mobile')
 const children = []
 const execFileAsync = promisify(execFile)
+let shuttingDown = false
 
 function run(name, packageDir, args, env = {}) {
   // npm/pnpm shims are .cmd files on Windows, which must go through cmd.exe.
@@ -35,8 +36,11 @@ function run(name, packageDir, args, env = {}) {
   const prefix = `[${name}]`
   child.stdout.on('data', (d) => process.stdout.write(prefixLines(prefix, d.toString())))
   child.stderr.on('data', (d) => process.stderr.write(prefixLines(prefix, d.toString())))
-  child.on('exit', (code) => {
-    if (code !== 0 && code !== null) console.error(`${prefix} exited with ${code}`)
+  child.on('exit', (code, signal) => {
+    if (shuttingDown) return
+    const reason = code === null ? `signal ${signal ?? 'unknown'}` : `code ${code}`
+    console.error(`${prefix} exited with ${reason}`)
+    shutdown(code ?? 1)
   })
   children.push(child)
   return child
@@ -69,6 +73,35 @@ function waitForPort(port, host = '127.0.0.1', timeoutMs = 30_000) {
   })
 }
 
+function portIsOpen(port, host) {
+  return new Promise((resolve) => {
+    const socket = net.connect(port, host)
+    let settled = false
+    const finish = (open) => {
+      if (settled) return
+      settled = true
+      socket.destroy()
+      resolve(open)
+    }
+    socket.once('connect', () => finish(true))
+    socket.once('error', () => finish(false))
+    socket.setTimeout(1_000, () => finish(false))
+  })
+}
+
+async function requireFreePorts(host) {
+  const ports = [4311, 5183]
+  const states = await Promise.all(ports.map((port) => portIsOpen(port, host)))
+  const occupied = ports.filter((_, index) => states[index])
+  if (occupied.length === 0) return
+
+  console.error(
+    `[dev] port${occupied.length === 1 ? '' : 's'} ${occupied.join(', ')} already in use. ` +
+      'Stop the existing Personal Harness dev process before starting another one.',
+  )
+  process.exit(1)
+}
+
 async function tailscaleIPv4() {
   const candidates = ['tailscale']
   if (process.platform === 'darwin') {
@@ -93,15 +126,18 @@ async function tailscaleIPv4() {
   )
 }
 
-function shutdown() {
+function shutdown(exitCode = 0) {
+  if (shuttingDown) return
+  shuttingDown = true
   for (const child of children) child.kill()
-  process.exit(0)
+  process.exit(exitCode)
 }
 process.on('SIGINT', shutdown)
 process.on('SIGTERM', shutdown)
 
 if (mobile) {
   const host = await tailscaleIPv4()
+  await requireFreePorts(host)
   const accessToken = randomBytes(24).toString('base64url')
   const serverUrl = `ws://${host}:4311`
   const webUrl = `http://${host}:5183/#access_token=${accessToken}`
@@ -114,9 +150,10 @@ if (mobile) {
     VITE_HARNESS_SERVER_URL: serverUrl,
   })
 
-  await waitForPort(5183, host)
+  await Promise.all([waitForPort(4311, host), waitForPort(5183, host)])
   console.log(`\nOpen on your Tailscale-connected phone:\n${webUrl}\n`)
 } else {
+  await requireFreePorts('127.0.0.1')
   run('server', 'apps/server', ['run', 'dev'])
   run('web', 'apps/web', ['run', 'dev'])
 
