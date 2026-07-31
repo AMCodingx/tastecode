@@ -8,6 +8,7 @@
 type Bridge = {
   pickFolder: () => Promise<string | undefined>
   pickFiles: () => Promise<string[]>
+  savePastedImage: (image: { type: string; bytes: ArrayBuffer }) => Promise<string>
   isDesktop: true
 }
 
@@ -28,6 +29,11 @@ export async function pickFiles(): Promise<string[]> {
   if (bridge) return bridge.pickFiles()
   const typed = window.prompt('Full path of a file to attach')?.trim()
   return typed ? [typed] : []
+}
+
+export async function savePastedImage(file: File): Promise<string | undefined> {
+  if (!bridge) return undefined
+  return bridge.savePastedImage({ type: file.type, bytes: await file.arrayBuffer() })
 }
 
 /**
