@@ -219,7 +219,6 @@ describe('web client', () => {
     expect(transport.close).toHaveBeenCalled()
     expect(transport.connect).toHaveBeenCalledTimes(2)
   })
-
 })
 describe('new chats', () => {
   it('starts a new session in an isolated checkout when selected', async () => {
