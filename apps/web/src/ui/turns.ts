@@ -16,6 +16,15 @@ export type TurnMark = {
   count: number
 }
 
+export type TurnPresentation = {
+  activity: Item[]
+  firstActivityIndex: number | undefined
+  firstResponseIndex: number | undefined
+  finalAnswerIndex: number | undefined
+  elapsedMs: number
+  complete: boolean
+}
+
 export function findTurns(items: Item[]): TurnMark[] {
   const turns: TurnMark[] = []
 
@@ -32,6 +41,79 @@ export function findTurns(items: Item[]): TurnMark[] {
   })
 
   return turns
+}
+
+/**
+ * The compact, completed-turn view used by first-party agent apps.
+ *
+ * Commands and reasoning stay available, but they sit behind one elapsed-time
+ * disclosure instead of interrupting the final answer as a transcript. The
+ * indices let Thread keep one flat virtualised list while rendering that
+ * disclosure only once.
+ */
+export function presentTurns(items: Item[]): ReadonlyMap<string, TurnPresentation> {
+  const drafts = new Map<
+    string,
+    {
+      activity: Item[]
+      firstActivityIndex?: number
+      firstResponseIndex?: number
+      finalAnswerIndex?: number
+      earliest: number
+      latest: number
+      hasRunningActivity: boolean
+    }
+  >()
+
+  items.forEach((item, index) => {
+    if (!item.turnId) return
+
+    const draft = drafts.get(item.turnId) ?? {
+      activity: [],
+      earliest: item.createdAt,
+      latest: item.createdAt,
+      hasRunningActivity: false,
+    }
+
+    draft.earliest = Math.min(draft.earliest, item.createdAt)
+    draft.latest = Math.max(draft.latest, item.createdAt)
+
+    if (item.type !== 'message' || item.role !== 'user') {
+      draft.firstResponseIndex ??= index
+    }
+
+    if (isActivity(item)) {
+      draft.activity.push(item)
+      draft.firstActivityIndex ??= index
+      draft.hasRunningActivity ||= item.status === 'started'
+    } else if (
+      item.type === 'message' &&
+      item.role === 'assistant' &&
+      item.status === 'completed'
+    ) {
+      draft.finalAnswerIndex = index
+    }
+
+    drafts.set(item.turnId, draft)
+  })
+
+  return new Map(
+    [...drafts].map(([turnId, draft]) => [
+      turnId,
+      {
+        activity: draft.activity,
+        firstActivityIndex: draft.firstActivityIndex,
+        firstResponseIndex: draft.firstResponseIndex,
+        finalAnswerIndex: draft.finalAnswerIndex,
+        elapsedMs: Math.max(0, draft.latest - draft.earliest),
+        complete: draft.finalAnswerIndex !== undefined && !draft.hasRunningActivity,
+      },
+    ]),
+  )
+}
+
+function isActivity(item: Item): boolean {
+  return item.type !== 'message' && item.type !== 'error'
 }
 
 /**

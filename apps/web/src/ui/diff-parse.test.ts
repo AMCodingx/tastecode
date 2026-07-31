@@ -20,6 +20,7 @@ describe('diff parsing', () => {
     expect(parsed.added).toBe(2)
     expect(parsed.removed).toBe(1)
     expect(parsed.files).toBe(1)
+    expect(parsed.fileEntries).toEqual([{ path: 'src/app.ts', added: 2, removed: 1 }])
   })
 
   it('classifies each line', () => {
@@ -33,6 +34,8 @@ describe('diff parsing', () => {
 
   it('counts multiple files', () => {
     const two = `${SAMPLE}\ndiff --git a/b.ts b/b.ts\n+x`
-    expect(parseDiff(two).files).toBe(2)
+    const parsed = parseDiff(two)
+    expect(parsed.files).toBe(2)
+    expect(parsed.fileEntries[1]).toEqual({ path: 'b.ts', added: 1, removed: 0 })
   })
 })

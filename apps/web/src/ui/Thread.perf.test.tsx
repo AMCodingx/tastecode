@@ -26,6 +26,7 @@ const view = (items: ReturnType<typeof makeFixtureThread>) => (
   <Thread
     items={items}
     running={false}
+    activeTurn={undefined}
     plan={[]}
     diff={undefined}
     approvals={[]}

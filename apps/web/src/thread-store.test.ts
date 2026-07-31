@@ -64,8 +64,10 @@ describe('thread reducer', () => {
       },
     ])
     expect(running.running).toBe(true)
+    expect(running.activeTurn).toEqual({ id: 't1', startedAt: 0 })
 
     const done = reduce(running, { type: 'turn.completed', turnId: 't1', status: 'completed' })
     expect(done.running).toBe(false)
+    expect(done.activeTurn).toBeUndefined()
   })
 })

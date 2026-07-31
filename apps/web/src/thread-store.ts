@@ -10,6 +10,8 @@ import type { ApprovalRequest, DomainEvent, Item, PlanStep, Usage } from '@harne
 export type ThreadState = {
   items: Item[]
   running: boolean
+  /** The live turn whose elapsed time and activity the UI is presenting. */
+  activeTurn: { id: string; startedAt: number } | undefined
   /** The agent's plan for the current turn. Replaced wholesale when it changes. */
   plan: PlanStep[]
   usage?: Usage
@@ -19,7 +21,13 @@ export type ThreadState = {
   approvals: ApprovalRequest[]
 }
 
-export const emptyThread: ThreadState = { items: [], running: false, plan: [], approvals: [] }
+export const emptyThread: ThreadState = {
+  items: [],
+  running: false,
+  activeTurn: undefined,
+  plan: [],
+  approvals: [],
+}
 
 /**
  * Marks a locally-echoed message that the agent has not confirmed yet. The
@@ -33,10 +41,16 @@ export function reduce(state: ThreadState, event: DomainEvent): ThreadState {
     case 'turn.started':
       // A new turn gets a fresh plan and diff; the previous ones described work
       // already finished, and leaving them up reads as stale instructions.
-      return { ...state, running: true, plan: [], diff: undefined }
+      return {
+        ...state,
+        running: true,
+        activeTurn: { id: event.turn.id, startedAt: event.turn.createdAt },
+        plan: [],
+        diff: undefined,
+      }
 
     case 'turn.completed':
-      return { ...state, running: false }
+      return { ...state, running: false, activeTurn: undefined }
 
     case 'plan.updated':
       return { ...state, plan: event.steps }
@@ -90,6 +104,7 @@ export function reduce(state: ThreadState, event: DomainEvent): ThreadState {
       return {
         ...state,
         running: false,
+        activeTurn: undefined,
         items: [
           ...state.items,
           {

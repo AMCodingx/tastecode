@@ -1,16 +1,20 @@
-import { useEffect, useRef, useState } from 'react'
+import { type DragEvent, useEffect, useRef, useState } from 'react'
 import type { Account } from '@harness/contracts'
 import {
+  Archive,
   ChevronRight,
   Ellipsis,
   Folder,
   FolderPen,
-  LoaderCircle,
+  Pencil,
   Plus,
   Search,
   X,
 } from 'lucide-react'
+import { isMacOS } from '../bridge.js'
+import { SHORTCUTS, shortcutAria, shortcutLabel } from '../shortcuts.js'
 import { Menu, MenuItem } from './Menu.js'
+import { ShortcutHint } from './ShortcutHint.js'
 
 /**
  * The rail. Collapsible, searchable, and everything in it can be renamed.
@@ -22,7 +26,7 @@ import { Menu, MenuItem } from './Menu.js'
 export type Session = {
   id: string
   title: string
-  status: 'running' | 'idle' | 'failed'
+  status: 'running' | 'attention' | 'idle' | 'failed'
 }
 
 export type Project = {
@@ -33,8 +37,13 @@ export type Project = {
   pinned?: boolean
 }
 
+type DropPosition = 'before' | 'after'
+
+const BRAILLE_SPINNER_FRAMES = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'] as const
+
 export function Sidebar(props: {
   projects: Project[]
+  activeProjectPath: string | undefined
   activeSessionId: string | undefined
   account: Account | undefined
   providerName: string
@@ -47,13 +56,21 @@ export function Sidebar(props: {
   onTogglePin: (path: string) => void
   onRenameSession: (id: string, title: string) => void
   onDeleteSession: (id: string) => void
+  onReorderSession: (
+    projectPath: string,
+    sourceId: string,
+    targetId: string,
+    position: DropPosition,
+  ) => void
   onOpenSettings: () => void
 }) {
   const [query, setQuery] = useState('')
+  const [edgeRevealed, setEdgeRevealed] = useState(false)
+  const macOS = isMacOS()
 
-  // Collapsed is an empty strip: the toggle that brings it back lives in the
-  // title bar, so it stays put instead of moving with the thing it controls.
-  if (props.collapsed) return <nav className="rail rail--collapsed" />
+  useEffect(() => {
+    if (!props.collapsed) setEdgeRevealed(false)
+  }, [props.collapsed])
 
   const term = query.trim().toLowerCase()
   const visible = term
@@ -72,90 +89,121 @@ export function Sidebar(props: {
   const rest = visible.filter((p) => !p.pinned)
 
   return (
-    <nav className="rail">
-      <div className="rail__actions">
-        <button
-          className="navitem"
-          onClick={() => {
-            const first = props.projects[0]
-            if (first) props.onNewSession(first.path)
-            else props.onAddProject()
-          }}
-        >
-          <Plus size={15} aria-hidden />
-          <span>New chat</span>
-        </button>
-        <button className="navitem" onClick={props.onAddProject}>
-          <FolderPen size={15} aria-hidden />
-          <span>New project</span>
-        </button>
-        <div className="search">
-          <Search size={13} aria-hidden />
-          <input
-            value={query}
-            onChange={(e) => setQuery(e.target.value)}
-            placeholder="Search chats"
-            spellCheck={false}
-          />
-          {query ? (
-            <button className="chip__x" onClick={() => setQuery('')} title="Clear">
-              <X size={10} aria-hidden />
-            </button>
-          ) : null}
+    <div
+      className={`rail-slot ${props.collapsed ? 'is-collapsed' : ''} ${
+        edgeRevealed ? 'is-revealed' : ''
+      }`}
+      onMouseLeave={() => setEdgeRevealed(false)}
+    >
+      {props.collapsed ? (
+        <div className="rail__edge" aria-hidden onMouseEnter={() => setEdgeRevealed(true)} />
+      ) : null}
+
+      <nav className="rail" inert={props.collapsed && !edgeRevealed ? true : undefined}>
+        <div className="rail__actions">
+          <button
+            className="navitem"
+            aria-keyshortcuts={shortcutAria(SHORTCUTS.newChat)}
+            onClick={() => {
+              const project =
+                props.projects.find((candidate) => candidate.path === props.activeProjectPath) ??
+                props.projects[0]
+              if (project) props.onNewSession(project.path)
+              else props.onAddProject()
+            }}
+          >
+            <Plus size={15} aria-hidden />
+            <span>New chat</span>
+            <ShortcutHint>{shortcutLabel(SHORTCUTS.newChat, macOS)}</ShortcutHint>
+          </button>
+          <button
+            className="navitem"
+            onClick={props.onAddProject}
+            aria-keyshortcuts={shortcutAria(SHORTCUTS.newProject)}
+          >
+            <FolderPen size={15} aria-hidden />
+            <span>New project</span>
+            <ShortcutHint>{shortcutLabel(SHORTCUTS.newProject, macOS)}</ShortcutHint>
+          </button>
+          <div className="search">
+            <Search size={13} aria-hidden />
+            <input
+              value={query}
+              onChange={(e) => setQuery(e.target.value)}
+              placeholder="Search chats"
+              spellCheck={false}
+            />
+            {query ? (
+              <button className="chip__x" onClick={() => setQuery('')} title="Clear">
+                <X size={10} aria-hidden />
+              </button>
+            ) : null}
+          </div>
         </div>
-      </div>
 
-      <div className="rail__body">
-        {pinned.length > 0 ? (
-          <>
-            <p className="section">Pinned</p>
-            {pinned.map((project) => (
-              <ProjectRow key={project.path} project={project} {...props} forceOpen={term !== ''} />
-            ))}
-          </>
-        ) : null}
-
-        <p className="section">Projects</p>
-        {rest.length === 0 ? (
-          <p className="rail__hint">{term ? 'Nothing matches.' : 'Nothing here yet.'}</p>
-        ) : (
-          rest.map((project) => (
-            <ProjectRow key={project.path} project={project} {...props} forceOpen={term !== ''} />
-          ))
-        )}
-      </div>
-
-      <div className="rail__foot">
-        <Menu
-          drop="up"
-          label="Account"
-          trigger={() => (
-            <span className="account">
-              <span className="account__avatar">{initial(props.account, props.providerName)}</span>
-              <span className="account__text">
-                <span className="account__name">{props.account?.email ?? props.providerName}</span>
-                {props.account?.plan ? (
-                  <span className="account__plan">{props.account.plan}</span>
-                ) : null}
-              </span>
-            </span>
-          )}
-        >
-          {(close) => (
+        <div className="rail__body">
+          {pinned.length > 0 ? (
             <>
-              <MenuItem
-                title="Settings"
-                detail="Providers, appearance, storage"
-                onClick={() => {
-                  props.onOpenSettings()
-                  close()
-                }}
-              />
+              <p className="section">Pinned</p>
+              {pinned.map((project) => (
+                <ProjectRow
+                  key={project.path}
+                  project={project}
+                  {...props}
+                  forceOpen={term !== ''}
+                />
+              ))}
             </>
+          ) : null}
+
+          <p className="section">Projects</p>
+          {rest.length === 0 ? (
+            <p className="rail__hint">{term ? 'Nothing matches.' : 'Nothing here yet.'}</p>
+          ) : (
+            rest.map((project) => (
+              <ProjectRow key={project.path} project={project} {...props} forceOpen={term !== ''} />
+            ))
           )}
-        </Menu>
-      </div>
-    </nav>
+        </div>
+
+        <div className="rail__foot">
+          <Menu
+            drop="up"
+            label="Account"
+            trigger={() => (
+              <span className="account">
+                <span className="account__avatar">
+                  {initial(props.account, props.providerName)}
+                </span>
+                <span className="account__text">
+                  <span className="account__name">
+                    {props.account?.email ?? props.providerName}
+                  </span>
+                  {props.account?.plan ? (
+                    <span className="account__plan">{props.account.plan}</span>
+                  ) : null}
+                </span>
+              </span>
+            )}
+          >
+            {(close) => (
+              <>
+                <MenuItem
+                  title="Settings"
+                  detail="Providers, appearance, storage"
+                  shortcut={shortcutLabel(SHORTCUTS.settings, macOS)}
+                  shortcutAria={shortcutAria(SHORTCUTS.settings)}
+                  onClick={() => {
+                    props.onOpenSettings()
+                    close()
+                  }}
+                />
+              </>
+            )}
+          </Menu>
+        </div>
+      </nav>
+    </div>
   )
 }
 
@@ -170,11 +218,37 @@ function ProjectRow(props: {
   onTogglePin: (path: string) => void
   onRenameSession: (id: string, title: string) => void
   onDeleteSession: (id: string) => void
+  onReorderSession: (
+    projectPath: string,
+    sourceId: string,
+    targetId: string,
+    position: DropPosition,
+  ) => void
 }) {
   const [open, setOpen] = useState(true)
   const [renaming, setRenaming] = useState(false)
+  const [draggedSessionId, setDraggedSessionId] = useState<string>()
+  const [dropTarget, setDropTarget] = useState<{
+    id: string
+    position: DropPosition
+  }>()
   const expanded = open || props.forceOpen
   const count = props.project.sessions.length
+  const reorderable = !props.forceOpen
+
+  const endDrag = () => {
+    setDraggedSessionId(undefined)
+    setDropTarget(undefined)
+  }
+
+  const dragOverSession = (event: DragEvent<HTMLLIElement>, targetId: string) => {
+    if (!draggedSessionId || draggedSessionId === targetId) return
+    event.preventDefault()
+    event.dataTransfer.dropEffect = 'move'
+    const bounds = event.currentTarget.getBoundingClientRect()
+    const position = event.clientY < bounds.top + bounds.height / 2 ? 'before' : 'after'
+    setDropTarget({ id: targetId, position })
+  }
 
   return (
     <section className="proj">
@@ -201,14 +275,6 @@ function ProjectRow(props: {
               </span>
               <Folder className="proj__mark" size={12} aria-hidden />
               <span className="proj__name">{displayName(props.project)}</span>
-            </button>
-
-            <button
-              className="icon-btn"
-              onClick={() => props.onNewSession(props.project.path)}
-              title="New chat here"
-            >
-              <Plus size={13} aria-hidden />
             </button>
 
             <Menu
@@ -249,6 +315,14 @@ function ProjectRow(props: {
                 </>
               )}
             </Menu>
+
+            <button
+              className="icon-btn"
+              onClick={() => props.onNewSession(props.project.path)}
+              title="New chat here"
+            >
+              <Plus size={13} aria-hidden />
+            </button>
           </>
         )}
       </div>
@@ -267,6 +341,32 @@ function ProjectRow(props: {
               onSelect={() => props.onSelectSession(session.id)}
               onRename={(title) => props.onRenameSession(session.id, title)}
               onDelete={() => props.onDeleteSession(session.id)}
+              reorderable={reorderable}
+              dragging={session.id === draggedSessionId}
+              dropPosition={dropTarget?.id === session.id ? dropTarget.position : undefined}
+              onDragStart={(event) => {
+                event.dataTransfer.effectAllowed = 'move'
+                event.dataTransfer.setData('text/plain', session.id)
+                setDraggedSessionId(session.id)
+              }}
+              onDragOver={(event) => dragOverSession(event, session.id)}
+              onDrop={(event) => {
+                event.preventDefault()
+                if (
+                  draggedSessionId &&
+                  dropTarget?.id === session.id &&
+                  draggedSessionId !== session.id
+                ) {
+                  props.onReorderSession(
+                    props.project.path,
+                    draggedSessionId,
+                    session.id,
+                    dropTarget.position,
+                  )
+                }
+                endDrag()
+              }}
+              onDragEnd={endDrag}
             />
           ))}
         </ul>
@@ -281,6 +381,13 @@ function SessionRow(props: {
   onSelect: () => void
   onRename: (title: string) => void
   onDelete: () => void
+  reorderable: boolean
+  dragging: boolean
+  dropPosition: DropPosition | undefined
+  onDragStart: (event: DragEvent<HTMLLIElement>) => void
+  onDragOver: (event: DragEvent<HTMLLIElement>) => void
+  onDrop: (event: DragEvent<HTMLLIElement>) => void
+  onDragEnd: () => void
 }) {
   const [renaming, setRenaming] = useState(false)
 
@@ -300,50 +407,83 @@ function SessionRow(props: {
   }
 
   return (
-    <li className="sessrow">
+    <li
+      className={`sessrow ${props.active ? 'is-active' : ''} ${
+        props.reorderable ? 'is-reorderable' : ''
+      } ${props.dragging ? 'is-dragging' : ''}`}
+      draggable={props.reorderable}
+      data-drop-position={props.dropPosition}
+      onDragStart={props.onDragStart}
+      onDragOver={props.onDragOver}
+      onDrop={props.onDrop}
+      onDragEnd={props.onDragEnd}
+    >
       <button
         className={`sess ${props.active ? 'is-active' : ''}`}
         onClick={props.onSelect}
         onDoubleClick={() => setRenaming(true)}
-        title={props.session.title}
+        aria-label={sessionLabel(props.session)}
+        title={sessionLabel(props.session)}
       >
         <span className="sess__title">{props.session.title}</span>
-        {props.session.status === 'running' ? (
-          <LoaderCircle className="spinner" aria-hidden />
-        ) : null}
+        <SessionStatus status={props.session.status} />
       </button>
 
-      <Menu
-        drop="down"
-        align="right"
-        label="Chat options"
-        trigger={() => (
-          <span className="dots">
-            <Ellipsis size={14} aria-hidden />
-          </span>
-        )}
-      >
-        {(close) => (
-          <>
-            <MenuItem
-              title="Rename"
-              onClick={() => {
-                setRenaming(true)
-                close()
-              }}
-            />
-            <MenuItem
-              title="Delete"
-              onClick={() => {
-                props.onDelete()
-                close()
-              }}
-            />
-          </>
-        )}
-      </Menu>
+      <span className="sess__actions">
+        <button
+          className="sess__action"
+          onClick={() => setRenaming(true)}
+          aria-label={`Rename ${props.session.title}`}
+          title="Rename"
+        >
+          <Pencil size={13} aria-hidden />
+        </button>
+        <button
+          className="sess__action"
+          onClick={props.onDelete}
+          aria-label={`Archive ${props.session.title}`}
+          title="Archive"
+        >
+          <Archive size={14} aria-hidden />
+        </button>
+      </span>
     </li>
   )
+}
+
+function SessionStatus(props: { status: Session['status'] }) {
+  if (props.status === 'running') {
+    return (
+      <span className="sess__spinner" aria-hidden>
+        {BRAILLE_SPINNER_FRAMES.map((frame) => (
+          <span key={frame}>{frame}</span>
+        ))}
+      </span>
+    )
+  }
+
+  if (props.status === 'attention') {
+    return <span className="sess__status-dot is-attention" aria-hidden />
+  }
+
+  if (props.status === 'failed') {
+    return <span className="sess__status-dot is-failed" aria-hidden />
+  }
+
+  return null
+}
+
+function sessionLabel(session: Session): string {
+  switch (session.status) {
+    case 'running':
+      return `${session.title}, working`
+    case 'attention':
+      return `${session.title}, needs attention`
+    case 'failed':
+      return `${session.title}, failed`
+    default:
+      return session.title
+  }
 }
 
 /** Rename in place. Enter commits, Escape reverts, blur commits. */

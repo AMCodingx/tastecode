@@ -1,9 +1,11 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
-import type { Account, ApprovalMode, Model, ProviderId } from '@harness/contracts'
+import type { Account, ApprovalMode, DomainEvent, Model, ProviderId } from '@harness/contracts'
 import { isMacOS, pickFolder } from './bridge.js'
+import { isEditableTarget, matchesShortcut, SHORTCUTS, shortcutLabel } from './shortcuts.js'
 import { warmHighlighter } from './ui/highlighter.js'
 import { Transport } from './transport.js'
 import { appendUserMessage, emptyThread, reduce, type ThreadState } from './thread-store.js'
+import { CommandPalette, type CommandScope, type PaletteCommand } from './ui/CommandPalette.js'
 import { Composer, type WorkspaceInfo } from './ui/Composer.js'
 import { Onboarding } from './ui/Onboarding.js'
 import { Settings } from './ui/Settings.js'
@@ -19,6 +21,7 @@ const SETUP_KEY = 'harness.provider'
 const AGENT_KEY = 'harness.acpAgent'
 const AGENT_NAME_KEY = 'harness.acpAgentName'
 const PROJECTS_KEY = 'harness.projects'
+const SESSION_ORDER_KEY = 'harness.sessionOrder'
 const MODEL_KEY = 'harness.model'
 const EFFORT_KEY = 'harness.effort'
 const SERVICE_TIER_KEY = 'harness.serviceTier'
@@ -32,7 +35,17 @@ const MACOS_FONT_SMOOTHING_KEY = 'harness.macosFontSmoothing'
 function loadProjects(): Project[] {
   try {
     const raw = localStorage.getItem(PROJECTS_KEY)
-    return raw ? (JSON.parse(raw) as Project[]) : []
+    const projects = raw ? (JSON.parse(raw) as Project[]) : []
+    if (localStorage.getItem(SESSION_ORDER_KEY) !== 'recent-first') {
+      const migrated = projects.map((project) => ({
+        ...project,
+        sessions: [...project.sessions].reverse(),
+      }))
+      localStorage.setItem(PROJECTS_KEY, JSON.stringify(migrated))
+      localStorage.setItem(SESSION_ORDER_KEY, 'recent-first')
+      return migrated
+    }
+    return projects
   } catch {
     return []
   }
@@ -55,6 +68,10 @@ export function App() {
   const [activeId, setActiveId] = useState<string | undefined>()
   const [activePath, setActivePath] = useState<string | undefined>(() => loadProjects()[0]?.path)
   const [thread, setThread] = useState<ThreadState>(emptyThread)
+  // Every live session keeps reducing events while it is off screen. A ref is
+  // intentional: streamed deltas for a background session should not rerender
+  // the active thread, while selecting it still gets the latest state at once.
+  const threadStates = useRef(new Map<string, ThreadState>())
   const [models, setModels] = useState<Model[]>([])
   const [modelsLoaded, setModelsLoaded] = useState(false)
   const [modelId, setModelId] = useState<string | undefined>(
@@ -73,6 +90,8 @@ export function App() {
   const [workspace, setWorkspace] = useState<WorkspaceInfo | undefined>()
   const [account, setAccount] = useState<Account | undefined>()
   const [settingsOpen, setSettingsOpen] = useState(false)
+  const [paletteScope, setPaletteScope] = useState<CommandScope | null>(null)
+  const [composerFocusRequest, setComposerFocusRequest] = useState(0)
   const [notice, setNotice] = useState<string | undefined>()
   const macOS = isMacOS()
   const [macOSFontSmoothing, setMacOSFontSmoothing] = useState(
@@ -100,9 +119,16 @@ export function App() {
 
   useEffect(() => {
     const off = transport.on('thread.event', ({ threadId, event }) => {
-      setThread((current) => (threadId === activeIdRef.current ? reduce(current, event) : current))
-      if (event.type === 'turn.started' || event.type === 'turn.completed') {
-        setProjects((current) => markStatus(current, threadId, event.type === 'turn.started'))
+      const next = reduce(threadStates.current.get(threadId) ?? emptyThread, event)
+      threadStates.current.set(threadId, next)
+
+      if (threadId === activeIdRef.current) setThread(next)
+
+      if (affectsSessionStatus(event)) {
+        setProjects((current) => {
+          const updated = markStatus(current, threadId, statusFor(next, event))
+          return event.type === 'turn.started' ? promoteSession(updated, threadId) : updated
+        })
       }
     })
     transport.connect()
@@ -226,6 +252,9 @@ export function App() {
       current.some((p) => p.path === path) ? current : [...current, { path, sessions: [] }],
     )
     setActivePath(path)
+    activeIdRef.current = undefined
+    setActiveId(undefined)
+    setThread(emptyThread)
   }, [])
 
   const createSession = useCallback(
@@ -249,13 +278,15 @@ export function App() {
               ? {
                   ...project,
                   sessions: [
-                    ...project.sessions,
                     { id: threadId, title: 'New session', status: 'idle' as const },
+                    ...project.sessions,
                   ],
                 }
               : project,
           ),
         )
+        threadStates.current.set(threadId, emptyThread)
+        activeIdRef.current = threadId
         setActiveId(threadId)
         setThread(emptyThread)
         return threadId
@@ -273,6 +304,7 @@ export function App() {
         .find((project) => project.path === projectPath)
         ?.sessions.filter((session) => session.title === 'New session')
       for (const session of untouched ?? []) {
+        threadStates.current.delete(session.id)
         void transport.request('thread.close', { threadId: session.id })
       }
       setProjects((current) =>
@@ -287,6 +319,7 @@ export function App() {
       )
       setNotice(undefined)
       setActivePath(projectPath)
+      activeIdRef.current = undefined
       setActiveId(undefined)
       setThread(emptyThread)
     },
@@ -305,7 +338,9 @@ export function App() {
         if (!threadId) return
       }
 
-      setThread((current) => appendUserMessage(current, text))
+      const next = appendUserMessage(threadStates.current.get(threadId) ?? emptyThread, text)
+      threadStates.current.set(threadId, next)
+      if (threadId === activeIdRef.current) setThread(next)
       setProjects((current) => titleIfNew(current, threadId, text))
       try {
         await transport.request('thread.sendTurn', {
@@ -327,6 +362,82 @@ export function App() {
     if (activeId) void transport.request('thread.interrupt', { threadId: activeId })
   }, [transport, activeId])
 
+  const selectProject = useCallback(
+    (path: string) => {
+      if (path === activePath) return
+      setActivePath(path)
+      activeIdRef.current = undefined
+      setActiveId(undefined)
+      setThread(emptyThread)
+    },
+    [activePath],
+  )
+
+  const selectSession = useCallback(
+    (id: string) => {
+      activeIdRef.current = id
+      setActiveId(id)
+      setActivePath(findSession(projects, id)?.project.path)
+      setThread(threadStates.current.get(id) ?? emptyThread)
+    },
+    [projects],
+  )
+
+  const startNewChat = useCallback(() => {
+    const path = activePath ?? projects[0]?.path
+    if (path) beginSession(path)
+    else void addProject()
+  }, [activePath, projects, beginSession, addProject])
+
+  useEffect(() => {
+    const onKey = (event: KeyboardEvent) => {
+      if (!provider) return
+      if (event.defaultPrevented || event.repeat || isEditableTarget(event.target)) return
+
+      if (matchesShortcut(event, SHORTCUTS.commandPalette)) {
+        event.preventDefault()
+        setSettingsOpen(false)
+        setPaletteScope('all')
+        return
+      }
+      if (matchesShortcut(event, SHORTCUTS.switchProject)) {
+        event.preventDefault()
+        setSettingsOpen(false)
+        setPaletteScope('projects')
+        return
+      }
+      if (matchesShortcut(event, SHORTCUTS.newChat)) {
+        event.preventDefault()
+        startNewChat()
+        return
+      }
+      if (matchesShortcut(event, SHORTCUTS.newProject)) {
+        event.preventDefault()
+        void addProject()
+        return
+      }
+      if (matchesShortcut(event, SHORTCUTS.settings)) {
+        event.preventDefault()
+        setPaletteScope(null)
+        setSettingsOpen((open) => !open)
+        return
+      }
+      if (matchesShortcut(event, SHORTCUTS.focusComposer) && activePath) {
+        event.preventDefault()
+        setPaletteScope(null)
+        setComposerFocusRequest((request) => request + 1)
+        return
+      }
+      if (matchesShortcut(event, SHORTCUTS.toggleSidebar)) {
+        event.preventDefault()
+        setCollapsed((current) => !current)
+      }
+    }
+
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [activePath, addProject, provider, startNewChat])
+
   if (!provider) {
     return (
       <Onboarding
@@ -346,6 +457,100 @@ export function App() {
   }
 
   const active = findSession(projects, activeId)
+  const labels = {
+    newChat: shortcutLabel(SHORTCUTS.newChat, macOS),
+    switchProject: shortcutLabel(SHORTCUTS.switchProject, macOS),
+    newProject: shortcutLabel(SHORTCUTS.newProject, macOS),
+    settings: shortcutLabel(SHORTCUTS.settings, macOS),
+    focusComposer: shortcutLabel(SHORTCUTS.focusComposer, macOS),
+    toggleSidebar: shortcutLabel(SHORTCUTS.toggleSidebar, macOS),
+  }
+  const commands: PaletteCommand[] = [
+    {
+      id: 'new-chat',
+      title: 'New chat',
+      detail: activePath ? `Start in ${basename(activePath)}` : 'Choose a project folder',
+      group: 'Actions',
+      keywords: 'session conversation',
+      shortcut: labels.newChat,
+      run: startNewChat,
+    },
+    {
+      id: 'switch-project',
+      title: 'Switch project…',
+      detail: 'Choose another workspace',
+      group: 'Actions',
+      keywords: 'folder workspace',
+      shortcut: labels.switchProject,
+      run: () => setPaletteScope('projects'),
+    },
+    {
+      id: 'new-project',
+      title: 'New project',
+      detail: 'Add a folder to the sidebar',
+      group: 'Actions',
+      keywords: 'add open folder workspace',
+      shortcut: labels.newProject,
+      projectCommand: true,
+      run: () => void addProject(),
+    },
+    ...(activePath
+      ? [
+          {
+            id: 'focus-composer',
+            title: 'Focus composer',
+            detail: 'Move the cursor to your prompt',
+            group: 'Actions' as const,
+            keywords: 'prompt message type',
+            shortcut: labels.focusComposer,
+            run: () => setComposerFocusRequest((request) => request + 1),
+          },
+        ]
+      : []),
+    {
+      id: 'toggle-sidebar',
+      title: collapsed ? 'Show sidebar' : 'Hide sidebar',
+      group: 'Actions',
+      keywords: 'rail navigation',
+      shortcut: labels.toggleSidebar,
+      run: () => setCollapsed((current) => !current),
+    },
+    {
+      id: 'open-settings',
+      title: 'Settings',
+      detail: 'Providers, appearance, storage',
+      group: 'Actions',
+      shortcut: labels.settings,
+      run: () => setSettingsOpen(true),
+    },
+    ...projects.map((project): PaletteCommand => ({
+      id: `project-${encodeURIComponent(project.path)}`,
+      title: displayName(project),
+      detail: project.path,
+      group: 'Projects',
+      keywords: 'switch folder workspace',
+      projectCommand: true,
+      run: () => selectProject(project.path),
+    })),
+    ...projects.map((project): PaletteCommand => ({
+      id: `new-chat-${encodeURIComponent(project.path)}`,
+      title: `New chat in ${displayName(project)}`,
+      detail: project.path,
+      group: 'Projects',
+      keywords: 'session conversation',
+      run: () => beginSession(project.path),
+    })),
+    ...projects.flatMap((project) =>
+      project.sessions.map((session): PaletteCommand => ({
+        id: `chat-${session.id}`,
+        title: session.title,
+        detail: displayName(project),
+        group: 'Chats',
+        keywords: `${project.path} open session conversation`,
+        run: () => selectSession(session.id),
+      })),
+    ),
+  ]
 
   return (
     <div className={`shell ${collapsed ? 'is-narrow' : ''}`}>
@@ -354,17 +559,14 @@ export function App() {
       <div className="shell__body">
         <Sidebar
           projects={projects}
+          activeProjectPath={activePath}
           activeSessionId={activeId}
           providerName={providerName(provider, acpAgentName)}
           collapsed={collapsed}
           account={account}
           onAddProject={() => void addProject()}
           onNewSession={beginSession}
-          onSelectSession={(id) => {
-            setActiveId(id)
-            setActivePath(findSession(projects, id)?.project.path)
-            setThread(emptyThread)
-          }}
+          onSelectSession={selectSession}
           onRenameProject={(path, name) =>
             setProjects((c) => c.map((p) => (p.path === path ? { ...p, name } : p)))
           }
@@ -385,14 +587,32 @@ export function App() {
           }
           onDeleteSession={(id) => {
             void transport.request('thread.close', { threadId: id })
+            threadStates.current.delete(id)
             setProjects((c) =>
               c.map((p) => ({ ...p, sessions: p.sessions.filter((s) => s.id !== id) })),
             )
             if (activeId === id) {
+              activeIdRef.current = undefined
               setActiveId(undefined)
               setThread(emptyThread)
             }
           }}
+          onReorderSession={(projectPath, sourceId, targetId, position) =>
+            setProjects((current) =>
+              current.map((project) => {
+                if (project.path !== projectPath) return project
+                const sourceIndex = project.sessions.findIndex((session) => session.id === sourceId)
+                if (sourceIndex < 0) return project
+
+                const sessions = [...project.sessions]
+                const [moved] = sessions.splice(sourceIndex, 1)
+                const targetIndex = sessions.findIndex((session) => session.id === targetId)
+                if (!moved || targetIndex < 0) return project
+                sessions.splice(targetIndex + (position === 'after' ? 1 : 0), 0, moved)
+                return { ...project, sessions }
+              }),
+            )
+          }
           onOpenSettings={() => setSettingsOpen(true)}
         />
 
@@ -402,13 +622,14 @@ export function App() {
             activePath={activePath}
             title={active?.session.title}
             usage={thread.usage}
-            onSelectProject={setActivePath}
+            onSelectProject={selectProject}
           />
 
           {active ? (
             <Thread
               items={thread.items}
               running={thread.running}
+              activeTurn={thread.activeTurn}
               plan={thread.plan}
               diff={thread.diff}
               approvals={thread.approvals}
@@ -422,7 +643,7 @@ export function App() {
               }}
             />
           ) : (
-            <Empty projects={projects} activePath={activePath} onSelectProject={setActivePath} />
+            <Empty projects={projects} activePath={activePath} onSelectProject={selectProject} />
           )}
 
           <Composer
@@ -436,6 +657,7 @@ export function App() {
             approval={approval}
             disabled={!activePath}
             running={thread.running}
+            focusRequest={composerFocusRequest}
             onModelChange={selectModel}
             onEffortChange={setEffort}
             onServiceTierChange={setServiceTier}
@@ -465,6 +687,14 @@ export function App() {
             location.reload()
           }}
           onClose={() => setSettingsOpen(false)}
+        />
+      ) : null}
+
+      {paletteScope ? (
+        <CommandPalette
+          commands={commands}
+          scope={paletteScope}
+          onClose={() => setPaletteScope(null)}
         />
       ) : null}
 
@@ -558,13 +788,44 @@ function findSession(projects: Project[], id: string | undefined) {
   return undefined
 }
 
-function markStatus(projects: Project[], threadId: string, running: boolean): Project[] {
+function markStatus(
+  projects: Project[],
+  threadId: string,
+  status: Project['sessions'][number]['status'],
+): Project[] {
   return projects.map((project) => ({
     ...project,
     sessions: project.sessions.map((session) =>
-      session.id === threadId ? { ...session, status: running ? 'running' : 'idle' } : session,
+      session.id === threadId ? { ...session, status } : session,
     ),
   }))
+}
+
+function promoteSession(projects: Project[], threadId: string): Project[] {
+  return projects.map((project) => {
+    const index = project.sessions.findIndex((session) => session.id === threadId)
+    if (index <= 0) return project
+    const sessions = [...project.sessions]
+    const [session] = sessions.splice(index, 1)
+    return session ? { ...project, sessions: [session, ...sessions] } : project
+  })
+}
+
+function affectsSessionStatus(event: DomainEvent): boolean {
+  return (
+    event.type === 'turn.started' ||
+    event.type === 'turn.completed' ||
+    event.type === 'approval.requested' ||
+    event.type === 'approval.resolved' ||
+    event.type === 'thread.error'
+  )
+}
+
+function statusFor(state: ThreadState, event: DomainEvent): Project['sessions'][number]['status'] {
+  if (event.type === 'thread.error') return 'failed'
+  if (event.type === 'turn.completed') return event.status === 'failed' ? 'failed' : 'idle'
+  if (state.approvals.length > 0) return 'attention'
+  return state.running ? 'running' : 'idle'
 }
 
 function basename(path: string): string {
@@ -578,12 +839,15 @@ function displayName(project: Project): string {
 
 /** The first thing a user types is the best title we get for free. */
 function titleIfNew(projects: Project[], threadId: string, text: string): Project[] {
-  return projects.map((project) => ({
-    ...project,
-    sessions: project.sessions.map((session) =>
-      session.id === threadId && session.title === 'New session'
-        ? { ...session, title: text.length > 40 ? `${text.slice(0, 40)}…` : text }
-        : session,
-    ),
-  }))
+  return promoteSession(
+    projects.map((project) => ({
+      ...project,
+      sessions: project.sessions.map((session) =>
+        session.id === threadId && session.title === 'New session'
+          ? { ...session, title: text.length > 40 ? `${text.slice(0, 40)}…` : text }
+          : session,
+      ),
+    })),
+    threadId,
+  )
 }

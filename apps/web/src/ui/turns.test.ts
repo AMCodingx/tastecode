@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { Item } from '@harness/contracts'
-import { findTurns, neighbourTurn } from './turns.js'
+import { findTurns, neighbourTurn, presentTurns } from './turns.js'
 
 const item = (id: string, turnId: string): Item => ({
   id,
@@ -45,5 +45,42 @@ describe('turn boundaries', () => {
     const turns = findTurns([item('a', 't1'), item('b', 't2'), item('c', 't2'), item('d', 't2')])
     // Standing on the third item of t2, "previous" is the start of t2.
     expect(neighbourTurn(turns, 3, 'prev')).toBe(1)
+  })
+
+  it('collects completed turn activity behind one elapsed-time disclosure', () => {
+    const items: Item[] = [
+      { ...item('user', 't1'), role: 'user', createdAt: 1_000 },
+      {
+        ...item('reasoning', 't1'),
+        type: 'reasoning',
+        text: 'Inspecting',
+        createdAt: 2_000,
+      },
+      {
+        ...item('command', 't1'),
+        type: 'command',
+        command: 'pnpm test',
+        createdAt: 3_000,
+      },
+      { ...item('answer', 't1'), role: 'assistant', text: 'Done.', createdAt: 7_500 },
+    ]
+
+    expect(presentTurns(items).get('t1')).toMatchObject({
+      activity: [items[1], items[2]],
+      firstActivityIndex: 1,
+      firstResponseIndex: 1,
+      finalAnswerIndex: 3,
+      elapsedMs: 6_500,
+      complete: true,
+    })
+  })
+
+  it('does not compact activity while the turn is still streaming', () => {
+    const items: Item[] = [
+      { ...item('user', 't1'), role: 'user' },
+      { ...item('command', 't1'), type: 'command', status: 'started' },
+    ]
+
+    expect(presentTurns(items).get('t1')?.complete).toBe(false)
   })
 })

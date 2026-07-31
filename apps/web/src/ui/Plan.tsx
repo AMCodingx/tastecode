@@ -8,8 +8,15 @@ import { Check, Circle, LoaderCircle } from 'lucide-react'
  * answer to "what is it doing and how far along", which is the question you ask
  * while it works — and a row that scrolls away cannot answer it.
  */
-export function Plan({ steps }: { steps: PlanStep[] }) {
+export function Plan({ steps, compact = false }: { steps: PlanStep[]; compact?: boolean }) {
   if (steps.length === 0) return null
+
+  if (compact) {
+    const current =
+      steps.find((step) => step.status === 'running') ??
+      steps.find((step) => step.status === 'pending')
+    return current ? <div className="live-status">{current.text}</div> : null
+  }
 
   const done = steps.filter((step) => step.status === 'done').length
 

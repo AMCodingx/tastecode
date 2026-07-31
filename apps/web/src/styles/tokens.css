@@ -35,6 +35,7 @@
 
   /* Meaning only. */
   --running: #d4d4d4;
+  --attention: #4c9dff;
   --effort: #ef706e;
   --error: #e5687a;
   --success: #6fbf8e;
@@ -53,8 +54,10 @@
   --r-md: 8px;
   --r-lg: 12px;
   --r-xl: 16px;
+  --r-2xl: 20px;
 
   --rail-w: 248px;
+  --chat-w: 808px;
 
   /* Windows reports the real caption-button strip through the Window Controls
      Overlay. Reading it means our bar can never disagree with the buttons - the
