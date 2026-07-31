@@ -59,6 +59,9 @@ describe('protocol envelopes', () => {
       }),
     ).toBeTruthy()
     expect(() => methods['thread.start'].params.parse({ provider: 'nope' })).toThrow()
+    expect(() =>
+      methods['thread.undoRestore'].params.parse({ threadId: 'th1', undo: '' }),
+    ).toThrow()
   })
 
   it('validates data for every declared channel', () => {
