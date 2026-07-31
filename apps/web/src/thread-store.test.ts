@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { DomainEvent, Item } from '@harness/contracts'
 import { appendUserMessage, emptyThread, reduce } from './thread-store.js'
 
@@ -13,6 +13,8 @@ const item = (over: Partial<Item> = {}): Item => ({
 })
 
 const apply = (events: DomainEvent[]) => events.reduce(reduce, emptyThread)
+
+afterEach(() => vi.unstubAllGlobals())
 
 describe('thread reducer', () => {
   it('appends streamed text to the item being written', () => {
@@ -54,6 +56,17 @@ describe('thread reducer', () => {
     })
     expect(state.items).toHaveLength(1)
     expect(state.items[0]?.id).toBe('server-1')
+  })
+
+  it('echoes a message when randomUUID is unavailable in an insecure mobile context', () => {
+    vi.stubGlobal('crypto', {})
+
+    const first = appendUserMessage(emptyThread, 'sent from mobile')
+    const second = appendUserMessage(first, 'sent again')
+
+    expect(second.items.map((entry) => entry.text)).toEqual(['sent from mobile', 'sent again'])
+    expect(second.items[0]?.id).toMatch(/^local:/)
+    expect(second.items[1]?.id).not.toBe(second.items[0]?.id)
   })
 
   it('rebuilds a whole conversation from a stored event log', () => {

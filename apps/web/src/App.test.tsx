@@ -158,6 +158,19 @@ describe('new chats', () => {
     })
   })
 
+  it('keeps full access selected after the app restarts', () => {
+    const first = render(<App />)
+
+    fireEvent.click(screen.getByRole('button', { name: 'Permissions' }))
+    fireEvent.click(screen.getByRole('menuitem', { name: /Full access/ }))
+
+    expect(localStorage.getItem('harness.approval')).toBe('full')
+    first.unmount()
+    render(<App />)
+
+    expect(screen.getByRole('button', { name: 'Permissions' }).textContent).toContain('Full access')
+  })
+
   it('switches the new chat project from the prompt', async () => {
     serverProjects = [
       {
@@ -220,6 +233,7 @@ describe('new chats', () => {
         approval: 'ask',
       })
       expect(screen.getByRole('button', { name: 'Fix the sidebar' })).toBeTruthy()
+      expect(screen.getByTestId('thread').textContent).toContain('Fix the sidebar')
     })
   })
 

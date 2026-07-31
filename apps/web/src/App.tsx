@@ -14,8 +14,9 @@ import { StageHeader } from './ui/StageHeader.js'
 import { Thread } from './ui/Thread.js'
 import { TitleBar } from './ui/TitleBar.js'
 import { Menu, MenuItem } from './ui/Menu.js'
+import { serverUrl } from './server-url.js'
 
-const SERVER_URL = 'ws://127.0.0.1:4311'
+const SERVER_URL = serverUrl(import.meta.env.VITE_HARNESS_SERVER_URL ?? 'ws://127.0.0.1:4311')
 const SETUP_KEY = 'harness.provider'
 /** Which ACP agent was chosen. Meaningless unless the provider is `acp`. */
 const AGENT_KEY = 'harness.acpAgent'
@@ -25,6 +26,7 @@ const SESSION_ORDER_KEY = 'harness.sessionOrder'
 const MODEL_KEY = 'harness.model'
 const EFFORT_KEY = 'harness.effort'
 const SERVICE_TIER_KEY = 'harness.serviceTier'
+const APPROVAL_KEY = 'harness.approval'
 const MACOS_FONT_SMOOTHING_KEY = 'harness.macosFontSmoothing'
 
 /**
@@ -79,10 +81,13 @@ export function App() {
   const [serviceTier, setServiceTier] = useState<string | undefined>(
     () => localStorage.getItem(SERVICE_TIER_KEY) ?? undefined,
   )
-  // Never restored from storage. Full access is genuinely dangerous, and a
-  // permission level that quietly survives a restart is how people get burned.
-  const [approval, setApproval] = useState<ApprovalMode>('ask')
-  const [collapsed, setCollapsed] = useState(false)
+  const [approval, setApproval] = useState<ApprovalMode>(() => {
+    const stored = localStorage.getItem(APPROVAL_KEY)
+    return stored === 'auto' || stored === 'full' ? stored : 'ask'
+  })
+  const [collapsed, setCollapsed] = useState(
+    () => globalThis.matchMedia?.('(max-width: 700px)').matches ?? false,
+  )
   const [workspace, setWorkspace] = useState<WorkspaceInfo | undefined>()
   const [account, setAccount] = useState<Account | undefined>()
   const [settingsOpen, setSettingsOpen] = useState(false)
@@ -260,6 +265,10 @@ export function App() {
       localStorage.removeItem(SERVICE_TIER_KEY)
     }
   }, [serviceTier])
+
+  useEffect(() => {
+    localStorage.setItem(APPROVAL_KEY, approval)
+  }, [approval])
 
   const selectModel = useCallback(
     (id: string) => {

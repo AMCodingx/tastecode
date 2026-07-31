@@ -1,5 +1,6 @@
 import os from 'node:os'
 import path from 'node:path'
+import { timingSafeEqual } from 'node:crypto'
 import { WebSocketServer, type WebSocket } from 'ws'
 import { detectAgents } from '@harness/adapter-acp'
 import {
@@ -49,8 +50,16 @@ function storeLocation(): string {
  * it reaches any logic, and the failure is reported as structured data rather
  * than a stack trace — "invalid message" in a log tells you nothing at 2am.
  */
-export function startServer(port = DEFAULT_PORT) {
-  const wss = new WebSocketServer({ port, host: '127.0.0.1' })
+export function startServer(
+  options: {
+    port?: number
+    host?: string
+    accessToken?: string | undefined
+  } = {},
+) {
+  const port = options.port ?? DEFAULT_PORT
+  const host = options.host ?? '127.0.0.1'
+  const wss = new WebSocketServer({ port, host })
   const push = new PushBus()
 
   // A port clash is the most likely startup failure — a previous run that did
@@ -80,7 +89,11 @@ export function startServer(port = DEFAULT_PORT) {
   // starts instead of failing with a message about our own leftovers.
   void orchestrator.recoverWorktrees().catch(() => undefined)
 
-  wss.on('connection', (socket) => {
+  wss.on('connection', (socket, request) => {
+    if (!hasAccess(request.url, options.accessToken)) {
+      socket.close(1008, 'Access denied')
+      return
+    }
     push.add(socket)
     push.send(socket, 'server.welcome', {
       serverVersion: SERVER_VERSION,
@@ -370,7 +383,7 @@ export function startServer(port = DEFAULT_PORT) {
     socket.send(JSON.stringify({ id, error: { code, message, ...(detail ? { detail } : {}) } }))
   }
 
-  console.log(`[server] listening on ws://127.0.0.1:${port}`)
+  console.log(`[server] listening on ws://${host}:${port}`)
 
   return {
     port,
@@ -380,4 +393,16 @@ export function startServer(port = DEFAULT_PORT) {
       wss.close()
     },
   }
+}
+
+export function hasAccess(requestUrl: string | undefined, expected: string | undefined): boolean {
+  if (!expected) return true
+  const supplied = new URL(requestUrl ?? '/', 'ws://harness.local').searchParams.get('token')
+  if (!supplied) return false
+
+  const expectedBytes = Buffer.from(expected)
+  const suppliedBytes = Buffer.from(supplied)
+  return (
+    expectedBytes.length === suppliedBytes.length && timingSafeEqual(expectedBytes, suppliedBytes)
+  )
 }

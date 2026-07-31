@@ -8,6 +8,7 @@
   },
   "scripts": {
     "dev": "node tools/scripts/dev.js",
+    "dev:mobile": "node tools/scripts/dev.js --mobile",
     "build": "pnpm -r build",
     "typecheck": "pnpm -r typecheck",
     "test": "pnpm -r test",

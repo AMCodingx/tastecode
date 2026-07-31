@@ -35,6 +35,18 @@ export const emptyThread: ThreadState = {
  * trip feels broken — but it has to be reconciled when the real item arrives.
  */
 const OPTIMISTIC_PREFIX = 'local:'
+let localIdSequence = 0
+
+/**
+ * randomUUID is restricted to secure contexts, while the mobile development
+ * client is served over plain HTTP on a private Tailscale address. These ids
+ * only identify renderer-local rows, so a timestamp and counter are a safe
+ * fallback when the browser deliberately withholds that API.
+ */
+function localId(prefix = ''): string {
+  const uuid = globalThis.crypto?.randomUUID?.()
+  return `${prefix}${uuid ?? `${Date.now().toString(36)}-${localIdSequence++}`}`
+}
 
 export function reduce(state: ThreadState, event: DomainEvent): ThreadState {
   switch (event.type) {
@@ -108,7 +120,7 @@ export function reduce(state: ThreadState, event: DomainEvent): ThreadState {
         items: [
           ...state.items,
           {
-            id: crypto.randomUUID(),
+            id: localId('error:'),
             turnId: '',
             type: 'error',
             status: 'completed',
@@ -130,7 +142,7 @@ export function appendUserMessage(state: ThreadState, text: string): ThreadState
     items: [
       ...state.items,
       {
-        id: `${OPTIMISTIC_PREFIX}${crypto.randomUUID()}`,
+        id: localId(OPTIMISTIC_PREFIX),
         turnId: '',
         type: 'message',
         role: 'user',

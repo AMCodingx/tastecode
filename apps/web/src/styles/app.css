@@ -3004,6 +3004,72 @@
   white-space: nowrap;
 }
 
+@media (max-width: 700px) {
+  .shell__body {
+    grid-template-columns: 0 minmax(0, 1fr);
+  }
+
+  .rail-slot {
+    z-index: 20;
+  }
+
+  .rail-slot .rail {
+    position: absolute;
+    inset: 0 auto 0 0;
+    width: min(86vw, 320px);
+    box-shadow: 18px 0 36px rgba(0, 0, 0, 0.38);
+  }
+
+  .rail-slot.is-collapsed .rail {
+    width: min(86vw, 320px);
+  }
+
+  .titlebar {
+    min-height: 44px;
+    padding-left: max(12px, env(safe-area-inset-left));
+    padding-right: max(12px, env(safe-area-inset-right));
+  }
+
+  .titlebar__toggle {
+    width: 34px;
+    height: 34px;
+  }
+
+  .shortcut {
+    display: none;
+  }
+
+  .stagehead {
+    padding: 6px 12px;
+  }
+
+  .stagehead__title {
+    display: none;
+  }
+
+  .thread__col {
+    padding: 0 14px;
+  }
+
+  .composer {
+    padding: 4px 10px max(8px, env(safe-area-inset-bottom));
+  }
+
+  .composer textarea {
+    font-size: 16px;
+  }
+
+  .sessrow .sess__actions,
+  .proj__head .dots {
+    opacity: 1;
+    pointer-events: auto;
+  }
+
+  .sheet {
+    padding: 12px;
+  }
+}
+
 /* ---------- onboarding ---------- */
 
 .onboard {
