@@ -5,7 +5,7 @@
  * and a .sh here would break one of us. See rules/code.md.
  */
 import { execFile, spawn } from 'node:child_process'
-import { randomBytes } from 'node:crypto'
+import { createHash, randomBytes } from 'node:crypto'
 import { fileURLToPath } from 'node:url'
 import { promisify } from 'node:util'
 import path from 'node:path'
@@ -17,7 +17,10 @@ const isWin = process.platform === 'win32'
 const mobile = process.argv.includes('--mobile')
 const children = []
 const execFileAsync = promisify(execFile)
+const launcherId = createHash('sha256').update(root).digest('hex')
+const launcherControlPort = 20_000 + (Number.parseInt(launcherId.slice(0, 4), 16) % 20_000)
 let shuttingDown = false
+let launcherControlServer
 
 function run(name, packageDir, args, env = {}) {
   // npm/pnpm shims are .cmd files on Windows, which must go through cmd.exe.
@@ -97,9 +100,81 @@ async function requireFreePorts(host) {
 
   console.error(
     `[dev] port${occupied.length === 1 ? '' : 's'} ${occupied.join(', ')} already in use. ` +
-      'Stop the existing Personal Harness dev process before starting another one.',
+      'Another application owns the port, so Personal Harness will not stop it.',
   )
   process.exit(1)
+}
+
+function requestLauncherShutdown() {
+  return new Promise((resolve, reject) => {
+    const socket = net.connect(launcherControlPort, '127.0.0.1')
+    let response = ''
+    let settled = false
+    const timeout = setTimeout(() => finish(new Error('shutdown request timed out')), 3_000)
+
+    const finish = (error) => {
+      if (settled) return
+      settled = true
+      clearTimeout(timeout)
+      socket.destroy()
+      if (error) reject(error)
+      else resolve()
+    }
+
+    socket.setEncoding('utf8')
+    socket.once('connect', () => socket.end(`stop:${launcherId}\n`))
+    socket.on('data', (chunk) => {
+      response += chunk
+    })
+    socket.once('end', () => {
+      if (response.trim() === `stopping:${launcherId}`) finish()
+      else finish(new Error('shutdown request was rejected'))
+    })
+    socket.once('error', finish)
+  })
+}
+
+function createLauncherControlServer() {
+  const server = net.createServer((socket) => {
+    socket.setEncoding('utf8')
+    let command = ''
+    socket.on('data', (chunk) => {
+      command += chunk
+      if (command.length > 1_000) socket.destroy()
+    })
+    socket.on('end', () => {
+      if (command.trim() !== `stop:${launcherId}`) {
+        socket.end('denied')
+        return
+      }
+      socket.end(`stopping:${launcherId}`, () => void shutdown(0))
+    })
+  })
+  return server
+}
+
+async function claimLauncher() {
+  while (true) {
+    const server = createLauncherControlServer()
+    try {
+      await new Promise((resolve, reject) => {
+        server.once('error', reject)
+        server.listen(launcherControlPort, '127.0.0.1', resolve)
+      })
+      launcherControlServer = server
+      return
+    } catch (error) {
+      if (error?.code !== 'EADDRINUSE') throw error
+    }
+
+    try {
+      await requestLauncherShutdown()
+    } catch (error) {
+      throw new Error(`launcher control port is owned by another application: ${error.message}`)
+    }
+    console.log('[dev] stopping previous Personal Harness dev process')
+    await new Promise((resolve) => setTimeout(resolve, 100))
+  }
 }
 
 async function tailscaleIPv4() {
@@ -126,14 +201,43 @@ async function tailscaleIPv4() {
   )
 }
 
-function shutdown(exitCode = 0) {
+function stopChild(child) {
+  if (!child.pid || child.exitCode !== null || child.signalCode !== null) return Promise.resolve()
+
+  return new Promise((resolve) => {
+    let settled = false
+    const finish = () => {
+      if (settled) return
+      settled = true
+      resolve()
+    }
+    child.once('exit', finish)
+
+    if (isWin) {
+      const killer = spawn('taskkill.exe', ['/pid', String(child.pid), '/T', '/F'], {
+        stdio: 'ignore',
+        windowsHide: true,
+      })
+      killer.once('error', finish)
+      killer.once('exit', finish)
+    } else {
+      child.kill()
+    }
+    setTimeout(finish, 5_000).unref()
+  })
+}
+
+async function shutdown(exitCode = 0) {
   if (shuttingDown) return
   shuttingDown = true
-  for (const child of children) child.kill()
+  launcherControlServer?.close()
+  await Promise.all(children.map(stopChild))
   process.exit(exitCode)
 }
-process.on('SIGINT', shutdown)
-process.on('SIGTERM', shutdown)
+process.on('SIGINT', () => void shutdown(0))
+process.on('SIGTERM', () => void shutdown(0))
+
+await claimLauncher()
 
 if (mobile) {
   const host = await tailscaleIPv4()
