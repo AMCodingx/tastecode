@@ -4397,7 +4397,9 @@
   font: inherit;
   font-size: var(--t-md);
   box-shadow: none;
-  transition: color var(--dur-fast) var(--ease-out);
+  transition:
+    background var(--dur-fast) var(--ease-out),
+    color var(--dur-fast) var(--ease-out);
 }
 
 .shelf-control--mode {
@@ -4406,6 +4408,13 @@
 }
 
 .shelf-control:active:not(:disabled) {
+  color: var(--text);
+}
+
+/* Scoped to the shelf so this outranks the flat .menutrigger:hover background,
+   and the plain workspace-mode button picks up the same treatment. */
+.composer__shelf .shelf-control:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--surface-3) 88%, transparent);
   color: var(--text);
 }
 
@@ -4962,10 +4971,10 @@
 .composer-voice-button {
   background: linear-gradient(
     180deg,
-    color-mix(in srgb, var(--surface-3) 58%, transparent),
-    color-mix(in srgb, var(--surface-2) 38%, transparent)
+    color-mix(in srgb, var(--surface-3) 72%, transparent),
+    color-mix(in srgb, var(--surface-2) 46%, transparent)
   );
-  border: 1px solid color-mix(in srgb, var(--line-strong) 70%, transparent);
+  border: 1px solid var(--line-strong);
   box-shadow:
     inset 0 1px color-mix(in srgb, white 9%, transparent),
     0 1px 1px color-mix(in srgb, black 18%, transparent);
@@ -4975,6 +4984,33 @@
     box-shadow var(--dur-fast) var(--ease-out),
     color var(--dur-fast) var(--ease-out),
     transform var(--dur-press) var(--ease-out);
+}
+
+/* Hover has to survive the generic .menutrigger:hover flattening the gradient,
+   hence the .tools prefix for specificity. */
+.tools
+  :is(
+    .composer__add,
+    .composer__permission,
+    .composer__design,
+    .menutrigger--model-selector,
+    .composer-voice-button
+  ):hover:not(:disabled) {
+  background: linear-gradient(
+    180deg,
+    color-mix(in srgb, var(--surface-3) 96%, transparent),
+    color-mix(in srgb, var(--surface-2) 68%, transparent)
+  );
+  border-color: color-mix(in srgb, var(--text-3) 55%, var(--line-strong));
+  box-shadow:
+    inset 0 1px color-mix(in srgb, white 12%, transparent),
+    0 1px 2px color-mix(in srgb, black 22%, transparent);
+}
+
+.tools
+  :is(.composer__add, .composer__permission):hover:not(:disabled)
+  :is(.tool:not(.tool--danger), .tool:not(.tool--danger) svg) {
+  color: var(--text);
 }
 
 .composer__add {
