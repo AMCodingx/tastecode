@@ -50,6 +50,12 @@ export function CommandPalette(props: {
   useEffect(() => {
     const command = commands[selected]
     if (!command) return
+    // Scrolling the first item into view would clip its group heading, which
+    // reads as an already-scrolled list the moment the palette opens.
+    if (selected === 0) {
+      results.current?.scrollTo?.({ top: 0 })
+      return
+    }
     results.current
       ?.querySelector<HTMLElement>(`#command-${CSS.escape(command.id)}`)
       ?.scrollIntoView?.({ block: 'nearest' })
