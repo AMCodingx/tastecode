@@ -547,14 +547,25 @@ export function startServer(
       }
 
       case 'usage.summary': {
-        const p = params as { threadId: string }
-        const thread = store.thread(p.threadId)
-        if (!thread) throw new Error('thread not found')
+        const p = params as { threadId: string } | { provider: ProviderId }
+        const thread = 'threadId' in p ? store.thread(p.threadId) : undefined
+        if ('threadId' in p && !thread) throw new Error('thread not found')
+        const provider = thread?.provider ?? ('provider' in p ? p.provider : undefined)
+        if (!provider) throw new Error('provider not found')
         const startOfToday = new Date()
         startOfToday.setHours(0, 0, 0, 0)
+        const empty = {
+          inputTokens: 0,
+          cachedInputTokens: 0,
+          outputTokens: 0,
+          reasoningTokens: 0,
+          totalTokens: 0,
+        }
         return {
-          ...store.usageSummary(p.threadId, startOfToday.getTime()),
-          limits: await orchestrator.usageLimits(thread.provider),
+          ...('threadId' in p
+            ? store.usageSummary(p.threadId, startOfToday.getTime())
+            : { session: empty, today: empty }),
+          limits: await orchestrator.usageLimits(provider),
         }
       }
 

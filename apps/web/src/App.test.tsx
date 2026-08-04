@@ -379,7 +379,7 @@ describe('new chats', () => {
     expect(screen.getByText('Working')).toBeTruthy()
     expect(screen.getByRole('button', { name: 'Stop' })).toBeTruthy()
     expect(document.querySelector('.stage__body.is-new-session')).toBeNull()
-    expect(transport.request).not.toHaveBeenCalledWith('usage.summary', expect.anything())
+    expect(transport.request).toHaveBeenCalledWith('usage.summary', { provider: 'codex' })
     const threadElement = screen.getByTestId('thread')
 
     fireEvent.change(composer, { target: { value: 'Then do this too' } })
@@ -395,7 +395,7 @@ describe('new chats', () => {
       ).toHaveLength(2)
       expect(
         transport.request.mock.calls.filter(([method]) => method === 'usage.summary'),
-      ).toHaveLength(1)
+      ).toHaveLength(2)
     })
     expect(screen.getByTestId('thread')).toBe(threadElement)
 
@@ -407,7 +407,7 @@ describe('new chats', () => {
     await waitFor(() =>
       expect(
         transport.request.mock.calls.filter(([method]) => method === 'usage.summary'),
-      ).toHaveLength(2),
+      ).toHaveLength(3),
     )
   })
 

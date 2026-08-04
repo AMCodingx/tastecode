@@ -261,6 +261,11 @@ describe('protocol envelopes', () => {
   })
 
   it('keeps unreported usage cost absent', () => {
+    expect(methods['usage.summary'].params.parse({ provider: 'codex' })).toEqual({
+      provider: 'codex',
+    })
+    expect(() => methods['usage.summary'].params.parse({})).toThrow()
+
     const result = methods['usage.summary'].result.parse({
       session: {
         inputTokens: 10,

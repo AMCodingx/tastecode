@@ -658,14 +658,16 @@ export function App() {
     void refreshCheckpoints(activeId).catch(() => setCheckpoints([]))
   }, [activeId, thread.running, refreshCheckpoints])
 
+  const usageThreadId = activeId && !activeId.startsWith('pending:') ? activeId : undefined
+
   useEffect(() => {
-    if (!activeId || activeId.startsWith('pending:')) {
+    if (!provider) {
       setUsageSummary(undefined)
       return
     }
     let cancelled = false
     void transport
-      .request('usage.summary', { threadId: activeId })
+      .request('usage.summary', usageThreadId ? { threadId: usageThreadId } : { provider })
       .then((summary) => {
         if (!cancelled) setUsageSummary(summary)
       })
@@ -675,7 +677,7 @@ export function App() {
     return () => {
       cancelled = true
     }
-  }, [transport, activeId])
+  }, [transport, usageThreadId, provider])
 
   // First load, plus the one-time handover from localStorage. Anything found
   // there is given to the server and the key removed, so it happens once.
@@ -1677,6 +1679,7 @@ export function App() {
           activeSessionId={activeId}
           providerName={providerName(provider, acpAgentName)}
           usageSummary={usageSummary}
+          hasActiveUsageSession={Boolean(activeId && !activeId.startsWith('pending:'))}
           usageSources={[...new Set(models.map((choice) => choice.sourceName))]}
           mode={sidebarSettings.mode}
           onModeChange={(mode) => updateSidebarSettings({ mode })}
