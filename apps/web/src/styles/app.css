@@ -184,6 +184,11 @@
     transform var(--dur-press) var(--ease-out);
 }
 
+.rail__mode-toggle:hover {
+  border-color: color-mix(in srgb, var(--text-3) 35%, var(--chrome-border));
+  color: var(--text-2);
+}
+
 .rail__mode-toggle[aria-pressed='true'] {
   background: var(--chrome-raised);
   box-shadow: var(--chrome-shadow);
@@ -425,10 +430,28 @@
   background: var(--chrome-raised);
   border: 1px solid var(--chrome-border);
   box-shadow: var(--chrome-shadow);
+  color: var(--text-2);
+  transition:
+    background var(--dur-fast) var(--ease-out),
+    border-color var(--dur-fast) var(--ease-out),
+    color var(--dur-fast) var(--ease-out),
+    box-shadow var(--dur-fast) var(--ease-out),
+    transform var(--dur-press) var(--ease-out);
 }
 
 .rail__foot .menutrigger:hover:not(:disabled) {
-  background: var(--chrome-raised);
+  background: var(--chrome-raised-hover);
+  border-color: color-mix(in srgb, var(--text-3) 40%, var(--chrome-border));
+  color: var(--text);
+}
+
+.rail__foot .menutrigger:hover:not(:disabled) :is(.usage-limits__summary svg, .chip svg) {
+  color: var(--text-2);
+}
+
+.rail__foot .menutrigger:hover:not(:disabled) .account__avatar {
+  background: color-mix(in srgb, var(--text-3) 24%, var(--surface-3));
+  color: var(--text);
 }
 
 .rail__foot .menutrigger:active {
