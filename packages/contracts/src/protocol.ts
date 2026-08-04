@@ -795,7 +795,7 @@ export const methods = {
   },
   /** Persistent token totals, with money only when the provider reports it. */
   'usage.summary': {
-    params: z.object({ threadId: z.string() }),
+    params: z.union([z.object({ threadId: z.string() }), z.object({ provider: ProviderIdSchema })]),
     result: z.object({
       session: UsageSchema.omit({ contextWindow: true }),
       today: UsageSchema.omit({ contextWindow: true }),

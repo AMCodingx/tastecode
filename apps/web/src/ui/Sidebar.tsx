@@ -62,6 +62,7 @@ export function Sidebar(props: {
   account: Account | undefined
   providerName: string
   usageSummary?: ResultOf<'usage.summary'> | undefined
+  hasActiveUsageSession?: boolean | undefined
   usageSources?: string[] | undefined
   mode?: 'classic' | 'inbox'
   onModeChange?: ((mode: 'classic' | 'inbox') => void) | undefined
@@ -254,6 +255,7 @@ export function Sidebar(props: {
           <UsageLimits
             providerName={props.providerName}
             summary={props.usageSummary}
+            showTotals={props.hasActiveUsageSession ?? Boolean(props.activeSessionId)}
             sources={props.usageSources ?? []}
           />
           <Menu
@@ -299,6 +301,7 @@ export function Sidebar(props: {
 function UsageLimits(props: {
   providerName: string
   summary: ResultOf<'usage.summary'> | undefined
+  showTotals: boolean
   sources: string[]
 }) {
   const primary = props.summary?.limits[0]
@@ -326,7 +329,7 @@ function UsageLimits(props: {
             <strong>{props.providerName}</strong>
             <span>Provider-reported usage</span>
           </div>
-          {props.summary ? (
+          {props.summary && props.showTotals ? (
             <div className="usage-limits__totals">
               <span>{compactTokens(props.summary.session.totalTokens)} this chat</span>
               <span>{compactTokens(props.summary.today.totalTokens)} today</span>

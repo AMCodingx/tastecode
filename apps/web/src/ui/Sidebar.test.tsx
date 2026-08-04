@@ -30,6 +30,7 @@ describe('Sidebar chat actions', () => {
         activeSessionId={undefined}
         account={{ signedIn: true, email: 'private@example.com', plan: 'Pro' }}
         providerName="Codex"
+        hasActiveUsageSession={false}
         usageSummary={{
           session: {
             inputTokens: 800,
@@ -89,6 +90,7 @@ describe('Sidebar chat actions', () => {
     expect(screen.getByRole('dialog', { name: 'Provider usage limits' }).textContent).toContain(
       '13% left',
     )
+    expect(screen.queryByText('1k tokens this chat')).toBeNull()
     expect(screen.getByText('Gemini CLI').parentElement?.textContent).toContain('Not reported')
   })
 
