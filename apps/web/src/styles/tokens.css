@@ -52,6 +52,9 @@
   --chrome-raised: linear-gradient(180deg, #242424, #1b1b1b);
   --chrome-raised-hover: linear-gradient(180deg, #2c2c2c, #222222);
   --chrome-recessed: #101010;
+  /* Chevron for restyled native selects. A data URI cannot read currentColor,
+     so each theme carries its own text-3-coloured copy. */
+  --select-chevron: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%236f6f6f' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E");
   --chrome-border: #303030;
   --chrome-highlight: rgb(255 255 255 / 5%);
   --chrome-shadow: inset 0 1px var(--chrome-highlight), 0 1px 2px rgb(0 0 0 / 28%);
@@ -220,6 +223,7 @@
   --chrome-raised: linear-gradient(180deg, #ffffff, #f1f1f2);
   --chrome-raised-hover: linear-gradient(180deg, #ffffff, #e9e9ec);
   --chrome-recessed: #eeeeef;
+  --select-chevron: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%2371717a' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E");
   --chrome-border: #d9d9dc;
   --chrome-highlight: rgb(255 255 255 / 85%);
   --chrome-shadow: inset 0 1px var(--chrome-highlight), 0 1px 2px rgb(24 24 27 / 12%);

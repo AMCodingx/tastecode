@@ -1850,6 +1850,7 @@
   max-width: 180px;
   padding: 4px 24px 4px 7px;
   background: var(--chrome-raised);
+  background-image: var(--select-chevron), var(--chrome-raised);
   border: 1px solid var(--chrome-border);
   border-radius: var(--r-sm);
   color: var(--text-2);
@@ -2024,14 +2025,39 @@
 
 .inbox__scope select {
   min-width: 0;
-  padding: 4px 7px;
+  padding: 4px 24px 4px 7px;
   background: var(--chrome-recessed);
+  background-image: var(--select-chevron);
   border: 1px solid var(--chrome-border);
   border-radius: var(--r-md);
   color: var(--text-2);
   font: inherit;
   font-size: var(--t-sm);
   box-shadow: var(--chrome-inset-shadow);
+}
+
+/* Native selects keep the OS dropdown; only the closed control is ours. */
+:is(.session-search__filters, .inbox__scope) select {
+  appearance: none;
+  background-repeat: no-repeat;
+  background-position:
+    right 6px center,
+    center;
+  background-size: 14px, auto;
+  cursor: pointer;
+  transition:
+    border-color var(--dur-fast) var(--ease-out),
+    color var(--dur-fast) var(--ease-out);
+}
+
+:is(.session-search__filters, .inbox__scope) select:hover {
+  border-color: color-mix(in srgb, var(--text-3) 40%, var(--chrome-border));
+  color: var(--text);
+}
+
+:is(.session-search__filters, .inbox__scope) select:focus-visible {
+  border-color: var(--text-3);
+  outline: none;
 }
 
 .inbox__heading {
