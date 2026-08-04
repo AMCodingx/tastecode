@@ -2047,6 +2047,9 @@
   background: var(--inbox-card-bg);
   border: 1px solid transparent;
   border-radius: var(--r-md);
+  transition:
+    border-color var(--dur-fast) var(--ease-out),
+    box-shadow var(--dur-fast) var(--ease-out);
 }
 
 .inbox-card:hover {
@@ -2679,6 +2682,7 @@
   align-items: center;
   gap: 5px;
   color: var(--text-3);
+  transition: color var(--dur-fast) var(--ease-out);
 }
 
 .terminal-trigger.is-open {
@@ -2897,10 +2901,14 @@
   padding: 5px 13px;
   box-shadow: var(--shadow-flyout);
   animation: menu-in var(--dur-fast) var(--ease-out);
+  transition:
+    background var(--dur-fast) var(--ease-out),
+    border-color var(--dur-fast) var(--ease-out);
 }
 
 .jump:hover {
   background: var(--surface-3);
+  border-color: color-mix(in srgb, var(--text-3) 35%, var(--line-strong));
 }
 
 .aux__code {
@@ -2963,6 +2971,12 @@
   letter-spacing: -0.012em;
   list-style: none;
   user-select: none;
+  transition: color var(--dur-fast) var(--ease-out);
+}
+
+/* Only the summaries that actually open respond to hover. */
+.activity:not(.activity--empty, .activity--working) > .activity__summary:hover {
+  color: var(--text-2);
 }
 
 .activity__summary::-webkit-details-marker {
@@ -3361,6 +3375,7 @@
   color: var(--text-3);
   font-size: var(--t-sm);
   padding: 1px 0;
+  transition: color var(--dur-fast) var(--ease-out);
 }
 
 .aux__row::-webkit-details-marker {
