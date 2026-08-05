@@ -50,6 +50,7 @@
   --shadow-modal: 0 20px 56px -24px rgb(0 0 0 / 52%);
   --shadow-rail: 12px 0 30px -18px rgb(0 0 0 / 40%);
   --chrome-raised: linear-gradient(180deg, #242424, #1b1b1b);
+  --chrome-raised-hover: linear-gradient(180deg, #2c2c2c, #222222);
   --chrome-recessed: #101010;
   --chrome-border: #303030;
   --chrome-highlight: rgb(255 255 255 / 5%);
@@ -217,6 +218,7 @@
   --shadow-modal: 0 20px 48px -28px rgb(24 24 27 / 22%);
   --shadow-rail: 12px 0 24px -18px rgb(24 24 27 / 18%);
   --chrome-raised: linear-gradient(180deg, #ffffff, #f1f1f2);
+  --chrome-raised-hover: linear-gradient(180deg, #ffffff, #e9e9ec);
   --chrome-recessed: #eeeeef;
   --chrome-border: #d9d9dc;
   --chrome-highlight: rgb(255 255 255 / 85%);
