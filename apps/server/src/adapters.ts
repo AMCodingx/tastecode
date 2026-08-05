@@ -237,14 +237,33 @@ function openCodeRuntime(onLog: (line: string) => void): ProviderRuntime {
       }
     },
     async listModels() {
-      const adapter = new OpenCodeAdapter()
-      try {
-        return await adapter.listModels()
-      } finally {
-        adapter.dispose()
-      }
+      return listOpenCodeModels()
     },
   }
+}
+
+/**
+ * Single-flight: every OpenCode model listing spawns a real `opencode serve`
+ * process for its lifetime, so concurrent or rapid-fire requests must share
+ * one run instead of forking one process each. A renderer refresh loop once
+ * held ~170 of these processes alive at the same time — the server, not the
+ * client, is where that has to be impossible.
+ */
+let openCodeModelListing: Promise<Model[]> | undefined
+
+function listOpenCodeModels(): Promise<Model[]> {
+  if (openCodeModelListing) return openCodeModelListing
+  openCodeModelListing = (async () => {
+    const adapter = new OpenCodeAdapter()
+    try {
+      return await adapter.listModels()
+    } finally {
+      adapter.dispose()
+    }
+  })().finally(() => {
+    openCodeModelListing = undefined
+  })
+  return openCodeModelListing
 }
 
 function codexRuntime(onLog: (line: string) => void): ProviderRuntime {
