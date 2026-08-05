@@ -335,7 +335,12 @@ export function App() {
             : updated
         })
         if (event.type === 'turn.completed' && threadId === activeIdRef.current) {
-          void transport.request('thread.history', { threadId }).catch(() => undefined)
+          // Only here for the server's mark-as-read side effect — the live event
+          // stream already delivered the turn. afterSeq skips serializing,
+          // shipping, and parsing the full log just to throw it away.
+          void transport
+            .request('thread.history', { threadId, afterSeq: Number.MAX_SAFE_INTEGER })
+            .catch(() => undefined)
           void transport
             .request('usage.summary', { threadId })
             .then((summary) => {
@@ -1231,7 +1236,11 @@ export function App() {
       if (cached) {
         setThread(cached)
         setProjects((current) => updateSession(current, id, markSessionRead))
-        void transport.request('thread.history', { threadId: id }).catch(() => undefined)
+        // Mark-as-read only; the cache is kept current by the live event
+        // stream, so don't ask the server to replay the whole log.
+        void transport
+          .request('thread.history', { threadId: id, afterSeq: Number.MAX_SAFE_INTEGER })
+          .catch(() => undefined)
         return
       }
 
