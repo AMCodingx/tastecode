@@ -314,11 +314,34 @@ export function App() {
   sidebarSettingsRef.current = sidebarSettings
 
   useEffect(() => {
+    // Deltas arrive far faster than frames are drawn. Committing React on
+    // every chunk multiplies the whole tree's render cost by the token rate,
+    // so streaming deltas coalesce onto one commit per animation frame
+    // (ARCHITECTURE.md, "Batch deltas on rAF"). threadStates stays current
+    // synchronously — only the setThread commit is deferred. Anything that
+    // is not a delta flushes immediately so approvals, turn boundaries, and
+    // completed items never wait on a frame.
+    let liveFlush: number | undefined
+    const flushLive = () => {
+      liveFlush = undefined
+      const id = activeIdRef.current
+      if (id) setThread(threadStates.current.get(id) ?? emptyThread)
+    }
     const offEvents = transport.on('thread.event', ({ threadId, event }) => {
       const next = reduce(threadStates.current.get(threadId) ?? emptyThread, event)
       threadStates.current.set(threadId, next)
 
-      if (threadId === activeIdRef.current) setThread(next)
+      if (threadId === activeIdRef.current) {
+        if (event.type === 'item.delta') {
+          liveFlush ??= requestAnimationFrame(flushLive)
+        } else {
+          if (liveFlush !== undefined) {
+            cancelAnimationFrame(liveFlush)
+            liveFlush = undefined
+          }
+          setThread(next)
+        }
+      }
       if (threadId === activeIdRef.current && endsDesignBriefing(event)) setDesignMode(false)
 
       if (affectsSessionStatus(event)) {
@@ -364,6 +387,7 @@ export function App() {
     const offSidebarSettings = transport.on('sidebar.settings', setSidebarSettings)
     transport.connect()
     return () => {
+      if (liveFlush !== undefined) cancelAnimationFrame(liveFlush)
       offEvents()
       offQueue()
       offLifecycle()
