@@ -257,24 +257,27 @@
   --composer-orb: #1d1d1f;
   --composer-on-orb: #ffffff;
   --composer-stop: #1d1d1f;
-  --composer-control-bg: var(--bg-prompt);
-  --composer-control-bg-hover: color-mix(in srgb, var(--surface) 28%, var(--bg-prompt));
-  --composer-control-border: color-mix(in srgb, var(--line) 76%, var(--bg-prompt));
-  --composer-control-border-hover: var(--line);
-  --composer-control-shadow: none;
-  --composer-control-shadow-hover: none;
-  --composer-control-shadow-active: none;
-  --model-picker-bg: var(--menu-bg);
-  --model-picker-controls-bg: color-mix(in srgb, var(--surface) 38%, var(--menu-bg));
+  --composer-control-bg: linear-gradient(180deg, #ffffff 0%, #fafafa 100%);
+  --composer-control-bg-hover: linear-gradient(180deg, #ffffff 0%, #f6f6f7 100%);
+  --composer-control-border: #e5e5e8;
+  --composer-control-border-hover: #dcdce0;
+  --composer-control-shadow:
+    inset 0 1px rgb(255 255 255 / 95%), 0 1px 2px rgb(24 24 27 / 8%),
+    0 4px 10px -8px rgb(24 24 27 / 18%);
+  --composer-control-shadow-hover: inset 0 1px #ffffff, 0 2px 5px -2px rgb(24 24 27 / 12%);
+  --composer-control-shadow-active: inset 0 1px 2px rgb(24 24 27 / 10%);
+  --model-picker-bg: linear-gradient(180deg, #ffffff 0%, #fafafa 100%);
+  --model-picker-controls-bg: linear-gradient(180deg, #fafafa 0%, #f6f6f7 100%);
   --model-picker-title-bg: transparent;
-  --model-picker-selected-bg: color-mix(in srgb, var(--surface) 84%, var(--menu-bg));
-  --model-picker-selected-shadow: inset 0 0 0 1px var(--line);
-  --model-picker-hover-bg: color-mix(in srgb, var(--surface) 58%, var(--menu-bg));
-  --model-picker-fast-bg: var(--bg-prompt);
-  --model-picker-fast-border: var(--line);
-  --model-picker-fast-shadow: none;
-  --model-picker-fast-on-bg: color-mix(in srgb, var(--surface-2) 54%, var(--menu-bg));
-  --model-picker-fast-on-border: var(--line-strong);
+  --model-picker-selected-bg: linear-gradient(180deg, #ffffff 0%, #f3f3f5 100%);
+  --model-picker-selected-shadow:
+    inset 0 0 0 1px #e3e3e6, inset 0 1px #ffffff, 0 1px 2px rgb(24 24 27 / 7%);
+  --model-picker-hover-bg: linear-gradient(180deg, #ffffff 0%, #f6f6f7 100%);
+  --model-picker-fast-bg: linear-gradient(180deg, #ffffff 0%, #f5f5f6 100%);
+  --model-picker-fast-border: #e1e1e4;
+  --model-picker-fast-shadow: inset 0 1px #ffffff, 0 1px 2px rgb(24 24 27 / 8%);
+  --model-picker-fast-on-bg: linear-gradient(180deg, #f5f5f6 0%, #e9e9ec 100%);
+  --model-picker-fast-on-border: #d7d7db;
   --shadow-flyout: 0 8px 24px -16px rgb(24 24 27 / 20%);
   --shadow-modal: 0 20px 48px -28px rgb(24 24 27 / 22%);
   --shadow-rail: 12px 0 24px -18px rgb(24 24 27 / 18%);
@@ -298,10 +301,10 @@
   --error: #be123c;
   --success: #16803c;
 
-  --effort-track: #ffffff;
-  --effort-track-shadow: inset 0 0 0 1px #e1e1e4;
-  --effort-fill: #f2f2f4;
-  --effort-fill-shadow: none;
+  --effort-track: linear-gradient(180deg, #f3f3f5 0%, #ffffff 100%);
+  --effort-track-shadow: inset 0 1px 2px rgb(24 24 27 / 7%), inset 0 0 0 1px #dedee2;
+  --effort-fill: linear-gradient(180deg, #fafafa 0%, #ececef 100%);
+  --effort-fill-shadow: inset 0 1px #ffffff, 0 1px 2px rgb(24 24 27 / 7%);
   --effort-value: #27272a;
   --dither-texture-filter: invert(1);
   --dither-texture-opacity: 0.26;
