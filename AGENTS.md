@@ -25,8 +25,11 @@ controls, a real terminal, MCP and Agent Skills. M4 (the design agent) is next. 
 - **Never commit a secret**, including in fixtures and examples.
 - **Never write a `.sh` script.** Node/TypeScript only — we are a Windows + macOS team.
 - **Never assume POSIX paths.** Use `node:path`.
-- **Never push to `main`.** Branch, PR, then explicit approval from the human responsible
-  for the work. Approval from the other human is optional.
+- **Never push to `main`.** Branch, PR, merge. An agent may **merge its own PR without
+  waiting** when the work is confidently finished: all four gates green locally, the flow
+  exercised against the running app, and nothing in the PR touches `packages/contracts`,
+  security, or another assignee's files. When any of that is in doubt, wait for the human
+  responsible for the work. Approval from the other human is always optional.
 - **Never mix a refactor with a behavior change** in one commit.
 - **Build shared features for every provider.** Contracts, persistence, orchestration and UI
   must still work when the user has only a direct API provider configured. A vendor CLI,
@@ -38,6 +41,12 @@ controls, a real terminal, MCP and Agent Skills. M4 (the design agent) is next. 
 
 ## How to work
 
+- **You are rarely alone in this repo.** Several agent sessions (and both humans) often work
+  in parallel. Expect `main` to move under you, expect open draft PRs and `scratch/`
+  worktrees you did not create, and expect the shared dev stack on ports 4311/5183 to be
+  restarted by someone else — a fresh `pnpm dev` deliberately replaces the running one.
+  Before starting: check open PRs and worktrees, rebase instead of assuming, and never
+  delete or modify a worktree, branch, or running process you did not create.
 - **Many small commits**, one logical change each. Push after every one — unpushed work is
   invisible to the other two.
 - **Every issue has exactly one directly responsible assignee from creation.** The
