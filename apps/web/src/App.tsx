@@ -1168,6 +1168,10 @@ export function App() {
     [transport],
   )
 
+  // Stable identity on purpose: this lands in effect dependency lists inside
+  // Settings, where a per-render identity would re-trigger them every render.
+  const refreshCatalog = useCallback(() => setCatalogRequest((request) => request + 1), [])
+
   const handleAccountChange = useCallback(
     (changedProvider: ProviderId, changedAccount: Account) => {
       if (changedProvider === provider) setAccount(changedAccount)
@@ -1565,7 +1569,7 @@ export function App() {
               return next
             })
           }}
-          onRefreshModels={() => setCatalogRequest((request) => request + 1)}
+          onRefreshModels={refreshCatalog}
           onDone={(id, agent) => {
             localStorage.setItem(SETUP_KEY, id)
             if (agent) {
@@ -1946,7 +1950,7 @@ export function App() {
               return next
             })
           }}
-          onConnectionsChanged={() => setCatalogRequest((request) => request + 1)}
+          onConnectionsChanged={refreshCatalog}
           projectCount={projects.length}
           sidebarSettings={sidebarSettings}
           onSidebarSettingsChange={updateSidebarSettings}

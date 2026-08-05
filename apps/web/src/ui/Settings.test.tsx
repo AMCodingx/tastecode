@@ -176,7 +176,7 @@ describe('provider settings', () => {
     } as unknown as Transport
     const onConnectionsChanged = vi.fn()
 
-    render(
+    const settingsFor = (onChanged: () => void) => (
       <Settings
         provider="codex"
         providerName="Codex"
@@ -202,7 +202,7 @@ describe('provider settings', () => {
         models={[]}
         hiddenModels={new Set()}
         onModelVisibilityChange={() => {}}
-        onConnectionsChanged={onConnectionsChanged}
+        onConnectionsChanged={onChanged}
         projectCount={0}
         sidebarSettings={{ mode: 'classic', autoSettleDays: 3 }}
         onSidebarSettingsChange={() => {}}
@@ -218,8 +218,9 @@ describe('provider settings', () => {
         onAccountChange={() => {}}
         onReset={() => {}}
         onClose={() => {}}
-      />,
+      />
     )
+    const view = render(settingsFor(onConnectionsChanged))
 
     fireEvent.click(screen.getByRole('button', { name: 'Install' }))
     await waitFor(() =>
@@ -238,6 +239,16 @@ describe('provider settings', () => {
 
     emit('terminal.exit', { terminalId: 'term-install-2', exitCode: 0 })
     await waitFor(() => expect(onConnectionsChanged).toHaveBeenCalled())
+
+    // The succeeded row persists until the provider list confirms the
+    // install, and parents may hand the callback a fresh identity on every
+    // render. That combination once produced an endless refresh loop that
+    // spawned an `opencode serve` process per iteration — the notification
+    // must stay one-shot no matter how often the row re-renders.
+    view.rerender(settingsFor(() => onConnectionsChanged()))
+    view.rerender(settingsFor(() => onConnectionsChanged()))
+    expect(screen.getByRole('button', { name: 'Installed' })).toBeTruthy()
+    expect(onConnectionsChanged).toHaveBeenCalledTimes(1)
   })
 
   it('signs in to provider-CLI-managed logins in an in-app terminal, not a docs page', async () => {
