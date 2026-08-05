@@ -46,6 +46,25 @@
   --composer-orb: #ededed;
   --composer-on-orb: #101010;
   --composer-stop: #2b2b2b;
+  --composer-control-bg: linear-gradient(
+    180deg,
+    color-mix(in srgb, var(--surface-3) 92%, transparent),
+    color-mix(in srgb, var(--surface-2) 52%, transparent)
+  );
+  --composer-control-bg-hover: linear-gradient(
+    180deg,
+    color-mix(in srgb, var(--surface-3) 100%, transparent),
+    color-mix(in srgb, var(--surface-2) 75%, transparent)
+  );
+  --composer-control-border: color-mix(in srgb, var(--text-3) 45%, var(--line-strong));
+  --composer-control-border-hover: color-mix(in srgb, var(--text-3) 70%, var(--line-strong));
+  --composer-control-shadow:
+    inset 0 1px color-mix(in srgb, white 14%, transparent),
+    0 1px 2px color-mix(in srgb, black 30%, transparent);
+  --composer-control-shadow-hover:
+    inset 0 1px color-mix(in srgb, white 18%, transparent),
+    0 2px 5px color-mix(in srgb, black 32%, transparent);
+  --composer-control-shadow-active: inset 0 1px 2px color-mix(in srgb, black 24%, transparent);
   --shadow-flyout: 0 8px 24px -14px rgb(0 0 0 / 46%);
   --shadow-modal: 0 20px 56px -24px rgb(0 0 0 / 52%);
   --shadow-rail: 12px 0 30px -18px rgb(0 0 0 / 40%);
@@ -217,6 +236,13 @@
   --composer-orb: #1d1d1f;
   --composer-on-orb: #ffffff;
   --composer-stop: #1d1d1f;
+  --composer-control-bg: color-mix(in srgb, var(--surface) 38%, var(--bg-prompt));
+  --composer-control-bg-hover: var(--control-hover);
+  --composer-control-border: var(--line);
+  --composer-control-border-hover: var(--line-strong);
+  --composer-control-shadow: none;
+  --composer-control-shadow-hover: none;
+  --composer-control-shadow-active: none;
   --shadow-flyout: 0 8px 24px -16px rgb(24 24 27 / 20%);
   --shadow-modal: 0 20px 48px -28px rgb(24 24 27 / 22%);
   --shadow-rail: 12px 0 24px -18px rgb(24 24 27 / 18%);
