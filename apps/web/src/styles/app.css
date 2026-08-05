@@ -2625,6 +2625,10 @@
 .stage__body.is-new-session {
   align-content: center;
   grid-template-rows: auto auto;
+  /* Optical centering: dead-center reads as sitting too low, so bias the
+     block upward. Padding, not transform — a transformed ancestor would
+     re-anchor the position:fixed flyout menus. */
+  padding-bottom: clamp(0px, 16vh, 148px);
 }
 
 .stage__body.has-terminal {
