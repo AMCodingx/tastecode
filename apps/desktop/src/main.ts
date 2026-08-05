@@ -54,6 +54,10 @@ function createWindow(): void {
       nodeIntegration: false,
       sandbox: true,
       webSecurity: true,
+      // Defaults to on, which loads Chromium's spellcheck service and
+      // downloads Hunspell dictionaries at first run — the only network
+      // traffic the app would ever do outside the renderer's own CSP.
+      spellcheck: false,
       preload: path.join(here, 'preload.cjs'),
     },
   })
