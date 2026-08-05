@@ -1,4 +1,11 @@
-import { useCallback, useEffect, useState, useSyncExternalStore, type ReactNode } from 'react'
+import {
+  useCallback,
+  useEffect,
+  useRef,
+  useState,
+  useSyncExternalStore,
+  type ReactNode,
+} from 'react'
 import type {
   Account,
   ModelConnection,
@@ -886,9 +893,22 @@ function InstallableRow(props: {
   const [startError, setStartError] = useState<string>()
   const { onInstalled } = props
 
+  // Latched: the succeeded state persists across renders (see the unmount
+  // cleanup below), and onInstalled may get a new identity from any parent
+  // render. Without the latch those two combine into an infinite refresh
+  // loop — notify → parent renders → new identity → effect refires — which
+  // once held ~170 concurrent `opencode serve` processes alive.
+  const notifiedInstall = useRef(false)
   useEffect(() => {
     if (install?.phase === 'failed') setShowTerminal(true)
-    if (install?.phase === 'succeeded') onInstalled()
+    if (install?.phase === 'succeeded') {
+      if (!notifiedInstall.current) {
+        notifiedInstall.current = true
+        onInstalled()
+      }
+    } else {
+      notifiedInstall.current = false
+    }
   }, [install?.phase, onInstalled])
 
   // The succeeded entry stays until this row leaves the page — re-detecting
