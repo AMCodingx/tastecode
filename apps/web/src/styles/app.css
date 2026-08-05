@@ -5028,17 +5028,25 @@
   border-radius: var(--r-md);
 }
 
-.composer__add,
-.composer__permission,
-.composer__design,
-.menutrigger--model-selector,
-.composer-voice-button {
+/* Scoped like the hover rule below: the later generic .menutrigger
+   { border: 0 } ties an unscoped selector on specificity and wins, which
+   zeroed this border out entirely — only the inset top highlight survived. */
+.tools
+  :is(
+    .composer__add,
+    .composer__permission,
+    .composer__design,
+    .menutrigger--model-selector,
+    .composer-voice-button
+  ) {
   background: linear-gradient(
     180deg,
     color-mix(in srgb, var(--surface-3) 72%, transparent),
     color-mix(in srgb, var(--surface-2) 46%, transparent)
   );
-  border: 1px solid var(--line-strong);
+  /* --line-strong alone sinks into --bg-prompt at 1px. The text-3 mix keeps
+     the resting border one clear step below the 55% hover mix. */
+  border: 1px solid color-mix(in srgb, var(--text-3) 30%, var(--line-strong));
   box-shadow:
     inset 0 1px color-mix(in srgb, white 9%, transparent),
     0 1px 1px color-mix(in srgb, black 18%, transparent);
@@ -5835,7 +5843,7 @@
     color-mix(in srgb, var(--surface-3) 72%, transparent),
     color-mix(in srgb, var(--surface-2) 46%, transparent)
   );
-  border: 1px solid var(--line-strong);
+  border: 1px solid color-mix(in srgb, var(--text-3) 30%, var(--line-strong));
   border-radius: 50%;
   box-shadow:
     inset 0 1px color-mix(in srgb, white 9%, transparent),
