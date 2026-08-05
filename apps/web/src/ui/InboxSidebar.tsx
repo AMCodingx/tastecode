@@ -494,7 +494,8 @@ function statusLabel(status: Session['status']): string {
 
 function providerName(session: Session): string {
   if (session.provider === 'claude-code') return 'Claude Code'
-  if (session.provider === 'acp') return session.agent ?? 'ACP'
+  // ACP is plumbing, not a name the user chose — never surface it.
+  if (session.provider === 'acp') return session.agent ?? 'Agent'
   return session.provider === 'codex' ? 'Codex' : session.provider
 }
 

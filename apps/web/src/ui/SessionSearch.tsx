@@ -3,12 +3,14 @@ import type { ProviderId, SessionSearchResult } from '@harness/contracts'
 import { Search, X } from 'lucide-react'
 import type { Transport } from '../transport.js'
 
+// 'acp' is one filter because the server stores those sessions under one
+// provider; the label names the agents the user knows, not our plumbing.
 const PROVIDERS: Array<{ id: ProviderId; label: string }> = [
   { id: 'codex', label: 'Codex' },
   { id: 'claude-code', label: 'Claude Code' },
-  { id: 'acp', label: 'ACP agents' },
   { id: 'cursor', label: 'Cursor' },
   { id: 'opencode', label: 'OpenCode' },
+  { id: 'acp', label: 'Gemini, Kimi & Qwen' },
 ]
 
 export function SessionSearch(props: {
