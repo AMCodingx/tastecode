@@ -670,6 +670,12 @@ export const methods = {
           verified: z.boolean(),
           install: z.string().optional(),
           setup: ProviderSetupSchema,
+          /**
+           * Why sign-in or use is impaired right now, in language we can show
+           * the user directly — e.g. a vendor discontinuing a login path.
+           * Mirrors `ProviderStatus.problem`.
+           */
+          problem: z.string().optional(),
         }),
       ),
     }),
