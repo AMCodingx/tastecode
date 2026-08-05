@@ -715,6 +715,22 @@ describe('protocol envelopes', () => {
         ],
       }).agents[0]?.setup,
     ).toEqual(setup)
+    // A vendor breaking a login path is the agent's story to tell; the field
+    // is optional so healthy agents carry nothing.
+    expect(
+      methods['acp.agents'].result.parse({
+        agents: [
+          {
+            id: 'gemini',
+            name: 'Gemini CLI',
+            installed: true,
+            verified: true,
+            setup,
+            problem: 'Google ended individual sign-in.',
+          },
+        ],
+      }).agents[0]?.problem,
+    ).toBe('Google ended individual sign-in.')
   })
 
   it('names an install target without carrying any command text', () => {
