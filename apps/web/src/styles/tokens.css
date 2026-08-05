@@ -65,6 +65,27 @@
     inset 0 1px color-mix(in srgb, white 18%, transparent),
     0 2px 5px color-mix(in srgb, black 32%, transparent);
   --composer-control-shadow-active: inset 0 1px 2px color-mix(in srgb, black 24%, transparent);
+  --model-picker-bg: var(--surface-2);
+  --model-picker-controls-bg: transparent;
+  --model-picker-title-bg: var(--surface-2);
+  --model-picker-selected-bg: linear-gradient(
+    180deg,
+    color-mix(in srgb, var(--surface-3) 92%, transparent),
+    color-mix(in srgb, var(--surface) 56%, transparent)
+  );
+  --model-picker-selected-shadow: inset 0 1px color-mix(in srgb, white 7%, transparent);
+  --model-picker-hover-bg: var(--surface-3);
+  --model-picker-fast-bg: linear-gradient(
+    180deg,
+    color-mix(in srgb, var(--surface-3) 78%, transparent),
+    color-mix(in srgb, var(--surface) 44%, transparent)
+  );
+  --model-picker-fast-border: color-mix(in srgb, var(--line-strong) 80%, transparent);
+  --model-picker-fast-shadow:
+    inset 0 1px color-mix(in srgb, white 9%, transparent),
+    0 1px 2px color-mix(in srgb, black 20%, transparent);
+  --model-picker-fast-on-bg: color-mix(in oklab, var(--light) 15%, var(--surface-3));
+  --model-picker-fast-on-border: color-mix(in oklab, var(--light) 28%, var(--line-strong));
   --shadow-flyout: 0 8px 24px -14px rgb(0 0 0 / 46%);
   --shadow-modal: 0 20px 56px -24px rgb(0 0 0 / 52%);
   --shadow-rail: 12px 0 30px -18px rgb(0 0 0 / 40%);
@@ -236,13 +257,24 @@
   --composer-orb: #1d1d1f;
   --composer-on-orb: #ffffff;
   --composer-stop: #1d1d1f;
-  --composer-control-bg: color-mix(in srgb, var(--surface) 38%, var(--bg-prompt));
-  --composer-control-bg-hover: var(--control-hover);
-  --composer-control-border: var(--line);
-  --composer-control-border-hover: var(--line-strong);
+  --composer-control-bg: var(--bg-prompt);
+  --composer-control-bg-hover: color-mix(in srgb, var(--surface) 28%, var(--bg-prompt));
+  --composer-control-border: color-mix(in srgb, var(--line) 76%, var(--bg-prompt));
+  --composer-control-border-hover: var(--line);
   --composer-control-shadow: none;
   --composer-control-shadow-hover: none;
   --composer-control-shadow-active: none;
+  --model-picker-bg: var(--menu-bg);
+  --model-picker-controls-bg: color-mix(in srgb, var(--surface) 38%, var(--menu-bg));
+  --model-picker-title-bg: transparent;
+  --model-picker-selected-bg: color-mix(in srgb, var(--surface) 84%, var(--menu-bg));
+  --model-picker-selected-shadow: inset 0 0 0 1px var(--line);
+  --model-picker-hover-bg: color-mix(in srgb, var(--surface) 58%, var(--menu-bg));
+  --model-picker-fast-bg: var(--bg-prompt);
+  --model-picker-fast-border: var(--line);
+  --model-picker-fast-shadow: none;
+  --model-picker-fast-on-bg: color-mix(in srgb, var(--surface-2) 54%, var(--menu-bg));
+  --model-picker-fast-on-border: var(--line-strong);
   --shadow-flyout: 0 8px 24px -16px rgb(24 24 27 / 20%);
   --shadow-modal: 0 20px 48px -28px rgb(24 24 27 / 22%);
   --shadow-rail: 12px 0 24px -18px rgb(24 24 27 / 18%);
@@ -266,9 +298,9 @@
   --error: #be123c;
   --success: #16803c;
 
-  --effort-track: #f3f3f5;
-  --effort-track-shadow: inset 0 0 0 1px #d4d4d8;
-  --effort-fill: #e4e4e7;
+  --effort-track: #ffffff;
+  --effort-track-shadow: inset 0 0 0 1px #e1e1e4;
+  --effort-fill: #f2f2f4;
   --effort-fill-shadow: none;
   --effort-value: #27272a;
   --dither-texture-filter: invert(1);

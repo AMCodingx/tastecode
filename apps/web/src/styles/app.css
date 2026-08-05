@@ -5412,7 +5412,7 @@
 
 .menutrigger--model-selector:hover:not(:disabled),
 .menutrigger--model-selector[aria-expanded='true'] {
-  border-color: color-mix(in srgb, var(--text-3) 58%, transparent);
+  border-color: var(--composer-control-border-hover);
 }
 
 .model-selector__trigger {
@@ -5473,7 +5473,7 @@
   width: min(330px, calc(100vw - 16px));
   padding: 0;
   overflow: hidden;
-  background: var(--surface-2);
+  background: var(--model-picker-bg);
   border-radius: var(--r-xl);
   translate: -28px 0;
 }
@@ -5490,16 +5490,10 @@
   height: 30px;
   flex: none;
   padding: 0;
-  background: linear-gradient(
-    180deg,
-    color-mix(in srgb, var(--surface-3) 78%, transparent),
-    color-mix(in srgb, var(--surface) 44%, transparent)
-  );
-  border: 1px solid color-mix(in srgb, var(--line-strong) 80%, transparent);
+  background: var(--model-picker-fast-bg);
+  border: 1px solid var(--model-picker-fast-border);
   border-radius: 50%;
-  box-shadow:
-    inset 0 1px color-mix(in srgb, white 9%, transparent),
-    0 1px 2px color-mix(in srgb, black 20%, transparent);
+  box-shadow: var(--model-picker-fast-shadow);
   color: var(--text-2);
   cursor: pointer;
   font: inherit;
@@ -5513,8 +5507,8 @@
 
 .model-selector__fast.is-on {
   color: var(--light);
-  background: color-mix(in oklab, var(--light) 15%, var(--surface-3));
-  border-color: color-mix(in oklab, var(--light) 28%, var(--line-strong));
+  background: var(--model-picker-fast-on-bg);
+  border-color: var(--model-picker-fast-on-border);
 }
 
 .model-selector__fast-icon {
@@ -5571,7 +5565,7 @@
 }
 
 .model-selector__fast:active {
-  box-shadow: inset 0 1px 2px color-mix(in srgb, black 26%, transparent);
+  box-shadow: var(--composer-control-shadow-active);
   transform: scale(0.97);
 }
 
@@ -5579,7 +5573,8 @@
   display: grid;
   gap: 6px;
   padding: 8px;
-  border-top: 1px solid var(--line-strong);
+  background: var(--model-picker-controls-bg);
+  border-top: 1px solid var(--menu-line);
 }
 
 .model-selector__controls-head {
@@ -5732,7 +5727,7 @@
   gap: 6px;
   margin: 0;
   padding: 5px 8px 3px;
-  background: var(--surface-2);
+  background: var(--model-picker-title-bg);
   color: var(--text-3);
   font-size: 10px;
   font-weight: 560;
@@ -5762,12 +5757,8 @@
 }
 
 .model-selector__model.is-selected {
-  background: linear-gradient(
-    180deg,
-    color-mix(in srgb, var(--surface-3) 92%, transparent),
-    color-mix(in srgb, var(--surface) 56%, transparent)
-  );
-  box-shadow: inset 0 1px color-mix(in srgb, white 7%, transparent);
+  background: var(--model-picker-selected-bg);
+  box-shadow: var(--model-picker-selected-shadow);
 }
 
 .model-selector__model-name {
@@ -5790,7 +5781,7 @@
 
   .model-selector__fast:hover,
   .model-selector__model:hover {
-    background: var(--surface-3);
+    background: var(--model-picker-hover-bg);
     color: var(--text);
   }
 }
