@@ -289,6 +289,7 @@ describe('provider settings', () => {
               installUrl: 'https://example.test/kimi',
               login: 'provider',
             },
+            problem: 'Vendor ended individual sign-in.',
           },
         ]}
         modelConnections={[]}
@@ -337,6 +338,9 @@ describe('provider settings', () => {
 
     const kimiRow = screen.getByText('Kimi CLI').closest<HTMLElement>('.settings__row')
     if (!kimiRow) throw new Error('Kimi row missing')
+    // An impaired agent leads with the vendor's story, not a generic note —
+    // but sign-in stays offered for the accounts that still work.
+    expect(within(kimiRow).getByText('Vendor ended individual sign-in.')).toBeTruthy()
     fireEvent.click(within(kimiRow).getByRole('button', { name: 'Sign in' }))
     await waitFor(() =>
       expect(transport.request).toHaveBeenCalledWith('providers.launch', {

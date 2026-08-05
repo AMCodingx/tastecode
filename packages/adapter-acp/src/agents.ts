@@ -27,6 +27,8 @@ export type AcpAgentSpec = {
   /** Shown when the binary is missing, so the user knows what to install. */
   install?: string
   setup: ProviderSetup
+  /** Why sign-in or use is impaired right now, in words shown to the user. */
+  problem?: string
   /** CLI flag used to select a model before the ACP handshake. */
   modelArg?: string
   /** ACP config option used to select a model after creating a session. */
@@ -47,6 +49,12 @@ export const ACP_AGENTS: AcpAgentSpec[] = [
       installCommand: 'npm install -g @google/gemini-cli',
       login: 'provider',
     },
+    // Google discontinued Gemini Code Assist for individuals on 2026-06-18;
+    // the CLI still runs, but personal-account OAuth is refused with a
+    // pointer to antigravity.google. Organization accounts and API keys
+    // keep working, so the agent stays offered rather than removed.
+    problem:
+      'Google ended individual sign-in (June 2026) — use an organization account or set GEMINI_API_KEY.',
   },
   {
     id: 'kimi',

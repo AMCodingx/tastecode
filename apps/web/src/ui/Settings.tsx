@@ -505,7 +505,7 @@ function ProviderSettings(props: {
           <CliSignInRow
             key={agent.id}
             title={agent.name}
-            idleNote="Installed · sign-in is managed by the provider CLI."
+            idleNote={agent.problem ?? 'Installed · sign-in is managed by the provider CLI.'}
             icon={<ProviderIcon mark={agentMark(agent.id)} size={17} />}
             target={{ provider: 'acp', agent: agent.id }}
             transport={props.transport}
