@@ -5031,11 +5031,20 @@
   display: block;
   width: 100%;
   border-radius: var(--r-2xl);
+  --beam-stroke-opacity: var(--composer-design-beam-stroke-strength);
+  --beam-inner-opacity: var(--composer-design-beam-inner-strength);
+  --beam-bloom-opacity: var(--composer-design-beam-bloom-strength);
 }
 
 .composer__design-beam[data-active]::after,
 .composer__design-beam[data-active] [data-beam-bloom] {
   padding: 2px !important;
+}
+
+:root[data-theme='light']
+  .composer__design-beam:is([data-active], [data-fading])
+  .composer__prompt {
+  border-color: var(--composer-design-prompt-border);
 }
 
 .composer__design-button-beam {
