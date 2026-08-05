@@ -65,6 +65,9 @@
     inset 0 1px color-mix(in srgb, white 18%, transparent),
     0 2px 5px color-mix(in srgb, black 32%, transparent);
   --composer-control-shadow-active: inset 0 1px 2px color-mix(in srgb, black 24%, transparent);
+  --composer-design-active-bg: var(--surface-3);
+  --composer-design-border-hover: var(--composer-control-border-hover);
+  --composer-design-border-active: var(--composer-control-border-hover);
   --model-picker-bg: var(--surface-2);
   --model-picker-controls-bg: transparent;
   --model-picker-title-bg: var(--surface-2);
@@ -266,6 +269,9 @@
     0 4px 10px -8px rgb(24 24 27 / 18%);
   --composer-control-shadow-hover: inset 0 1px #ffffff, 0 2px 5px -2px rgb(24 24 27 / 12%);
   --composer-control-shadow-active: inset 0 1px 2px rgb(24 24 27 / 10%);
+  --composer-design-active-bg: var(--composer-control-bg);
+  --composer-design-border-hover: #c7c7cd;
+  --composer-design-border-active: #b9bac2;
   --model-picker-bg: linear-gradient(180deg, #ffffff 0%, #fafafa 100%);
   --model-picker-controls-bg: linear-gradient(180deg, #fafafa 0%, #f6f6f7 100%);
   --model-picker-title-bg: transparent;

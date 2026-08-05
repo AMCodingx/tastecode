@@ -5107,9 +5107,13 @@
   transform: scale(0.97);
 }
 
-.composer__design.is-active,
-.composer__design.is-active svg {
-  background: var(--surface-3);
+.tools .composer__design.is-active {
+  background: var(--composer-design-active-bg);
+  border-color: var(--composer-design-border-active);
+  color: var(--text);
+}
+
+.tools .composer__design.is-active svg {
   color: var(--text);
 }
 
@@ -5871,6 +5875,15 @@
     background: var(--composer-control-bg-hover);
     border-color: var(--composer-control-border-hover);
     box-shadow: var(--composer-control-shadow-hover);
+  }
+
+  .tools .composer__design:hover:not(:disabled) {
+    border-color: var(--composer-design-border-hover);
+  }
+
+  .tools .composer__design.is-active:hover:not(:disabled) {
+    background: var(--composer-design-active-bg);
+    border-color: var(--composer-design-border-active);
   }
 
   .tools
