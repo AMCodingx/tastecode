@@ -220,6 +220,11 @@ export class Store {
     this.#db = new DatabaseSync(location)
     // Without WAL a reader blocks a writer, and we do both on every turn.
     this.#db.exec('PRAGMA journal_mode = WAL')
+    // FULL fsyncs the WAL on every commit — and append() commits per streamed
+    // delta chunk. NORMAL only syncs at checkpoint; with WAL a crash can lose
+    // the tail of the log but cannot corrupt the database, which is the right
+    // trade for a local event log rebuilt from the agent on resume.
+    this.#db.exec('PRAGMA synchronous = NORMAL')
     this.#db.exec('PRAGMA foreign_keys = ON')
     this.#db.exec(SCHEMA)
     this.#migrate()
@@ -675,11 +680,16 @@ export class Store {
     const thread = this.thread(threadId)
     if (!thread) return { session: emptyUsage(), today: emptyUsage() }
 
+    // The LIKE prefilter keeps SQLite from handing us every delta chunk ever
+    // streamed just to find the rare usage rows; the type check below still
+    // decides for real. Substring match, so key order in the payload is
+    // irrelevant and a false positive costs one JSON.parse, not correctness.
     const rows = this.#db
       .prepare(
         `SELECT events.thread_id, events.at, events.payload
          FROM events JOIN threads ON threads.id = events.thread_id
-         WHERE threads.provider = ? ORDER BY events.thread_id, events.seq`,
+         WHERE threads.provider = ? AND events.payload LIKE '%"usage.updated"%'
+         ORDER BY events.thread_id, events.seq`,
       )
       .all(thread.provider) as Array<{ thread_id: string; at: number; payload: string }>
     const previous = new Map<string, UsageTotal>()
@@ -746,14 +756,25 @@ export class Store {
   }
 
   checkpoint(id: number): StoredCheckpoint | undefined {
-    return this.checkpoints(
-      String(
-        (
-          this.#db.prepare(`SELECT thread_id FROM checkpoints WHERE id = ?`).get(id) as
-            { thread_id: string } | undefined
-        )?.thread_id ?? '',
-      ),
-    ).find((entry) => entry.id === id)
+    const row = this.#db.prepare(`SELECT * FROM checkpoints WHERE id = ?`).get(id) as
+      | {
+          id: number
+          thread_id: string
+          seq: number
+          commit_sha: string
+          label: string
+          created_at: number
+        }
+      | undefined
+    if (!row) return undefined
+    return {
+      id: Number(row.id),
+      threadId: row.thread_id,
+      seq: Number(row.seq),
+      commit: row.commit_sha,
+      label: row.label,
+      createdAt: Number(row.created_at),
+    }
   }
 
   /**
