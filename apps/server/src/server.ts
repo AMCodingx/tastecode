@@ -121,6 +121,10 @@ export function startServer(
   void orchestrator.recoverWorktrees().catch(() => undefined)
 
   wss.on('connection', (socket, request) => {
+    if (!allowedOrigin(request.headers.origin)) {
+      socket.close(1008, 'Origin not allowed')
+      return
+    }
     if (!hasAccess(request.url, options.accessToken)) {
       socket.close(1008, 'Access denied')
       return
@@ -799,6 +803,36 @@ export function startServer(
       wss.close()
     },
   }
+}
+
+/**
+ * Which pages may open a socket to us.
+ *
+ * Browsers do not apply the same-origin policy to WebSocket, so binding to
+ * loopback is not a trust boundary: any page the user visits could otherwise
+ * connect and drive the agent — list their repos, start a thread with `full`
+ * approval, or open a terminal. The Origin header is the one thing a page
+ * cannot forge, so it is what we gate on.
+ *
+ * Allowed: no Origin at all (non-browser clients — the CLI, tests, the mobile
+ * app), `null`/`file://` (the packaged Electron renderer), and loopback
+ * origins (the dev server, and our own web UI). A hostile page always sends
+ * its own public origin and is refused.
+ */
+export function allowedOrigin(origin: string | undefined): boolean {
+  if (!origin || origin === 'null' || origin === 'file://') return true
+  let hostname: string
+  try {
+    ;({ hostname } = new URL(origin))
+  } catch {
+    return false
+  }
+  return (
+    hostname === 'localhost' ||
+    hostname === '::1' ||
+    hostname === '[::1]' ||
+    (isIPv4(hostname) && hostname.startsWith('127.'))
+  )
 }
 
 export function hasAccess(requestUrl: string | undefined, expected: string | undefined): boolean {

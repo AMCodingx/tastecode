@@ -52,6 +52,17 @@ export function ThreadSearch(props: {
     if (target !== undefined) props.onJump(target)
   }
 
+  /** The first navigation lands on match one whichever control triggers it —
+   *  advancing before ever jumping skipped it while the counter said "2/n". */
+  const advance = (back: boolean) => {
+    if (!jumped.current) {
+      jumped.current = true
+      go(back ? hits.length - 1 : 0)
+      return
+    }
+    go(back ? cursor - 1 : cursor + 1)
+  }
+
   return (
     <div className="find">
       <input
@@ -66,25 +77,16 @@ export function ThreadSearch(props: {
         }}
         onKeyDown={(e) => {
           if (e.key === 'Escape') props.onClose()
-          if (e.key === 'Enter') {
-            // The first Enter lands on match one; advancing before ever
-            // jumping skipped it while the counter claimed "2/n".
-            if (!jumped.current) {
-              jumped.current = true
-              go(e.shiftKey ? hits.length - 1 : 0)
-            } else {
-              go(e.shiftKey ? cursor - 1 : cursor + 1)
-            }
-          }
+          if (e.key === 'Enter') advance(e.shiftKey)
         }}
       />
       <span className="find__count">
         {term === '' ? '' : hits.length === 0 ? 'None' : `${cursor + 1}/${hits.length}`}
       </span>
-      <button className="icon-btn icon-btn--always" onClick={() => go(cursor - 1)} title="Previous">
+      <button className="icon-btn icon-btn--always" onClick={() => advance(true)} title="Previous">
         <ChevronUp size={12} aria-hidden />
       </button>
-      <button className="icon-btn icon-btn--always" onClick={() => go(cursor + 1)} title="Next">
+      <button className="icon-btn icon-btn--always" onClick={() => advance(false)} title="Next">
         <ChevronDown size={12} aria-hidden />
       </button>
       <button className="icon-btn icon-btn--always" onClick={props.onClose} title="Close">

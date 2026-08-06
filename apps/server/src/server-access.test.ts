@@ -1,5 +1,28 @@
 import { describe, expect, it } from 'vitest'
-import { assertSafeBind, hasAccess } from './server.js'
+import { allowedOrigin, assertSafeBind, hasAccess } from './server.js'
+
+describe('websocket origin gate', () => {
+  it('admits our own surfaces, including non-browser clients', () => {
+    // No Origin at all: the CLI, tests, a native mobile client.
+    expect(allowedOrigin(undefined)).toBe(true)
+    // The packaged Electron renderer loads from file:.
+    expect(allowedOrigin('null')).toBe(true)
+    expect(allowedOrigin('file://')).toBe(true)
+    // The dev server and the web UI.
+    expect(allowedOrigin('http://127.0.0.1:5183')).toBe(true)
+    expect(allowedOrigin('http://localhost:5173')).toBe(true)
+  })
+
+  it('refuses a hostile page — loopback is not a trust boundary in a browser', () => {
+    // Browsers do not apply same-origin policy to WebSocket, so without this
+    // any page the user visits could drive the agent.
+    expect(allowedOrigin('https://evil.example')).toBe(false)
+    // Prefix tricks on our own hostnames.
+    expect(allowedOrigin('http://127.0.0.1.evil.example')).toBe(false)
+    expect(allowedOrigin('http://localhost.evil.example')).toBe(false)
+    expect(allowedOrigin('not a url')).toBe(false)
+  })
+})
 
 describe('server access token', () => {
   it('leaves the loopback server open when no token is configured', () => {
