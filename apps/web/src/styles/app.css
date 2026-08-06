@@ -181,7 +181,21 @@
     transform var(--dur-press) var(--ease-out);
 }
 
-.rail__mode-toggle:hover {
+/* The search button also carries .icon-btn, which is declared later at equal
+   specificity and was overriding all of the above — a 22px transparent icon
+   next to the 30px recessed toggle it is meant to match. */
+.rail__utility-row .rail__search.icon-btn {
+  width: 30px;
+  height: 30px;
+  background: var(--chrome-recessed);
+  border: 1px solid var(--chrome-border);
+  border-radius: var(--r-md);
+  color: var(--text-3);
+}
+
+.rail__mode-toggle:hover,
+.rail__utility-row .rail__search.icon-btn:is(:hover, :focus-visible) {
+  background: var(--chrome-recessed);
   border-color: color-mix(in srgb, var(--text-3) 35%, var(--chrome-border));
   color: var(--text-2);
 }
@@ -261,6 +275,8 @@
 .rail__body {
   overflow-y: auto;
   padding: 0 10px 14px;
+  /* Same reason as .thread: the list must not shift when it crosses the fold. */
+  scrollbar-gutter: stable;
 }
 
 .rail__foot {
@@ -502,7 +518,10 @@
   cursor: grabbing;
 }
 
-.sessrow[data-drop-position]::before {
+/* ::after, not ::before: the active-session accent tick is a ::before on the
+   same element and is declared later, so it won the cascade and the drop line
+   vanished — dragging onto the row you are already in showed nothing. */
+.sessrow[data-drop-position]::after {
   content: '';
   position: absolute;
   z-index: 2;
@@ -514,11 +533,11 @@
   pointer-events: none;
 }
 
-.sessrow[data-drop-position='before']::before {
+.sessrow[data-drop-position='before']::after {
   top: -1px;
 }
 
-.sessrow[data-drop-position='after']::before {
+.sessrow[data-drop-position='after']::after {
   bottom: -1px;
 }
 
@@ -1686,7 +1705,7 @@
   border: 1px solid var(--line-strong);
   border-radius: var(--r-md);
   outline: none;
-  background: var(--surface-1);
+  background: var(--surface-2);
   color: var(--text);
   font: inherit;
 }
@@ -2433,17 +2452,27 @@
   white-space: nowrap;
 }
 
-/* Height-capped drawer: 'auto' cannot be transitioned, and rows are a known
-   height, so the cap is exact rather than a guess. */
+/* 'auto' cannot be transitioned, but 0fr → 1fr can, and it measures the real
+   content — no per-row guess, and no dead time at either end. */
 .proj__drawer {
+  display: grid;
+  grid-template-rows: 0fr;
   overflow: hidden;
   transition:
-    max-height var(--dur-slow) var(--ease-out),
+    grid-template-rows var(--dur-slow) var(--ease-out),
     opacity var(--dur-fast) var(--ease-out);
+}
+
+.proj__drawer[data-open='true'] {
+  grid-template-rows: 1fr;
 }
 
 .proj__drawer[data-open='false'] {
   opacity: 0;
+}
+
+.proj__drawer > .proj__sessions {
+  min-height: 0;
 }
 
 .proj__sessions {
@@ -2777,6 +2806,16 @@
   overflow: hidden;
   background: var(--bg);
   border-top: 1px solid var(--line);
+  /* It was the only surface in the app that opened with no transition: the
+     composer jumped up its full height in a single frame. */
+  animation: terminal-in 200ms var(--ease-out) both;
+}
+
+@keyframes terminal-in {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
 }
 
 .terminal-pane__resize {
@@ -2911,6 +2950,11 @@
   min-height: 0;
   padding: 2px 0 4px;
   font-size: var(--t-lg);
+  /* The chat column is centred, and a classic scrollbar takes layout width:
+     without a reserved gutter the whole column shifted sideways the first
+     time a session grew past one screen, reflowing every wrapped line.
+     both-edges keeps the centring exact. */
+  scrollbar-gutter: stable both-edges;
 }
 
 .thread__col {
@@ -2986,10 +3030,20 @@
   font-size: var(--t-sm);
   padding: 5px 13px;
   box-shadow: var(--shadow-flyout);
-  animation: menu-in var(--dur-fast) var(--ease-out);
+  /* Its own keyframes, not menu-in: that one animates transform from a value
+     with no translateX, so this button visibly slid in from the left edge
+     every time it appeared — which is on every scroll-up during a stream. */
+  animation: jump-in var(--dur-fast) var(--ease-out);
   transition:
     background var(--dur-fast) var(--ease-out),
     border-color var(--dur-fast) var(--ease-out);
+}
+
+@keyframes jump-in {
+  from {
+    opacity: 0;
+    transform: translateX(-50%) translateY(4px) scale(0.97);
+  }
 }
 
 .jump:hover {
@@ -3105,8 +3159,10 @@
   animation: activity-label-in 180ms var(--ease-out) both;
 }
 
+/* Dimmer than the label beside it — --text-4 was never defined, so this
+   declaration was dropped and the elapsed time read at full label weight. */
 .activity__working-time {
-  color: var(--text-4);
+  color: color-mix(in srgb, var(--text-3) 72%, transparent);
 }
 
 .activity__working-time::before {
@@ -3188,6 +3244,12 @@
 .reply {
   color: var(--response-text);
   line-height: 1.52;
+  /* Room for the copy row, reserved whether or not it is rendered yet: it
+     only appears once the answer completes, and in normal flow that made the
+     transcript jump 32px at the exact moment a stream ended. Same technique
+     the user prompts already use for .said__actions. */
+  position: relative;
+  padding-bottom: 32px;
 }
 
 .reply > .md {
@@ -3570,6 +3632,13 @@
   padding: 1px 0 4px;
   color: var(--text-3);
   font-size: var(--t-lg);
+}
+
+.reply > .response-actions {
+  position: absolute;
+  bottom: 0;
+  left: 0;
+  margin-top: 0;
 }
 
 .response-actions {
@@ -4982,7 +5051,8 @@
   stroke: var(--text-2);
   stroke-linecap: round;
   stroke-dasharray: var(--context-used) 100;
-  transition: stroke-dasharray var(--dur-med) var(--ease-out);
+  /* --dur-med does not exist: the ring used to snap between percentages. */
+  transition: stroke-dasharray var(--dur-slow) var(--ease-out);
 }
 
 .context-usage__tooltip {
@@ -4998,7 +5068,7 @@
   background: var(--surface-3);
   border: 1px solid var(--line-strong);
   border-radius: var(--r-md);
-  box-shadow: var(--shadow-lg);
+  box-shadow: var(--shadow-flyout);
   color: var(--text-3);
   font-size: var(--t-xs);
   pointer-events: none;
@@ -5054,6 +5124,9 @@
 .tool--quiet {
   color: var(--text-3);
   padding: 0 8px;
+  /* Roughly the model selector's width, so the shelf does not shuffle
+     sideways when the real control replaces this on every app start. */
+  min-width: 148px;
 }
 
 .tool--icon {

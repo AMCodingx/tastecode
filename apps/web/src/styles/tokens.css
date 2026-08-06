@@ -432,7 +432,9 @@ html.is-macos-font-smoothing {
   border-radius: 99px;
 }
 ::-webkit-scrollbar-thumb:hover {
-  background: #3a3a3a;
+  /* Was a hardcoded near-black, which in the light theme jumped from a pale
+     grey to almost black on hover — the only raw hex outside a theme block. */
+  background: color-mix(in srgb, var(--text-3) 45%, var(--surface-3));
   background-clip: content-box;
 }
 ::-webkit-scrollbar-track {
