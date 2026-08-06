@@ -1,10 +1,13 @@
 use crate::theme::{RAIL_WIDTH, Theme};
-use gpui::{FontWeight, Hsla, SharedString, div, prelude::*, px, svg};
+use gpui::{App, FontWeight, Hsla, SharedString, div, prelude::*, px, svg};
 use harness_client::ConnectionState;
 use harness_protocol::{
     ProjectSummary, ProviderId, SessionSummary, ThreadInboxStatus, ThreadLifecycle,
 };
+use std::rc::Rc;
 use std::time::{SystemTime, UNIX_EPOCH};
+
+pub(crate) type SelectSession = Rc<dyn Fn(String, &mut App)>;
 
 pub fn sidebar(
     theme: Theme,
@@ -12,6 +15,8 @@ pub fn sidebar(
     connection: ConnectionState,
     loaded: bool,
     fixture: bool,
+    selected_thread_id: Option<&str>,
+    on_select: SelectSession,
 ) -> impl IntoElement {
     div()
         .w(px(RAIL_WIDTH))
@@ -26,7 +31,15 @@ pub fn sidebar(
         .child(if fixture {
             fixture_sidebar_body(theme).into_any_element()
         } else {
-            sidebar_body(theme, projects, connection, loaded).into_any_element()
+            sidebar_body(
+                theme,
+                projects,
+                connection,
+                loaded,
+                selected_thread_id,
+                on_select,
+            )
+            .into_any_element()
         })
         .child(
             div()
@@ -106,47 +119,68 @@ fn fixture_sidebar_body(theme: Theme) -> impl IntoElement {
         .pb(px(12.0))
         .child(section_label("Active".into(), theme))
         .child(inbox_row(
+            "fixture-working".into(),
             "Finish Sidebar v2".into(),
             "personalharness · Codex · codex/sidebar-v2".into(),
             Status::Working,
             theme,
+            false,
+            None,
         ))
         .child(inbox_row(
+            "fixture-approval".into(),
             "Review lifecycle contract".into(),
             "personalharness · Codex · 9m ago".into(),
             Status::Approval,
             theme,
+            false,
+            None,
         ))
         .child(inbox_row(
+            "fixture-input".into(),
             "Connect remote desktop".into(),
             "mobile-harness · Claude Code · 20m ago".into(),
             Status::Input,
             theme,
+            false,
+            None,
         ))
         .child(inbox_row(
+            "fixture-ready".into(),
             "Verify macOS terminal behavior".into(),
             "personalharness · Codex · 36m ago".into(),
             Status::Ready,
             theme,
+            false,
+            None,
         ))
         .child(inbox_row(
+            "fixture-failed".into(),
             "Run device smoke test".into(),
             "mobile-harness · Gemini · 1h ago".into(),
             Status::Failed,
             theme,
+            false,
+            None,
         ))
         .child(collapsed_group("Projects · 2".into(), None, theme))
         .child(collapsed_group("Snoozed".into(), Some("2".into()), theme))
         .child(collapsed_group("Settled".into(), Some("3".into()), theme))
         .child(settled_row(
+            "fixture-settled-1".into(),
             "Persist sidebar settings".into(),
             "personalharness · 40m ago".into(),
             theme,
+            false,
+            None,
         ))
         .child(settled_row(
+            "fixture-settled-2".into(),
             "Add lifecycle event routing".into(),
             "personalharness · 1h ago".into(),
             theme,
+            false,
+            None,
         ))
 }
 
@@ -155,6 +189,8 @@ fn sidebar_body(
     projects: &[ProjectSummary],
     connection: ConnectionState,
     loaded: bool,
+    selected_thread_id: Option<&str>,
+    on_select: SelectSession,
 ) -> impl IntoElement {
     let mut active = Vec::new();
     let mut snoozed = Vec::new();
@@ -194,10 +230,13 @@ fn sidebar_body(
             body.child(section_label("Active".into(), theme))
                 .children(active.into_iter().map(|(project, session)| {
                     inbox_row(
+                        session.id.clone().into(),
                         session.title.clone().into(),
                         session_meta(project, session).into(),
                         status_for(session),
                         theme,
+                        selected_thread_id == Some(session.id.as_str()),
+                        Some(on_select.clone()),
                     )
                 }))
         })
@@ -216,6 +255,7 @@ fn sidebar_body(
             ))
             .children(settled.into_iter().take(10).map(|(project, session)| {
                 settled_row(
+                    session.id.clone().into(),
                     session.title.clone().into(),
                     format!(
                         "{} · {}",
@@ -224,6 +264,8 @@ fn sidebar_body(
                     )
                     .into(),
                     theme,
+                    selected_thread_id == Some(session.id.as_str()),
+                    Some(on_select.clone()),
                 )
             }))
         })
@@ -326,14 +368,18 @@ impl Status {
 }
 
 fn inbox_row(
+    thread_id: SharedString,
     title: SharedString,
     meta: SharedString,
     status: Status,
     theme: Theme,
+    active: bool,
+    on_select: Option<SelectSession>,
 ) -> impl IntoElement {
     let status_color = status.color(theme);
+    let event_thread_id = thread_id.clone();
     div()
-        .id(SharedString::from(format!("inbox:{title}")))
+        .id(SharedString::from(format!("inbox:{thread_id}")))
         .min_h(px(64.0))
         .w_full()
         .flex()
@@ -341,8 +387,14 @@ fn inbox_row(
         .justify_center()
         .px(px(8.0))
         .rounded(px(8.0))
+        .when(active, |row| row.bg(theme.surface_2.hsla()))
         .cursor_pointer()
         .hover(move |style| style.bg(theme.surface.hsla()))
+        .when_some(on_select, |row, handler| {
+            row.on_click(move |_event, _window, cx| {
+                handler(event_thread_id.to_string(), cx);
+            })
+        })
         .child(
             div()
                 .w_full()
@@ -404,17 +456,31 @@ fn collapsed_group(
         })
 }
 
-fn settled_row(title: SharedString, meta: SharedString, theme: Theme) -> impl IntoElement {
+fn settled_row(
+    thread_id: SharedString,
+    title: SharedString,
+    meta: SharedString,
+    theme: Theme,
+    active: bool,
+    on_select: Option<SelectSession>,
+) -> impl IntoElement {
+    let event_thread_id = thread_id.clone();
     div()
-        .id(SharedString::from(format!("settled:{title}")))
+        .id(SharedString::from(format!("settled:{thread_id}")))
         .min_h(px(44.0))
         .w_full()
         .flex()
         .items_center()
         .px(px(8.0))
         .rounded(px(8.0))
+        .when(active, |row| row.bg(theme.surface_2.hsla()))
         .cursor_pointer()
         .hover(move |style| style.bg(theme.surface.hsla()))
+        .when_some(on_select, |row, handler| {
+            row.on_click(move |_event, _window, cx| {
+                handler(event_thread_id.to_string(), cx);
+            })
+        })
         .child(
             div()
                 .min_w(px(0.0))

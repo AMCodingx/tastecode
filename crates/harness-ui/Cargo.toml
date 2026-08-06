@@ -9,6 +9,8 @@ publish.workspace = true
 anyhow.workspace = true
 async-channel.workspace = true
 gpui.workspace = true
+gpui-component.workspace = true
 harness-client = { path = "../harness-client" }
 harness-protocol = { path = "../harness-protocol" }
+harness-state = { path = "../harness-state" }
 serde_json.workspace = true

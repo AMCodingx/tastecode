@@ -1,5 +1,6 @@
 mod app;
 mod assets;
+mod chat;
 mod client_state;
 mod sidebar;
 mod theme;

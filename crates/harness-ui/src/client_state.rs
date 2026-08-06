@@ -1,9 +1,9 @@
 use async_channel::Receiver as EventReceiver;
 use harness_client::{ClientEvent, ClientHandle, ConnectionState, Endpoint};
 use harness_protocol::{
-    DomainEvent, PROTOCOL_VERSION, ProjectSummary, ProjectsListResult, Response, ServerWelcome,
-    SidebarMode, SidebarSettings, ThreadEventPush, ThreadInboxStatus, ThreadLifecyclePush, channel,
-    method,
+    DomainEvent, PROTOCOL_VERSION, ProjectSummary, ProjectsListResult, Response, SendTurnResult,
+    ServerWelcome, SidebarMode, SidebarSettings, ThreadEventPush, ThreadHistoryResult,
+    ThreadInboxStatus, ThreadLifecyclePush, ThreadQueuePush, ThreadQueueResult, channel, method,
 };
 use serde_json::{Value, json};
 use std::collections::HashMap;
@@ -18,11 +18,55 @@ pub(crate) struct ClientState {
     pub(crate) notice: Option<String>,
 }
 
-#[derive(Clone, Copy)]
 enum PendingRequest {
     Capabilities,
     Projects,
     SidebarSettings,
+    History { thread_id: String, replace: bool },
+    Queue { thread_id: String },
+    SendTurn { thread_id: String, steer: bool },
+    Steer { thread_id: String },
+    Interrupt { thread_id: String },
+}
+
+#[derive(Default)]
+pub(crate) struct ClientUpdate {
+    pub(crate) shell_changed: bool,
+    pub(crate) chat: Vec<ChatUpdate>,
+}
+
+pub(crate) enum ChatUpdate {
+    History {
+        thread_id: String,
+        history: ThreadHistoryResult,
+        replace: bool,
+    },
+    Queue {
+        thread_id: String,
+        queue: ThreadQueueResult,
+    },
+    Event(ThreadEventPush),
+    Refresh,
+    Error {
+        thread_id: String,
+        message: String,
+    },
+}
+
+impl ClientUpdate {
+    fn shell_changed() -> Self {
+        Self {
+            shell_changed: true,
+            chat: Vec::new(),
+        }
+    }
+
+    fn chat(update: ChatUpdate) -> Self {
+        Self {
+            shell_changed: false,
+            chat: vec![update],
+        }
+    }
 }
 
 impl ClientState {
@@ -59,8 +103,7 @@ impl ClientState {
         }
     }
 
-    /// Returns whether the event changed visible state and needs a GPUI frame.
-    pub(crate) fn handle_event(&mut self, event: ClientEvent) -> bool {
+    pub(crate) fn handle_event(&mut self, event: ClientEvent) -> ClientUpdate {
         match event {
             ClientEvent::StateChanged(state) => {
                 self.connection = state;
@@ -68,7 +111,7 @@ impl ClientState {
                     self.notice = None;
                     self.request_initial_state();
                 }
-                true
+                ClientUpdate::shell_changed()
             }
             ClientEvent::Response(response) => self.handle_response(response),
             ClientEvent::Push(push) => self.handle_push(&push.channel, push.data),
@@ -77,13 +120,63 @@ impl ClientState {
                     "Live state skipped from sequence {expected} to {received}; refreshing."
                 ));
                 self.request_projects();
-                true
+                ClientUpdate {
+                    shell_changed: true,
+                    chat: vec![ChatUpdate::Refresh],
+                }
             }
             ClientEvent::DecodeFailed { reason } => {
                 self.notice = Some(format!("The server sent an unreadable frame: {reason}"));
-                true
+                ClientUpdate::shell_changed()
             }
         }
+    }
+
+    pub(crate) fn select_thread(&mut self, thread_id: &str) {
+        self.request_history(thread_id, None);
+        self.send_request(
+            method::THREAD_QUEUE,
+            json!({ "threadId": thread_id }),
+            PendingRequest::Queue {
+                thread_id: thread_id.into(),
+            },
+        );
+    }
+
+    pub(crate) fn request_history(&mut self, thread_id: &str, after_seq: Option<u64>) {
+        let params = match after_seq {
+            Some(after_seq) => json!({ "threadId": thread_id, "afterSeq": after_seq }),
+            None => json!({ "threadId": thread_id }),
+        };
+        self.send_request(
+            method::THREAD_HISTORY,
+            params,
+            PendingRequest::History {
+                thread_id: thread_id.into(),
+                replace: after_seq.is_none(),
+            },
+        );
+    }
+
+    pub(crate) fn send_turn(&mut self, thread_id: &str, text: String, steer: bool) {
+        self.send_request(
+            method::THREAD_SEND_TURN,
+            json!({ "threadId": thread_id, "text": text }),
+            PendingRequest::SendTurn {
+                thread_id: thread_id.into(),
+                steer,
+            },
+        );
+    }
+
+    pub(crate) fn interrupt(&mut self, thread_id: &str) {
+        self.send_request(
+            method::THREAD_INTERRUPT,
+            json!({ "threadId": thread_id }),
+            PendingRequest::Interrupt {
+                thread_id: thread_id.into(),
+            },
+        );
     }
 
     pub(crate) fn stage_message(&self, fixture: bool) -> String {
@@ -135,61 +228,113 @@ impl ClientState {
         }
     }
 
-    fn handle_response(&mut self, response: Response<Value>) -> bool {
+    fn handle_response(&mut self, response: Response<Value>) -> ClientUpdate {
         let pending = self.pending.remove(response.id());
         match response {
             Response::Failure { error, .. } => {
-                self.notice = Some(match error.detail {
+                let message = match error.detail {
                     Some(detail) => format!("{} ({detail})", error.message),
                     None => error.message,
-                });
-                true
+                };
+                match pending.and_then(PendingRequest::thread_id) {
+                    Some(thread_id) => ClientUpdate::chat(ChatUpdate::Error { thread_id, message }),
+                    None => {
+                        self.notice = Some(message);
+                        ClientUpdate::shell_changed()
+                    }
+                }
             }
             Response::Success { result, .. } => match pending {
-                Some(PendingRequest::Projects) => {
-                    match serde_json::from_value::<ProjectsListResult>(result) {
-                        Ok(result) => {
-                            self.projects = result.projects;
-                            self.projects_loaded = true;
-                            self.notice = None;
-                        }
-                        Err(error) => {
-                            self.notice = Some(format!("projects.list was invalid: {error}"));
-                        }
+                Some(PendingRequest::Projects) => self.handle_projects_response(result),
+                Some(PendingRequest::SidebarSettings) => self.handle_settings_response(result),
+                Some(PendingRequest::History { thread_id, replace }) => {
+                    match serde_json::from_value::<ThreadHistoryResult>(result) {
+                        Ok(history) => ClientUpdate::chat(ChatUpdate::History {
+                            thread_id,
+                            history,
+                            replace,
+                        }),
+                        Err(error) => ClientUpdate::chat(ChatUpdate::Error {
+                            thread_id,
+                            message: format!("thread.history was invalid: {error}"),
+                        }),
                     }
-                    true
                 }
-                Some(PendingRequest::SidebarSettings) => {
-                    match serde_json::from_value::<SidebarSettings>(result) {
-                        Ok(settings) => self.sidebar_settings = settings,
-                        Err(error) => {
-                            self.notice = Some(format!("sidebar.settings was invalid: {error}"));
-                        }
+                Some(PendingRequest::Queue { thread_id }) => {
+                    match serde_json::from_value::<ThreadQueueResult>(result) {
+                        Ok(queue) => ClientUpdate::chat(ChatUpdate::Queue { thread_id, queue }),
+                        Err(error) => ClientUpdate::chat(ChatUpdate::Error {
+                            thread_id,
+                            message: format!("thread.queue was invalid: {error}"),
+                        }),
                     }
-                    true
                 }
-                Some(PendingRequest::Capabilities) | None => false,
+                Some(PendingRequest::SendTurn { thread_id, steer }) => {
+                    match serde_json::from_value::<SendTurnResult>(result) {
+                        Ok(SendTurnResult::Started { queued: false, .. }) => {
+                            ClientUpdate::default()
+                        }
+                        Ok(SendTurnResult::Queued {
+                            queued: true,
+                            queued_turn,
+                        }) => {
+                            if steer {
+                                self.send_request(
+                                    method::THREAD_STEER_QUEUED_TURN,
+                                    json!({
+                                        "threadId": thread_id,
+                                        "queuedTurnId": queued_turn.id
+                                    }),
+                                    PendingRequest::Steer { thread_id },
+                                );
+                            }
+                            ClientUpdate::default()
+                        }
+                        Ok(_) => ClientUpdate::chat(ChatUpdate::Error {
+                            thread_id,
+                            message: "thread.sendTurn returned a contradictory queue state.".into(),
+                        }),
+                        Err(error) => ClientUpdate::chat(ChatUpdate::Error {
+                            thread_id,
+                            message: format!("thread.sendTurn was invalid: {error}"),
+                        }),
+                    }
+                }
+                Some(PendingRequest::Interrupt { .. })
+                | Some(PendingRequest::Steer { .. })
+                | Some(PendingRequest::Capabilities)
+                | None => ClientUpdate::default(),
             },
         }
     }
 
-    fn handle_push(&mut self, channel_name: &str, data: Value) -> bool {
-        match channel_name {
-            channel::SERVER_WELCOME => {
-                match serde_json::from_value::<ServerWelcome>(data) {
-                    Ok(welcome) if welcome.protocol_version == PROTOCOL_VERSION => return false,
-                    Ok(welcome) => {
-                        self.notice = Some(format!(
-                            "Protocol mismatch: native client expects v{PROTOCOL_VERSION}, server sent v{}.",
-                            welcome.protocol_version
-                        ));
-                    }
-                    Err(error) => {
-                        self.notice = Some(format!("server.welcome was invalid: {error}"));
-                    }
-                }
-                true
+    fn handle_projects_response(&mut self, result: Value) -> ClientUpdate {
+        match serde_json::from_value::<ProjectsListResult>(result) {
+            Ok(result) => {
+                self.projects = result.projects;
+                self.projects_loaded = true;
+                self.notice = None;
             }
+            Err(error) => {
+                self.notice = Some(format!("projects.list was invalid: {error}"));
+            }
+        }
+        ClientUpdate::shell_changed()
+    }
+
+    fn handle_settings_response(&mut self, result: Value) -> ClientUpdate {
+        match serde_json::from_value::<SidebarSettings>(result) {
+            Ok(settings) => self.sidebar_settings = settings,
+            Err(error) => {
+                self.notice = Some(format!("sidebar.settings was invalid: {error}"));
+            }
+        }
+        ClientUpdate::shell_changed()
+    }
+
+    fn handle_push(&mut self, channel_name: &str, data: Value) -> ClientUpdate {
+        match channel_name {
+            channel::SERVER_WELCOME => self.handle_welcome(data),
             channel::SIDEBAR_SETTINGS => {
                 match serde_json::from_value::<SidebarSettings>(data) {
                     Ok(settings) => self.sidebar_settings = settings,
@@ -197,7 +342,7 @@ impl ClientState {
                         self.notice = Some(format!("sidebar.settings push was invalid: {error}"));
                     }
                 }
-                true
+                ClientUpdate::shell_changed()
             }
             channel::THREAD_LIFECYCLE => {
                 match serde_json::from_value::<ThreadLifecyclePush>(data) {
@@ -212,68 +357,79 @@ impl ClientState {
                         self.notice = Some(format!("thread.lifecycle push was invalid: {error}"));
                     }
                 }
-                true
+                ClientUpdate::shell_changed()
             }
             channel::THREAD_EVENT => self.handle_thread_event(data),
-            _ => false,
+            channel::THREAD_QUEUE => match serde_json::from_value::<ThreadQueuePush>(data) {
+                Ok(push) => ClientUpdate::chat(ChatUpdate::Queue {
+                    thread_id: push.thread_id,
+                    queue: ThreadQueueResult {
+                        items: push.items,
+                        can_steer: push.can_steer,
+                    },
+                }),
+                Err(error) => {
+                    self.notice = Some(format!("thread.queue push was invalid: {error}"));
+                    ClientUpdate::shell_changed()
+                }
+            },
+            _ => ClientUpdate::default(),
         }
     }
 
-    fn handle_thread_event(&mut self, data: Value) -> bool {
+    fn handle_welcome(&mut self, data: Value) -> ClientUpdate {
+        match serde_json::from_value::<ServerWelcome>(data) {
+            Ok(welcome) if welcome.protocol_version == PROTOCOL_VERSION => ClientUpdate::default(),
+            Ok(welcome) => {
+                self.notice = Some(format!(
+                    "Protocol mismatch: native client expects v{PROTOCOL_VERSION}, server sent v{}.",
+                    welcome.protocol_version
+                ));
+                ClientUpdate::shell_changed()
+            }
+            Err(error) => {
+                self.notice = Some(format!("server.welcome was invalid: {error}"));
+                ClientUpdate::shell_changed()
+            }
+        }
+    }
+
+    fn handle_thread_event(&mut self, data: Value) -> ClientUpdate {
         let Ok(push) = serde_json::from_value::<ThreadEventPush>(data) else {
             self.notice = Some("thread.event push was invalid.".into());
-            return true;
+            return ClientUpdate::shell_changed();
         };
+        let shell_changed = self.apply_session_status(&push);
+        ClientUpdate {
+            shell_changed,
+            chat: vec![ChatUpdate::Event(push)],
+        }
+    }
 
-        match push.event {
-            DomainEvent::TurnStarted { .. } => {
-                if let Some(session) = self.session_mut(&push.thread_id) {
-                    session.running = true;
-                    session.status = Some(ThreadInboxStatus::Working);
-                } else {
-                    self.request_projects();
-                }
-                true
-            }
-            DomainEvent::TurnCompleted { .. } => {
-                if let Some(session) = self.session_mut(&push.thread_id) {
-                    session.running = false;
-                    session.status = Some(ThreadInboxStatus::Ready);
-                }
-                self.request_projects();
-                true
-            }
-            DomainEvent::ThreadError { .. } => {
-                if let Some(session) = self.session_mut(&push.thread_id) {
-                    session.running = false;
-                    session.status = Some(ThreadInboxStatus::Failed);
-                }
-                true
-            }
-            DomainEvent::ApprovalRequested { .. } => {
-                if let Some(session) = self.session_mut(&push.thread_id) {
-                    session.status = Some(ThreadInboxStatus::Approval);
-                }
-                true
-            }
-            DomainEvent::UserInputRequested { .. } => {
-                if let Some(session) = self.session_mut(&push.thread_id) {
-                    session.status = Some(ThreadInboxStatus::Input);
-                }
-                true
-            }
+    fn apply_session_status(&mut self, push: &ThreadEventPush) -> bool {
+        let (running, status) = match &push.event {
+            DomainEvent::TurnStarted { .. } => (Some(true), Some(ThreadInboxStatus::Working)),
+            DomainEvent::TurnCompleted { .. } => (Some(false), Some(ThreadInboxStatus::Ready)),
+            DomainEvent::ThreadError { .. } => (Some(false), Some(ThreadInboxStatus::Failed)),
+            DomainEvent::ApprovalRequested { .. } => (None, Some(ThreadInboxStatus::Approval)),
+            DomainEvent::UserInputRequested { .. } => (None, Some(ThreadInboxStatus::Input)),
             DomainEvent::ApprovalResolved { .. } | DomainEvent::UserInputResolved { .. } => {
-                if let Some(session) = self.session_mut(&push.thread_id) {
-                    session.status = Some(if session.running {
+                let running = self
+                    .session(&push.thread_id)
+                    .is_some_and(|session| session.running);
+                (
+                    None,
+                    Some(if running {
                         ThreadInboxStatus::Working
                     } else {
                         ThreadInboxStatus::Ready
-                    });
-                }
-                true
+                    }),
+                )
             }
-            // Deltas are the hot path. The transcript model consumes them,
-            // while the rail remains untouched until status actually changes.
+            DomainEvent::ThreadStarted { .. } => {
+                self.request_projects();
+                return true;
+            }
             DomainEvent::ItemStarted { .. }
             | DomainEvent::ItemDelta { .. }
             | DomainEvent::ItemCompleted { .. }
@@ -281,9 +437,25 @@ impl ClientState {
             | DomainEvent::UsageUpdated { .. }
             | DomainEvent::DiffUpdated { .. }
             | DomainEvent::ApprovalReviewStarted { .. }
-            | DomainEvent::ApprovalReviewCompleted { .. }
-            | DomainEvent::ThreadStarted { .. } => false,
+            | DomainEvent::ApprovalReviewCompleted { .. } => return false,
+        };
+
+        if let Some(session) = self.session_mut(&push.thread_id) {
+            if let Some(running) = running {
+                session.running = running;
+            }
+            session.status = status;
+        } else {
+            self.request_projects();
         }
+        true
+    }
+
+    fn session(&self, thread_id: &str) -> Option<&harness_protocol::SessionSummary> {
+        self.projects
+            .iter()
+            .flat_map(|project| project.sessions.iter())
+            .find(|session| session.id == thread_id)
     }
 
     fn session_mut(&mut self, thread_id: &str) -> Option<&mut harness_protocol::SessionSummary> {
@@ -294,17 +466,29 @@ impl ClientState {
     }
 }
 
+impl PendingRequest {
+    fn thread_id(self) -> Option<String> {
+        match self {
+            Self::History { thread_id, .. }
+            | Self::Queue { thread_id }
+            | Self::SendTurn { thread_id, .. }
+            | Self::Steer { thread_id }
+            | Self::Interrupt { thread_id } => Some(thread_id),
+            Self::Capabilities | Self::Projects | Self::SidebarSettings => None,
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use harness_client::ClientEvent;
     use harness_protocol::Push;
     use serde_json::json;
 
     #[test]
-    fn streamed_delta_does_not_request_a_frame() {
+    fn streamed_delta_routes_to_chat_without_invalidating_the_shell() {
         let mut state = ClientState::new(true);
-        let changed = state.handle_event(ClientEvent::Push(Push {
+        let update = state.handle_event(ClientEvent::Push(Push {
             channel: channel::THREAD_EVENT.into(),
             sequence: 1,
             data: json!({
@@ -319,7 +503,9 @@ mod tests {
             }),
         }));
 
-        assert!(!changed);
+        assert!(!update.shell_changed);
+        assert_eq!(update.chat.len(), 1);
+        assert!(matches!(update.chat[0], ChatUpdate::Event(_)));
     }
 
     #[test]
@@ -329,7 +515,7 @@ mod tests {
             .pending
             .insert("native-1".into(), PendingRequest::Projects);
 
-        assert!(state.handle_response(Response::Success {
+        let update = state.handle_response(Response::Success {
             id: "native-1".into(),
             result: json!({
                 "projects": [{
@@ -340,7 +526,8 @@ mod tests {
                     "sessions": []
                 }]
             }),
-        }));
+        });
+        assert!(update.shell_changed);
         assert!(state.projects_loaded);
         assert_eq!(state.projects[0].name, "Harness");
     }
