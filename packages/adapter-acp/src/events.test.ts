@@ -288,4 +288,36 @@ describe('streamed tool output', () => {
     // that spins forever next to a finished duplicate.
     expect(completedItem.item.id).toBe(startedItem.item.id)
   })
+
+  it('gives the NEXT id-less call its own item instead of the finished one', () => {
+    const streamer = new Streamer('t1')
+    const run = (title: string, output: string) => {
+      streamer.translate({
+        sessionUpdate: 'tool_call',
+        status: 'in_progress',
+        title,
+        kind: 'execute',
+        content: [],
+        locations: [],
+      })
+      return streamer.translate({
+        sessionUpdate: 'tool_call_update',
+        status: 'completed',
+        content: [{ type: 'content', content: { type: 'text', text: output } }],
+        locations: [],
+      })
+    }
+    const first = run('first command', 'first output')
+    const second = run('second command', 'second output')
+
+    const firstDone = first.find((entry) => entry.type === 'item.completed')
+    const secondDone = second.find((entry) => entry.type === 'item.completed')
+    if (firstDone?.type !== 'item.completed' || secondDone?.type !== 'item.completed') {
+      throw new Error('shape')
+    }
+    // Distinct identities, and the second call must not inherit — or render —
+    // the first call's accumulated output.
+    expect(secondDone.item.id).not.toBe(firstDone.item.id)
+    expect(secondDone.item.text ?? secondDone.item.command ?? '').not.toContain('first output')
+  })
 })

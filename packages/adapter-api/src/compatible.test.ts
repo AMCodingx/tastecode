@@ -94,6 +94,35 @@ describe('OpenAI-compatible transport', () => {
     ])
   })
 
+  it('drops a tool call truncated at max_tokens instead of executing it', async () => {
+    // The call's JSON arguments were cut mid-stream; finish_reason is
+    // 'length'. Promoting to tool_calls would execute truncated arguments.
+    const truncated = [
+      'data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_1","type":"function","function":{"name":"read_file","arguments":"{\\"pa"}}]},"finish_reason":null}]}',
+      '',
+      'data: {"choices":[{"delta":{},"finish_reason":"length"}]}',
+      '',
+      'data: [DONE]',
+      '',
+    ].join('\n')
+    const { baseUrl } = await serve([truncated])
+    const events: ApiStreamEvent[] = []
+    for await (const event of createOpenAiCompatibleTransport({
+      apiKey: 'test-key',
+      provider: 'custom',
+      baseUrl,
+    })({
+      model: 'provider-model',
+      messages: [{ role: 'user', content: 'Hello' }],
+      tools: [],
+      signal: new AbortController().signal,
+    }))
+      events.push(event)
+
+    expect(events.some((event) => event.type === 'tool_call')).toBe(false)
+    expect(events.at(-1)).toEqual({ type: 'finish', reason: 'stop' })
+  })
+
   it('uses reviewed presets and capability-gates model discovery', async () => {
     expect(OPENAI_COMPATIBLE_PRESETS).toMatchObject({
       openrouter: { baseUrl: 'https://openrouter.ai/api/v1', modelDiscovery: true },
