@@ -6057,8 +6057,34 @@
   color: var(--composer-on-orb);
 }
 
+/* Stop was the one control in the composer that ignored the pointer: every
+   hover rule above excludes it. A brake with no hover state reads as dead. */
+.orb--stop:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--composer-stop) 82%, var(--text));
+  transform: scale(1.05);
+}
+
 .orb--stop:active {
   transform: scale(0.92);
+}
+
+/* Sent, not yet acknowledged. Some providers take a moment to unwind, and
+   without a visible pending state people press Stop again and again. */
+.orb--stop.is-stopping {
+  background: color-mix(in srgb, var(--composer-stop) 55%, var(--surface-3));
+  cursor: default;
+  transform: none;
+}
+
+.orb--stop.is-stopping .orb__icon--stop {
+  animation: orb-stopping 900ms var(--ease-in-out) infinite;
+}
+
+@keyframes orb-stopping {
+  50% {
+    opacity: 0.45;
+    transform: scale(0.86);
+  }
 }
 
 @media (prefers-reduced-motion: reduce) {
@@ -6130,6 +6156,13 @@
   border-radius: var(--r-md);
   padding: 9px 10px;
   font-size: var(--t-sm);
+}
+
+/* Sits above the error toast so the two never overlap when both are up. */
+.notice--offline {
+  bottom: 62px;
+  border-color: color-mix(in srgb, var(--attention) 55%, var(--line-strong));
+  color: var(--text-2);
 }
 
 .notice__text {

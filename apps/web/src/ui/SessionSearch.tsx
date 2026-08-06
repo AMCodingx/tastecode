@@ -43,8 +43,11 @@ export function SessionSearch(props: {
       setLoading(false)
       return
     }
-    setLoading(true)
     const timer = window.setTimeout(() => {
+      // Only once a request is actually in flight: setting it before the
+      // debounce replaced the "search across projects" hint with
+      // "Searching…" on the very first keystroke.
+      setLoading(true)
       void props.transport
         .request('search.sessions', {
           query: term,

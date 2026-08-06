@@ -8,6 +8,7 @@ import { DESIGN_BRIEF_ATTACHMENT } from './design-agent/briefing.js'
 const transport = vi.hoisted(() => ({
   request: vi.fn(),
   listeners: new Map<string, (data: unknown) => void>(),
+  stateListeners: new Set<(state: string) => void>(),
   urls: [] as string[],
   connect: vi.fn(),
   close: vi.fn(),
@@ -28,6 +29,12 @@ vi.mock('./transport.js', () => ({
       transport.listeners.set(channel, listener)
       return () => {
         transport.listeners.delete(channel)
+      }
+    }
+    onState(listener: (state: string) => void) {
+      transport.stateListeners.add(listener)
+      return () => {
+        transport.stateListeners.delete(listener)
       }
     }
     request(method: string, params: unknown) {
@@ -77,6 +84,7 @@ let serverSidebarSettings: {
 
 beforeEach(() => {
   transport.listeners.clear()
+  transport.stateListeners.clear()
   transport.urls.length = 0
   window.location.hash = ''
   document.documentElement.removeAttribute('data-theme')
@@ -1285,6 +1293,43 @@ describe('live sessions', () => {
       threadId: 'thread-1',
       queuedTurnId: 'queued-1',
     })
+  })
+
+  it('acknowledges Stop instead of looking inert until the turn unwinds', async () => {
+    // Providers can take a second or two to stop. With no acknowledged state
+    // the button looked dead, so people pressed it repeatedly and concluded
+    // that stopping does not work.
+    serverProjects = [
+      {
+        path: '/work/project',
+        name: 'project',
+        pinned: false,
+        createdAt: 0,
+        sessions: [{ id: 'thread-1', title: 'Existing work', running: false }],
+      },
+    ]
+
+    render(<App />)
+    fireEvent.click(await screen.findByRole('button', { name: 'Existing work' }))
+    emitThreadEvent('thread-1', {
+      type: 'turn.started',
+      turn: { id: 'turn-1', threadId: 'thread-1', status: 'running', createdAt: 0 },
+    })
+
+    fireEvent.click(screen.getByRole('button', { name: 'Stop' }))
+    expect(transport.request).toHaveBeenCalledWith('thread.interrupt', { threadId: 'thread-1' })
+
+    // Pending: named so, and no longer clickable — one interrupt is enough.
+    const stopping = await screen.findByRole('button', { name: 'Stopping…' })
+    expect((stopping as HTMLButtonElement).disabled).toBe(true)
+
+    // The turn actually ending is what clears it.
+    emitThreadEvent('thread-1', {
+      type: 'turn.completed',
+      turnId: 'turn-1',
+      status: 'interrupted',
+    })
+    await waitFor(() => expect(screen.queryByRole('button', { name: 'Stopping…' })).toBeNull())
   })
 
   it('steers the active turn with Ctrl+Enter instead of leaving a queued prompt', async () => {

@@ -9,6 +9,7 @@ import {
   useState,
 } from 'react'
 import type { CSSProperties } from 'react'
+import { LoaderCircle } from 'lucide-react'
 import type {
   Account,
   ApprovalMode,
@@ -147,6 +148,9 @@ export function App() {
   const [projects, setProjects] = useState<Project[]>([])
   const [projectsLoaded, setProjectsLoaded] = useState(false)
   const [shortcutsOpen, setShortcutsOpen] = useState(false)
+  /** The thread whose interrupt has been sent but not yet acknowledged. */
+  const [stoppingThreadId, setStoppingThreadId] = useState<string | undefined>()
+  const [offline, setOffline] = useState(false)
   const [activeId, setActiveId] = useState<string | undefined>()
   const [activePath, setActivePath] = useState<string | undefined>()
   const [thread, setThread] = useState<ThreadState>(emptyThread)
@@ -441,13 +445,26 @@ export function App() {
       )
     })
     const offSidebarSettings = transport.on('sidebar.settings', setSidebarSettings)
+    // Held back briefly: a clean reconnect takes ~500ms, and a banner that
+    // appears and vanishes in that time is noise, not information.
+    let announce: number | undefined
+    const offState = transport.onState((state) => {
+      window.clearTimeout(announce)
+      if (state === 'reconnecting') {
+        announce = window.setTimeout(() => setOffline(true), 1200)
+      } else {
+        setOffline(false)
+      }
+    })
     transport.connect()
     return () => {
       if (liveFlush !== undefined) cancelAnimationFrame(liveFlush)
+      window.clearTimeout(announce)
       offEvents()
       offQueue()
       offLifecycle()
       offSidebarSettings()
+      offState()
       transport.close()
     }
   }, [transport])
@@ -1271,10 +1288,24 @@ export function App() {
     // A provisional id means the thread is still being created server-side;
     // interrupting it would only produce an error nobody can act on.
     if (!activeId || activeId.startsWith('pending:')) return
-    transport
-      .request('thread.interrupt', { threadId: activeId })
-      .catch((error) => setNotice(error instanceof Error ? error.message : String(error)))
+    // Some providers take a second or two to unwind. Without an acknowledged
+    // state the button looks inert, so people press it repeatedly and
+    // conclude that stopping does not work.
+    setStoppingThreadId(activeId)
+    transport.request('thread.interrupt', { threadId: activeId }).catch((error) => {
+      setStoppingThreadId((current) => (current === activeId ? undefined : current))
+      setNotice(error instanceof Error ? error.message : String(error))
+    })
   }, [transport, activeId])
+
+  // The turn ending — however it ended — clears the pending state. Switching
+  // sessions does too: the badge belongs to the thread, not to the composer.
+  const stopping = stoppingThreadId !== undefined && stoppingThreadId === activeId && thread.running
+  useEffect(() => {
+    if (stoppingThreadId && !thread.running && stoppingThreadId === activeId) {
+      setStoppingThreadId(undefined)
+    }
+  }, [thread.running, stoppingThreadId, activeId])
 
   const transcribeVoice = useCallback(
     async (requestId: string, recording: VoiceRecording): Promise<string> => {
@@ -2106,6 +2137,7 @@ export function App() {
               onSend={(t, files) => void send(t, files)}
               onSteer={(t, files) => void send(t, files, 'steer')}
               onInterrupt={interrupt}
+              stopping={stopping}
               onDeleteQueuedTurn={deleteQueuedTurn}
               onMoveQueuedTurn={moveQueuedTurn}
               onSteerQueuedTurn={steerQueuedTurn}
@@ -2210,6 +2242,15 @@ export function App() {
           onDiscard={() => void discardAndArchive()}
           onClose={() => setCheckoutDelete(undefined)}
         />
+      ) : null}
+
+      {/* A dropped connection used to be invisible: requests queued, pushes
+          stopped, the working rail kept counting, and nothing said why. */}
+      {offline ? (
+        <div className="notice notice--offline" role="status">
+          <LoaderCircle className="spinner" size={12} aria-hidden />
+          <span className="notice__text">Reconnecting to the server…</span>
+        </div>
       ) : null}
 
       {notice ? (

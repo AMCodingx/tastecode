@@ -182,6 +182,8 @@ export function Composer(props: {
   onSend: (text: string, attachments: string[]) => void
   onSteer: (text: string, attachments: string[]) => void
   onInterrupt: () => void
+  /** An interrupt is sent and the turn has not ended yet. */
+  stopping?: boolean | undefined
   onDeleteQueuedTurn: (id: string) => void
   onMoveQueuedTurn: (id: string, direction: 'up' | 'down') => void
   onSteerQueuedTurn: (id: string) => void
@@ -976,11 +978,13 @@ export function Composer(props: {
                     borderRadius={15}
                   >
                     <button
-                      className={`orb${showStop ? ' orb--stop' : ''}${sending ? ' is-sending' : ''}`}
+                      className={`orb${showStop ? ' orb--stop' : ''}${sending ? ' is-sending' : ''}${
+                        showStop && props.stopping ? ' is-stopping' : ''
+                      }`}
                       onClick={showStop ? props.onInterrupt : () => submit()}
-                      disabled={!showStop && sendDisabled}
-                      title={showStop ? 'Stop' : submitLabel}
-                      aria-label={showStop ? 'Stop' : submitLabel}
+                      disabled={showStop ? Boolean(props.stopping) : sendDisabled}
+                      title={showStop ? (props.stopping ? 'Stopping…' : 'Stop') : submitLabel}
+                      aria-label={showStop ? (props.stopping ? 'Stopping…' : 'Stop') : submitLabel}
                     >
                       <span className="orb__icon orb__icon--send">
                         <ArrowUp size={15} aria-hidden />
