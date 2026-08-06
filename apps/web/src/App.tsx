@@ -368,6 +368,9 @@ export function App() {
 
   const activeIdRef = useRef(activeId)
   activeIdRef.current = activeId
+  /** Refetch after an outage. Held in a ref because the transport effect is
+   *  set up before the fetchers it needs are declared. */
+  const resync = useRef<() => void>(() => {})
   const sidebarSettingsRef = useRef(sidebarSettings)
   sidebarSettingsRef.current = sidebarSettings
 
@@ -450,12 +453,24 @@ export function App() {
     // Held back briefly: a clean reconnect takes ~500ms, and a banner that
     // appears and vanishes in that time is noise, not information.
     let announce: number | undefined
+    let missedPushes = false
     const offState = transport.onState((state) => {
       window.clearTimeout(announce)
       if (state === 'reconnecting') {
+        missedPushes = true
         announce = window.setTimeout(() => setOffline(true), 1200)
       } else {
         setOffline(false)
+        // Pushes sent while the socket was down are in the durable log but
+        // were never delivered, and sequence numbers restart per connection
+        // so the gap detector cannot see it. Without this the thread stays
+        // silently truncated — an answer cut mid-sentence, an approval that
+        // was already resolved still asking — until the user switches
+        // sessions and back.
+        if (state === 'open' && missedPushes) {
+          missedPushes = false
+          resync.current()
+        }
       }
     })
     transport.connect()
@@ -762,6 +777,12 @@ export function App() {
     },
     [transport],
   )
+
+  resync.current = () => {
+    const id = activeIdRef.current
+    if (id && !id.startsWith('pending:')) void loadHistory(id).catch(() => undefined)
+    void refreshProjects().catch(() => undefined)
+  }
 
   useEffect(() => {
     if (!activeId) {
