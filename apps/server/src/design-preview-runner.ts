@@ -1,12 +1,19 @@
 import type { ChildProcessWithoutNullStreams } from 'node:child_process'
 import { spawn } from 'node:child_process'
-import { realpathSync } from 'node:fs'
+import { readFileSync, realpathSync } from 'node:fs'
+import path from 'node:path'
 import type { PreviewPlan } from '@harness/design-agent'
 import { spawnCli } from '@harness/proc'
 import { existingWorkspacePath } from './api-workspace-paths.js'
 import { safeCommandEnvironment } from './safe-command-environment.js'
 
-const COMMANDS = new Set(['bun', 'node', 'npm', 'npx', 'pnpm', 'yarn'])
+/**
+ * `npx` is deliberately absent: it fetches and executes a package from the
+ * network, which turns "the model chose a preview command" into arbitrary
+ * remote code execution. Everything left here runs code that is already in
+ * the workspace the user opened.
+ */
+const COMMANDS = new Set(['bun', 'node', 'npm', 'pnpm', 'yarn'])
 const UNSAFE_ARG = /[&|<>^%!"\r\n()]/
 const MAX_OUTPUT_BYTES = 100_000
 
@@ -28,6 +35,7 @@ export async function startDesignPreview(
   }
   const workspace = realpathSync(workspacePath)
   const cwd = existingWorkspacePath(workspace, plan.cwd, true)
+  assertRunsWorkspaceCode(workspace, cwd, plan)
   const child = spawnCli(plan.command, plan.args, {
     cwd,
     replaceEnv: true,
@@ -56,6 +64,46 @@ export async function startDesignPreview(
     viewports: plan.viewports,
     output: () => output,
     stop: () => stopProcess(child),
+  }
+}
+
+/**
+ * The plan must start code that already lives in the workspace.
+ *
+ * Design Mode reads the project's own README, package.json and source while
+ * it works, so anything in there can steer the model's choice of preview
+ * command. Without this, a line in a README was enough to make the harness
+ * run a command of the repository's choosing with no user approval. Package
+ * scripts and workspace files are code the user already opted into by
+ * pointing Design Mode at the project; a package name resolved off the
+ * network is not.
+ */
+export function assertRunsWorkspaceCode(workspace: string, cwd: string, plan: PreviewPlan): void {
+  if (plan.command === 'node') {
+    const entry = plan.args.find((arg) => !arg.startsWith('-'))
+    if (!entry) throw new Error('preview command must name a script in the workspace')
+    // Throws unless the file exists inside the workspace.
+    existingWorkspacePath(workspace, path.relative(workspace, path.resolve(cwd, entry)), false)
+    return
+  }
+
+  // `pnpm dev` and `pnpm run dev` are both idiomatic; both must name a script.
+  const named = plan.args.filter((arg) => !arg.startsWith('-'))
+  const script = named[0] === 'run' ? named[1] : named[0]
+  if (!script) throw new Error('preview command must name a package script')
+  if (!packageScripts(cwd).has(script)) {
+    throw new Error(`preview script "${script}" is not declared in package.json`)
+  }
+}
+
+function packageScripts(cwd: string): Set<string> {
+  try {
+    const manifest = JSON.parse(readFileSync(path.join(cwd, 'package.json'), 'utf8')) as {
+      scripts?: Record<string, unknown>
+    }
+    return new Set(Object.keys(manifest.scripts ?? {}))
+  } catch {
+    return new Set()
   }
 }
 

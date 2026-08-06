@@ -55,6 +55,35 @@ describe('design preview runner', () => {
     })
     await expect(startDesignPreview(workspace, plan)).rejects.toThrow('argument is unsafe')
   })
+
+  it('refuses to run code that is not already in the workspace', async () => {
+    // Design Mode reads the project's own README and sources, so anything in
+    // there can steer the model's choice of preview command. These are the
+    // shapes that turn that into "run something of the repo's choosing".
+    const workspace = mkdtempSync(path.join(os.tmpdir(), 'harness-preview-'))
+    workspaces.push(workspace)
+    writeFileSync(path.join(workspace, 'package.json'), JSON.stringify({ scripts: { dev: 'x' } }))
+    const plan = (command: string, args: string[]) =>
+      parsePreviewPlan({
+        version: 1,
+        command,
+        args,
+        cwd: '.',
+        url: 'http://127.0.0.1:5173',
+        viewports: [{ name: 'desktop', width: 1440, height: 1000 }],
+      })
+
+    // Fetches and executes a package off the network.
+    await expect(startDesignPreview(workspace, plan('npx', ['some-package']))).rejects.toThrow(
+      'not allowed',
+    )
+    // A script the project does not declare.
+    await expect(startDesignPreview(workspace, plan('pnpm', ['run', 'evil']))).rejects.toThrow(
+      'not declared in package.json',
+    )
+    // A file that is not in the workspace.
+    await expect(startDesignPreview(workspace, plan('node', ['../outside.mjs']))).rejects.toThrow()
+  })
 })
 
 function freePort(): Promise<number> {

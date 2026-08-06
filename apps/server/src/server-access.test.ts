@@ -6,7 +6,6 @@ describe('websocket origin gate', () => {
     // No Origin at all: the CLI, tests, a native mobile client.
     expect(allowedOrigin(undefined)).toBe(true)
     // The packaged Electron renderer loads from file:.
-    expect(allowedOrigin('null')).toBe(true)
     expect(allowedOrigin('file://')).toBe(true)
     // The dev server and the web UI.
     expect(allowedOrigin('http://127.0.0.1:5183')).toBe(true)
@@ -17,6 +16,10 @@ describe('websocket origin gate', () => {
     // Browsers do not apply same-origin policy to WebSocket, so without this
     // any page the user visits could drive the agent.
     expect(allowedOrigin('https://evil.example')).toBe(false)
+    // The opaque origin. Any page mints one with a sandboxed iframe or a
+    // data: document, so allowing it would hand the gate back to the
+    // attacker — verified admitted against a live server before this fix.
+    expect(allowedOrigin('null')).toBe(false)
     // Prefix tricks on our own hostnames.
     expect(allowedOrigin('http://127.0.0.1.evil.example')).toBe(false)
     expect(allowedOrigin('http://localhost.evil.example')).toBe(false)

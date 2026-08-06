@@ -65,8 +65,12 @@ function lsRemoteHead(): Promise<
   return new Promise((resolve) => {
     execFile(
       'git',
-      ['ls-remote', 'origin', 'refs/heads/main'],
-      { windowsHide: true, timeout: 10_000 },
+      // Anchored like head(): without a cwd this resolves `origin` from
+      // whatever repository the server happened to start in, and a git remote
+      // is a code-execution primitive (ext::, core.gitProxy, insteadOf).
+      // protocol.ext.allow=never refuses the worst of those outright.
+      ['-c', 'protocol.ext.allow=never', 'ls-remote', 'origin', 'refs/heads/main'],
+      { windowsHide: true, timeout: 10_000, cwd: dirname(fileURLToPath(import.meta.url)) },
       (error, stdout) => {
         const sha = stdout?.split(/\s/)[0]
         if (error || !sha) resolve({ error: 'Could not reach GitHub.' })
