@@ -720,6 +720,13 @@ export class CodexAdapter extends EventEmitter<CodexAdapterEvents> {
       grantRoot?: string | null
     }
     const id = p.approvalId ?? p.itemId ?? crypto.randomUUID()
+    // An id collision (a retried command reusing its itemId) would silently
+    // drop the earlier responder and leave Codex blocked on it forever.
+    const previous = this.#approvals.get(id)
+    if (previous) {
+      previous.respond({ decision: DECISION[previous.kind]['deny'] })
+      this.emit('event', { type: 'approval.resolved', id })
+    }
     this.#approvals.set(id, { kind, respond })
 
     this.emit('event', {
@@ -774,6 +781,20 @@ export class CodexAdapter extends EventEmitter<CodexAdapterEvents> {
 
       case 'turn/completed': {
         const p = params as TurnCompletedNotification
+        // A turn that ends with unanswered approvals must not leave the
+        // thread pinned to 'approval' forever — the request is durably in
+        // the event log, so without a resolved event even a restart keeps
+        // the ghost card. Decline what nobody answered.
+        for (const [id, pending] of [...this.#approvals]) {
+          this.#approvals.delete(id)
+          pending.respond({ decision: DECISION[pending.kind]['deny'] })
+          emit({ type: 'approval.resolved', id })
+        }
+        for (const [id, respond] of [...this.#userInputs]) {
+          this.#userInputs.delete(id)
+          respond({ answers: {} })
+          emit({ type: 'user_input.resolved', id })
+        }
         emit({
           type: 'turn.completed',
           turnId: p.turn.id,
