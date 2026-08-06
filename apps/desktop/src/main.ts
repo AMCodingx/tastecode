@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto'
-import { mkdir, writeFile } from 'node:fs/promises'
+import { mkdir, rm, writeFile } from 'node:fs/promises'
 import { fileURLToPath } from 'node:url'
 import path from 'node:path'
 import {
@@ -42,7 +42,17 @@ function isWebUrl(value: string): boolean {
     return false
   }
 }
+function sameOrigin(url: string, base: string): boolean {
+  try {
+    return new URL(url).origin === new URL(base).origin
+  } catch {
+    return false
+  }
+}
 const devServer = process.env['HARNESS_DEV_SERVER']
+/** Hidden capture windows are real BrowserWindows; lifecycle checks that count
+ *  "the app's windows" must not count them. */
+const captureWindows = new Set<BrowserWindow>()
 const MAX_PASTED_IMAGE_BYTES = 25 * 1024 * 1024
 const CAPTURE_SETTLE_SCRIPT = `new Promise(resolve => requestAnimationFrame(resolve))
   .then(() => Promise.race([
@@ -97,7 +107,9 @@ function createWindow(): void {
   })
 
   window.webContents.on('will-navigate', (event, url) => {
-    const allowed = devServer !== undefined && url.startsWith(devServer)
+    // Origin comparison, not a prefix check — "http://localhost:5173.evil.example"
+    // starts with the dev server string but is not it.
+    const allowed = devServer !== undefined && sameOrigin(url, devServer)
     if (!allowed) {
       event.preventDefault()
       if (isWebUrl(url)) void shell.openExternal(url)
@@ -112,11 +124,23 @@ function createWindow(): void {
     applyZoom(window, action)
   })
 
+  // If the user closes the last real window while a hidden capture is in
+  // flight, the app must still quit/reset — transient windows don't get a vote.
+  window.on('closed', () => {
+    if (appWindows().length === 0) {
+      for (const capture of [...captureWindows]) capture.destroy()
+    }
+  })
+
   if (devServer) {
     void window.loadURL(devServer)
   } else {
     void window.loadFile(path.join(here, '../../web/dist/index.html'))
   }
+}
+
+function appWindows(): BrowserWindow[] {
+  return BrowserWindow.getAllWindows().filter((window) => !captureWindows.has(window))
 }
 
 ipcMain.handle('harness:setZoom', (event, action: unknown) => {
@@ -168,9 +192,13 @@ async function capturePreview(request: PreviewCaptureRequest): Promise<PreviewCa
       sandbox: true,
       webSecurity: true,
       spellcheck: false,
-      partition: `preview-capture-${request.requestId}`,
+      // One fixed partition, cleared after every run. A partition per request
+      // would leave Electron's session registry holding a live session (and
+      // its network stack) per capture for the life of the process.
+      partition: 'preview-capture',
     },
   })
+  captureWindows.add(preview)
 
   preview.webContents.session.setPermissionRequestHandler((_contents, _permission, callback) =>
     callback(false),
@@ -183,9 +211,14 @@ async function capturePreview(request: PreviewCaptureRequest): Promise<PreviewCa
   // A pending webfont or a throttled hidden renderer can stall the settle
   // script forever; the whole capture races a hard deadline instead of
   // leaving a hidden BrowserWindow alive and the caller's promise pending.
-  const deadline = new Promise<never>((_, reject) =>
-    setTimeout(() => reject(new Error('preview capture timed out')), 30_000).unref?.(),
-  )
+  let deadlineTimer: NodeJS.Timeout | undefined
+  const deadline = new Promise<never>((_, reject) => {
+    deadlineTimer = setTimeout(() => reject(new Error('preview capture timed out')), 30_000)
+    deadlineTimer.unref?.()
+  })
+  // Until the first race attaches a handler, a firing deadline would be an
+  // unhandled rejection — fatal in the main process — e.g. when mkdir throws.
+  deadline.catch(() => undefined)
   try {
     await mkdir(directory, { recursive: true, mode: 0o700 })
     await Promise.race([preview.loadURL(request.url), deadline])
@@ -208,13 +241,19 @@ async function capturePreview(request: PreviewCaptureRequest): Promise<PreviewCa
     }
     return { status: 'completed', requestId: request.requestId, screenshots }
   } catch (error) {
+    // Nothing consumes a failed capture's directory; leaving it accumulates.
+    await rm(directory, { recursive: true, force: true }).catch(() => undefined)
     return {
       status: 'failed',
       requestId: request.requestId,
       error: error instanceof Error ? error.message : String(error),
     }
   } finally {
+    clearTimeout(deadlineTimer)
+    const previewSession = preview.webContents.session
     preview.destroy()
+    captureWindows.delete(preview)
+    void previewSession.clearStorageData().catch(() => undefined)
   }
 }
 
@@ -222,7 +261,8 @@ async function capturePreview(request: PreviewCaptureRequest): Promise<PreviewCa
  * Native pickers. The renderer can ask for a path but never reads the disk
  * itself — the user's own selection is the only way a path enters the app.
  */
-ipcMain.handle('harness:pickFolder', async () => {
+ipcMain.handle('harness:pickFolder', async (event) => {
+  requireOwnRenderer(event.sender)
   const result = await dialog.showOpenDialog({
     properties: ['openDirectory', 'createDirectory'],
     title: 'Choose a project folder',
@@ -230,7 +270,8 @@ ipcMain.handle('harness:pickFolder', async () => {
   return result.canceled ? undefined : result.filePaths[0]
 })
 
-ipcMain.handle('harness:pickSkillFolder', async () => {
+ipcMain.handle('harness:pickSkillFolder', async (event) => {
+  requireOwnRenderer(event.sender)
   const result = await dialog.showOpenDialog({
     properties: ['openDirectory'],
     title: 'Choose an Agent Skill folder',
@@ -238,7 +279,8 @@ ipcMain.handle('harness:pickSkillFolder', async () => {
   return result.canceled ? undefined : result.filePaths[0]
 })
 
-ipcMain.handle('harness:pickFiles', async () => {
+ipcMain.handle('harness:pickFiles', async (event) => {
+  requireOwnRenderer(event.sender)
   const result = await dialog.showOpenDialog({
     properties: ['openFile', 'multiSelections'],
     title: 'Attach files',
@@ -265,7 +307,7 @@ void app.whenReady().then(() => {
   configureMediaPermissions()
   createWindow()
   app.on('activate', () => {
-    if (BrowserWindow.getAllWindows().length === 0) createWindow()
+    if (appWindows().length === 0) createWindow()
   })
 })
 
@@ -306,7 +348,7 @@ function requireOwnRenderer(webContents: WebContents): void {
 
 function isOwnRenderer(webContents: WebContents): boolean {
   const url = webContents.getURL()
-  return devServer ? url.startsWith(devServer) : url.startsWith('file:')
+  return devServer ? sameOrigin(url, devServer) : url.startsWith('file:')
 }
 
 app.on('window-all-closed', () => {
