@@ -38,27 +38,41 @@ function canonicalProjectPath(projectPath: string): string {
   return process.platform === 'win32' ? resolved.toLowerCase() : resolved
 }
 
-function parseConfig(raw: string): ConfigFile {
+function parseConfig(raw: string): { config: ConfigFile; skipped: boolean } {
   const value: unknown = JSON.parse(raw)
   if (!isObject(value) || value['version'] !== 1 || !isObject(value['projects'])) {
     throw new Error('invalid MCP config: expected a version 1 project map')
   }
+  let skipped = false
 
+  // One malformed entry must not take the whole file down: throwing here
+  // made every MCP operation fail, which also removed the only way to repair
+  // the file from inside the app. Invalid entries are skipped and logged;
+  // the next write persists the sanitised shape.
   const projects: ConfigFile['projects'] = {}
   for (const [projectPath, providersValue] of Object.entries(value['projects'])) {
-    if (!isObject(providersValue))
-      throw new Error(`invalid MCP config for project "${projectPath}"`)
+    if (!isObject(providersValue)) {
+      skipped = true
+      console.warn(`[mcp-config] skipping invalid project entry "${projectPath}"`)
+      continue
+    }
     const providers: ConfigFile['projects'][string] = {}
     for (const [providerName, serversValue] of Object.entries(providersValue)) {
       const provider = ProviderIdSchema.safeParse(providerName)
       if (!provider.success || !isObject(serversValue)) {
-        throw new Error(`invalid MCP provider "${providerName}" for project "${projectPath}"`)
+        skipped = true
+        console.warn(
+          `[mcp-config] skipping invalid provider "${providerName}" for "${projectPath}"`,
+        )
+        continue
       }
       const servers: Record<string, McpServerConfig> = {}
       for (const [serverId, serverValue] of Object.entries(serversValue)) {
         const server = McpServerConfigSchema.safeParse(serverValue)
         if (!server.success || server.data.id !== serverId) {
-          throw new Error(`invalid MCP server "${serverId}" for project "${projectPath}"`)
+          skipped = true
+          console.warn(`[mcp-config] skipping invalid server "${serverId}" for "${projectPath}"`)
+          continue
         }
         servers[serverId] = server.data
       }
@@ -66,7 +80,7 @@ function parseConfig(raw: string): ConfigFile {
     }
     projects[projectPath] = providers
   }
-  return { version: 1, projects }
+  return { config: { version: 1, projects }, skipped }
 }
 
 /** Human-readable project MCP definitions. Secret values never enter this file. */
@@ -114,14 +128,25 @@ export class McpConfigStore {
     return (project[provider] ??= {})
   }
 
+  /** Set when the last read skipped entries; the original must be kept. */
+  #readLossy = false
+
   #read(): ConfigFile {
-    return existsSync(this.location)
-      ? parseConfig(readFileSync(this.location, 'utf8'))
-      : structuredClone(EMPTY_CONFIG)
+    if (!existsSync(this.location)) return structuredClone(EMPTY_CONFIG)
+    const raw = readFileSync(this.location, 'utf8')
+    const parsed = parseConfig(raw)
+    this.#readLossy = parsed.skipped
+    return parsed.config
   }
 
   #write(file: ConfigFile): void {
     mkdirSync(path.dirname(this.location), { recursive: true })
+    // A hand-edited file with entries we could not parse is not ours to
+    // destroy — park the original next to the sanitised rewrite.
+    if (this.#readLossy && existsSync(this.location)) {
+      renameSync(this.location, `${this.location}.invalid-${Date.now()}.bak`)
+      this.#readLossy = false
+    }
     const temporary = `${this.location}.${randomUUID()}.tmp`
     writeFileSync(temporary, `${JSON.stringify(file, null, 2)}\n`, {
       encoding: 'utf8',

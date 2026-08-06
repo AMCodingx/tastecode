@@ -84,7 +84,14 @@ export async function switchWorkspaceBranch(path: string, branch: string): Promi
 
 async function git(cwd: string, args: string[]): Promise<string | undefined> {
   try {
-    const { stdout } = await run('git', args, { cwd, windowsHide: true, timeout: 4000 })
+    const { stdout } = await run('git', args, {
+      cwd,
+      windowsHide: true,
+      timeout: 8000,
+      // A large repo's numstat overflowing Node's 1 MiB default silently
+      // reported the tree as clean right before dispatching an agent.
+      maxBuffer: 64 * 1024 * 1024,
+    })
     return stdout.trim()
   } catch {
     return undefined

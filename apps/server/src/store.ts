@@ -508,13 +508,22 @@ export class Store {
     if (this.thread(id)?.worktreePath) {
       throw new Error('discard the isolated session checkout before deleting it')
     }
-    this.#db.prepare(`DELETE FROM session_search WHERE thread_id = ?`).run(id)
-    this.#db.prepare(`DELETE FROM events WHERE thread_id = ?`).run(id)
-    this.#db.prepare(`DELETE FROM checkpoints WHERE thread_id = ?`).run(id)
-    this.#db.prepare(`DELETE FROM restore_undos WHERE thread_id = ?`).run(id)
-    this.#db.prepare(`DELETE FROM diff_decisions WHERE thread_id = ?`).run(id)
-    this.#db.prepare(`DELETE FROM design_runs WHERE thread_id = ?`).run(id)
-    this.#db.prepare(`DELETE FROM threads WHERE id = ?`).run(id)
+    // One transaction: a failure partway must not leave orphaned rows with
+    // no owner and no path to ever clean them up.
+    this.#db.exec('BEGIN IMMEDIATE')
+    try {
+      this.#db.prepare(`DELETE FROM session_search WHERE thread_id = ?`).run(id)
+      this.#db.prepare(`DELETE FROM events WHERE thread_id = ?`).run(id)
+      this.#db.prepare(`DELETE FROM checkpoints WHERE thread_id = ?`).run(id)
+      this.#db.prepare(`DELETE FROM restore_undos WHERE thread_id = ?`).run(id)
+      this.#db.prepare(`DELETE FROM diff_decisions WHERE thread_id = ?`).run(id)
+      this.#db.prepare(`DELETE FROM design_runs WHERE thread_id = ?`).run(id)
+      this.#db.prepare(`DELETE FROM threads WHERE id = ?`).run(id)
+      this.#db.exec('COMMIT')
+    } catch (error) {
+      this.#db.exec('ROLLBACK')
+      throw error
+    }
   }
 
   setDesignRun(threadId: string, payload: unknown): void {
