@@ -1,4 +1,6 @@
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
+use std::collections::BTreeMap;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum ProviderId {
@@ -540,6 +542,238 @@ pub struct AcpAgentsResult {
     pub agents: Vec<AcpAgent>,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Account {
+    pub signed_in: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub email: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub plan: Option<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "source", rename_all = "snake_case")]
+pub enum McpConfigValue {
+    Literal { value: String },
+    Credential { credential_ref: String },
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum McpTransport {
+    Stdio {
+        command: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        args: Option<Vec<String>>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        cwd: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        environment: Option<BTreeMap<String, McpConfigValue>>,
+    },
+    Http {
+        url: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        headers: Option<BTreeMap<String, McpConfigValue>>,
+    },
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum McpServerScope {
+    Project,
+    Global,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum McpAuthMethod {
+    Oauth,
+    Bearer,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "status", rename_all = "snake_case")]
+pub enum McpAuth {
+    Unsupported,
+    NotRequired,
+    SignInRequired { method: McpAuthMethod },
+    Authenticated { method: McpAuthMethod },
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "state", rename_all = "snake_case")]
+pub enum McpStartupStatus {
+    Stopped,
+    Starting,
+    Ready,
+    Failed { message: String },
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct McpTool {
+    pub name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    pub input_schema: BTreeMap<String, Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub output_schema: Option<BTreeMap<String, Value>>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct McpResource {
+    pub uri: String,
+    pub name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mime_type: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub size: Option<u64>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct McpResourceTemplate {
+    pub uri_template: String,
+    pub name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mime_type: Option<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct McpServer {
+    pub id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub display_name: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub version: Option<String>,
+    pub scope: McpServerScope,
+    pub enabled: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub transport: Option<McpTransport>,
+    pub auth: McpAuth,
+    pub startup: McpStartupStatus,
+    pub tools: Vec<McpTool>,
+    pub resources: Vec<McpResource>,
+    pub resource_templates: Vec<McpResourceTemplate>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct McpCapabilities {
+    pub inventory: bool,
+    pub add: bool,
+    pub update: bool,
+    pub remove: bool,
+    pub reload: bool,
+    pub start_o_auth: bool,
+    pub cancel_o_auth: bool,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct McpListResult {
+    pub capabilities: McpCapabilities,
+    pub servers: Vec<McpServer>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct McpServerConfig {
+    pub id: String,
+    pub enabled: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub display_name: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub transport: Option<McpTransport>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SkillScope {
+    Project,
+    User,
+    System,
+    Admin,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum SkillSource {
+    Folder { path: String },
+    Provider,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SkillDependencyError {
+    pub dependency: String,
+    pub message: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Skill {
+    pub id: String,
+    pub name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub display_name: Option<String>,
+    pub description: String,
+    pub source: SkillSource,
+    pub scope: SkillScope,
+    pub enabled: bool,
+    pub dependency_errors: Vec<SkillDependencyError>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SkillDiscoveryError {
+    pub path: String,
+    pub message: String,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SkillCapabilities {
+    pub inventory: bool,
+    pub configure: bool,
+    pub install: bool,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SkillsListResult {
+    pub capabilities: SkillCapabilities,
+    pub skills: Vec<Skill>,
+    pub errors: Vec<SkillDiscoveryError>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SkillEnabledResult {
+    pub enabled: bool,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SkillInstalledResult {
+    pub skill: Skill,
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ModelsListResult {
@@ -876,5 +1110,55 @@ mod tests {
 
         assert_eq!(output.terminal_id, "terminal-1");
         assert_eq!(exit.exit_code, None);
+    }
+
+    #[test]
+    fn mcp_and_skills_match_the_typescript_wire_shape() {
+        let mcp: McpListResult = serde_json::from_value(json!({
+            "capabilities": {
+                "inventory": true,
+                "add": true,
+                "update": true,
+                "remove": true,
+                "reload": true,
+                "startOAuth": true,
+                "cancelOAuth": true
+            },
+            "servers": [{
+                "id": "docs",
+                "displayName": "Docs",
+                "scope": "project",
+                "enabled": true,
+                "transport": { "type": "http", "url": "https://example.com/mcp" },
+                "auth": { "status": "authenticated", "method": "oauth" },
+                "startup": { "state": "ready" },
+                "tools": [],
+                "resources": [],
+                "resourceTemplates": []
+            }]
+        }))
+        .unwrap();
+        let skills: SkillsListResult = serde_json::from_value(json!({
+            "capabilities": { "inventory": true, "configure": true, "install": true },
+            "skills": [{
+                "id": "skill-1",
+                "name": "review",
+                "description": "Review the current change",
+                "source": { "type": "folder", "path": "review-skill" },
+                "scope": "project",
+                "enabled": true,
+                "dependencyErrors": []
+            }],
+            "errors": []
+        }))
+        .unwrap();
+
+        assert!(mcp.capabilities.start_o_auth);
+        assert!(matches!(mcp.servers[0].startup, McpStartupStatus::Ready));
+        assert_eq!(skills.skills[0].scope, SkillScope::Project);
+        assert_eq!(
+            serde_json::to_value(mcp.capabilities).unwrap()["cancelOAuth"],
+            true
+        );
     }
 }

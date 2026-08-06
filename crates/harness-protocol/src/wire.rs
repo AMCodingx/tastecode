@@ -76,6 +76,13 @@ pub mod method {
     pub const PROVIDERS_LIST: &str = "providers.list";
     pub const CONNECTIONS_LIST: &str = "connections.list";
     pub const CONNECTIONS_MODELS: &str = "connections.models";
+    pub const MCP_LIST: &str = "mcp.list";
+    pub const MCP_ADD: &str = "mcp.add";
+    pub const MCP_REMOVE: &str = "mcp.remove";
+    pub const MCP_RELOAD: &str = "mcp.reload";
+    pub const SKILLS_LIST: &str = "skills.list";
+    pub const SKILLS_SET_ENABLED: &str = "skills.setEnabled";
+    pub const SKILLS_INSTALL_FROM_FOLDER: &str = "skills.installFromFolder";
     pub const ACP_AGENTS: &str = "acp.agents";
     pub const PROJECTS_LIST: &str = "projects.list";
     pub const PROJECTS_ADD: &str = "projects.add";
@@ -108,6 +115,8 @@ pub mod channel {
     pub const SIDEBAR_SETTINGS: &str = "sidebar.settings";
     pub const TERMINAL_OUTPUT: &str = "terminal.output";
     pub const TERMINAL_EXIT: &str = "terminal.exit";
+    pub const MCP_CHANGED: &str = "mcp.changed";
+    pub const SKILLS_CHANGED: &str = "skills.changed";
 }
 
 #[cfg(test)]
@@ -166,5 +175,21 @@ mod tests {
         assert_eq!(method::SIDEBAR_SETTINGS, "sidebar.settings");
         assert_eq!(method::SIDEBAR_UPDATE_SETTINGS, "sidebar.updateSettings");
         assert_eq!(channel::SIDEBAR_SETTINGS, "sidebar.settings");
+    }
+
+    #[test]
+    fn mcp_and_skills_contract_keep_the_existing_method_names() {
+        assert_eq!(method::MCP_LIST, "mcp.list");
+        assert_eq!(method::MCP_ADD, "mcp.add");
+        assert_eq!(method::MCP_REMOVE, "mcp.remove");
+        assert_eq!(method::MCP_RELOAD, "mcp.reload");
+        assert_eq!(method::SKILLS_LIST, "skills.list");
+        assert_eq!(method::SKILLS_SET_ENABLED, "skills.setEnabled");
+        assert_eq!(
+            method::SKILLS_INSTALL_FROM_FOLDER,
+            "skills.installFromFolder"
+        );
+        assert_eq!(channel::MCP_CHANGED, "mcp.changed");
+        assert_eq!(channel::SKILLS_CHANGED, "skills.changed");
     }
 }
