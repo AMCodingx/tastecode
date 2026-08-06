@@ -867,11 +867,7 @@ export class Orchestrator {
       const design = attachments.includes(DESIGN_BRIEF_ATTACHMENT)
       const turnOptions = design ? { ...options, effort: 'low' } : options
       if (design) {
-        const previousPreview = this.#designPreviews.get(threadId)
-        if (previousPreview) {
-          this.#designPreviews.delete(threadId)
-          void previousPreview.stop()
-        }
+        this.#stopDesignPreview(threadId)
         this.#designFlows.set(threadId, {
           workspacePath: this.#repoPath(threadId),
           originalRequest: text,
@@ -1511,6 +1507,7 @@ export class Orchestrator {
 
   close(threadId: string): void {
     this.#terminals.closeThread(threadId)
+    this.#stopDesignPreview(threadId)
     this.#inboxProjections.delete(threadId)
     const entry = this.#threads.get(threadId)
     if (entry) {
@@ -1833,7 +1830,12 @@ export class Orchestrator {
       if (this.#acceptedDesignOutputs.has(turnId)) return
       try {
         this.#handleDesignOutput(threadId, turnId, event.item.text ?? '')
-        this.#acceptedDesignOutputs.add(turnId)
+        // Only while the flow is still ours. A 'not a design task' verdict
+        // clears the flow inside the call above, which detaches this turn —
+        // re-adding it here left an entry only disposeAll could release.
+        if (this.#designTurns.get(turnId) === threadId) {
+          this.#acceptedDesignOutputs.add(turnId)
+        }
       } catch (error) {
         this.#designOutputErrors.set(turnId, error)
       }
@@ -2180,7 +2182,25 @@ export class Orchestrator {
     return prompt
   }
 
+  /**
+   * Stop the dev server a design run started, if any.
+   *
+   * It is a real spawned process with its cwd inside the session's worktree.
+   * Left running it holds a port and, on Windows, a lock on the checkout —
+   * which then makes removing that worktree fail with a git error the user
+   * cannot act on.
+   */
+  #stopDesignPreview(threadId: string): void {
+    const preview = this.#designPreviews.get(threadId)
+    if (!preview) return
+    this.#designPreviews.delete(threadId)
+    void preview.stop()
+  }
+
   #clearDesignFlow(threadId: string): void {
+    // The flow is over however it ended — completed, failed, or "not a design
+    // task". Its preview server has no owner left to stop it.
+    this.#stopDesignPreview(threadId)
     this.#designFlows.delete(threadId)
     this.#store.deleteDesignRun(threadId)
     const requestId = this.#designInputByThread.get(threadId)
@@ -2195,8 +2215,9 @@ export class Orchestrator {
       }
     }
     // Item ids normally self-delete on item.completed; a design turn that
-    // died mid-item leaves its entry behind. With no design flow live the
-    // set has no meaning, so this is the safe moment to empty it.
+    // died mid-item leaves its entry behind. Only safe to empty the whole set
+    // when no flow anywhere is live — it is global, and clearing it per
+    // thread would drop another thread's in-flight ids.
     if (this.#designFlows.size === 0) this.#designMessageItems.clear()
   }
 
