@@ -58,16 +58,23 @@ import {
 import {
   ACCENT_KEY,
   applyAccentPreference,
+  applyBackdropPreference,
   applyFontPreference,
+  applyGlassPreference,
   applyTheme,
+  BACKDROP_KEY,
   DARK_THEME_QUERY,
   FONT_KEY,
+  GLASS_KEY,
   readAccentPreference,
+  readBackdropPreference,
   readFontPreference,
+  readGlassPreference,
   readSystemTheme,
   readThemePreference,
   THEME_KEY,
   type AccentPreference,
+  type BackdropPreference,
   type Theme,
   type ThemePreference,
   type FontPreference,
@@ -223,6 +230,9 @@ export function App() {
   const [themePreference, setThemePreference] = useState<ThemePreference>(readThemePreference)
   const [fontPreference, setFontPreference] = useState<FontPreference>(readFontPreference)
   const [accentPreference, setAccentPreference] = useState<AccentPreference>(readAccentPreference)
+  const [backdropPreference, setBackdropPreference] =
+    useState<BackdropPreference>(readBackdropPreference)
+  const [sidebarGlass, setSidebarGlass] = useState<number>(readGlassPreference)
   const [systemTheme, setSystemTheme] = useState<Theme>(readSystemTheme)
   const theme = themePreference === 'system' ? systemTheme : themePreference
   const [macOSFontSmoothing, setMacOSFontSmoothing] = useState(
@@ -284,6 +294,16 @@ export function App() {
     applyAccentPreference(accentPreference)
     localStorage.setItem(ACCENT_KEY, accentPreference)
   }, [accentPreference])
+
+  useLayoutEffect(() => {
+    applyBackdropPreference(backdropPreference)
+    localStorage.setItem(BACKDROP_KEY, backdropPreference)
+  }, [backdropPreference])
+
+  useLayoutEffect(() => {
+    applyGlassPreference(sidebarGlass)
+    localStorage.setItem(GLASS_KEY, String(sidebarGlass))
+  }, [sidebarGlass])
 
   useEffect(() => {
     const media = globalThis.matchMedia?.(DARK_THEME_QUERY)
@@ -1980,6 +2000,10 @@ export function App() {
           onFontPreferenceChange={setFontPreference}
           accentPreference={accentPreference}
           onAccentPreferenceChange={setAccentPreference}
+          backdropPreference={backdropPreference}
+          onBackdropPreferenceChange={setBackdropPreference}
+          sidebarGlass={sidebarGlass}
+          onSidebarGlassChange={setSidebarGlass}
           showMacOSFontSmoothing={macOS}
           macOSFontSmoothing={macOSFontSmoothing}
           onMacOSFontSmoothingChange={setMacOSFontSmoothing}

@@ -46,7 +46,12 @@ import {
 } from '../provider-install.js'
 import type { Transport } from '../transport.js'
 import { InstallTerminal } from './InstallTerminal.js'
-import type { AccentPreference, FontPreference, ThemePreference } from '../theme.js'
+import type {
+  AccentPreference,
+  BackdropPreference,
+  FontPreference,
+  ThemePreference,
+} from '../theme.js'
 import { McpSettings } from './McpSettings.js'
 import { Menu, MenuItem } from './Menu.js'
 import { SkillsSettings } from './SkillsSettings.js'
@@ -80,6 +85,15 @@ const ACCENT_OPTIONS = [
   { value: 'lavender', label: 'Lavender' },
 ] as const satisfies ReadonlyArray<{ value: AccentPreference; label: string }>
 
+const BACKDROP_OPTIONS = [
+  { value: 'default', label: 'Graphite' },
+  { value: 'slate', label: 'Slate' },
+  { value: 'mocha', label: 'Mocha' },
+  { value: 'forest', label: 'Forest' },
+  { value: 'midnight', label: 'Midnight' },
+  { value: 'plum', label: 'Plum' },
+] as const satisfies ReadonlyArray<{ value: BackdropPreference; label: string }>
+
 /**
  * Settings stays intentionally small: the sidebar reorganizes the decisions
  * the app already exposes without inventing preferences for their own sake.
@@ -107,6 +121,10 @@ export function Settings(props: {
   onFontPreferenceChange: (font: FontPreference) => void
   accentPreference: AccentPreference
   onAccentPreferenceChange: (accent: AccentPreference) => void
+  backdropPreference: BackdropPreference
+  onBackdropPreferenceChange: (backdrop: BackdropPreference) => void
+  sidebarGlass: number
+  onSidebarGlassChange: (glass: number) => void
   showMacOSFontSmoothing: boolean
   macOSFontSmoothing: boolean
   onMacOSFontSmoothingChange: (enabled: boolean) => void
@@ -740,6 +758,10 @@ function AppearanceSettings(props: {
   onFontPreferenceChange: (font: FontPreference) => void
   accentPreference: AccentPreference
   onAccentPreferenceChange: (accent: AccentPreference) => void
+  backdropPreference: BackdropPreference
+  onBackdropPreferenceChange: (backdrop: BackdropPreference) => void
+  sidebarGlass: number
+  onSidebarGlassChange: (glass: number) => void
   showMacOSFontSmoothing: boolean
   macOSFontSmoothing: boolean
   onMacOSFontSmoothingChange: (enabled: boolean) => void
@@ -769,6 +791,62 @@ function AppearanceSettings(props: {
             </button>
           ))}
         </fieldset>
+      </div>
+      <div className="appearance__text">
+        <h2 className="settings__group-title">Background</h2>
+        <fieldset
+          className="appearance-picker appearance-picker--accent"
+          aria-label="Background palette"
+        >
+          {BACKDROP_OPTIONS.map((option) => (
+            <button
+              className={`appearance-choice${props.backdropPreference === option.value ? ' is-selected' : ''}`}
+              type="button"
+              aria-pressed={props.backdropPreference === option.value}
+              onClick={() => props.onBackdropPreferenceChange(option.value)}
+              key={option.value}
+            >
+              <span
+                className="appearance-choice__swatch"
+                data-backdrop-preview={option.value}
+                aria-hidden
+              />
+              <span>{option.label}</span>
+            </button>
+          ))}
+        </fieldset>
+      </div>
+      <div className="appearance__text">
+        <h2 className="settings__group-title">Sidebar</h2>
+        <div className="settings__group">
+          <SettingsRow
+            title="Translucent sidebar"
+            note="Let a soft glow shine through the rail. Strength is yours to set."
+          >
+            <div className="settings__inline-controls">
+              <input
+                className="settings__slider"
+                type="range"
+                aria-label="Sidebar translucency"
+                min={0}
+                max={60}
+                step={5}
+                value={props.sidebarGlass}
+                onChange={(event) => props.onSidebarGlassChange(event.currentTarget.valueAsNumber)}
+              />
+              <button
+                className={`switch${props.sidebarGlass > 0 ? ' is-on' : ''}`}
+                type="button"
+                role="switch"
+                aria-label="Translucent sidebar"
+                aria-checked={props.sidebarGlass > 0}
+                onClick={() => props.onSidebarGlassChange(props.sidebarGlass > 0 ? 0 : 35)}
+              >
+                <span className="switch__thumb" />
+              </button>
+            </div>
+          </SettingsRow>
+        </div>
       </div>
       <div className="appearance__text">
         <h2 className="settings__group-title">Accent palette</h2>

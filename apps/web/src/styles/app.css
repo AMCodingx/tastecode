@@ -6790,3 +6790,70 @@
     animation: none;
   }
 }
+
+/* ---------------------------------------------------------------------------
+   Translucent sidebar. The strength comes from --rail-glass (0..0.6, set by
+   Appearance). A soft accent glow sits behind the shell whenever glass or a
+   background palette is active, so the translucency has something to show.
+   --------------------------------------------------------------------------- */
+
+:root[data-glass='on'] .rail {
+  background: color-mix(
+    in srgb,
+    var(--bg-rail) calc(100% - var(--rail-glass, 0) * 100%),
+    transparent
+  );
+  backdrop-filter: blur(16px) saturate(1.15);
+  -webkit-backdrop-filter: blur(16px) saturate(1.15);
+}
+
+:root[data-glass='on'] .shell,
+:root[data-backdrop]:not([data-backdrop='default']) .shell {
+  background-image:
+    radial-gradient(
+      60% 42% at 8% 0%,
+      color-mix(in srgb, var(--attention) 6%, transparent),
+      transparent 70%
+    ),
+    radial-gradient(
+      50% 38% at 100% 100%,
+      color-mix(in srgb, var(--effort) 5%, transparent),
+      transparent 70%
+    );
+  background-attachment: fixed;
+}
+
+.appearance-choice__swatch[data-backdrop-preview='default'] {
+  --swatch-a: #1a1a1a;
+  --swatch-b: #444444;
+}
+
+.appearance-choice__swatch[data-backdrop-preview='slate'] {
+  --swatch-a: #12151a;
+  --swatch-b: #3a4353;
+}
+
+.appearance-choice__swatch[data-backdrop-preview='mocha'] {
+  --swatch-a: #161312;
+  --swatch-b: #55453d;
+}
+
+.appearance-choice__swatch[data-backdrop-preview='forest'] {
+  --swatch-a: #121713;
+  --swatch-b: #3c5242;
+}
+
+.appearance-choice__swatch[data-backdrop-preview='midnight'] {
+  --swatch-a: #0e1119;
+  --swatch-b: #2c3a5e;
+}
+
+.appearance-choice__swatch[data-backdrop-preview='plum'] {
+  --swatch-a: #161217;
+  --swatch-b: #4d3a52;
+}
+
+.settings__slider {
+  width: 130px;
+  accent-color: var(--attention);
+}
