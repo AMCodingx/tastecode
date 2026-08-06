@@ -2,13 +2,15 @@ use async_channel::Receiver as EventReceiver;
 use harness_client::{ClientEvent, ClientHandle, ConnectionState, Endpoint};
 use harness_protocol::{
     AcpAgent, AcpAgentsResult, ApprovalDecision, ApprovalMode, DiffDecision, DomainEvent,
-    ErrorCode, Model, ModelConnection, ModelConnectionsResult, ModelsListResult, PROTOCOL_VERSION,
-    ProjectAddedResult, ProjectSummary, ProjectsListResult, ProviderId, ProviderStatus,
-    ProvidersListResult, Response, ReviewDiffResult, SendTurnResult, ServerWelcome, SessionDiff,
-    SessionSummary, SidebarMode, SidebarSettings, TerminalExitPush, TerminalOpenedResult,
+    ErrorCode, McpListResult, McpServer, Model, ModelConnection, ModelConnectionsResult,
+    ModelsListResult, PROTOCOL_VERSION, ProjectAddedResult, ProjectSummary, ProjectsListResult,
+    ProviderId, ProviderStatus, ProvidersListResult, Response, ReviewDiffResult, SendTurnResult,
+    ServerWelcome, SessionDiff, SessionSummary, SidebarMode, SidebarSettings, SkillEnabledResult,
+    SkillInstalledResult, SkillsListResult, TerminalExitPush, TerminalOpenedResult,
     TerminalOutputPush, ThreadEventPush, ThreadHistoryResult, ThreadInboxStatus, ThreadLifecycle,
     ThreadLifecyclePush, ThreadQueuePush, ThreadQueueResult, ThreadStartResult, channel, method,
 };
+use serde::Deserialize;
 use serde_json::{Value, json};
 use std::collections::HashMap;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -24,6 +26,18 @@ pub(crate) struct ClientState {
     pub(crate) acp_agents: Vec<AcpAgent>,
     pub(crate) model_catalog: Vec<ModelChoice>,
     pub(crate) model_catalog_loaded: bool,
+    pub(crate) mcp_inventory: Option<ScopedMcpInventory>,
+    pub(crate) mcp_loading: bool,
+    pub(crate) mcp_busy: Option<String>,
+    pub(crate) mcp_error: Option<String>,
+    mcp_scope: Option<(ProviderId, String)>,
+    mcp_generation: u64,
+    pub(crate) skills_inventory: Option<ScopedSkillsInventory>,
+    pub(crate) skills_loading: bool,
+    pub(crate) skills_busy: Option<String>,
+    pub(crate) skills_error: Option<String>,
+    skills_scope: Option<(ProviderId, String)>,
+    skills_generation: u64,
     pending: HashMap<String, PendingRequest>,
     catalog_discovery_pending: usize,
     catalog_model_pending: usize,
@@ -40,6 +54,27 @@ pub(crate) struct ModelChoice {
     pub(crate) agent_name: Option<String>,
     pub(crate) model: Model,
     catalog_order: (u8, usize, usize),
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct ScopedMcpInventory {
+    pub(crate) provider: ProviderId,
+    pub(crate) project_path: String,
+    pub(crate) result: McpListResult,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct ScopedSkillsInventory {
+    pub(crate) provider: ProviderId,
+    pub(crate) project_path: String,
+    pub(crate) result: SkillsListResult,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ProviderProjectPush {
+    provider: ProviderId,
+    project_path: String,
 }
 
 #[derive(Clone)]
@@ -95,6 +130,34 @@ enum PendingRequest {
     AcpAgents,
     Models {
         source: ModelSource,
+    },
+    McpList {
+        provider: ProviderId,
+        project_path: String,
+        generation: u64,
+    },
+    McpMutation {
+        provider: ProviderId,
+        project_path: String,
+        server_id: String,
+    },
+    McpReload {
+        provider: ProviderId,
+        project_path: String,
+    },
+    SkillsList {
+        provider: ProviderId,
+        project_path: String,
+        generation: u64,
+    },
+    SkillToggle {
+        provider: ProviderId,
+        project_path: String,
+        skill_id: String,
+    },
+    SkillInstall {
+        provider: ProviderId,
+        project_path: String,
     },
     AddProject {
         path: String,
@@ -278,6 +341,18 @@ impl ClientState {
             acp_agents: Vec::new(),
             model_catalog: Vec::new(),
             model_catalog_loaded: fixture,
+            mcp_inventory: None,
+            mcp_loading: false,
+            mcp_busy: None,
+            mcp_error: None,
+            mcp_scope: None,
+            mcp_generation: 0,
+            skills_inventory: None,
+            skills_loading: false,
+            skills_busy: None,
+            skills_error: None,
+            skills_scope: None,
+            skills_generation: 0,
             pending: HashMap::new(),
             catalog_discovery_pending: 0,
             catalog_model_pending: 0,
@@ -360,6 +435,159 @@ impl ClientState {
             }),
             PendingRequest::UpdateSidebarSettings,
         );
+        ClientUpdate::shell_changed()
+    }
+
+    pub(crate) fn request_mcp_inventory(
+        &mut self,
+        provider: ProviderId,
+        project_path: String,
+    ) -> ClientUpdate {
+        let scope = (provider, project_path.clone());
+        if self.mcp_scope.as_ref() != Some(&scope) {
+            self.mcp_inventory = None;
+        }
+        self.mcp_scope = Some(scope);
+        self.mcp_generation = self.mcp_generation.wrapping_add(1);
+        let generation = self.mcp_generation;
+        self.mcp_loading = true;
+        self.mcp_error = None;
+        if !self.send_request(
+            method::MCP_LIST,
+            json!({ "provider": provider, "projectPath": project_path }),
+            PendingRequest::McpList {
+                provider,
+                project_path,
+                generation,
+            },
+        ) {
+            self.mcp_loading = false;
+        }
+        ClientUpdate::shell_changed()
+    }
+
+    pub(crate) fn toggle_mcp_server(
+        &mut self,
+        provider: ProviderId,
+        project_path: String,
+        server: &McpServer,
+    ) -> ClientUpdate {
+        self.mcp_scope = Some((provider, project_path.clone()));
+        self.mcp_busy = Some(server.id.clone());
+        self.mcp_error = None;
+        let (method_name, params) = if server.enabled {
+            (
+                method::MCP_ADD,
+                json!({
+                    "provider": provider,
+                    "projectPath": project_path,
+                    "server": { "id": server.id, "enabled": false }
+                }),
+            )
+        } else {
+            (
+                method::MCP_REMOVE,
+                json!({
+                    "provider": provider,
+                    "projectPath": project_path,
+                    "serverId": server.id
+                }),
+            )
+        };
+        if !self.send_request(
+            method_name,
+            params,
+            PendingRequest::McpMutation {
+                provider,
+                project_path,
+                server_id: server.id.clone(),
+            },
+        ) {
+            self.mcp_busy = None;
+        }
+        ClientUpdate::shell_changed()
+    }
+
+    pub(crate) fn request_skills_inventory(
+        &mut self,
+        provider: ProviderId,
+        project_path: String,
+    ) -> ClientUpdate {
+        let scope = (provider, project_path.clone());
+        if self.skills_scope.as_ref() != Some(&scope) {
+            self.skills_inventory = None;
+        }
+        self.skills_scope = Some(scope);
+        self.skills_generation = self.skills_generation.wrapping_add(1);
+        let generation = self.skills_generation;
+        self.skills_loading = true;
+        self.skills_error = None;
+        if !self.send_request(
+            method::SKILLS_LIST,
+            json!({ "provider": provider, "projectPath": project_path }),
+            PendingRequest::SkillsList {
+                provider,
+                project_path,
+                generation,
+            },
+        ) {
+            self.skills_loading = false;
+        }
+        ClientUpdate::shell_changed()
+    }
+
+    pub(crate) fn set_skill_enabled(
+        &mut self,
+        provider: ProviderId,
+        project_path: String,
+        skill_id: String,
+        enabled: bool,
+    ) -> ClientUpdate {
+        self.skills_scope = Some((provider, project_path.clone()));
+        self.skills_busy = Some(skill_id.clone());
+        self.skills_error = None;
+        if !self.send_request(
+            method::SKILLS_SET_ENABLED,
+            json!({
+                "provider": provider,
+                "projectPath": project_path,
+                "skillId": skill_id,
+                "enabled": enabled,
+            }),
+            PendingRequest::SkillToggle {
+                provider,
+                project_path,
+                skill_id,
+            },
+        ) {
+            self.skills_busy = None;
+        }
+        ClientUpdate::shell_changed()
+    }
+
+    pub(crate) fn install_skill_from_folder(
+        &mut self,
+        provider: ProviderId,
+        project_path: String,
+        folder_path: String,
+    ) -> ClientUpdate {
+        self.skills_scope = Some((provider, project_path.clone()));
+        self.skills_busy = Some("install".into());
+        self.skills_error = None;
+        if !self.send_request(
+            method::SKILLS_INSTALL_FROM_FOLDER,
+            json!({
+                "provider": provider,
+                "projectPath": project_path,
+                "folderPath": folder_path,
+            }),
+            PendingRequest::SkillInstall {
+                provider,
+                project_path,
+            },
+        ) {
+            self.skills_busy = None;
+        }
         ClientUpdate::shell_changed()
     }
 
@@ -740,6 +968,61 @@ impl ClientState {
                     None => error.message,
                 };
                 match pending {
+                    Some(PendingRequest::McpList {
+                        provider,
+                        project_path,
+                        generation,
+                    }) => {
+                        if self.mcp_scope.as_ref() == Some(&(provider, project_path))
+                            && self.mcp_generation == generation
+                        {
+                            self.mcp_loading = false;
+                            self.mcp_error = Some(message);
+                            ClientUpdate::shell_changed()
+                        } else {
+                            ClientUpdate::default()
+                        }
+                    }
+                    Some(PendingRequest::McpMutation { server_id, .. }) => {
+                        if self.mcp_busy.as_deref() == Some(server_id.as_str()) {
+                            self.mcp_busy = None;
+                        }
+                        self.mcp_error = Some(message);
+                        ClientUpdate::shell_changed()
+                    }
+                    Some(PendingRequest::McpReload { .. }) => {
+                        self.mcp_loading = false;
+                        self.mcp_busy = None;
+                        self.mcp_error = Some(message);
+                        ClientUpdate::shell_changed()
+                    }
+                    Some(PendingRequest::SkillsList {
+                        provider,
+                        project_path,
+                        generation,
+                    }) => {
+                        if self.skills_scope.as_ref() == Some(&(provider, project_path))
+                            && self.skills_generation == generation
+                        {
+                            self.skills_loading = false;
+                            self.skills_error = Some(message);
+                            ClientUpdate::shell_changed()
+                        } else {
+                            ClientUpdate::default()
+                        }
+                    }
+                    Some(PendingRequest::SkillToggle { skill_id, .. }) => {
+                        if self.skills_busy.as_deref() == Some(skill_id.as_str()) {
+                            self.skills_busy = None;
+                        }
+                        self.skills_error = Some(message);
+                        ClientUpdate::shell_changed()
+                    }
+                    Some(PendingRequest::SkillInstall { .. }) => {
+                        self.skills_busy = None;
+                        self.skills_error = Some(message);
+                        ClientUpdate::shell_changed()
+                    }
                     Some(PendingRequest::StartThread { request }) => {
                         ClientUpdate::chat(ChatUpdate::DraftError {
                             message,
@@ -820,6 +1103,34 @@ impl ClientState {
                 Some(PendingRequest::Models { source }) => {
                     self.handle_models_response(result, source)
                 }
+                Some(PendingRequest::McpList {
+                    provider,
+                    project_path,
+                    generation,
+                }) => self.handle_mcp_response(result, provider, project_path, generation),
+                Some(PendingRequest::McpMutation {
+                    provider,
+                    project_path,
+                    ..
+                }) => self.finish_mcp_mutation(provider, project_path),
+                Some(PendingRequest::McpReload {
+                    provider,
+                    project_path,
+                }) => self.request_mcp_inventory(provider, project_path),
+                Some(PendingRequest::SkillsList {
+                    provider,
+                    project_path,
+                    generation,
+                }) => self.handle_skills_response(result, provider, project_path, generation),
+                Some(PendingRequest::SkillToggle {
+                    provider,
+                    project_path,
+                    skill_id,
+                }) => self.handle_skill_toggle_response(result, provider, project_path, skill_id),
+                Some(PendingRequest::SkillInstall {
+                    provider,
+                    project_path,
+                }) => self.handle_skill_install_response(result, provider, project_path),
                 Some(PendingRequest::AddProject { path }) => {
                     self.handle_add_project_response(result, path)
                 }
@@ -944,6 +1255,24 @@ impl ClientState {
             return ClientUpdate::shell_changed();
         }
         match pending {
+            PendingRequest::McpList { .. }
+            | PendingRequest::McpMutation { .. }
+            | PendingRequest::McpReload { .. } => {
+                self.mcp_loading = false;
+                self.mcp_busy = None;
+                self.mcp_error =
+                    Some("The server connection was lost while updating MCP settings.".into());
+                ClientUpdate::shell_changed()
+            }
+            PendingRequest::SkillsList { .. }
+            | PendingRequest::SkillToggle { .. }
+            | PendingRequest::SkillInstall { .. } => {
+                self.skills_loading = false;
+                self.skills_busy = None;
+                self.skills_error =
+                    Some("The server connection was lost while updating Agent Skills.".into());
+                ClientUpdate::shell_changed()
+            }
             PendingRequest::StartThread { request } => ClientUpdate::chat(ChatUpdate::DraftError {
                 message: "The server connection was lost before the session was created.".into(),
                 restore_text: request.text,
@@ -1339,6 +1668,157 @@ impl ClientState {
         ClientUpdate::shell_changed()
     }
 
+    fn handle_mcp_response(
+        &mut self,
+        result: Value,
+        provider: ProviderId,
+        project_path: String,
+        generation: u64,
+    ) -> ClientUpdate {
+        if self.mcp_scope.as_ref() != Some(&(provider, project_path.clone()))
+            || self.mcp_generation != generation
+        {
+            return ClientUpdate::default();
+        }
+        self.mcp_loading = false;
+        match serde_json::from_value::<McpListResult>(result) {
+            Ok(result) => {
+                self.mcp_inventory = Some(ScopedMcpInventory {
+                    provider,
+                    project_path,
+                    result,
+                });
+                self.mcp_error = None;
+            }
+            Err(error) => {
+                self.mcp_error = Some(format!("mcp.list was invalid: {error}"));
+            }
+        }
+        ClientUpdate::shell_changed()
+    }
+
+    fn finish_mcp_mutation(&mut self, provider: ProviderId, project_path: String) -> ClientUpdate {
+        if self.mcp_scope.as_ref() != Some(&(provider, project_path.clone())) {
+            return ClientUpdate::default();
+        }
+        self.mcp_busy = None;
+        let reload = self
+            .mcp_inventory
+            .as_ref()
+            .is_some_and(|inventory| inventory.result.capabilities.reload);
+        if reload {
+            self.mcp_loading = true;
+            if !self.send_request(
+                method::MCP_RELOAD,
+                json!({ "provider": provider, "projectPath": project_path }),
+                PendingRequest::McpReload {
+                    provider,
+                    project_path,
+                },
+            ) {
+                self.mcp_loading = false;
+            }
+            ClientUpdate::shell_changed()
+        } else {
+            self.request_mcp_inventory(provider, project_path)
+        }
+    }
+
+    fn handle_skills_response(
+        &mut self,
+        result: Value,
+        provider: ProviderId,
+        project_path: String,
+        generation: u64,
+    ) -> ClientUpdate {
+        if self.skills_scope.as_ref() != Some(&(provider, project_path.clone()))
+            || self.skills_generation != generation
+        {
+            return ClientUpdate::default();
+        }
+        self.skills_loading = false;
+        match serde_json::from_value::<SkillsListResult>(result) {
+            Ok(result) => {
+                self.skills_inventory = Some(ScopedSkillsInventory {
+                    provider,
+                    project_path,
+                    result,
+                });
+                self.skills_error = None;
+            }
+            Err(error) => {
+                self.skills_error = Some(format!("skills.list was invalid: {error}"));
+            }
+        }
+        ClientUpdate::shell_changed()
+    }
+
+    fn handle_skill_toggle_response(
+        &mut self,
+        result: Value,
+        provider: ProviderId,
+        project_path: String,
+        skill_id: String,
+    ) -> ClientUpdate {
+        if self.skills_scope.as_ref() != Some(&(provider, project_path.clone())) {
+            return ClientUpdate::default();
+        }
+        self.skills_busy = None;
+        match serde_json::from_value::<SkillEnabledResult>(result) {
+            Ok(result) => {
+                if let Some(inventory) = &mut self.skills_inventory
+                    && inventory.provider == provider
+                    && inventory.project_path == project_path
+                    && let Some(skill) = inventory
+                        .result
+                        .skills
+                        .iter_mut()
+                        .find(|skill| skill.id == skill_id)
+                {
+                    skill.enabled = result.enabled;
+                }
+                self.skills_error = None;
+            }
+            Err(error) => {
+                self.skills_error = Some(format!("skills.setEnabled was invalid: {error}"));
+            }
+        }
+        ClientUpdate::shell_changed()
+    }
+
+    fn handle_skill_install_response(
+        &mut self,
+        result: Value,
+        provider: ProviderId,
+        project_path: String,
+    ) -> ClientUpdate {
+        if self.skills_scope.as_ref() != Some(&(provider, project_path.clone())) {
+            return ClientUpdate::default();
+        }
+        self.skills_busy = None;
+        match serde_json::from_value::<SkillInstalledResult>(result) {
+            Ok(result) => {
+                if let Some(inventory) = &mut self.skills_inventory
+                    && inventory.provider == provider
+                    && inventory.project_path == project_path
+                {
+                    inventory
+                        .result
+                        .skills
+                        .retain(|skill| skill.id != result.skill.id);
+                    inventory.result.skills.push(result.skill);
+                } else {
+                    return self.request_skills_inventory(provider, project_path);
+                }
+                self.skills_error = None;
+            }
+            Err(error) => {
+                self.skills_error = Some(format!("skills.installFromFolder was invalid: {error}"));
+            }
+        }
+        ClientUpdate::shell_changed()
+    }
+
     fn handle_push(&mut self, channel_name: &str, data: Value) -> ClientUpdate {
         match channel_name {
             channel::SERVER_WELCOME => self.handle_welcome(data),
@@ -1351,6 +1831,32 @@ impl ClientState {
                 }
                 ClientUpdate::shell_changed()
             }
+            channel::MCP_CHANGED => match serde_json::from_value::<ProviderProjectPush>(data) {
+                Ok(push)
+                    if self.mcp_scope.as_ref()
+                        == Some(&(push.provider, push.project_path.clone())) =>
+                {
+                    self.request_mcp_inventory(push.provider, push.project_path)
+                }
+                Ok(_) => ClientUpdate::default(),
+                Err(error) => {
+                    self.mcp_error = Some(format!("mcp.changed push was invalid: {error}"));
+                    ClientUpdate::shell_changed()
+                }
+            },
+            channel::SKILLS_CHANGED => match serde_json::from_value::<ProviderProjectPush>(data) {
+                Ok(push)
+                    if self.skills_scope.as_ref()
+                        == Some(&(push.provider, push.project_path.clone())) =>
+                {
+                    self.request_skills_inventory(push.provider, push.project_path)
+                }
+                Ok(_) => ClientUpdate::default(),
+                Err(error) => {
+                    self.skills_error = Some(format!("skills.changed push was invalid: {error}"));
+                    ClientUpdate::shell_changed()
+                }
+            },
             channel::THREAD_LIFECYCLE => {
                 match serde_json::from_value::<ThreadLifecyclePush>(data) {
                     Ok(push) => {
@@ -1519,6 +2025,12 @@ impl PendingRequest {
             | Self::Connections
             | Self::AcpAgents
             | Self::Models { .. }
+            | Self::McpList { .. }
+            | Self::McpMutation { .. }
+            | Self::McpReload { .. }
+            | Self::SkillsList { .. }
+            | Self::SkillToggle { .. }
+            | Self::SkillInstall { .. }
             | Self::TerminalInput { .. }
             | Self::TerminalResize { .. }
             | Self::TerminalClose { .. } => None,
@@ -1870,5 +2382,54 @@ mod tests {
             [ChatUpdate::TerminalOutput(push)]
                 if push.terminal_id == "terminal-1" && push.data == "hello"
         ));
+    }
+
+    #[test]
+    fn stale_mcp_inventory_cannot_replace_a_newer_refresh() {
+        let mut state = ClientState::new(true);
+        state.mcp_scope = Some((ProviderId::Codex, "project".into()));
+        state.mcp_generation = 2;
+
+        let stale = state.handle_mcp_response(
+            json!({
+                "capabilities": {
+                    "inventory": true,
+                    "add": true,
+                    "update": true,
+                    "remove": true,
+                    "reload": true,
+                    "startOAuth": true,
+                    "cancelOAuth": true
+                },
+                "servers": []
+            }),
+            ProviderId::Codex,
+            "project".into(),
+            1,
+        );
+
+        assert!(!stale.shell_changed);
+        assert!(state.mcp_inventory.is_none());
+
+        let current = state.handle_mcp_response(
+            json!({
+                "capabilities": {
+                    "inventory": true,
+                    "add": false,
+                    "update": false,
+                    "remove": false,
+                    "reload": false,
+                    "startOAuth": false,
+                    "cancelOAuth": false
+                },
+                "servers": []
+            }),
+            ProviderId::Codex,
+            "project".into(),
+            2,
+        );
+
+        assert!(current.shell_changed);
+        assert!(state.mcp_inventory.is_some());
     }
 }

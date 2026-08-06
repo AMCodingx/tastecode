@@ -2,10 +2,13 @@ use super::HarnessApp;
 use crate::preferences::{FontPreference, NativePreferences, ThemePreference};
 use crate::theme::{Accent, Backdrop, Theme, ThemeMode};
 use gpui::{
-    Animation, AnimationExt, AnyElement, App, Context, FontWeight, SharedString, div,
-    ease_out_quint, prelude::*, px, svg,
+    Animation, AnimationExt, AnyElement, App, Context, FontWeight, PathPromptOptions, SharedString,
+    div, ease_out_quint, prelude::*, px, svg,
 };
-use harness_protocol::{ProviderAuth, SidebarMode, SidebarSettings};
+use harness_protocol::{
+    McpAuth, McpServer, McpStartupStatus, ProviderAuth, ProviderId, SidebarMode, SidebarSettings,
+    Skill, SkillScope,
+};
 use std::rc::Rc;
 
 const SETTINGS_CONTENT_WIDTH: f32 = 840.0;
@@ -110,7 +113,7 @@ impl HarnessApp {
                     if this.settings_section != section {
                         this.settings_section = section;
                         this.settings_transition = this.settings_transition.wrapping_add(1);
-                        cx.notify();
+                        this.refresh_settings_inventory(cx);
                     }
                 });
             });
@@ -215,16 +218,8 @@ impl HarnessApp {
         match self.settings_section {
             SettingsSection::Providers => self.provider_settings(cx),
             SettingsSection::Models => self.model_settings(cx),
-            SettingsSection::Mcp => self.unported_settings(
-                "MCP",
-                "Model Context Protocol",
-                "The native MCP registry is the next settings slice. No server is shown as enabled until its Rust transport is connected.",
-            ),
-            SettingsSection::Skills => self.unported_settings(
-                "Skills",
-                "Agent skills",
-                "Skill discovery is still served by the existing runtime. The GPUI registry will expose every discovered skill and its project scope here.",
-            ),
+            SettingsSection::Mcp => self.mcp_settings(cx),
+            SettingsSection::Skills => self.skills_settings(cx),
             SettingsSection::Workflows => self.workflow_settings(cx),
             SettingsSection::Appearance => self.appearance_settings(cx),
             SettingsSection::Data => self.data_settings(cx),
@@ -478,6 +473,346 @@ impl HarnessApp {
             ));
         }
         settings_panel("Models", blocks, theme)
+    }
+
+    fn mcp_settings(&self, cx: &mut Context<Self>) -> gpui::Div {
+        let theme = self.theme;
+        let Some((provider, project_path)) = self.settings_scope() else {
+            return settings_panel(
+                "MCP servers",
+                vec![settings_group(
+                    "Model Context Protocol",
+                    vec![settings_empty_row(
+                        "Select a project in the sidebar before managing MCP servers.",
+                        theme,
+                    )],
+                    theme,
+                )],
+                theme,
+            );
+        };
+        let project_name = self.settings_project_name(&project_path);
+        let provider_name = self.settings_provider_name(provider);
+        let refresh_view = cx.weak_entity();
+        let refresh_path = project_path.clone();
+        let refresh: SettingsAction = Rc::new(move |cx| {
+            let path = refresh_path.clone();
+            let _ = refresh_view.update(cx, |this, cx| {
+                let update = this.state.request_mcp_inventory(provider, path);
+                this.apply_client_update(update, cx);
+            });
+        });
+        let intro = div()
+            .w_full()
+            .flex()
+            .items_center()
+            .justify_between()
+            .gap(px(16.0))
+            .child(
+                div()
+                    .min_w(px(0.0))
+                    .child(
+                        div()
+                            .text_size(px(12.0))
+                            .text_color(theme.text_2.hsla())
+                            .child(format!("Available in {project_name}")),
+                    )
+                    .child(
+                        div()
+                            .mt(px(3.0))
+                            .text_size(px(10.5))
+                            .text_color(theme.text_3.hsla())
+                            .child(format!("Managed through {provider_name}")),
+                    ),
+            )
+            .child(settings_button(
+                "refresh-mcp",
+                if self.state.mcp_loading {
+                    "Refreshing…"
+                } else {
+                    "Refresh"
+                },
+                "icons/rotate-ccw.svg",
+                theme,
+                refresh,
+                false,
+            ))
+            .into_any_element();
+        let mut blocks = vec![settings_plain_group("Project inventory", intro, theme)];
+
+        if let Some(error) = &self.state.mcp_error {
+            blocks.push(settings_error_group("MCP error", error.clone(), theme));
+        }
+        let inventory = self.state.mcp_inventory.as_ref().filter(|inventory| {
+            inventory.provider == provider && inventory.project_path == project_path
+        });
+        let Some(inventory) = inventory else {
+            blocks.push(settings_group(
+                "Servers",
+                vec![settings_empty_row(
+                    if self.state.mcp_loading {
+                        "Loading MCP servers…"
+                    } else {
+                        "MCP inventory has not been loaded yet."
+                    },
+                    theme,
+                )],
+                theme,
+            ));
+            return settings_panel("MCP servers", blocks, theme);
+        };
+        if !inventory.result.capabilities.inventory {
+            blocks.push(settings_group(
+                "Servers",
+                vec![settings_empty_row(
+                    format!("{provider_name} does not expose MCP inventory here."),
+                    theme,
+                )],
+                theme,
+            ));
+            return settings_panel("MCP servers", blocks, theme);
+        }
+
+        let mut rows = Vec::new();
+        for (index, server) in inventory.result.servers.iter().enumerate() {
+            let busy = self.state.mcp_busy.as_deref() == Some(server.id.as_str());
+            let configurable = if server.enabled {
+                inventory.result.capabilities.add
+            } else {
+                inventory.result.capabilities.remove
+            };
+            let trailing = if busy {
+                status_pill("Saving…", false, theme)
+            } else if configurable {
+                let enabled = server.enabled;
+                let server = server.clone();
+                let path = project_path.clone();
+                let view = cx.weak_entity();
+                let action: SettingsAction = Rc::new(move |cx| {
+                    let server = server.clone();
+                    let path = path.clone();
+                    let _ = view.update(cx, |this, cx| {
+                        let update = this.state.toggle_mcp_server(provider, path, &server);
+                        this.apply_client_update(update, cx);
+                    });
+                });
+                settings_switch(920_000 + index, enabled, theme, action)
+            } else {
+                let (label, ready) = mcp_status(server);
+                status_pill(label, ready, theme)
+            };
+            let (status, _) = mcp_status(server);
+            let name = server
+                .display_name
+                .clone()
+                .unwrap_or_else(|| server.id.clone());
+            let detail = match &server.startup {
+                McpStartupStatus::Failed { message } => format!(
+                    "{status} · {message} · {} tools · {} resources",
+                    server.tools.len(),
+                    server.resources.len()
+                ),
+                _ => format!(
+                    "{status} · {} scope · {} tools · {} resources",
+                    match server.scope {
+                        harness_protocol::McpServerScope::Project => "project",
+                        harness_protocol::McpServerScope::Global => "global",
+                    },
+                    server.tools.len(),
+                    server.resources.len()
+                ),
+            };
+            rows.push(settings_row(index, name, detail, trailing, theme));
+        }
+        if rows.is_empty() {
+            rows.push(settings_empty_row(
+                "No MCP servers are configured for this project.",
+                theme,
+            ));
+        }
+        blocks.push(settings_group("Servers", rows, theme));
+        settings_panel("MCP servers", blocks, theme)
+    }
+
+    fn skills_settings(&self, cx: &mut Context<Self>) -> gpui::Div {
+        let theme = self.theme;
+        let Some((provider, project_path)) = self.settings_scope() else {
+            return settings_panel(
+                "Agent Skills",
+                vec![settings_group(
+                    "Skills",
+                    vec![settings_empty_row(
+                        "Select a project in the sidebar before managing Agent Skills.",
+                        theme,
+                    )],
+                    theme,
+                )],
+                theme,
+            );
+        };
+        let project_name = self.settings_project_name(&project_path);
+        let provider_name = self.settings_provider_name(provider);
+        let refresh_view = cx.weak_entity();
+        let refresh_path = project_path.clone();
+        let refresh: SettingsAction = Rc::new(move |cx| {
+            let path = refresh_path.clone();
+            let _ = refresh_view.update(cx, |this, cx| {
+                let update = this.state.request_skills_inventory(provider, path);
+                this.apply_client_update(update, cx);
+            });
+        });
+        let inventory = self.state.skills_inventory.as_ref().filter(|inventory| {
+            inventory.provider == provider && inventory.project_path == project_path
+        });
+        let install_supported = inventory.is_some_and(|inventory| {
+            inventory.result.capabilities.install && self.state.skills_busy.is_none()
+        });
+        let intro_action = if install_supported {
+            let install_view = cx.weak_entity();
+            let install_path = project_path.clone();
+            let install: SettingsAction = Rc::new(move |cx| {
+                let path = install_path.clone();
+                let _ =
+                    install_view.update(cx, |this, cx| this.pick_skill_folder(provider, path, cx));
+            });
+            settings_button(
+                "install-skill",
+                "Install from folder",
+                "icons/folder-pen.svg",
+                theme,
+                install,
+                false,
+            )
+        } else {
+            settings_button(
+                "refresh-skills",
+                if self.state.skills_loading {
+                    "Refreshing…"
+                } else {
+                    "Refresh"
+                },
+                "icons/rotate-ccw.svg",
+                theme,
+                refresh,
+                false,
+            )
+        };
+        let intro = div()
+            .w_full()
+            .flex()
+            .items_center()
+            .justify_between()
+            .gap(px(16.0))
+            .child(
+                div()
+                    .min_w(px(0.0))
+                    .child(
+                        div()
+                            .text_size(px(12.0))
+                            .text_color(theme.text_2.hsla())
+                            .child(format!("Available in {project_name}")),
+                    )
+                    .child(
+                        div()
+                            .mt(px(3.0))
+                            .text_size(px(10.5))
+                            .text_color(theme.text_3.hsla())
+                            .child(format!("Discovered by {provider_name}")),
+                    ),
+            )
+            .child(intro_action)
+            .into_any_element();
+        let mut blocks = vec![settings_plain_group("Project inventory", intro, theme)];
+
+        if let Some(error) = &self.state.skills_error {
+            blocks.push(settings_error_group("Skills error", error.clone(), theme));
+        }
+        let Some(inventory) = inventory else {
+            blocks.push(settings_group(
+                "Skills",
+                vec![settings_empty_row(
+                    if self.state.skills_loading {
+                        "Discovering Agent Skills…"
+                    } else {
+                        "Skill inventory has not been loaded yet."
+                    },
+                    theme,
+                )],
+                theme,
+            ));
+            return settings_panel("Agent Skills", blocks, theme);
+        };
+        if !inventory.result.errors.is_empty() {
+            let details = inventory
+                .result
+                .errors
+                .iter()
+                .map(|error| format!("{} · {}", error.message, error.path))
+                .collect::<Vec<_>>()
+                .join("\n");
+            blocks.push(settings_error_group(
+                "Some skills could not be loaded",
+                details,
+                theme,
+            ));
+        }
+        if !inventory.result.capabilities.inventory {
+            blocks.push(settings_group(
+                "Skills",
+                vec![settings_empty_row(
+                    format!("{provider_name} does not expose Agent Skills here."),
+                    theme,
+                )],
+                theme,
+            ));
+            return settings_panel("Agent Skills", blocks, theme);
+        }
+
+        let mut rows = Vec::new();
+        for (index, skill) in inventory.result.skills.iter().enumerate() {
+            let busy = self.state.skills_busy.as_deref() == Some(skill.id.as_str());
+            let trailing = if busy {
+                status_pill("Saving…", false, theme)
+            } else if inventory.result.capabilities.configure {
+                let id = skill.id.clone();
+                let path = project_path.clone();
+                let enabled = skill.enabled;
+                let view = cx.weak_entity();
+                let action: SettingsAction = Rc::new(move |cx| {
+                    let id = id.clone();
+                    let path = path.clone();
+                    let _ = view.update(cx, |this, cx| {
+                        let update = this.state.set_skill_enabled(provider, path, id, !enabled);
+                        this.apply_client_update(update, cx);
+                    });
+                });
+                settings_switch(930_000 + index, skill.enabled, theme, action)
+            } else {
+                status_pill(
+                    if skill.enabled { "Enabled" } else { "Disabled" },
+                    skill.enabled,
+                    theme,
+                )
+            };
+            rows.push(settings_row(
+                index,
+                skill
+                    .display_name
+                    .clone()
+                    .unwrap_or_else(|| skill.name.clone()),
+                skill_note(skill),
+                trailing,
+                theme,
+            ));
+        }
+        if rows.is_empty() {
+            rows.push(settings_empty_row(
+                "No Agent Skills were discovered for this project.",
+                theme,
+            ));
+        }
+        blocks.push(settings_group("Skills", rows, theme));
+        settings_panel("Agent Skills", blocks, theme)
     }
 
     fn workflow_settings(&self, cx: &mut Context<Self>) -> gpui::Div {
@@ -878,16 +1213,91 @@ impl HarnessApp {
         )
     }
 
-    fn unported_settings(&self, title: &str, group: &str, note: &str) -> gpui::Div {
-        settings_panel(
-            title,
-            vec![settings_group(
-                group,
-                vec![settings_empty_row(note.to_owned(), self.theme)],
-                self.theme,
-            )],
-            self.theme,
-        )
+    fn refresh_settings_inventory(&mut self, cx: &mut Context<Self>) {
+        let Some((provider, project_path)) = self.settings_scope() else {
+            cx.notify();
+            return;
+        };
+        let update = match self.settings_section {
+            SettingsSection::Mcp => self.state.request_mcp_inventory(provider, project_path),
+            SettingsSection::Skills => self.state.request_skills_inventory(provider, project_path),
+            _ => {
+                cx.notify();
+                return;
+            }
+        };
+        self.apply_client_update(update, cx);
+    }
+
+    fn settings_scope(&self) -> Option<(ProviderId, String)> {
+        let provider = self
+            .selected_model_choice()
+            .map_or(ProviderId::Codex, |choice| choice.provider);
+        let project_path = self
+            .active_project_path
+            .clone()
+            .or_else(|| self.sidebar_scope.clone())
+            .or_else(|| {
+                self.state
+                    .projects
+                    .first()
+                    .map(|project| project.path.clone())
+            })?;
+        Some((provider, project_path))
+    }
+
+    fn settings_project_name(&self, project_path: &str) -> String {
+        self.state
+            .projects
+            .iter()
+            .find(|project| project.path == project_path)
+            .map_or_else(|| project_path.to_owned(), |project| project.name.clone())
+    }
+
+    fn settings_provider_name(&self, provider: ProviderId) -> String {
+        self.state
+            .provider_statuses
+            .iter()
+            .find(|status| status.id == provider)
+            .map(|status| status.display_name.clone())
+            .or_else(|| {
+                self.state
+                    .model_catalog
+                    .iter()
+                    .find(|choice| choice.provider == provider)
+                    .map(|choice| choice.source_name.clone())
+            })
+            .unwrap_or_else(|| provider_label(provider).into())
+    }
+
+    fn pick_skill_folder(
+        &mut self,
+        provider: ProviderId,
+        project_path: String,
+        cx: &mut Context<Self>,
+    ) {
+        let receiver = cx.prompt_for_paths(PathPromptOptions {
+            files: false,
+            directories: true,
+            multiple: false,
+            prompt: Some("Install Agent Skill".into()),
+        });
+        cx.spawn(async move |view, cx| {
+            let Ok(Ok(Some(paths))) = receiver.await else {
+                return;
+            };
+            let Some(folder) = paths.into_iter().next() else {
+                return;
+            };
+            let folder_path = folder.to_string_lossy().into_owned();
+            let _ = view.update(cx, |this, cx| {
+                let update =
+                    this.state
+                        .install_skill_from_folder(provider, project_path, folder_path);
+                this.apply_client_update(update, cx);
+            });
+        })
+        .detach();
     }
 
     fn set_models_visible(&mut self, keys: &[String], visible: bool, cx: &mut Context<Self>) {
@@ -1050,6 +1460,34 @@ fn settings_plain_group(title: &str, child: AnyElement, theme: Theme) -> AnyElem
                 .child(title.to_owned()),
         )
         .child(child)
+        .into_any_element()
+}
+
+fn settings_error_group(title: &str, message: String, theme: Theme) -> AnyElement {
+    div()
+        .w_full()
+        .child(
+            div()
+                .mb(px(12.0))
+                .text_size(px(12.5))
+                .font_weight(FontWeight::MEDIUM)
+                .text_color(theme.error.hsla())
+                .child(title.to_owned()),
+        )
+        .child(
+            div()
+                .w_full()
+                .rounded(px(10.0))
+                .border_1()
+                .border_color(theme.error.hsla().opacity(0.35))
+                .bg(theme.error.hsla().opacity(0.08))
+                .px(px(16.0))
+                .py(px(12.0))
+                .text_size(px(11.0))
+                .line_height(px(16.0))
+                .text_color(theme.error.hsla())
+                .child(message),
+        )
         .into_any_element()
 }
 
@@ -1509,6 +1947,56 @@ fn font_family(preference: FontPreference) -> &'static str {
             }
         }
         FontPreference::Mono => "Geist Mono",
+    }
+}
+
+fn mcp_status(server: &McpServer) -> (&'static str, bool) {
+    if !server.enabled {
+        return ("Disabled", false);
+    }
+    if matches!(server.auth, McpAuth::SignInRequired { .. }) {
+        return ("Sign-in required", false);
+    }
+    match server.startup {
+        McpStartupStatus::Ready => ("Ready", true),
+        McpStartupStatus::Starting => ("Starting", false),
+        McpStartupStatus::Stopped => ("Stopped", false),
+        McpStartupStatus::Failed { .. } => ("Failed", false),
+    }
+}
+
+fn skill_note(skill: &Skill) -> String {
+    let scope = match skill.scope {
+        SkillScope::Project => "Project",
+        SkillScope::User => "User",
+        SkillScope::System => "System",
+        SkillScope::Admin => "Admin",
+    };
+    if skill.dependency_errors.is_empty() {
+        if skill.description.is_empty() {
+            format!("{scope} skill")
+        } else {
+            format!("{scope} · {}", skill.description)
+        }
+    } else {
+        let errors = skill
+            .dependency_errors
+            .iter()
+            .map(|error| format!("{}: {}", error.dependency, error.message))
+            .collect::<Vec<_>>()
+            .join("; ");
+        format!("{scope} · {errors}")
+    }
+}
+
+fn provider_label(provider: ProviderId) -> &'static str {
+    match provider {
+        ProviderId::Codex => "Codex",
+        ProviderId::ClaudeCode => "Claude Code",
+        ProviderId::Cursor => "Cursor",
+        ProviderId::OpenCode => "OpenCode",
+        ProviderId::Acp => "ACP",
+        ProviderId::Api => "Direct API",
     }
 }
 
