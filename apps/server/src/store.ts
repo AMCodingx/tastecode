@@ -680,14 +680,27 @@ export class Store {
   }
 
   #rebuildSearchIndex(): void {
-    const rows = this.#db
-      .prepare(`SELECT seq, thread_id, at, payload FROM events ORDER BY seq`)
-      .all() as Array<{ seq: number; thread_id: string; at: number; payload: string }>
+    // Batched: loading the entire events table into memory at construction
+    // was a startup hang for a database with months of streamed history.
+    const batch = this.#db.prepare(
+      `SELECT seq, thread_id, at, payload FROM events WHERE seq > ? ORDER BY seq LIMIT 5000`,
+    )
     this.#db.exec('BEGIN IMMEDIATE')
     try {
       this.#db.exec(`DELETE FROM session_search`)
-      for (const row of rows) {
-        this.#indexEvent(row.seq, row.thread_id, row.at, JSON.parse(row.payload) as DomainEvent)
+      let cursor = 0
+      for (;;) {
+        const rows = batch.all(cursor) as Array<{
+          seq: number
+          thread_id: string
+          at: number
+          payload: string
+        }>
+        if (rows.length === 0) break
+        for (const row of rows) {
+          this.#indexEvent(row.seq, row.thread_id, row.at, JSON.parse(row.payload) as DomainEvent)
+        }
+        cursor = rows.at(-1)?.seq ?? cursor
       }
       this.#db
         .prepare(`INSERT OR REPLACE INTO schema_migrations (name) VALUES (?)`)
@@ -1086,18 +1099,20 @@ function toThread(row: unknown): StoredThread {
     unread: number
     last_active_at: number
   }
+  // Null timestamps (rows migrated before these columns existed) must not
+  // become NaN — a snoozed thread with NaN wakeAt can never be woken.
   const lifecycle: ThreadLifecycle =
     r.lifecycle_state === 'settled'
       ? {
           state: 'settled',
-          settledAt: Number(r.lifecycle_at),
+          settledAt: Number(r.lifecycle_at ?? r.created_at),
           reason: r.lifecycle_reason ?? 'manual',
         }
       : r.lifecycle_state === 'snoozed'
         ? {
             state: 'snoozed',
-            snoozedAt: Number(r.lifecycle_at),
-            wakeAt: Number(r.wake_at),
+            snoozedAt: Number(r.lifecycle_at ?? r.created_at),
+            wakeAt: Number(r.wake_at ?? r.created_at),
           }
         : {
             state: 'active',
