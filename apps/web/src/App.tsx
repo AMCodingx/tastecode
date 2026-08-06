@@ -81,6 +81,8 @@ const AGENT_NAME_KEY = 'harness.acpAgentName'
 const PROJECTS_KEY = 'harness.projects'
 const SESSION_ORDER_KEY = 'harness.sessionOrder'
 const MODEL_KEY = 'harness.model'
+/** Stable identity: a fresh [] every render re-renders every thread row. */
+const EMPTY_CHECKPOINTS: Checkpoint[] = []
 const HIDDEN_MODELS_KEY = 'harness.hiddenModels'
 const EFFORT_KEY = 'harness.effort'
 const SERVICE_TIER_KEY = 'harness.serviceTier'
@@ -1856,7 +1858,7 @@ export function App() {
                 approvals={thread.approvals}
                 userInputs={thread.userInputs}
                 reviews={Object.values(thread.reviews)}
-                checkpoints={thread.running ? [] : checkpoints}
+                checkpoints={thread.running ? EMPTY_CHECKPOINTS : checkpoints}
                 onDecide={(approvalId, decision) => {
                   if (!activeId) return
                   void transport.request('thread.respondToApproval', {
