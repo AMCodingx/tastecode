@@ -4,6 +4,7 @@ import { spawn, type IPty } from 'node-pty'
 type TerminalEntry = {
   threadId: string
   process: IPty
+  output: { dispose(): void }
 }
 
 export class TerminalManager {
@@ -52,11 +53,11 @@ export class TerminalManager {
       cwd,
       env: globalThis.process.env,
     })
-    const entry = { threadId: key, process }
+    const output = process.onData((data) => this.#onOutput(terminalId, data))
+    const entry = { threadId: key, process, output }
     this.#byId.set(terminalId, entry)
     this.#byThread.set(key, terminalId)
 
-    process.onData((data) => this.#onOutput(terminalId, data))
     process.onExit(({ exitCode }) => {
       if (this.#byId.get(terminalId) === entry) {
         this.#byId.delete(terminalId)
@@ -85,6 +86,9 @@ export class TerminalManager {
     if (this.#byThread.get(entry.threadId) === terminalId) {
       this.#byThread.delete(entry.threadId)
     }
+    // node-pty flushes buffered output after kill(); the client tore this
+    // pane down, so those late chunks must not be broadcast for its id.
+    entry.output.dispose()
     entry.process.kill()
   }
 

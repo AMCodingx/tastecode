@@ -1,4 +1,6 @@
 import { execFile } from 'node:child_process'
+import { dirname } from 'node:path'
+import { fileURLToPath } from 'node:url'
 import type { ResultOf } from '@harness/contracts'
 
 /**
@@ -21,8 +23,15 @@ type Probe = {
 const REAL_PROBE: Probe = {
   head: () =>
     new Promise((resolve) => {
-      execFile('git', ['rev-parse', 'HEAD'], { windowsHide: true }, (error, stdout) =>
-        resolve(error ? undefined : stdout.trim() || undefined),
+      // Anchored to this module, not the server's cwd — the probe must
+      // describe the app checkout, not whatever directory the server was
+      // started from. The timeout keeps the RPC from pending forever on a
+      // stalled filesystem.
+      execFile(
+        'git',
+        ['rev-parse', 'HEAD'],
+        { windowsHide: true, timeout: 10_000, cwd: dirname(fileURLToPath(import.meta.url)) },
+        (error, stdout) => resolve(error ? undefined : stdout.trim() || undefined),
       )
     }),
   fetchLatest: async () => {
