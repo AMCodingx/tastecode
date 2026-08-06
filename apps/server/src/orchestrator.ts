@@ -1035,6 +1035,9 @@ export class Orchestrator {
 
   async #drainQueue(threadId: string): Promise<void> {
     if (
+      // A panic stop empties every queue; a drain that was already in flight
+      // must not start the turn it grabbed before the panic landed.
+      this.#panicStopping ||
       this.#drainingQueues.has(threadId) ||
       this.#activeTurns.has(threadId) ||
       this.#startingTurns.has(threadId) ||
@@ -1384,6 +1387,12 @@ export class Orchestrator {
       result.session.dispose()
       throw new Error(`provider resumed unexpected thread ${result.thread.id}`)
     }
+    // The thread may have been closed while the provider was resuming; a
+    // late attach would leave a zombie agent process nobody can reach.
+    if (this.#store.thread(threadId)?.closedAt !== undefined) {
+      result.session.dispose()
+      throw new Error(`thread ${threadId} was closed while resuming`)
+    }
     this.#attachThread(result.thread, result.session, stored.projectPath)
   }
 
@@ -1570,6 +1579,16 @@ export class Orchestrator {
     for (const [turnId, owner] of this.#designTurns) {
       if (owner === threadId) this.#designTurns.delete(turnId)
     }
+    // Item ids normally self-delete on item.completed; a design turn that
+    // died mid-item leaves its entry behind. With no design flow live the
+    // set has no meaning, so this is the safe moment to empty it.
+    if (this.#designFlows.size === 0) this.#designMessageItems.clear()
+  }
+
+  /** Drop per-project watch state when a project leaves the sidebar. */
+  forgetProject(projectPath: string): void {
+    this.#watchedSkillProjects.delete(projectPath)
+    this.#watchedMcpProjects.delete(projectPath)
   }
 
   #attachThread(

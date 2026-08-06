@@ -460,6 +460,7 @@ export function startServer(
         // The sidebar entry can disappear while its history remains available
         // when the project is added again. Running processes still need an owner.
         for (const thread of store.threads(p.path)) orchestrator.close(thread.id)
+        orchestrator.forgetProject(p.path)
         store.removeProject(p.path)
         return {}
       }
