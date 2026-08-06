@@ -93,12 +93,20 @@ const STREAMDOWN_COMPONENTS = {
   inlineCode: InlineCode,
 } satisfies Components
 
+/**
+ * Nothing upstream paces the output: a provider emits a chunk, the server
+ * forwards it, and the client coalesces a frame's worth. With no stagger every
+ * word of a burst starts its fade at the same instant, so a 300ms stall
+ * followed by forty words reads as a freeze and then a flash. A small stagger
+ * spreads that burst across the gap — enough to flow, not enough to lag
+ * visibly behind the model.
+ */
 const STREAM_ANIMATION = {
   animation: 'fadeIn',
   duration: 160,
   easing: 'cubic-bezier(0.23, 1, 0.32, 1)',
   sep: 'word',
-  stagger: 0,
+  stagger: 14,
 } as const
 
 /**

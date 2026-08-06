@@ -87,16 +87,20 @@ export function Thread(props: {
    * apart from the user's, the handler cannot let a manual scroll take over
    * during anchor mode — the effect would just yank the viewport back on the
    * next streamed chunk, which is the most hostile thing a chat UI can do.
+   *
+   * We track the position we last wrote, rather than a one-shot flag: the browser may
+   * coalesce two of our writes into a single scroll event, and a leftover
+   * flag would then swallow the user's next real gesture. Comparing positions
+   * cannot get out of step that way.
    */
-  const programmaticScroll = useRef(false)
+  const writtenScrollTop = useRef<number | undefined>(undefined)
   const writeScrollTop = useCallback((el: HTMLElement, top: number) => {
     // Clamp before comparing: an out-of-range target gets clamped by the
-    // browser, no scroll event fires, and the flag would stay set — silently
-    // eating the user's next real scroll gesture.
+    // browser, so the write would land somewhere we did not record.
     const max = Math.max(0, el.scrollHeight - el.clientHeight)
     const target = Math.min(Math.max(top, 0), max)
     if (Math.abs(el.scrollTop - target) < 1) return
-    programmaticScroll.current = true
+    writtenScrollTop.current = target
     el.scrollTop = target
   }, [])
   const enteringItemIds = useEnteringItemIds(props.items, props.threadId)
@@ -162,11 +166,16 @@ export function Thread(props: {
   const onScroll = useCallback(() => {
     const el = scroller.current
     if (!el) return
-    // Our own corrections are not the user's opinion.
-    if (programmaticScroll.current) {
-      programmaticScroll.current = false
+    // Our own corrections are not the user's opinion. The event that lands
+    // where we wrote is ours; anything else is a real gesture.
+    if (
+      writtenScrollTop.current !== undefined &&
+      Math.abs(el.scrollTop - writtenScrollTop.current) < 1
+    ) {
+      writtenScrollTop.current = undefined
       return
     }
+    writtenScrollTop.current = undefined
     // Any manual scroll hands control back to the user — from anchor mode
     // too, not only from follow-end.
     if (isAtBottom(el)) {
@@ -209,10 +218,24 @@ export function Thread(props: {
   const turns = useMemo(() => findTurns(props.items), [props.items])
   const presentations = useMemo(() => presentTurns(props.items), [props.items])
   const activePresentation = props.activeTurn ? presentations.get(props.activeTurn.id) : undefined
-  const activeWorkLabel = useMemo(
+  const rawWorkLabel = useMemo(
     () => workLabel(props.items, props.activeTurn?.id, props.searching),
     [props.items, props.activeTurn?.id, props.searching],
   )
+  // Between two tool calls — which is exactly while prose streams — nothing
+  // is 'started', so the label fell back to the generic "Working" and then
+  // returned. Each flip remounts the span and replays its fade, so a normal
+  // read/search/edit sequence strobed. Hold the last specific label instead.
+  const lastSpecific = useRef<string | undefined>(undefined)
+  const activeTurnId = props.activeTurn?.id
+  const previousTurnId = useRef(activeTurnId)
+  if (previousTurnId.current !== activeTurnId) {
+    previousTurnId.current = activeTurnId
+    lastSpecific.current = undefined
+  }
+  if (rawWorkLabel !== 'Working') lastSpecific.current = rawWorkLabel
+  const activeWorkLabel =
+    rawWorkLabel === 'Working' ? (lastSpecific.current ?? 'Working') : rawWorkLabel
 
   useEffect(() => {
     const target = props.searchJump
