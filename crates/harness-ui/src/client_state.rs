@@ -1,13 +1,13 @@
 use async_channel::Receiver as EventReceiver;
 use harness_client::{ClientEvent, ClientHandle, ConnectionState, Endpoint};
 use harness_protocol::{
-    AcpAgentsResult, ApprovalDecision, ApprovalMode, DiffDecision, DomainEvent, ErrorCode, Model,
-    ModelConnectionsResult, ModelsListResult, PROTOCOL_VERSION, ProjectAddedResult, ProjectSummary,
-    ProjectsListResult, ProviderId, ProviderStatus, ProvidersListResult, Response,
-    ReviewDiffResult, SendTurnResult, ServerWelcome, SessionDiff, SessionSummary, SidebarMode,
-    SidebarSettings, TerminalExitPush, TerminalOpenedResult, TerminalOutputPush, ThreadEventPush,
-    ThreadHistoryResult, ThreadInboxStatus, ThreadLifecycle, ThreadLifecyclePush, ThreadQueuePush,
-    ThreadQueueResult, ThreadStartResult, channel, method,
+    AcpAgent, AcpAgentsResult, ApprovalDecision, ApprovalMode, DiffDecision, DomainEvent,
+    ErrorCode, Model, ModelConnection, ModelConnectionsResult, ModelsListResult, PROTOCOL_VERSION,
+    ProjectAddedResult, ProjectSummary, ProjectsListResult, ProviderId, ProviderStatus,
+    ProvidersListResult, Response, ReviewDiffResult, SendTurnResult, ServerWelcome, SessionDiff,
+    SessionSummary, SidebarMode, SidebarSettings, TerminalExitPush, TerminalOpenedResult,
+    TerminalOutputPush, ThreadEventPush, ThreadHistoryResult, ThreadInboxStatus, ThreadLifecycle,
+    ThreadLifecyclePush, ThreadQueuePush, ThreadQueueResult, ThreadStartResult, channel, method,
 };
 use serde_json::{Value, json};
 use std::collections::HashMap;
@@ -20,6 +20,8 @@ pub(crate) struct ClientState {
     pub(crate) projects_loaded: bool,
     pub(crate) sidebar_settings: SidebarSettings,
     pub(crate) provider_statuses: Vec<ProviderStatus>,
+    pub(crate) model_connections: Vec<ModelConnection>,
+    pub(crate) acp_agents: Vec<AcpAgent>,
     pub(crate) model_catalog: Vec<ModelChoice>,
     pub(crate) model_catalog_loaded: bool,
     pending: HashMap<String, PendingRequest>,
@@ -87,6 +89,7 @@ enum PendingRequest {
     Capabilities,
     Projects,
     SidebarSettings,
+    UpdateSidebarSettings,
     Providers,
     Connections,
     AcpAgents,
@@ -271,6 +274,8 @@ impl ClientState {
                 auto_settle_days: Some(3),
             },
             provider_statuses: Vec::new(),
+            model_connections: Vec::new(),
+            acp_agents: Vec::new(),
             model_catalog: Vec::new(),
             model_catalog_loaded: fixture,
             pending: HashMap::new(),
@@ -343,6 +348,19 @@ impl ClientState {
                 thread_id: thread_id.into(),
             },
         );
+    }
+
+    pub(crate) fn update_sidebar_settings(&mut self, settings: SidebarSettings) -> ClientUpdate {
+        self.sidebar_settings = settings.clone();
+        self.send_request(
+            method::SIDEBAR_UPDATE_SETTINGS,
+            json!({
+                "mode": settings.mode,
+                "autoSettleDays": settings.auto_settle_days,
+            }),
+            PendingRequest::UpdateSidebarSettings,
+        );
+        ClientUpdate::shell_changed()
     }
 
     pub(crate) fn request_history(&mut self, thread_id: &str, after_seq: Option<u64>) {
@@ -659,6 +677,8 @@ impl ClientState {
         self.pending
             .retain(|_, request| !request.is_catalog_request());
         self.provider_statuses.clear();
+        self.model_connections.clear();
+        self.acp_agents.clear();
         self.model_catalog.clear();
         self.model_catalog_loaded = false;
         self.catalog_discovery_pending = 0;
@@ -677,6 +697,10 @@ impl ClientState {
             self.catalog_discovery_pending += 1;
         }
         self.update_catalog_loaded();
+    }
+
+    pub(crate) fn refresh_model_catalog(&mut self) {
+        self.request_model_catalog();
     }
 
     fn request_projects(&mut self) {
@@ -786,7 +810,10 @@ impl ClientState {
             }
             Response::Success { result, .. } => match pending {
                 Some(PendingRequest::Projects) => self.handle_projects_response(result),
-                Some(PendingRequest::SidebarSettings) => self.handle_settings_response(result),
+                Some(PendingRequest::SidebarSettings)
+                | Some(PendingRequest::UpdateSidebarSettings) => {
+                    self.handle_settings_response(result)
+                }
                 Some(PendingRequest::Providers) => self.handle_providers_response(result),
                 Some(PendingRequest::Connections) => self.handle_connections_response(result),
                 Some(PendingRequest::AcpAgents) => self.handle_acp_agents_response(result),
@@ -1151,8 +1178,10 @@ impl ClientState {
     fn handle_connections_response(&mut self, result: Value) -> ClientUpdate {
         match serde_json::from_value::<ModelConnectionsResult>(result) {
             Ok(result) => {
-                for (source_index, connection) in result
-                    .connections
+                self.model_connections = result.connections;
+                for (source_index, connection) in self
+                    .model_connections
+                    .clone()
                     .into_iter()
                     .filter(|connection| connection.enabled && connection.credential_configured)
                     .enumerate()
@@ -1195,8 +1224,10 @@ impl ClientState {
     fn handle_acp_agents_response(&mut self, result: Value) -> ClientUpdate {
         match serde_json::from_value::<AcpAgentsResult>(result) {
             Ok(result) => {
-                for (source_index, agent) in result
-                    .agents
+                self.acp_agents = result.agents;
+                for (source_index, agent) in self
+                    .acp_agents
+                    .clone()
                     .into_iter()
                     .filter(|agent| agent.installed)
                     .enumerate()
@@ -1480,6 +1511,7 @@ impl PendingRequest {
             Self::Capabilities
             | Self::Projects
             | Self::SidebarSettings
+            | Self::UpdateSidebarSettings
             | Self::AddProject { .. }
             | Self::StartThread { .. }
             | Self::RenameThread

@@ -97,6 +97,7 @@ pub mod method {
     pub const THREAD_QUEUE: &str = "thread.queue";
     pub const THREAD_STEER_QUEUED_TURN: &str = "thread.steerQueuedTurn";
     pub const SIDEBAR_SETTINGS: &str = "sidebar.settings";
+    pub const SIDEBAR_UPDATE_SETTINGS: &str = "sidebar.updateSettings";
 }
 
 pub mod channel {
@@ -158,5 +159,12 @@ mod tests {
         assert_eq!(method::TERMINAL_CLOSE, "terminal.close");
         assert_eq!(channel::TERMINAL_OUTPUT, "terminal.output");
         assert_eq!(channel::TERMINAL_EXIT, "terminal.exit");
+    }
+
+    #[test]
+    fn sidebar_settings_contract_keeps_the_existing_update_method() {
+        assert_eq!(method::SIDEBAR_SETTINGS, "sidebar.settings");
+        assert_eq!(method::SIDEBAR_UPDATE_SETTINGS, "sidebar.updateSettings");
+        assert_eq!(channel::SIDEBAR_SETTINGS, "sidebar.settings");
     }
 }
