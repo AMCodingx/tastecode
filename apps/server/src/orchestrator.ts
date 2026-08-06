@@ -92,6 +92,16 @@ const UNSUPPORTED_MCP_CAPABILITIES: McpCapabilities = {
   startOAuth: false,
   cancelOAuth: false,
 }
+/** Harness-managed project servers only: no vendor inventory, no OAuth. */
+const OPENCODE_MCP_MANAGEMENT_CAPABILITIES: McpCapabilities = {
+  inventory: false,
+  add: true,
+  update: true,
+  remove: true,
+  reload: false,
+  startOAuth: false,
+  cancelOAuth: false,
+}
 const UNSUPPORTED_SKILL_CAPABILITIES: SkillCapabilities = {
   inventory: false,
   configure: false,
@@ -287,6 +297,31 @@ export class Orchestrator {
     provider: ProviderId,
     projectPath: string,
   ): Promise<{ capabilities: McpCapabilities; servers: McpServer[] }> {
+    if (provider === 'opencode') {
+      // No vendor inventory over this surface, but the harness-managed
+      // project servers are real: they are handed to every opencode launch
+      // through its own config.
+      this.#watchedMcpProjects.add(projectPath)
+      return {
+        capabilities: OPENCODE_MCP_MANAGEMENT_CAPABILITIES,
+        servers: this.#mcpConfig.list(provider, projectPath).map((config) => ({
+          id: config.id,
+          scope: 'project' as const,
+          enabled: config.enabled,
+          auth: { status: 'not_required' as const },
+          startup: { state: 'stopped' as const },
+          tools: [],
+          resources: [],
+          resourceTemplates: [],
+          ...(config.enabled
+            ? {
+                transport: config.transport,
+                ...(config.displayName ? { displayName: config.displayName } : {}),
+              }
+            : {}),
+        })),
+      }
+    }
     if (provider !== 'codex') {
       return { capabilities: UNSUPPORTED_MCP_CAPABILITIES, servers: [] }
     }
@@ -444,12 +479,12 @@ export class Orchestrator {
   }
 
   #requireMcpManagement(provider: ProviderId): void {
-    if (provider !== 'codex')
+    if (provider !== 'codex' && provider !== 'opencode')
       throw new Error(`provider "${provider}" cannot manage MCP servers yet`)
   }
 
   #mcpRuntimeOptions(provider: ProviderId, projectPath: string): StartOptions {
-    if (provider !== 'codex') return {}
+    if (provider !== 'codex' && provider !== 'opencode') return {}
     const mcpServers = this.#mcpConfig.list(provider, projectPath)
     const mcpCredentials: Record<string, string> = {}
     for (const server of mcpServers) {

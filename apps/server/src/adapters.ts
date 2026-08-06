@@ -207,7 +207,10 @@ function cursorRuntime(onLog: (line: string) => void): ProviderRuntime {
 function openCodeRuntime(onLog: (line: string) => void): ProviderRuntime {
   return {
     async start(workspacePath, options) {
-      const adapter = new OpenCodeAdapter()
+      const adapter = new OpenCodeAdapter({
+        ...(options.mcpServers ? { mcpServers: options.mcpServers } : {}),
+        ...(options.mcpCredentials ? { mcpCredentials: options.mcpCredentials } : {}),
+      })
       adapter.on('log', onLog)
       try {
         await adapter.start()
@@ -223,7 +226,10 @@ function openCodeRuntime(onLog: (line: string) => void): ProviderRuntime {
       }
     },
     async resume(threadId, workspacePath, options) {
-      const adapter = new OpenCodeAdapter()
+      const adapter = new OpenCodeAdapter({
+        ...(options.mcpServers ? { mcpServers: options.mcpServers } : {}),
+        ...(options.mcpCredentials ? { mcpCredentials: options.mcpCredentials } : {}),
+      })
       adapter.on('log', onLog)
       try {
         await adapter.start()
