@@ -113,13 +113,22 @@ export function Onboarding(props: {
   // Someone who already ran `codex login` should not be asked to do it again.
   useEffect(() => {
     if (step !== 'signin') return
+    // Cancelled on step change: a late signedIn reply must not teleport the
+    // user forward off a screen they already navigated away from.
+    let cancelled = false
     void props.transport
       .request('auth.status', { provider })
       .then((status) => {
+        if (cancelled) return
         setAccount(status)
         if (status.signedIn) setStep('models')
       })
-      .catch(() => setAccount({ signedIn: false }))
+      .catch(() => {
+        if (!cancelled) setAccount({ signedIn: false })
+      })
+    return () => {
+      cancelled = true
+    }
   }, [props.transport, provider, step])
 
   return (

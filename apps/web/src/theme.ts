@@ -6,6 +6,16 @@ export type AccentPreference =
 
 export type BackdropPreference = 'default' | 'slate' | 'mocha' | 'forest' | 'midnight' | 'plum'
 
+/** With site data blocked, touching localStorage throws SecurityError — and
+ *  these run during module init, where a throw is a white screen. */
+function readStored(key: string): string | null {
+  try {
+    return localStorage.getItem(key)
+  } catch {
+    return null
+  }
+}
+
 export const THEME_KEY = 'harness.theme'
 export const FONT_KEY = 'harness.font'
 export const ACCENT_KEY = 'harness.accent'
@@ -14,7 +24,7 @@ export const GLASS_KEY = 'harness.sidebarGlass'
 export const DARK_THEME_QUERY = '(prefers-color-scheme: dark)'
 
 export function readThemePreference(): ThemePreference {
-  const stored = localStorage.getItem(THEME_KEY)
+  const stored = readStored(THEME_KEY)
   return stored === 'light' || stored === 'system' ? stored : 'dark'
 }
 
@@ -32,7 +42,7 @@ export function applyTheme(theme: Theme): void {
 }
 
 export function readFontPreference(): FontPreference {
-  const stored = localStorage.getItem(FONT_KEY)
+  const stored = readStored(FONT_KEY)
   return stored === 'system' ||
     stored === 'humanist' ||
     stored === 'rounded' ||
@@ -47,7 +57,7 @@ export function applyFontPreference(font: FontPreference): void {
 }
 
 export function readAccentPreference(): AccentPreference {
-  const stored = localStorage.getItem(ACCENT_KEY)
+  const stored = readStored(ACCENT_KEY)
   return stored === 'ocean' ||
     stored === 'forest' ||
     stored === 'sunset' ||
@@ -63,7 +73,7 @@ export function applyAccentPreference(accent: AccentPreference): void {
 }
 
 export function readBackdropPreference(): BackdropPreference {
-  const stored = localStorage.getItem(BACKDROP_KEY)
+  const stored = readStored(BACKDROP_KEY)
   return stored === 'slate' ||
     stored === 'mocha' ||
     stored === 'forest' ||
@@ -82,7 +92,7 @@ export function applyBackdropPreference(backdrop: BackdropPreference): void {
  * above that makes text sit on too little contrast to read comfortably.
  */
 export function readGlassPreference(): number {
-  const stored = Number(localStorage.getItem(GLASS_KEY))
+  const stored = Number(readStored(GLASS_KEY))
   return Number.isFinite(stored) ? Math.min(60, Math.max(0, Math.round(stored))) : 0
 }
 

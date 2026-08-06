@@ -1,4 +1,4 @@
-import { useEffect } from 'react'
+import { useEffect, useRef } from 'react'
 import { X } from 'lucide-react'
 import { isMacOS } from '../bridge.js'
 import { SHORTCUTS, shortcutLabel } from '../shortcuts.js'
@@ -18,6 +18,13 @@ const ROWS = [
 export function ShortcutsDialog(props: { onClose: () => void }) {
   const macOS = isMacOS()
 
+  // Focus moves into the dialog on open, so Tab cycles its controls instead
+  // of walking the app hidden behind the overlay.
+  const panel = useRef<HTMLDivElement>(null)
+  useEffect(() => {
+    panel.current?.focus()
+  }, [])
+
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
       if (event.key === 'Escape') props.onClose()
@@ -34,6 +41,8 @@ export function ShortcutsDialog(props: { onClose: () => void }) {
         aria-modal="true"
         aria-label="Keyboard shortcuts"
         onClick={(event) => event.stopPropagation()}
+        ref={panel}
+        tabIndex={-1}
       >
         <div className="shortcuts-dialog__head">
           <h2>Keyboard shortcuts</h2>

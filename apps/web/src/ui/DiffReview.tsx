@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState, type ReactNode } from 'react'
+import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react'
 import type { DiffDecision, DiffHunk, DiffLine, SessionDiff } from '@harness/contracts'
 import { Check, RefreshCw, X } from 'lucide-react'
 import type { Transport } from '../transport.js'
@@ -9,16 +9,27 @@ export function DiffReview({ transport, threadId }: { transport: Transport; thre
   const [status, setStatus] = useState<string>()
   const [showSlowLoad, setShowSlowLoad] = useState(false)
 
+  // Generation-guarded: an in-flight diff for the previous thread (or an
+  // unmounted panel) must not land its snapshot on top of the current one.
+  const generation = useRef(0)
   const refresh = useCallback(async () => {
+    const mine = ++generation.current
     try {
-      setDiff(await transport.request('thread.diff', { threadId }))
+      const result = await transport.request('thread.diff', { threadId })
+      if (generation.current !== mine) return
+      setDiff(result)
       setStatus(undefined)
     } catch (cause) {
-      setStatus(message(cause))
+      if (generation.current === mine) setStatus(message(cause))
     }
   }, [transport, threadId])
 
-  useEffect(() => void refresh(), [refresh])
+  useEffect(() => {
+    void refresh()
+    return () => {
+      generation.current++
+    }
+  }, [refresh])
 
   useEffect(() => {
     const timer = window.setTimeout(() => setShowSlowLoad(true), 200)

@@ -50,6 +50,15 @@ export class Transport {
   close(): void {
     this.#closedByUs = true
     this.#socket?.close()
+    // This instance is being discarded; nothing will ever flush the queue or
+    // answer in-flight calls. A request left pending here kept its caller's
+    // await hanging (and the composer stuck on Stop) until a reload.
+    for (const pending of this.#pending.values()) {
+      pending.reject(new Error('Connection to the server was closed.'))
+    }
+    this.#pending.clear()
+    this.#inFlight.clear()
+    this.#queue = []
     this.#setState('closed')
   }
 
@@ -97,6 +106,9 @@ export class Transport {
     this.#socket = socket
 
     socket.onopen = () => {
+      // Same replaced-socket guard as onmessage/onclose: an orphan socket
+      // must not flush the queue into a connection whose replies are dropped.
+      if (this.#socket !== socket) return
       this.#setState('open')
       for (const entry of this.#queue.splice(0)) {
         socket.send(entry.payload)

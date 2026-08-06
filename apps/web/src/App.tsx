@@ -112,7 +112,7 @@ const TerminalPane = lazy(() =>
  */
 function takeLegacyProjects(): Array<{ path: string; name?: string }> {
   try {
-    const raw = localStorage.getItem(PROJECTS_KEY)
+    const raw = readSetting(PROJECTS_KEY)
     if (!raw) return []
     const parsed = JSON.parse(raw) as Array<{ path?: string; name?: string }>
     return parsed
@@ -130,17 +130,17 @@ export function App() {
     // Validated like every other stored key: a provider id from an older
     // build would skip onboarding and send every request somewhere the
     // server rejects — a broken app whose only cure was a full reset.
-    const stored = localStorage.getItem(SETUP_KEY)
+    const stored = readSetting(SETUP_KEY)
     const known: string[] = ['codex', 'claude-code', 'cursor', 'opencode', 'acp', 'api']
     return stored !== null && known.includes(stored) ? (stored as ProviderId) : null
   })
   const [acpAgent, setAcpAgent] = useState<string | undefined>(
-    () => localStorage.getItem(AGENT_KEY) ?? undefined,
+    () => readSetting(AGENT_KEY) ?? undefined,
   )
   // Kept so the sidebar can say "Gemini CLI" rather than "acp". The name lives
   // in the adapter package, which the renderer deliberately cannot import.
   const [acpAgentName, setAcpAgentName] = useState<string | undefined>(
-    () => localStorage.getItem(AGENT_NAME_KEY) ?? undefined,
+    () => readSetting(AGENT_NAME_KEY) ?? undefined,
   )
   // A cache of what the server says, not a source of truth. Every change goes
   // to the server and comes back through here.
@@ -178,7 +178,7 @@ export function App() {
   const [catalogRequest, setCatalogRequest] = useState(0)
   const [hiddenModels, setHiddenModels] = useState<Set<string>>(() => {
     try {
-      return new Set(JSON.parse(localStorage.getItem(HIDDEN_MODELS_KEY) ?? '[]') as string[])
+      return new Set(JSON.parse(readSetting(HIDDEN_MODELS_KEY) ?? '[]') as string[])
     } catch {
       return new Set()
     }
@@ -190,16 +190,16 @@ export function App() {
   const [autoReviewSupported, setAutoReviewSupported] = useState(false)
   const [userInputSupported, setUserInputSupported] = useState(false)
   const [modelId, setModelId] = useState<string | undefined>(
-    () => localStorage.getItem(MODEL_KEY) ?? undefined,
+    () => readSetting(MODEL_KEY) ?? undefined,
   )
   const [effort, setEffort] = useState<string | undefined>(
-    () => localStorage.getItem(EFFORT_KEY) ?? undefined,
+    () => readSetting(EFFORT_KEY) ?? undefined,
   )
   const [serviceTier, setServiceTier] = useState<string | undefined>(
-    () => localStorage.getItem(SERVICE_TIER_KEY) ?? undefined,
+    () => readSetting(SERVICE_TIER_KEY) ?? undefined,
   )
   const [approval, setApproval] = useState<ApprovalMode>(() => {
-    const stored = localStorage.getItem(APPROVAL_KEY)
+    const stored = readSetting(APPROVAL_KEY)
     return stored === 'auto' || stored === 'auto-review' || stored === 'full' ? stored : 'ask'
   })
   const [collapsed, setCollapsed] = useState(
@@ -257,30 +257,34 @@ export function App() {
   const [systemTheme, setSystemTheme] = useState<Theme>(readSystemTheme)
   const theme = themePreference === 'system' ? systemTheme : themePreference
   const [macOSFontSmoothing, setMacOSFontSmoothing] = useState(
-    () => localStorage.getItem(MACOS_FONT_SMOOTHING_KEY) !== 'false',
+    () => readSetting(MACOS_FONT_SMOOTHING_KEY) !== 'false',
   )
-  const [terminalOpen, setTerminalOpen] = useState(
-    () => localStorage.getItem(TERMINAL_OPEN_KEY) === 'true',
-  )
+  const [terminalOpen, setTerminalOpen] = useState(() => readSetting(TERMINAL_OPEN_KEY) === 'true')
   const [terminalHeight, setTerminalHeight] = useState(readTerminalHeight)
   const visibleModels = useMemo(
     () => models.filter((choice) => !hiddenModels.has(choice.key)),
     [models, hiddenModels],
   )
-  const implicitChoice =
-    provider && provider !== 'api'
-      ? choicesFor(
-          {
-            provider,
-            sourceName: providerName(provider, acpAgentName),
-            mark: provider === 'acp' && acpAgent ? agentMark(acpAgent) : providerMark(provider),
-            ...(provider === 'acp' && acpAgent
-              ? { agent: { id: acpAgent, name: acpAgentName ?? acpAgent } }
-              : {}),
-          },
-          [],
-        )[0]
-      : undefined
+  // Memoised for identity: while the catalog is empty this is the selected
+  // choice, and a fresh object per render would give every consumer downstream
+  // (including effects that write settings) a new dependency each frame.
+  const implicitChoice = useMemo(
+    () =>
+      provider && provider !== 'api'
+        ? choicesFor(
+            {
+              provider,
+              sourceName: providerName(provider, acpAgentName),
+              mark: provider === 'acp' && acpAgent ? agentMark(acpAgent) : providerMark(provider),
+              ...(provider === 'acp' && acpAgent
+                ? { agent: { id: acpAgent, name: acpAgentName ?? acpAgent } }
+                : {}),
+            },
+            [],
+          )[0]
+        : undefined,
+    [provider, acpAgent, acpAgentName],
+  )
   const selectedModelChoice =
     models.find((choice) => choice.key === modelId) ??
     visibleModels[0] ??
@@ -546,7 +550,7 @@ export function App() {
       setModelConnections(connections)
       setModels(catalog)
       setModelsLoaded(true)
-      const stored = localStorage.getItem(MODEL_KEY)
+      const stored = readSetting(MODEL_KEY)
       // Fallbacks respect hidden models: adding an API key must not silently
       // switch the user onto a model they explicitly hid. An explicit stored
       // choice still wins — hiding is about the list, not about revoking a
@@ -572,6 +576,11 @@ export function App() {
       if (selected.agent) {
         writeSetting(AGENT_KEY, selected.agent.id)
         writeSetting(AGENT_NAME_KEY, selected.agent.name)
+      } else {
+        // A stale agent id under a non-ACP provider is the same boot split
+        // this block exists to prevent.
+        removeSetting(AGENT_KEY)
+        removeSetting(AGENT_NAME_KEY)
       }
       setEffort((current) =>
         current && selected.model.reasoningEfforts.includes(current)
@@ -799,7 +808,7 @@ export function App() {
       for (const project of legacy) {
         await transport.request('projects.add', project).catch(() => undefined)
       }
-      if (legacy.length > 0) localStorage.removeItem(PROJECTS_KEY)
+      if (legacy.length > 0) removeSetting(PROJECTS_KEY)
       if (!cancelled) await refreshProjects().catch(() => undefined)
     })()
     return () => {
@@ -817,6 +826,9 @@ export function App() {
 
   useEffect(() => {
     writeSetting(HIDDEN_MODELS_KEY, JSON.stringify([...hiddenModels]))
+  }, [hiddenModels])
+
+  useEffect(() => {
     if (selectedModelChoice && hiddenModels.has(selectedModelChoice.key)) {
       const fallback = visibleModels[0]
       if (fallback) setModelId(fallback.key)
@@ -827,7 +839,7 @@ export function App() {
     if (effort) {
       writeSetting(EFFORT_KEY, effort)
     } else {
-      localStorage.removeItem(EFFORT_KEY)
+      removeSetting(EFFORT_KEY)
     }
   }, [effort])
 
@@ -835,7 +847,7 @@ export function App() {
     if (serviceTier) {
       writeSetting(SERVICE_TIER_KEY, serviceTier)
     } else {
-      localStorage.removeItem(SERVICE_TIER_KEY)
+      removeSetting(SERVICE_TIER_KEY)
     }
   }, [serviceTier])
 
@@ -855,6 +867,11 @@ export function App() {
       if (selected.agent) {
         writeSetting(AGENT_KEY, selected.agent.id)
         writeSetting(AGENT_NAME_KEY, selected.agent.name)
+      } else {
+        // A stale agent id under a non-ACP provider is the same boot split
+        // this block exists to prevent.
+        removeSetting(AGENT_KEY)
+        removeSetting(AGENT_NAME_KEY)
       }
       setEffort((current) =>
         current && selected.model.reasoningEfforts.includes(current)
@@ -1634,6 +1651,17 @@ export function App() {
         setSessionSearchOpen(true)
         return
       }
+      // A modal sheet owns the keyboard. Without this, Ctrl+N started a chat
+      // underneath the open Settings panel. The settings shortcut still works
+      // (it closes the sheet); everything else waits.
+      if (settingsOpen || shortcutsOpen) {
+        if (matchesShortcut(event, SHORTCUTS.settings)) {
+          event.preventDefault()
+          setShortcutsOpen(false)
+          setSettingsOpen((open) => !open)
+        }
+        return
+      }
       if (isEditableTarget(event.target)) return
 
       if (matchesShortcut(event, SHORTCUTS.commandPalette)) {
@@ -1678,7 +1706,7 @@ export function App() {
 
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
-  }, [activePath, addProject, provider, startNewChat])
+  }, [activePath, addProject, provider, startNewChat, settingsOpen, shortcutsOpen])
 
   if (!provider) {
     return (
@@ -2211,7 +2239,7 @@ export function App() {
 }
 
 function readRailWidth(): number {
-  const stored = Number(localStorage.getItem(RAIL_WIDTH_KEY))
+  const stored = Number(readSetting(RAIL_WIDTH_KEY))
   return Number.isFinite(stored) && stored >= 176 && stored <= 420 ? stored : 248
 }
 
@@ -2337,7 +2365,7 @@ function basename(path: string): string {
 }
 
 function readTerminalHeight(): number {
-  const stored = Number(localStorage.getItem(TERMINAL_HEIGHT_KEY))
+  const stored = Number(readSetting(TERMINAL_HEIGHT_KEY))
   const height = Number.isFinite(stored) && stored >= 160 ? stored : 260
   return Math.min(height, Math.max(160, Math.floor(window.innerHeight * 0.72)))
 }
@@ -2369,7 +2397,7 @@ type SessionOrder = Record<string, string[]>
 
 function loadSessionOrder(): SessionOrder {
   try {
-    const parsed = JSON.parse(localStorage.getItem(SESSION_ORDER_KEY) ?? '{}') as unknown
+    const parsed = JSON.parse(readSetting(SESSION_ORDER_KEY) ?? '{}') as unknown
     if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return {}
     return Object.fromEntries(
       Object.entries(parsed).filter(
@@ -2423,5 +2451,23 @@ function writeSetting(key: string, value: string): void {
     localStorage.setItem(key, value)
   } catch {
     // A lost preference beats a white screen.
+  }
+}
+
+/** With site data blocked, merely touching localStorage throws SecurityError —
+ *  and most reads run inside useState initializers on first render. */
+function readSetting(key: string): string | null {
+  try {
+    return localStorage.getItem(key)
+  } catch {
+    return null
+  }
+}
+
+function removeSetting(key: string): void {
+  try {
+    localStorage.removeItem(key)
+  } catch {
+    // Nothing to lose.
   }
 }

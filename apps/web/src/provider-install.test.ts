@@ -106,7 +106,7 @@ describe('beginLogin', () => {
     expect(transport.request).toHaveBeenCalledWith('providers.launch', {
       provider: 'acp',
       agent: 'gemini',
-      columns: 100,
+      columns: 320,
       rows: 30,
     })
   })
