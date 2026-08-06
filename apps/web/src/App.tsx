@@ -150,6 +150,10 @@ export function App() {
   // intentional: streamed deltas for a background session should not rerender
   // the active thread, while selecting it still gets the latest state at once.
   const threadStates = useRef(new Map<string, ThreadState>())
+  /** Live events parked while a history fetch for the thread is in flight. */
+  const historyBuffers = useRef(
+    new Map<string, Array<{ seq: number | undefined; event: DomainEvent }>>(),
+  )
   const queueStates = useRef(new Map<string, { items: QueuedTurn[]; canSteer: boolean }>())
   const pendingSession = useRef<
     | {
@@ -357,7 +361,11 @@ export function App() {
       const id = activeIdRef.current
       if (id) setThread(threadStates.current.get(id) ?? emptyThread)
     }
-    const offEvents = transport.on('thread.event', ({ threadId, event }) => {
+    const offEvents = transport.on('thread.event', ({ threadId, event, seq }) => {
+      // While a history load is in flight, the fetched state will replace the
+      // cache — record the event so it can be replayed on top. It still
+      // applies immediately below, so the UI never waits on the round trip.
+      historyBuffers.current.get(threadId)?.push({ seq, event })
       const next = reduce(threadStates.current.get(threadId) ?? emptyThread, event)
       threadStates.current.set(threadId, next)
 
@@ -682,11 +690,24 @@ export function App() {
 
   const loadHistory = useCallback(
     async (threadId: string) => {
-      const { events } = await transport.request('thread.history', { threadId })
-      const restored = events.reduce((state, entry) => reduce(state, entry.event), emptyThread)
-      threadStates.current.set(threadId, restored)
-      setProjects((current) => updateSession(current, threadId, markSessionRead))
-      if (activeIdRef.current === threadId) setThread(restored)
+      // Live pushes landing during this round trip are buffered (see the
+      // thread.event handler) and re-applied on top of the fetched history —
+      // overwriting the cache blindly used to silently drop them.
+      historyBuffers.current.set(threadId, [])
+      try {
+        const { events } = await transport.request('thread.history', { threadId })
+        const restored = events.reduce((state, entry) => reduce(state, entry.event), emptyThread)
+        const lastSeq = events.at(-1)?.seq ?? 0
+        const buffered = historyBuffers.current.get(threadId) ?? []
+        const withLive = buffered
+          .filter((entry) => entry.seq === undefined || entry.seq > lastSeq)
+          .reduce((state, entry) => reduce(state, entry.event), restored)
+        threadStates.current.set(threadId, withLive)
+        setProjects((current) => updateSession(current, threadId, markSessionRead))
+        if (activeIdRef.current === threadId) setThread(withLive)
+      } finally {
+        historyBuffers.current.delete(threadId)
+      }
     },
     [transport],
   )
@@ -982,11 +1003,17 @@ export function App() {
 
   const send = useCallback(
     async (text: string, attachments: string[] = [], submission: 'queue' | 'steer' = 'queue') => {
+      // The composer clears itself the moment it hands the text over. Every
+      // early bail below must put the words back — a toast is no substitute
+      // for the paragraph someone just typed.
+      const restoreDraft = () =>
+        setComposerDraft((current) => ({ text, request: (current?.request ?? 0) + 1 }))
       const briefing = designMode
       if (briefing) {
         if (!userInputSupported) {
           setDesignMode(false)
           setNotice('Design briefing requires an agent that supports structured questions.')
+          restoreDraft()
           return
         }
       }
@@ -999,11 +1026,17 @@ export function App() {
       let optimisticTurnId: string | undefined
       let titledOnCreate = false
       if (!threadId) {
-        if (!activePath) return
+        if (!activePath) {
+          restoreDraft()
+          return
+        }
         const provisionalId = `pending:${crypto.randomUUID()}`
         const provisional = beginOptimisticTurn(emptyThread, text)
         const choice = selectedModelChoice
-        if (!choice) return
+        if (!choice) {
+          restoreDraft()
+          return
+        }
         optimisticTurnId = provisional.activeTurn?.id
         threadStates.current.set(provisionalId, provisional)
         setProjects((current) =>
@@ -1043,6 +1076,7 @@ export function App() {
             threadStates.current.set(provisionalId, next)
             if (activeIdRef.current === provisionalId) setThread(next)
           }
+          restoreDraft()
           return
         }
         optimisticAdded = true
@@ -1058,7 +1092,10 @@ export function App() {
         if (activeIdRef.current === targetId) setThread(provisional)
         setThreadRevealRequest((request) => request + 1)
         threadId = await pending.promise
-        if (!threadId) return
+        if (!threadId) {
+          restoreDraft()
+          return
+        }
         optimisticAdded = true
       }
 
@@ -1160,7 +1197,14 @@ export function App() {
           updateQueue(threadId, (items) => items.filter((item) => item.id !== optimisticQueueId))
         }
         const current = threadStates.current.get(threadId)
-        if (current !== undefined && current.activeTurn?.id === optimisticTurnId) {
+        // Any locally-invented turn must be rolled back on failure, not only
+        // the one whose id this call happens to remember — a stranded
+        // optimistic turn keeps the composer stuck on Stop until a reload.
+        if (
+          current !== undefined &&
+          (current.activeTurn?.id === optimisticTurnId ||
+            current.activeTurn?.id.startsWith('local-turn:') === true)
+        ) {
           const next: ThreadState = { ...current, running: false, activeTurn: undefined }
           threadStates.current.set(threadId, next)
           if (threadId === activeIdRef.current) setThread(next)
