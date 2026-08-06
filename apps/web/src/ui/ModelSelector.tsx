@@ -260,6 +260,14 @@ function DitherChoiceRow(props: {
       }}
       onPointerUp={(event) => {
         if (props.disabled || !hasPointerCaptureSafe(event.currentTarget, event.pointerId)) {
+          // Capture can be lost without a pointercancel — a re-render under
+          // the drag, the menu closing mid-gesture. Leaving the preview state
+          // set showed an effort the composer was not going to send.
+          if (pointerIndexRef.current !== null) {
+            pointerIndexRef.current = null
+            setPointerIndex(null)
+            props.onPreviewIndex(null)
+          }
           return
         }
         event.preventDefault()

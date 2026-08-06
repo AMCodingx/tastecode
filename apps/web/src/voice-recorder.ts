@@ -29,6 +29,8 @@ type RecorderRuntime = {
 
 export function useVoiceRecorder() {
   const runtime = useRef<RecorderRuntime | null>(null)
+  /** Set synchronously, before the permission prompt can be awaited twice. */
+  const starting = useRef(false)
   const timer = useRef<number | undefined>(undefined)
   const levelsRef = useRef<number[]>([])
   const lastLevelEmitAt = useRef(0)
@@ -55,10 +57,15 @@ export function useVoiceRecorder() {
   }, [])
 
   const start = useCallback(async () => {
-    if (runtime.current) throw new Error('Voice recording is already running.')
+    // `starting` as well as `runtime`: runtime is only assigned after the
+    // permission prompt resolves, so two clicks inside that window both got
+    // past a runtime-only guard and the first stream became unreachable —
+    // microphone left live for the rest of the session.
+    if (runtime.current || starting.current) throw new Error('Voice recording is already running.')
     if (!canCaptureVoice()) {
       throw new Error('Microphone recording is unavailable in this browser.')
     }
+    starting.current = true
 
     let stream: MediaStream | undefined
     let audioContext: AudioContext | undefined
@@ -130,6 +137,8 @@ export function useVoiceRecorder() {
       for (const track of stream?.getTracks() ?? []) track.stop()
       await audioContext?.close().catch(() => undefined)
       throw error
+    } finally {
+      starting.current = false
     }
   }, [])
 
