@@ -109,10 +109,14 @@ export async function removeWorktree(worktree: Worktree, force = false): Promise
 }
 
 export async function hasUncommittedChanges(worktreePath: string): Promise<boolean> {
+  // A checkout that is not there holds nothing to lose. Asking git about a
+  // missing cwd fails, and without this the user would be warned about losing
+  // work in a directory that no longer exists.
+  if (!existsSync(worktreePath)) return false
   const status = await git(worktreePath, ['status', '--porcelain'])
-  // `git` swallows every failure into undefined — a timeout, a missing git, a
-  // corrupt index. Reading that as "clean" would green-light a destructive
-  // removal on no evidence, so unknown counts as dirty.
+  // `git` swallows every other failure into undefined — a timeout, a missing
+  // git, a corrupt index. Reading that as "clean" would green-light a
+  // destructive removal on no evidence, so unknown counts as dirty.
   if (status === undefined) return true
   return status !== ''
 }

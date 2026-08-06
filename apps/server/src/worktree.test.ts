@@ -150,6 +150,25 @@ describe('hasUncommittedChanges', () => {
     writeFileSync(path.join(worktree.path, 'new.txt'), 'hello\n')
     expect(await hasUncommittedChanges(worktree.path)).toBe(true)
   })
+
+  it('reports nothing to lose for a checkout that is not there', async () => {
+    // Not "unknown, so assume dirty": a directory that does not exist holds
+    // no work, and warning about losing it would be a lie.
+    const worktree = await createWorktree(repo, 'thread-666666666666', root)
+    rmSync(worktree.path, { recursive: true, force: true })
+    expect(await hasUncommittedChanges(worktree.path)).toBe(false)
+  })
+
+  it('assumes work is at risk when git cannot answer', async () => {
+    // A plain directory is not a repository, so status fails. Anything that
+    // gates a destructive step must not read a failure as "clean".
+    const plain = mkdtempSync(path.join(os.tmpdir(), 'harness-notrepo-'))
+    try {
+      expect(await hasUncommittedChanges(plain)).toBe(true)
+    } finally {
+      rmSync(plain, { recursive: true, force: true })
+    }
+  })
 })
 
 describe('isRepository', () => {
