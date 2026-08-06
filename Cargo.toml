@@ -1,0 +1,32 @@
+[workspace]
+resolver = "2"
+members = [
+  "apps/native",
+  "crates/harness-client",
+  "crates/harness-protocol",
+  "crates/harness-ui",
+]
+
+[workspace.package]
+edition = "2024"
+rust-version = "1.91.1"
+publish = false
+
+[workspace.dependencies]
+anyhow = "1.0.100"
+async-channel = "2.5.0"
+gpui = "=0.2.2"
+serde = { version = "1.0.228", features = ["derive"] }
+serde_json = "1.0.145"
+thiserror = "2.0.17"
+tungstenite = "0.30.0"
+url = "2.5.8"
+uuid = { version = "1.18.1", features = ["serde", "v4"] }
+
+[profile.dev]
+debug = 1
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+strip = "symbols"
