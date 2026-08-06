@@ -206,7 +206,7 @@ export function Settings(props: {
           {section === 'workflows' ? <WorkflowSettings {...props} /> : null}
           {section === 'appearance' ? <AppearanceSettings {...props} /> : null}
           {section === 'data' ? <DataSettings {...props} /> : null}
-          {section === 'about' ? <AboutSettings /> : null}
+          {section === 'about' ? <AboutSettings transport={props.transport} /> : null}
         </div>
       </main>
     </div>
@@ -957,14 +957,64 @@ function DataSettings(props: { projectCount: number; onReset: () => void }) {
   )
 }
 
-function AboutSettings() {
+function AboutSettings(props: { transport: Transport }) {
+  const [checking, setChecking] = useState(false)
+  const [result, setResult] = useState<ResultOf<'system.updateCheck'>>()
+
+  const check = async () => {
+    setChecking(true)
+    try {
+      setResult(await props.transport.request('system.updateCheck', {}))
+    } catch (cause) {
+      setResult({ error: cause instanceof Error ? cause.message : String(cause) })
+    } finally {
+      setChecking(false)
+    }
+  }
+
+  const short = (sha: string) => sha.slice(0, 7)
+  const updateNote = !result
+    ? 'Compare this build with the latest commit on GitHub.'
+    : result.error
+      ? result.error
+      : result.upToDate
+        ? `Up to date · ${short(result.remote?.sha ?? '')} is the newest commit.`
+        : result.remote
+          ? `Newer commit on GitHub: "${result.remote.message}" (${short(result.remote.sha)}). Pull and restart to update.`
+          : 'Could not determine a verdict.'
+
   return (
     <SettingsPanel title="About" groupTitle="Personal Harness">
       <SettingsRow
         title="Personal Harness"
-        note={`${isDesktop ? 'Desktop' : 'Browser'} · pre-release`}
+        note={`${isDesktop ? 'Desktop' : 'Browser'} · pre-release${result?.localCommit ? ` · ${short(result.localCommit)}` : ''}`}
       />
-      <p className="settings__group-note">Open source, and built to be forked.</p>
+      <SettingsRow title="Updates" note={updateNote}>
+        <button
+          className="settings__action"
+          type="button"
+          disabled={checking}
+          onClick={() => void check()}
+        >
+          <RotateCcw size={13} aria-hidden />
+          {checking ? 'Checking…' : 'Check for updates'}
+        </button>
+      </SettingsRow>
+      <SettingsRow title="Source" note="Open source, and built to be forked.">
+        <button
+          className="settings__action"
+          type="button"
+          onClick={() =>
+            window.open(
+              'https://github.com/Leonxlnx/personalharness',
+              '_blank',
+              'noopener,noreferrer',
+            )
+          }
+        >
+          GitHub
+        </button>
+      </SettingsRow>
     </SettingsPanel>
   )
 }
