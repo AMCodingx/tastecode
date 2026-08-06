@@ -27,21 +27,25 @@ export function SkillsSettings(props: {
     }
 
     let active = true
+    // Ordered: two overlapping refreshes (initial load racing a
+    // skills.changed push) must not land out of order.
+    let generation = 0
     const load = async () => {
+      const mine = ++generation
       setLoading(true)
       try {
         const next = await props.transport.request('skills.list', {
           provider: props.provider,
           projectPath: props.projectPath!,
         })
-        if (active) {
+        if (active && mine === generation) {
           setInventory(next)
           setError(undefined)
         }
       } catch (cause) {
-        if (active) setError(message(cause))
+        if (active && mine === generation) setError(message(cause))
       } finally {
-        if (active) setLoading(false)
+        if (active && mine === generation) setLoading(false)
       }
     }
     setInventory(undefined)
@@ -114,7 +118,9 @@ export function SkillsSettings(props: {
   const project = props.projectName ?? props.projectPath
   const status = !props.projectPath
     ? 'Select a project in the sidebar first.'
-    : loading
+    : // A background refresh keeps the current list on screen; blanking it
+      // to a loading note on every skills.changed push read as flicker.
+      loading && !inventory
       ? 'Discovering skills…'
       : !inventory
         ? undefined
