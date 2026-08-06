@@ -230,3 +230,62 @@ describe('Streamer', () => {
     expect(next[0]?.type).toBe('item.started')
   })
 })
+
+describe('streamed tool output', () => {
+  it('accumulates output across update frames instead of keeping only the last', () => {
+    const streamer = new Streamer('t1')
+    streamer.translate({
+      sessionUpdate: 'tool_call',
+      toolCallId: 'cmd-1',
+      status: 'in_progress',
+      title: 'build',
+      kind: 'execute',
+      content: [{ type: 'content', content: { type: 'text', text: 'step one\n' } }],
+      locations: [],
+    })
+    streamer.translate({
+      sessionUpdate: 'tool_call_update',
+      toolCallId: 'cmd-1',
+      status: 'in_progress',
+      content: [{ type: 'content', content: { type: 'text', text: 'step two\n' } }],
+    })
+    const events = streamer.translate({
+      sessionUpdate: 'tool_call_update',
+      toolCallId: 'cmd-1',
+      status: 'completed',
+      content: [{ type: 'content', content: { type: 'text', text: 'done' } }],
+    })
+
+    const event = events.find((entry) => entry.type === 'item.completed')
+    if (event?.type !== 'item.completed') throw new Error('shape')
+    expect(event.item.text).toContain('step one')
+    expect(event.item.text).toContain('step two')
+    expect(event.item.text).toContain('done')
+  })
+
+  it('folds id-less frames into one shared slot instead of one row per frame', () => {
+    const streamer = new Streamer('t1')
+    const first = streamer.translate({
+      sessionUpdate: 'tool_call',
+      status: 'in_progress',
+      title: 'anonymous work',
+      kind: 'execute',
+      content: [],
+      locations: [],
+    })
+    const second = streamer.translate({
+      sessionUpdate: 'tool_call_update',
+      status: 'completed',
+      content: [],
+    })
+
+    const startedItem = first.find((entry) => entry.type === 'item.started')
+    const completedItem = second.find((entry) => entry.type === 'item.completed')
+    if (startedItem?.type !== 'item.started' || completedItem?.type !== 'item.completed') {
+      throw new Error('shape')
+    }
+    // Same id: the call and its completion are one item, not a started row
+    // that spins forever next to a finished duplicate.
+    expect(completedItem.item.id).toBe(startedItem.item.id)
+  })
+})
