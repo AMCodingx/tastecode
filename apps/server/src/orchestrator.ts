@@ -8,11 +8,38 @@ import { cursorAccount, signOutCursor, startCursorLogin } from '@harness/adapter
 import {
   DESIGN_BRIEF_ATTACHMENT,
   FINAL_BRIEFING_QUESTION,
+  designAssetPrompt,
+  designBrandPrompt,
   designBriefingContinuation,
   designBriefingPrompt,
+  designBuildPrompt,
+  designPagePrompt,
+  designPhaseCorrectionPrompt,
+  designPreviewPrompt,
+  designRepairPrompt,
+  designReviewPrompt,
+  parseAssetPhaseOutput,
+  parseBrandPhaseOutput,
   parseBriefingOutput,
+  parseBuildPhaseOutput,
+  parsePagePhaseOutput,
+  parsePreviewPhaseOutput,
+  parsePreviewPlan,
+  parseRepairPhaseOutput,
+  parseReviewPhaseOutput,
+  readAssetManifest,
+  readBrandSystem,
+  readDesignBrief,
+  readPageBlueprint,
+  writeAssetManifest,
+  writeBrandSystem,
   writeDesignBrief,
+  writePageBlueprint,
+  writeVisualReview,
   type BriefingQuestion,
+  type PreviewPlan,
+  type ReviewScreenshot,
+  type VisualReview,
 } from '@harness/design-agent'
 import {
   providerRuntime,
@@ -45,6 +72,7 @@ import type {
   McpServer,
   McpServerConfig,
   Model,
+  Item,
   PanicStopResult,
   ParamsOf,
   ProviderId,
@@ -64,17 +92,158 @@ import { readCredential } from './credentials.js'
 import { ModelConnectionStore } from './model-connections.js'
 import { TerminalManager } from './terminal.js'
 import { installLocalSkill } from './skill-install.js'
+import { startDesignPreview, type RunningPreview } from './design-preview-runner.js'
 
 type QueuedTurnEntry = QueuedTurn & { options: TurnOptions }
 type QueueState = { items: QueuedTurn[]; canSteer: boolean }
+type DesignFlowPhase =
+  'brief' | 'brand' | 'page' | 'assets' | 'build' | 'preview' | 'review' | 'repair' | 'complete'
 type DesignFlow = {
   workspacePath: string
   originalRequest: string
   options: TurnOptions
+  phase: DesignFlowPhase
   askedQuestions: boolean
   finalAsked: boolean
   explicitAnswers: Array<{ question: string; answer: string }>
+  correcting: boolean
+  repairAttempt: number
   pendingBrief?: unknown
+  pendingPrompt?: string
+  completion?: string
+  previewPlan?: PreviewPlan
+  previewUrl?: string
+  screenshots?: ReviewScreenshot[]
+  review?: VisualReview
+}
+
+function parseStoredDesignFlow(value: unknown, workspacePath: string): DesignFlow | undefined {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) return undefined
+  const stored = value as Record<string, unknown>
+  const phases: DesignFlowPhase[] = [
+    'brief',
+    'brand',
+    'page',
+    'assets',
+    'build',
+    'preview',
+    'review',
+    'repair',
+    'complete',
+  ]
+  if (
+    typeof stored.originalRequest !== 'string' ||
+    !phases.includes(stored.phase as DesignFlowPhase) ||
+    typeof stored.askedQuestions !== 'boolean' ||
+    typeof stored.finalAsked !== 'boolean' ||
+    !Array.isArray(stored.explicitAnswers)
+  ) {
+    return undefined
+  }
+  const explicitAnswers = stored.explicitAnswers.filter(
+    (answer): answer is { question: string; answer: string } =>
+      typeof answer === 'object' &&
+      answer !== null &&
+      typeof (answer as Record<string, unknown>).question === 'string' &&
+      typeof (answer as Record<string, unknown>).answer === 'string',
+  )
+  if (explicitAnswers.length !== stored.explicitAnswers.length) return undefined
+
+  const rawOptions =
+    typeof stored.options === 'object' && stored.options !== null && !Array.isArray(stored.options)
+      ? (stored.options as Record<string, unknown>)
+      : {}
+  const options: TurnOptions = {}
+  for (const field of ['model', 'serviceTier', 'effort'] as const) {
+    if (typeof rawOptions[field] === 'string') options[field] = rawOptions[field]
+  }
+
+  let previewPlan: PreviewPlan | undefined
+  let review: VisualReview | undefined
+  try {
+    if (stored.previewPlan !== undefined) previewPlan = parsePreviewPlan(stored.previewPlan)
+    if (stored.review !== undefined) {
+      review = parseReviewPhaseOutput(JSON.stringify(stored.review))
+    }
+  } catch {
+    return undefined
+  }
+  const rawScreenshots = stored.screenshots
+  const screenshotCount = Array.isArray(rawScreenshots) ? rawScreenshots.length : undefined
+  const screenshots = Array.isArray(rawScreenshots)
+    ? rawScreenshots.filter(
+        (value): value is ReviewScreenshot =>
+          typeof value === 'object' &&
+          value !== null &&
+          typeof (value as Record<string, unknown>).path === 'string' &&
+          Number.isInteger((value as Record<string, unknown>).width) &&
+          Number.isInteger((value as Record<string, unknown>).height),
+      )
+    : undefined
+  if (screenshots && screenshots.length !== screenshotCount) return undefined
+  const repairAttempt =
+    Number.isInteger(stored.repairAttempt) && (stored.repairAttempt as number) >= 0
+      ? (stored.repairAttempt as number)
+      : 0
+  const phase = stored.phase as DesignFlowPhase
+  if (
+    ((phase === 'review' || phase === 'repair') && !previewPlan) ||
+    (phase === 'review' && !screenshots) ||
+    (phase === 'repair' && !review)
+  ) {
+    return undefined
+  }
+
+  return {
+    workspacePath,
+    originalRequest: stored.originalRequest,
+    options,
+    phase,
+    askedQuestions: stored.askedQuestions,
+    finalAsked: stored.finalAsked,
+    explicitAnswers,
+    correcting: stored.correcting === true,
+    repairAttempt,
+    ...(stored.pendingBrief === undefined ? {} : { pendingBrief: stored.pendingBrief }),
+    ...(typeof stored.pendingPrompt === 'string' ? { pendingPrompt: stored.pendingPrompt } : {}),
+    ...(typeof stored.completion === 'string' ? { completion: stored.completion } : {}),
+    ...(previewPlan ? { previewPlan } : {}),
+    ...(previewPlan ? { previewUrl: previewPlan.url } : {}),
+    ...(screenshots ? { screenshots } : {}),
+    ...(review ? { review } : {}),
+  }
+}
+
+function unresolvedDesignInput(
+  history: Array<{ event: DomainEvent }>,
+): { id: string; turnId: string; questions: BriefingQuestion[] } | undefined {
+  const unresolved = new Map<string, { turnId: string; questions: BriefingQuestion[] }>()
+  for (const { event } of history) {
+    if (event.type === 'user_input.requested') {
+      unresolved.set(event.request.id, {
+        turnId: event.request.turnId,
+        questions: event.request.questions.map((question) => ({
+          id: question.id,
+          header: question.header,
+          question: question.question,
+          allowOther: question.allowOther,
+          options: question.options ?? [],
+        })),
+      })
+    }
+    if (event.type === 'user_input.resolved') unresolved.delete(event.id)
+  }
+  const last = [...unresolved].at(-1)
+  return last ? { id: last[0], ...last[1] } : undefined
+}
+
+function openTurn(history: Array<{ event: DomainEvent }>): string | undefined {
+  const open = new Set<string>()
+  for (const { event } of history) {
+    if (event.type === 'turn.started') open.add(event.turn.id)
+    if (event.type === 'turn.completed') open.delete(event.turnId)
+  }
+  return [...open].at(-1)
 }
 type DesignInput = {
   threadId: string
@@ -83,6 +252,7 @@ type DesignInput = {
   final: boolean
 }
 const PANIC_STOP_TIMEOUT_MS = 5_000
+const DESIGN_REPAIR_LIMIT = 2
 const UNSUPPORTED_MCP_CAPABILITIES: McpCapabilities = {
   inventory: false,
   add: false,
@@ -131,8 +301,12 @@ export class Orchestrator {
   #designTurns = new Map<string, string>()
   #designStartingThreads = new Set<string>()
   #designMessageItems = new Set<string>()
+  #acceptedDesignOutputs = new Set<string>()
+  #designOutputErrors = new Map<string, unknown>()
+  #designActivityItems = new Map<string, Item>()
   #designInputs = new Map<string, DesignInput>()
   #designInputByThread = new Map<string, string>()
+  #designPreviews = new Map<string, RunningPreview>()
   #resumingThreads = new Map<string, Promise<void>>()
   #panicGeneration = 0
   #panicStopping = false
@@ -153,6 +327,12 @@ export class Orchestrator {
   #onMcpChanged: (provider: ProviderId, projectPath: string) => void
   #onSkillsChanged: (provider: ProviderId, projectPath: string) => void
   #onLifecycle: (threadId: string, lifecycle: ThreadLifecycle) => void
+  #capturePreview:
+    | ((
+        url: string,
+        viewports: Array<{ width: number; height: number }>,
+      ) => Promise<ReviewScreenshot[] | undefined>)
+    | undefined
   #watchedSkillProjects = new Set<string>()
   #watchedMcpProjects = new Set<string>()
   #inboxProjections = new Map<
@@ -191,6 +371,10 @@ export class Orchestrator {
       onMcpChanged?: (provider: ProviderId, projectPath: string) => void
       onSkillsChanged?: (provider: ProviderId, projectPath: string) => void
       onLifecycle?: (threadId: string, lifecycle: ThreadLifecycle) => void
+      capturePreview?: (
+        url: string,
+        viewports: Array<{ width: number; height: number }>,
+      ) => Promise<ReviewScreenshot[] | undefined>
       mcpConfig?: McpConfigStore
       modelConnections?: ModelConnectionStore
       readCredential?: (reference: string) => string
@@ -211,6 +395,7 @@ export class Orchestrator {
     this.#onMcpChanged = handlers.onMcpChanged ?? (() => {})
     this.#onSkillsChanged = handlers.onSkillsChanged ?? (() => {})
     this.#onLifecycle = handlers.onLifecycle ?? (() => {})
+    this.#capturePreview = handlers.capturePreview
     this.#mcpConfig = handlers.mcpConfig ?? new McpConfigStore()
     this.#modelConnections = handlers.modelConnections ?? new ModelConnectionStore()
     this.#readCredential = handlers.readCredential ?? readCredential
@@ -677,14 +862,23 @@ export class Orchestrator {
       const design = attachments.includes(DESIGN_BRIEF_ATTACHMENT)
       const turnOptions = design ? { ...options, effort: 'low' } : options
       if (design) {
+        const previousPreview = this.#designPreviews.get(threadId)
+        if (previousPreview) {
+          this.#designPreviews.delete(threadId)
+          void previousPreview.stop()
+        }
         this.#designFlows.set(threadId, {
           workspacePath: this.#repoPath(threadId),
           originalRequest: text,
           options: turnOptions,
+          phase: 'brief',
           askedQuestions: false,
           finalAsked: false,
           explicitAnswers: [],
+          correcting: false,
+          repairAttempt: 0,
         })
+        this.#saveDesignFlow(threadId)
       }
       const prompt = design ? designBriefingPrompt(text) : text
       const visibleAttachments = attachments.filter((path) => path !== DESIGN_BRIEF_ATTACHMENT)
@@ -708,6 +902,7 @@ export class Orchestrator {
     if (
       this.#activeTurns.has(threadId) ||
       this.#startingTurns.has(threadId) ||
+      this.#designFlows.has(threadId) ||
       this.#designInputByThread.has(threadId) ||
       queue.length > 0
     ) {
@@ -721,7 +916,12 @@ export class Orchestrator {
       queue.push(queuedTurn)
       this.#queuedTurns.set(threadId, queue)
       this.#notifyQueue(threadId)
-      if (!this.#activeTurns.has(threadId) && !this.#startingTurns.has(threadId)) {
+      if (
+        !this.#activeTurns.has(threadId) &&
+        !this.#startingTurns.has(threadId) &&
+        !this.#designFlows.has(threadId) &&
+        !this.#designInputByThread.has(threadId)
+      ) {
         void this.#drainQueue(threadId)
       }
       return { queued: true, queuedTurn: this.#publicQueuedTurn(queuedTurn) }
@@ -803,7 +1003,11 @@ export class Orchestrator {
       this.#wakeForActivity(threadId, true)
     }
     this.#onEvent(threadId, event, seq)
-    if (event.type === 'turn.completed' && !this.#designInputByThread.has(threadId)) {
+    if (
+      event.type === 'turn.completed' &&
+      !this.#designFlows.has(threadId) &&
+      !this.#designInputByThread.has(threadId)
+    ) {
       void this.#drainQueue(threadId)
     }
   }
@@ -1200,10 +1404,23 @@ export class Orchestrator {
             return answer ? [{ question: question.question, answer }] : []
           }),
         )
+        this.#saveDesignFlow(threadId)
       }
       if (noMoreDetails && flow.pendingBrief) {
-        this.#completeDesignBrief(threadId, designInput.turnId, flow.pendingBrief)
-        void this.#drainQueue(threadId)
+        try {
+          this.#completeDesignBrief(threadId, designInput.turnId, flow.pendingBrief)
+        } catch (error) {
+          const prompt = this.#queueDesignCorrection(threadId, flow, error)
+          if (!prompt) {
+            this.#failDesignFlow(threadId, error)
+            return
+          }
+          delete flow.pendingPrompt
+          this.#saveDesignFlow(threadId)
+          void this.#sendDesignTurn(threadId, prompt, [], flow.options).catch(
+            (sendError: unknown) => this.#failDesignFlow(threadId, sendError),
+          )
+        }
         return
       }
 
@@ -1359,8 +1576,13 @@ export class Orchestrator {
     this.#designTurns.clear()
     this.#designStartingThreads.clear()
     this.#designMessageItems.clear()
+    this.#acceptedDesignOutputs.clear()
+    this.#designOutputErrors.clear()
+    this.#designActivityItems.clear()
     this.#designInputs.clear()
     this.#designInputByThread.clear()
+    for (const preview of this.#designPreviews.values()) void preview.stop()
+    this.#designPreviews.clear()
     this.#resumingThreads.clear()
     void this.#controlStarting?.then(
       (adapter) => adapter.dispose(),
@@ -1413,6 +1635,71 @@ export class Orchestrator {
       throw new Error(`thread ${threadId} was closed while resuming`)
     }
     this.#attachThread(result.thread, result.session, stored.projectPath)
+    this.#restoreDesignFlow(threadId, workspacePath)
+  }
+
+  #restoreDesignFlow(threadId: string, workspacePath: string): void {
+    const flow = parseStoredDesignFlow(this.#store.designRun(threadId), workspacePath)
+    if (!flow) return
+    this.#designFlows.set(threadId, flow)
+
+    const unresolved = unresolvedDesignInput(this.#store.history(threadId))
+    if (unresolved) {
+      this.#designInputs.set(unresolved.id, {
+        threadId,
+        turnId: unresolved.turnId,
+        questions: unresolved.questions,
+        final: unresolved.questions.every((question) => question.id === FINAL_BRIEFING_QUESTION.id),
+      })
+      this.#designInputByThread.set(threadId, unresolved.id)
+      return
+    }
+
+    const openTurnId = openTurn(this.#store.history(threadId))
+    if (openTurnId) {
+      this.#designTurns.set(openTurnId, threadId)
+      return
+    }
+
+    if (flow.completion) {
+      this.#finishDesignFlow(threadId, `design-resumed-${crypto.randomUUID()}`, flow.completion)
+      return
+    }
+
+    const prompt = flow.pendingPrompt ?? this.#designPromptFor(flow)
+    delete flow.pendingPrompt
+    this.#saveDesignFlow(threadId)
+    void this.#sendDesignTurn(
+      threadId,
+      prompt,
+      this.#designAttachmentsFor(flow),
+      flow.options,
+    ).catch((error: unknown) => this.#failDesignFlow(threadId, error))
+  }
+
+  #designPromptFor(flow: DesignFlow): string {
+    if (flow.phase === 'brief') return designBriefingPrompt(flow.originalRequest)
+    const brief = readDesignBrief(flow.workspacePath)
+    if (flow.phase === 'brand') return designBrandPrompt(brief)
+    const brand = readBrandSystem(flow.workspacePath)
+    if (flow.phase === 'page') return designPagePrompt(brief, brand)
+    const page = readPageBlueprint(flow.workspacePath)
+    if (flow.phase === 'assets') return designAssetPrompt(brief, brand, page)
+    if (flow.phase === 'build') {
+      return designBuildPrompt(brief, brand, page, readAssetManifest(flow.workspacePath))
+    }
+    if (flow.phase === 'preview') return designPreviewPrompt()
+    if (flow.phase === 'review' && flow.screenshots) {
+      return designReviewPrompt(brief, brand, page, flow.screenshots)
+    }
+    if (flow.phase === 'repair' && flow.review) {
+      return designRepairPrompt(flow.review, flow.repairAttempt, DESIGN_REPAIR_LIMIT)
+    }
+    throw new Error(`cannot resume design phase ${flow.phase}`)
+  }
+
+  #designAttachmentsFor(flow: DesignFlow): string[] {
+    return flow.phase === 'review' ? (flow.screenshots?.map(({ path }) => path) ?? []) : []
   }
 
   async #sendDesignTurn(
@@ -1421,6 +1708,12 @@ export class Orchestrator {
     attachments: string[],
     options: TurnOptions,
   ): Promise<string> {
+    for (const [turnId, owner] of this.#designTurns) {
+      if (owner === threadId) {
+        this.#acceptedDesignOutputs.delete(turnId)
+        this.#designOutputErrors.delete(turnId)
+      }
+    }
     this.#designStartingThreads.add(threadId)
     try {
       const turnId = await this.#get(threadId).session.sendTurn(
@@ -1430,6 +1723,19 @@ export class Orchestrator {
         options,
       )
       this.#designTurns.set(turnId, threadId)
+      const flow = this.#designFlows.get(threadId)
+      if (flow) {
+        const item: Item = {
+          id: `design-activity-${crypto.randomUUID()}`,
+          turnId,
+          type: 'tool_call',
+          status: 'started',
+          text: `design:${flow.phase}`,
+          createdAt: Date.now(),
+        }
+        this.#designActivityItems.set(turnId, item)
+        this.#record(threadId, { type: 'item.started', item })
+      }
       return turnId
     } finally {
       this.#designStartingThreads.delete(threadId)
@@ -1437,6 +1743,12 @@ export class Orchestrator {
   }
 
   #handleSessionEvent(threadId: string, event: DomainEvent): void {
+    if (event.type === 'thread.error' && this.#designFlows.has(threadId)) {
+      this.#clearDesignFlow(threadId)
+      this.#record(threadId, event)
+      void this.#drainQueue(threadId)
+      return
+    }
     if (event.type === 'turn.started' && this.#designStartingThreads.has(threadId)) {
       this.#designTurns.set(event.turn.id, threadId)
     }
@@ -1481,10 +1793,58 @@ export class Orchestrator {
       event.item.role === 'assistant'
     ) {
       this.#designMessageItems.delete(event.item.id)
-      this.#handleDesignOutput(threadId, turnId, event.item.text ?? '')
+      if (this.#acceptedDesignOutputs.has(turnId)) return
+      try {
+        this.#handleDesignOutput(threadId, turnId, event.item.text ?? '')
+        this.#acceptedDesignOutputs.add(turnId)
+      } catch (error) {
+        this.#designOutputErrors.set(turnId, error)
+      }
       return
     }
-    if (event.type === 'turn.completed') this.#designTurns.delete(turnId)
+    if (event.type === 'turn.completed') {
+      const acceptedOutput = this.#acceptedDesignOutputs.delete(turnId)
+      const outputError = this.#designOutputErrors.get(turnId)
+      this.#designOutputErrors.delete(turnId)
+      this.#completeDesignActivity(
+        threadId,
+        turnId,
+        event.status === 'completed' ? 'completed' : 'failed',
+      )
+      this.#designTurns.delete(turnId)
+      if (event.status !== 'completed') {
+        this.#clearDesignFlow(threadId)
+        this.#record(threadId, event)
+        void this.#drainQueue(threadId)
+        return
+      }
+      let flow = this.#designFlows.get(threadId)
+      if (!acceptedOutput && outputError && flow) {
+        if (!this.#queueDesignCorrection(threadId, flow, outputError)) {
+          this.#failDesignFlow(threadId, outputError)
+          return
+        }
+        flow = this.#designFlows.get(threadId)
+      }
+      if (flow?.completion) {
+        this.#record(threadId, event)
+        this.#finishDesignFlow(threadId, turnId, flow.completion)
+        return
+      }
+      if (flow?.pendingPrompt) {
+        const prompt = flow.pendingPrompt
+        delete flow.pendingPrompt
+        this.#saveDesignFlow(threadId)
+        this.#record(threadId, event)
+        void this.#sendDesignTurn(
+          threadId,
+          prompt,
+          this.#designAttachmentsFor(flow),
+          flow.options,
+        ).catch((error: unknown) => this.#failDesignFlow(threadId, error))
+        return
+      }
+    }
     this.#record(threadId, event)
   }
 
@@ -1492,41 +1852,44 @@ export class Orchestrator {
     const flow = this.#designFlows.get(threadId)
     if (!flow) return
 
-    try {
-      const output = parseBriefingOutput(text)
-      if (output.status === 'questions') {
-        flow.askedQuestions = true
-        flow.finalAsked = false
-        flow.pendingBrief = undefined
-        this.#requestDesignInput(threadId, turnId, output.questions, false)
-        return
-      }
-      if (output.status === 'not_design') {
-        this.#clearDesignFlow(threadId)
-        this.#record(threadId, {
-          type: 'item.completed',
-          item: {
-            id: `design-not-applicable-${crypto.randomUUID()}`,
-            turnId,
-            type: 'message',
-            role: 'assistant',
-            status: 'completed',
-            text: 'Design mode was turned off because this request is not a website design task.',
-            createdAt: Date.now(),
-          },
-        })
-        return
-      }
-      if (flow.askedQuestions && !flow.finalAsked) {
-        flow.pendingBrief = output.brief
-        flow.finalAsked = true
-        this.#requestDesignInput(threadId, turnId, [FINAL_BRIEFING_QUESTION], true)
-        return
-      }
-      this.#completeDesignBrief(threadId, turnId, output.brief)
-    } catch (error) {
-      this.#failDesignFlow(threadId, error)
+    if (flow.phase !== 'brief') {
+      this.#completeDesignPhase(threadId, turnId, flow, text)
+      return
     }
+    const output = parseBriefingOutput(text)
+    flow.correcting = false
+    if (output.status === 'questions') {
+      flow.askedQuestions = true
+      flow.finalAsked = false
+      flow.pendingBrief = undefined
+      this.#saveDesignFlow(threadId)
+      this.#requestDesignInput(threadId, turnId, output.questions, false)
+      return
+    }
+    if (output.status === 'not_design') {
+      this.#clearDesignFlow(threadId)
+      this.#record(threadId, {
+        type: 'item.completed',
+        item: {
+          id: `design-not-applicable-${crypto.randomUUID()}`,
+          turnId,
+          type: 'message',
+          role: 'assistant',
+          status: 'completed',
+          text: 'Design mode was turned off because this request is not a website design task.',
+          createdAt: Date.now(),
+        },
+      })
+      return
+    }
+    if (flow.askedQuestions && !flow.finalAsked) {
+      flow.pendingBrief = output.brief
+      flow.finalAsked = true
+      this.#saveDesignFlow(threadId)
+      this.#requestDesignInput(threadId, turnId, [FINAL_BRIEFING_QUESTION], true)
+      return
+    }
+    this.#completeDesignBrief(threadId, turnId, output.brief)
   }
 
   #requestDesignInput(
@@ -1560,12 +1923,114 @@ export class Orchestrator {
   #completeDesignBrief(threadId: string, turnId: string, brief: unknown): void {
     const flow = this.#designFlows.get(threadId)
     if (!flow) return
-    writeDesignBrief(
+    const saved = writeDesignBrief(
       flow.workspacePath,
       typeof brief === 'object' && brief !== null && !Array.isArray(brief)
         ? { ...brief, explicitAnswers: flow.explicitAnswers }
         : brief,
     )
+    flow.phase = 'brand'
+    const prompt = designBrandPrompt(saved)
+    if (this.#activeTurns.has(threadId)) {
+      flow.pendingPrompt = prompt
+      this.#saveDesignFlow(threadId)
+      return
+    }
+    this.#saveDesignFlow(threadId)
+    void this.#sendDesignTurn(threadId, prompt, [], flow.options).catch((error: unknown) =>
+      this.#failDesignFlow(threadId, error),
+    )
+  }
+
+  #completeDesignPhase(threadId: string, turnId: string, flow: DesignFlow, text: string): void {
+    if (flow.phase === 'brand') {
+      const output = parseBrandPhaseOutput(text)
+      flow.correcting = false
+      const brand = writeBrandSystem(flow.workspacePath, output)
+      flow.phase = 'page'
+      flow.pendingPrompt = designPagePrompt(readDesignBrief(flow.workspacePath), brand)
+      this.#saveDesignFlow(threadId)
+      return
+    }
+    if (flow.phase === 'page') {
+      const output = parsePagePhaseOutput(text)
+      flow.correcting = false
+      const page = writePageBlueprint(flow.workspacePath, output)
+      flow.phase = 'assets'
+      flow.pendingPrompt = designAssetPrompt(
+        readDesignBrief(flow.workspacePath),
+        readBrandSystem(flow.workspacePath),
+        page,
+      )
+      this.#saveDesignFlow(threadId)
+      return
+    }
+    if (flow.phase === 'assets') {
+      const output = parseAssetPhaseOutput(text)
+      flow.correcting = false
+      const assets = writeAssetManifest(flow.workspacePath, output)
+      flow.phase = 'build'
+      flow.pendingPrompt = designBuildPrompt(
+        readDesignBrief(flow.workspacePath),
+        readBrandSystem(flow.workspacePath),
+        readPageBlueprint(flow.workspacePath),
+        assets,
+      )
+      this.#saveDesignFlow(threadId)
+      return
+    }
+    if (flow.phase === 'build') {
+      const output = parseBuildPhaseOutput(text)
+      flow.correcting = false
+      if (output.status === 'failed') throw new Error(output.error)
+      flow.phase = 'preview'
+      flow.pendingPrompt = designPreviewPrompt()
+      this.#saveDesignFlow(threadId)
+      return
+    }
+    if (flow.phase === 'preview') {
+      const plan = parsePreviewPhaseOutput(text)
+      flow.correcting = false
+      void this.#startDesignPreview(threadId, turnId, flow, plan).catch((error: unknown) =>
+        this.#failDesignFlow(threadId, error),
+      )
+      return
+    }
+    if (flow.phase === 'review') {
+      const review = writeVisualReview(flow.workspacePath, parseReviewPhaseOutput(text))
+      flow.correcting = false
+      flow.review = review
+      if (review.verdict === 'pass') {
+        flow.phase = 'complete'
+        flow.completion = `Preview ready at ${flow.previewUrl}. Visual review passed${
+          flow.repairAttempt
+            ? ` after ${flow.repairAttempt} repair attempt${flow.repairAttempt === 1 ? '' : 's'}`
+            : ''
+        }.`
+      } else if (flow.repairAttempt >= DESIGN_REPAIR_LIMIT) {
+        flow.phase = 'complete'
+        flow.completion = `Preview ready at ${flow.previewUrl}. Visual review stopped after ${DESIGN_REPAIR_LIMIT} repair attempts with ${review.findings.length} finding${review.findings.length === 1 ? '' : 's'} remaining.`
+      } else {
+        flow.phase = 'repair'
+        flow.repairAttempt += 1
+        flow.pendingPrompt = designRepairPrompt(review, flow.repairAttempt, DESIGN_REPAIR_LIMIT)
+      }
+      this.#saveDesignFlow(threadId)
+      return
+    }
+    if (flow.phase === 'repair') {
+      const output = parseRepairPhaseOutput(text)
+      flow.correcting = false
+      if (output.status === 'failed') throw new Error(output.summary)
+      void this.#captureDesignReview(threadId, turnId, flow).catch((error: unknown) =>
+        this.#failDesignFlow(threadId, error),
+      )
+      return
+    }
+    throw new Error(`unexpected design phase ${flow.phase}`)
+  }
+
+  #finishDesignFlow(threadId: string, turnId: string, summary: string): void {
     this.#clearDesignFlow(threadId)
     this.#record(threadId, {
       type: 'item.completed',
@@ -1575,10 +2040,83 @@ export class Orchestrator {
         type: 'message',
         role: 'assistant',
         status: 'completed',
-        text: 'Brief complete.\nDEBUG FINISHED · NO WEBSITE BUILT',
+        text: `Website built. ${summary}`,
         createdAt: Date.now(),
       },
     })
+    void this.#drainQueue(threadId)
+  }
+
+  async #startDesignPreview(
+    threadId: string,
+    turnId: string,
+    flow: DesignFlow,
+    plan: ReturnType<typeof parsePreviewPhaseOutput>,
+  ): Promise<void> {
+    const preview = await startDesignPreview(flow.workspacePath, plan)
+    this.#designPreviews.set(threadId, preview)
+    flow.previewPlan = plan
+    flow.previewUrl = preview.url
+    if (!this.#get(threadId).session.capabilities.images) {
+      this.#finishWithoutVisualReview(
+        threadId,
+        turnId,
+        flow,
+        'the selected provider does not declare image support',
+      )
+      return
+    }
+    await this.#captureDesignReview(threadId, turnId, flow)
+  }
+
+  async #captureDesignReview(threadId: string, turnId: string, flow: DesignFlow): Promise<void> {
+    if (!flow.previewPlan || !flow.previewUrl) throw new Error('Preview plan is unavailable')
+    if (!this.#capturePreview) {
+      this.#finishWithoutVisualReview(threadId, turnId, flow, 'desktop capture is unavailable')
+      return
+    }
+    if (!this.#designPreviews.has(threadId)) {
+      const preview = await startDesignPreview(flow.workspacePath, flow.previewPlan)
+      this.#designPreviews.set(threadId, preview)
+      flow.previewUrl = preview.url
+    }
+    const screenshots = await this.#capturePreview(
+      flow.previewUrl,
+      flow.previewPlan.viewports.map(({ width, height }) => ({ width, height })),
+    )
+    if (!screenshots) {
+      this.#finishWithoutVisualReview(threadId, turnId, flow, 'desktop capture is unavailable')
+      return
+    }
+    flow.phase = 'review'
+    flow.screenshots = screenshots
+    flow.pendingPrompt = designReviewPrompt(
+      readDesignBrief(flow.workspacePath),
+      readBrandSystem(flow.workspacePath),
+      readPageBlueprint(flow.workspacePath),
+      screenshots,
+    )
+    this.#saveDesignFlow(threadId)
+    this.#completeDesignActivity(threadId, turnId)
+    if (this.#activeTurns.has(threadId)) return
+
+    const prompt = flow.pendingPrompt
+    delete flow.pendingPrompt
+    this.#saveDesignFlow(threadId)
+    await this.#sendDesignTurn(threadId, prompt, this.#designAttachmentsFor(flow), flow.options)
+  }
+
+  #finishWithoutVisualReview(
+    threadId: string,
+    turnId: string,
+    flow: DesignFlow,
+    reason: string,
+  ): void {
+    flow.phase = 'complete'
+    flow.completion = `Preview ready at ${flow.previewUrl}. Visual review skipped because ${reason}.`
+    this.#saveDesignFlow(threadId)
+    this.#completeDesignActivity(threadId, turnId)
+    this.#finishDesignFlow(threadId, turnId, flow.completion)
   }
 
   #failDesignFlow(threadId: string, error: unknown): void {
@@ -1586,17 +2124,34 @@ export class Orchestrator {
     this.#record(threadId, {
       type: 'thread.error',
       threadId,
-      message: `Design briefing failed: ${error instanceof Error ? error.message : String(error)}`,
+      message: `Design mode failed: ${error instanceof Error ? error.message : String(error)}`,
     })
+  }
+
+  #queueDesignCorrection(threadId: string, flow: DesignFlow, error: unknown): string | undefined {
+    if (flow.correcting) return undefined
+    flow.correcting = true
+    const prompt = designPhaseCorrectionPrompt(
+      error instanceof Error ? error.message : String(error),
+    )
+    flow.pendingPrompt = prompt
+    this.#saveDesignFlow(threadId)
+    return prompt
   }
 
   #clearDesignFlow(threadId: string): void {
     this.#designFlows.delete(threadId)
+    this.#store.deleteDesignRun(threadId)
     const requestId = this.#designInputByThread.get(threadId)
     if (requestId) this.#designInputs.delete(requestId)
     this.#designInputByThread.delete(threadId)
     for (const [turnId, owner] of this.#designTurns) {
-      if (owner === threadId) this.#designTurns.delete(turnId)
+      if (owner === threadId) {
+        this.#designTurns.delete(turnId)
+        this.#acceptedDesignOutputs.delete(turnId)
+        this.#designOutputErrors.delete(turnId)
+        this.#designActivityItems.delete(turnId)
+      }
     }
     // Item ids normally self-delete on item.completed; a design turn that
     // died mid-item leaves its entry behind. With no design flow live the
@@ -1608,6 +2163,25 @@ export class Orchestrator {
   forgetProject(projectPath: string): void {
     this.#watchedSkillProjects.delete(projectPath)
     this.#watchedMcpProjects.delete(projectPath)
+  }
+
+  #completeDesignActivity(
+    threadId: string,
+    turnId: string,
+    status: 'completed' | 'failed' = 'completed',
+  ): void {
+    const item = this.#designActivityItems.get(turnId)
+    if (!item) return
+    this.#designActivityItems.delete(turnId)
+    this.#record(threadId, {
+      type: 'item.completed',
+      item: { ...item, status },
+    })
+  }
+
+  #saveDesignFlow(threadId: string): void {
+    const flow = this.#designFlows.get(threadId)
+    if (flow) this.#store.setDesignRun(threadId, flow)
   }
 
   #attachThread(

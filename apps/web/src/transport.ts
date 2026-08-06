@@ -1,4 +1,12 @@
-import type { ChannelName, DataOf, MethodName, ParamsOf, ResultOf } from '@harness/contracts'
+import {
+  PreviewCaptureRequestSchema,
+  type ChannelName,
+  type DataOf,
+  type MethodName,
+  type ParamsOf,
+  type ResultOf,
+} from '@harness/contracts'
+import { canCapturePreview, capturePreview } from './bridge.js'
 
 /**
  * Client side of the wire protocol.
@@ -94,6 +102,9 @@ export class Transport {
         socket.send(entry.payload)
         if (entry.id) this.#inFlight.add(entry.id)
       }
+      void this.request('client.capabilities', { previewCapture: canCapturePreview }).catch(
+        () => undefined,
+      )
     }
 
     socket.onmessage = (event) => {
@@ -161,6 +172,15 @@ export class Transport {
       console.warn(`[transport] push gap: expected ${this.#lastSequence + 1}, got ${sequence}`)
     }
     this.#lastSequence = sequence
+
+    if (channel === 'preview.captureRequested' && canCapturePreview) {
+      const request = PreviewCaptureRequestSchema.safeParse(message['data'])
+      if (request.success) {
+        void capturePreview(request.data)
+          .then((result) => this.request('preview.captureResult', result))
+          .catch(() => undefined)
+      }
+    }
 
     for (const listener of this.#channelListeners.get(channel) ?? []) {
       listener(message['data'])

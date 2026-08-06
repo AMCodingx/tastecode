@@ -196,6 +196,7 @@ export function Thread(props: {
   const turns = useMemo(() => findTurns(props.items), [props.items])
   const presentations = useMemo(() => presentTurns(props.items), [props.items])
   const activePresentation = props.activeTurn ? presentations.get(props.activeTurn.id) : undefined
+  const activeWorkLabel = workLabel(props.items, props.activeTurn?.id, props.searching)
 
   useEffect(() => {
     const target = props.searchJump
@@ -267,7 +268,7 @@ export function Thread(props: {
                   responseText={responseLead ? presentation.responseText : undefined}
                   settling={settling}
                   showWorkingRail={live && presentation?.firstResponseIndex === row.index}
-                  searching={props.searching}
+                  workLabel={activeWorkLabel}
                   startedAt={props.activeTurn?.startedAt}
                   showCompletionRail={
                     !live &&
@@ -287,7 +288,7 @@ export function Thread(props: {
         {props.running &&
         props.activeTurn &&
         activePresentation?.firstResponseIndex === undefined ? (
-          <WorkingRail startedAt={props.activeTurn.startedAt} searching={props.searching} />
+          <WorkingRail startedAt={props.activeTurn.startedAt} label={activeWorkLabel} />
         ) : null}
 
         {/* Above the plan and the diff: it is the only thing here that blocks
@@ -471,7 +472,7 @@ function Row({
   responseText,
   settling,
   showWorkingRail,
-  searching,
+  workLabel,
   startedAt,
   showCompletionRail,
   onEditMessage,
@@ -486,7 +487,7 @@ function Row({
   responseText: string | undefined
   settling: boolean
   showWorkingRail: boolean
-  searching: boolean | undefined
+  workLabel: string
   startedAt: number | undefined
   showCompletionRail: boolean
   onEditMessage: ((text: string) => void) | undefined
@@ -539,7 +540,7 @@ function Row({
     return (
       <>
         {showWorkingRail && startedAt !== undefined ? (
-          <WorkingRail startedAt={startedAt} searching={searching} />
+          <WorkingRail startedAt={startedAt} label={workLabel} />
         ) : null}
         <div className={`reply${live ? ' is-streaming' : ''}`}>
           {showCompletionRail ? (
@@ -557,7 +558,7 @@ function Row({
   return (
     <>
       {showWorkingRail && startedAt !== undefined ? (
-        <WorkingRail startedAt={startedAt} searching={searching} />
+        <WorkingRail startedAt={startedAt} label={workLabel} />
       ) : null}
       <details className={`aux aux--${item.type} ${live ? 'aux--live' : ''}`}>
         <summary className="aux__row">
@@ -671,25 +672,44 @@ function CopyAction({ text, label }: { text: string; label: string }) {
   )
 }
 
-function WorkingRail({
-  startedAt,
-  searching,
-}: {
-  startedAt: number
-  searching: boolean | undefined
-}) {
+function WorkingRail({ startedAt, label }: { startedAt: number; label: string }) {
   return (
     <div className="activity activity--working">
       <div className="activity__summary">
         <span className="activity__working-orb">
-          <ThinkingOrb state={searching ? 'searching' : 'working'} size={20} aria-hidden />
+          <ThinkingOrb
+            state={label === 'Searching' ? 'searching' : 'working'}
+            size={20}
+            aria-hidden
+          />
         </span>
-        <span>
-          Working for <WorkingTimer startedAt={startedAt} />
+        <span className="activity__working-label" key={label}>
+          {label}
+        </span>
+        <span className="activity__working-time">
+          <WorkingTimer startedAt={startedAt} />
         </span>
       </div>
     </div>
   )
+}
+
+export function workLabel(
+  items: Item[],
+  turnId: string | undefined,
+  searching: boolean | undefined,
+) {
+  if (searching) return 'Searching'
+  if (!turnId) return 'Working'
+
+  for (let index = items.length - 1; index >= 0; index--) {
+    const item = items[index]
+    if (item?.turnId === turnId && item.status === 'started' && isActivity(item)) {
+      return summariseLive(item)
+    }
+  }
+
+  return 'Working'
 }
 
 // Updating this text node directly avoids committing the virtualized thread
@@ -758,6 +778,8 @@ function summariseLive(item: Item): string {
       return ongoing ? 'Editing files' : 'Edited files'
     case 'tool_call': {
       const text = toolText(item)
+      const designPhase = designPhaseLabel(text)
+      if (designPhase) return designPhase
       if (text.includes('image')) return ongoing ? 'Viewing an image' : 'Viewed an image'
       if (text.match(/read|open|file/)) return ongoing ? 'Reading files' : 'Read files'
       if (text.includes('search')) return ongoing ? 'Searching' : 'Searched'
@@ -768,6 +790,18 @@ function summariseLive(item: Item): string {
     default:
       return summarise(item)
   }
+}
+
+function designPhaseLabel(text: string): string | undefined {
+  if (text.includes('design:brief')) return 'Preparing questions'
+  if (text.includes('design:brand')) return 'Creating brand direction'
+  if (text.includes('design:page')) return 'Planning the page'
+  if (text.includes('design:assets')) return 'Gathering assets'
+  if (text.includes('design:build')) return 'Building the website'
+  if (text.includes('design:preview')) return 'Starting the preview'
+  if (text.includes('design:review')) return 'Reviewing the design'
+  if (text.includes('design:repair')) return 'Refining the website'
+  return undefined
 }
 
 function toolText(item: Item): string {
