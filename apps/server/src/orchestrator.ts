@@ -1492,15 +1492,21 @@ export class Orchestrator {
     this.#terminals.closeThread(threadId)
     this.#inboxProjections.delete(threadId)
     const entry = this.#threads.get(threadId)
-    if (!entry) return
-    entry.session.dispose()
-    this.#threads.delete(threadId)
+    if (entry) {
+      entry.session.dispose()
+      this.#threads.delete(threadId)
+    }
     this.#activeTurns.delete(threadId)
     this.#startingTurns.delete(threadId)
     this.#reviewingDiffs.delete(threadId)
     this.#queuedTurns.delete(threadId)
     this.#drainingQueues.delete(threadId)
     this.#clearDesignFlow(threadId)
+    // Always mark closed, live entry or not: closing is the user's statement
+    // about the thread. Early-returning when no session was attached left a
+    // thread mid-resume unmarked, so the resume guard never saw the close
+    // and attached a zombie anyway.
+    //
     // Marked closed, not deleted. Ending the process is not the same as
     // wanting the transcript gone.
     //
