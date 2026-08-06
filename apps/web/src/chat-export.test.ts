@@ -1,74 +1,58 @@
 import { describe, expect, it } from 'vitest'
+import type { Item } from '@harness/contracts'
 import { chatToMarkdown, exportFilename } from './chat-export.js'
 
+const item = (partial: Partial<Item>): Item => ({
+  id: 'i1',
+  turnId: 't1',
+  type: 'message',
+  status: 'completed',
+  createdAt: 1,
+  ...partial,
+})
+
 describe('chatToMarkdown', () => {
-  it('keeps the conversation and the visible work, drops the noise', () => {
-    const markdown = chatToMarkdown('Fix login', [
-      {
-        id: '1',
-        turnId: 't1',
-        type: 'message',
-        status: 'completed',
-        role: 'user',
-        text: 'Fix the login bug',
-        createdAt: 1,
-      },
-      {
-        id: '2',
-        turnId: 't1',
-        type: 'reasoning',
-        status: 'completed',
-        text: 'private thinking',
-        createdAt: 2,
-      },
-      {
-        id: '3',
-        turnId: 't1',
-        type: 'command',
-        status: 'completed',
-        command: 'pnpm test',
-        exitCode: 1,
-        createdAt: 3,
-      },
-      {
-        id: '4',
-        turnId: 't1',
-        type: 'file_change',
-        status: 'completed',
-        path: 'src/auth.ts',
-        linesAdded: 4,
-        linesRemoved: 1,
-        createdAt: 4,
-      },
-      {
-        id: '5',
-        turnId: 't1',
-        type: 'message',
-        status: 'completed',
-        role: 'assistant',
-        text: 'Done - the token check was inverted.',
-        createdAt: 5,
-      },
+  it('keeps the conversation and drops reasoning and tool noise', () => {
+    const markdown = chatToMarkdown('Fix the build', [
+      item({ role: 'user', text: 'Why does the build fail?' }),
+      item({ type: 'reasoning', text: 'Let me think about tsconfig...' }),
+      item({ type: 'tool_call', text: '{"raw":"payload"}' }),
+      item({ type: 'command', command: 'pnpm build', exitCode: 1 }),
+      item({ type: 'file_change', path: 'tsconfig.json', linesAdded: 2, linesRemoved: 1 }),
+      item({ role: 'assistant', text: 'A stale project reference. Fixed.' }),
     ])
 
-    expect(markdown).toContain('# Fix login')
-    expect(markdown).toContain('## You')
-    expect(markdown).toContain('Fix the login bug')
-    expect(markdown).toContain('$ pnpm test # exit 1')
-    expect(markdown).toContain('> Edited `src/auth.ts` (+4 -1)')
-    expect(markdown).toContain('## Assistant')
-    expect(markdown).not.toContain('private thinking')
+    expect(markdown).toContain('# Fix the build')
+    expect(markdown).toContain('## You\n\nWhy does the build fail?')
+    expect(markdown).toContain('## Assistant\n\nA stale project reference. Fixed.')
+    expect(markdown).toContain('$ pnpm build # exit 1')
+    expect(markdown).toContain('> Edited `tsconfig.json` (+2 -1)')
+    expect(markdown).not.toContain('tsconfig...')
+    expect(markdown).not.toContain('payload')
+  })
+
+  it('skips empty messages and omits exit 0 — success is not noise', () => {
+    const markdown = chatToMarkdown('Quiet', [
+      item({ role: 'assistant', text: '   ' }),
+      item({ type: 'command', command: 'git status' }),
+      item({ type: 'command', command: 'pnpm test', exitCode: 0 }),
+    ])
+
+    expect(markdown).not.toContain('## Assistant')
+    expect(markdown).toContain('$ git status\n')
+    expect(markdown).toContain('$ pnpm test\n')
+    expect(markdown).not.toContain('# exit')
   })
 })
 
 describe('exportFilename', () => {
   it('slugs the title and stamps the date', () => {
-    expect(exportFilename('Fix: the Login Bug!', new Date('2026-08-07T03:00:00Z'))).toBe(
-      'fix-the-login-bug-2026-08-07.md',
+    expect(exportFilename('Fix: the (build)!', new Date('2026-08-06T05:00:00Z'))).toBe(
+      'fix-the-build-2026-08-06.md',
     )
   })
 
-  it('falls back when the title has nothing usable', () => {
-    expect(exportFilename('???', new Date('2026-08-07T03:00:00Z'))).toBe('chat-2026-08-07.md')
+  it('never produces an extensionless or empty name', () => {
+    expect(exportFilename('!!!', new Date('2026-08-06T05:00:00Z'))).toBe('chat-2026-08-06.md')
   })
 })
