@@ -9,6 +9,10 @@ use harness_protocol::{
     Item, ItemStatus, ItemType, MessageRole, ProviderId, ThreadEventPush, ThreadQueueResult,
 };
 use harness_state::{ApplyOutcome, HistoryError, ThreadState};
+use std::collections::HashSet;
+use std::time::Duration;
+
+const LIVE_FLUSH_INTERVAL: Duration = Duration::from_millis(16);
 
 #[derive(Clone)]
 pub(crate) struct SessionContext {
@@ -53,6 +57,9 @@ pub(crate) struct ChatView {
     clear_composer: bool,
     restore_composer: Option<String>,
     creating: bool,
+    history_in_flight: bool,
+    pending_live: Vec<ThreadEventPush>,
+    delta_flush_scheduled: bool,
 }
 
 impl ChatView {
@@ -83,6 +90,9 @@ impl ChatView {
             clear_composer: false,
             restore_composer: None,
             creating: false,
+            history_in_flight: false,
+            pending_live: Vec::new(),
+            delta_flush_scheduled: false,
         }
     }
 
@@ -97,6 +107,12 @@ impl ChatView {
         self.clear_composer = true;
         self.restore_composer = None;
         self.creating = false;
+        self.history_in_flight = self
+            .session
+            .as_ref()
+            .is_some_and(|session| session.thread_id.is_some());
+        self.pending_live.clear();
+        self.delta_flush_scheduled = false;
         cx.notify();
     }
 
@@ -111,6 +127,7 @@ impl ChatView {
         self.session = Some(session);
         self.creating = false;
         self.loading = true;
+        self.history_in_flight = true;
         self.error = None;
         cx.notify();
     }
@@ -137,7 +154,9 @@ impl ChatView {
                             self.list_state.splice(old_len..old_len, new_len - old_len);
                         }
                         self.loading = false;
+                        self.history_in_flight = false;
                         self.error = None;
+                        self.flush_pending_live(cx);
                     }
                     Err(error) => self.reconcile_after_error(error, cx),
                 }
@@ -148,7 +167,14 @@ impl ChatView {
                 cx.notify();
             }
             ChatUpdate::Event(push) if self.is_selected(&push.thread_id) => {
-                self.apply_thread_event(push, cx);
+                if self.history_in_flight {
+                    self.pending_live.push(push);
+                } else if matches!(&push.event, harness_protocol::DomainEvent::ItemDelta { .. }) {
+                    self.queue_delta(push, cx);
+                } else {
+                    self.flush_pending_live(cx);
+                    self.apply_live_events(vec![push], cx);
+                }
             }
             ChatUpdate::Refresh => {
                 if let Some(thread_id) = self
@@ -156,6 +182,7 @@ impl ChatView {
                     .as_ref()
                     .and_then(|session| session.thread_id.as_ref())
                 {
+                    self.history_in_flight = true;
                     cx.emit(ChatEvent::NeedHistory {
                         thread_id: thread_id.clone(),
                         after_seq: Some(self.state.last_seq()),
@@ -164,7 +191,9 @@ impl ChatView {
             }
             ChatUpdate::Error { thread_id, message } if self.is_selected(&thread_id) => {
                 self.loading = false;
+                self.history_in_flight = false;
                 self.error = Some(message);
+                self.flush_pending_live(cx);
                 cx.notify();
             }
             ChatUpdate::DraftError {
@@ -189,55 +218,109 @@ impl ChatView {
         }
     }
 
-    fn apply_thread_event(&mut self, push: ThreadEventPush, cx: &mut Context<Self>) {
-        let changed_item = match &push.event {
-            harness_protocol::DomainEvent::ItemDelta {
-                turn_id, item_id, ..
-            }
-            | harness_protocol::DomainEvent::ItemCompleted {
-                item:
-                    Item {
-                        turn_id,
-                        id: item_id,
-                        ..
-                    },
-            } => Some((turn_id.clone(), item_id.clone())),
-            _ => None,
-        };
+    fn queue_delta(&mut self, push: ThreadEventPush, cx: &mut Context<Self>) {
+        self.pending_live.push(push);
+        if self.delta_flush_scheduled {
+            return;
+        }
+        self.delta_flush_scheduled = true;
+        cx.spawn(async move |view, cx| {
+            cx.background_executor().timer(LIVE_FLUSH_INTERVAL).await;
+            let _ = view.update(cx, |this, cx| this.flush_pending_live(cx));
+        })
+        .detach();
+    }
+
+    fn flush_pending_live(&mut self, cx: &mut Context<Self>) {
+        self.delta_flush_scheduled = false;
+        if self.history_in_flight || self.pending_live.is_empty() {
+            return;
+        }
+        let events = std::mem::take(&mut self.pending_live);
+        self.apply_live_events(events, cx);
+    }
+
+    fn apply_live_events(&mut self, events: Vec<ThreadEventPush>, cx: &mut Context<Self>) {
         let old_len = self.state.timeline_len();
-        match self.state.apply_live(push.seq, push.event) {
-            ApplyOutcome::Applied(changes) => {
-                let new_len = self.state.timeline_len();
-                if new_len > old_len {
-                    self.list_state.splice(old_len..old_len, new_len - old_len);
-                } else if changes.transcript
-                    && let Some((turn_id, item_id)) = changed_item
-                    && let Some(row) = self.state.row_for_item(&turn_id, &item_id)
-                {
+        let mut changed_items = HashSet::new();
+        let mut transcript_changed = false;
+        let mut applied = false;
+        let mut reconcile_after = None;
+
+        let mut events = events.into_iter();
+        while let Some(push) = events.next() {
+            let replay = push.clone();
+            let changed_item = match &push.event {
+                harness_protocol::DomainEvent::ItemDelta {
+                    turn_id, item_id, ..
+                }
+                | harness_protocol::DomainEvent::ItemCompleted {
+                    item:
+                        Item {
+                            turn_id,
+                            id: item_id,
+                            ..
+                        },
+                } => Some((turn_id.clone(), item_id.clone())),
+                _ => None,
+            };
+            match self.state.apply_live(push.seq, push.event) {
+                ApplyOutcome::Applied(changes) => {
+                    applied = true;
+                    transcript_changed |= changes.transcript;
+                    if changes.transcript
+                        && let Some(changed_item) = changed_item
+                    {
+                        changed_items.insert(changed_item);
+                    }
+                }
+                ApplyOutcome::Duplicate => {}
+                ApplyOutcome::NeedsHistory { after_seq } => {
+                    reconcile_after = Some(after_seq);
+                    self.history_in_flight = true;
+                    self.pending_live.push(replay);
+                    self.pending_live.extend(events);
+                    break;
+                }
+            }
+        }
+
+        if applied {
+            let new_len = self.state.timeline_len();
+            if new_len > old_len {
+                self.list_state.splice(old_len..old_len, new_len - old_len);
+            } else if transcript_changed {
+                let mut changed_rows = changed_items
+                    .into_iter()
+                    .filter_map(|(turn_id, item_id)| self.state.row_for_item(&turn_id, &item_id))
+                    .collect::<Vec<_>>();
+                changed_rows.sort_unstable();
+                changed_rows.dedup();
+                for row in changed_rows {
                     self.list_state.splice(row..row + 1, 1);
                 }
-                self.loading = false;
-                self.error = None;
-                cx.notify();
             }
-            ApplyOutcome::Duplicate => {}
-            ApplyOutcome::NeedsHistory { after_seq } => {
-                if let Some(thread_id) = self
-                    .session
-                    .as_ref()
-                    .and_then(|session| session.thread_id.as_ref())
-                {
-                    cx.emit(ChatEvent::NeedHistory {
-                        thread_id: thread_id.clone(),
-                        after_seq: Some(after_seq),
-                    });
-                }
-            }
+            self.loading = false;
+            self.error = None;
+            cx.notify();
+        }
+
+        if let Some(after_seq) = reconcile_after
+            && let Some(thread_id) = self
+                .session
+                .as_ref()
+                .and_then(|session| session.thread_id.as_ref())
+        {
+            cx.emit(ChatEvent::NeedHistory {
+                thread_id: thread_id.clone(),
+                after_seq: Some(after_seq),
+            });
         }
     }
 
     fn reconcile_after_error(&mut self, error: HistoryError, cx: &mut Context<Self>) {
         self.error = Some(error.to_string());
+        self.history_in_flight = true;
         if let Some(thread_id) = self
             .session
             .as_ref()
