@@ -95,6 +95,12 @@ Each of these cost someone hours. They are not preferences.
 - **Adapters are written against captured output**, not against published schemas. When a
   protocol and its documentation disagree, the wire wins — capture frames from the real
   binary before writing types.
+- **Anything on the per-delta path is on the critical path.** A streamed answer produces
+  hundreds of `item.delta` events a second, and every one of them runs the store reduce and
+  re-renders whatever is subscribed. Work that is fine once per turn is not fine here:
+  scanning the transcript, copying the item array, rebuilding derived lists, re-tokenizing a
+  code block. Before adding anything to that path, ask what it costs times the length of the
+  session — that multiplication is why a long chat used to feel worse than a short one.
 - **Never put an unstable callback identity in an effect dependency list when the effect's
   trigger condition persists across renders.** Notify → parent re-renders → new identity →
   effect refires → notify: an invisible infinite loop. One of these hammered `models.list`
