@@ -886,7 +886,14 @@ function initial(account: Account | undefined, fallback: string): string {
 }
 
 /**
- * Memoised: the app root re-renders on every streamed frame, and this
- * subtree does not change while an answer arrives.
+ * Memoised: the app root re-renders on every streamed frame, and this subtree
+ * does not change while an answer arrives.
+ *
+ * NOT YET EFFECTIVE. memo compares props shallowly, and the owner still passes
+ * a dozen inline arrows plus a fresh `inbox` object and `usageSources` array,
+ * so the comparison fails every time. The internal useMemos above are what is
+ * saving work today. Finishing this means giving those props stable
+ * identities in App.tsx — mechanical, but too broad a change to make
+ * carelessly.
  */
 export const Sidebar = memo(SidebarComponent)

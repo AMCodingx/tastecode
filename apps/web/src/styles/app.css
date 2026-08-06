@@ -6150,7 +6150,9 @@
 }
 
 .orb--stop.is-stopping .orb__icon--stop {
-  animation: orb-stopping 900ms var(--ease-in-out) infinite;
+  /* ease-in-out is not one of our tokens; an unresolvable var() inside a
+     shorthand invalidates the whole declaration, so this pulse never ran. */
+  animation: orb-stopping 900ms var(--ease-out) infinite;
 }
 
 @keyframes orb-stopping {

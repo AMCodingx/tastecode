@@ -83,6 +83,15 @@ describe('design preview runner', () => {
     )
     // A file that is not in the workspace.
     await expect(startDesignPreview(workspace, plan('node', ['../outside.mjs']))).rejects.toThrow()
+    // Every path argument counts, not just the first: a local entry point
+    // beside an escaping one must not launder it through.
+    writeFileSync(path.join(workspace, 'local.mjs'), 'export {}\n')
+    await expect(
+      startDesignPreview(workspace, plan('node', ['local.mjs', '../outside.mjs'])),
+    ).rejects.toThrow()
+    await expect(
+      startDesignPreview(workspace, plan('node', ['--import=../outside.mjs', 'local.mjs'])),
+    ).rejects.toThrow()
   })
 })
 
