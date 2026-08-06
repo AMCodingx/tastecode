@@ -1192,7 +1192,9 @@ function CliSignInRow(props: {
 
   const note =
     login?.phase === 'running'
-      ? 'Complete the sign-in in the terminal below, then exit the CLI.'
+      ? login.openedAuthUrl
+        ? 'Browser opened — approve the sign-in there. The terminal below follows along.'
+        : 'Complete the sign-in in the terminal below, then exit the CLI.'
       : login?.phase === 'failed'
         ? `The CLI exited${login.exitCode === null ? '' : ` (exit ${login.exitCode})`} — check the terminal, or retry.`
         : (startError ?? props.idleNote)
