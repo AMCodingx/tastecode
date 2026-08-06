@@ -20,7 +20,7 @@ import type {
   ResultOf,
   SidebarSettings,
 } from '@harness/contracts'
-import { isDesktop, isMacOS, pickFolder, setDesktopTheme } from './bridge.js'
+import { isDesktop, isMacOS, pickFolder, setAppZoom, setDesktopTheme } from './bridge.js'
 import { isEditableTarget, matchesShortcut, SHORTCUTS, shortcutLabel } from './shortcuts.js'
 import { warmHighlighter } from './ui/highlighter.js'
 import { Transport } from './transport.js'
@@ -1746,7 +1746,28 @@ export function App() {
       className={`shell ${collapsed ? 'is-narrow' : ''}`}
       style={{ '--rail-w': `${railWidth}px` } as CSSProperties}
     >
-      <TitleBar collapsed={collapsed} onToggleRail={() => setCollapsed((c) => !c)} />
+      <TitleBar
+        collapsed={collapsed}
+        onToggleRail={() => setCollapsed((c) => !c)}
+        onNewChat={startNewChat}
+        onNewProject={() => void addProject()}
+        onOpenSettings={() => setSettingsOpen(true)}
+        onSearchChats={() => {
+          setSessionSearchProject(undefined)
+          setSessionSearchOpen(true)
+        }}
+        onZoom={(action) => void setAppZoom(action)}
+        zoomAvailable={isDesktop}
+        onOpenHelp={(page) =>
+          window.open(
+            page === 'docs'
+              ? 'https://github.com/Leonxlnx/personalharness#readme'
+              : 'https://github.com/Leonxlnx/personalharness/issues',
+            '_blank',
+            'noopener,noreferrer',
+          )
+        }
+      />
       {isDesktop ? <ZoomHud /> : null}
 
       <div className="shell__body">
