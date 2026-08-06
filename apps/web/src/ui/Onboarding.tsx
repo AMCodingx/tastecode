@@ -466,19 +466,30 @@ function SignIn(props: {
   // in the gap — a sign-in that hangs on "waiting" forever.
   const onDone = useRef(props.onDone)
   onDone.current = props.onDone
+  // loginId in a ref too: with it in the dependency list, setLoginId tore the
+  // subscription down right as the browser flow started — the exact gap the
+  // ref above exists to close.
+  const loginIdRef = useRef(loginId)
+  loginIdRef.current = loginId
   useEffect(() => {
     return props.transport.on('auth.event', (event) => {
-      if (loginId && event.loginId !== loginId) return
+      if (loginIdRef.current && event.loginId !== loginIdRef.current) return
       if (event.success) {
-        void props.transport
+        props.transport
           .request('auth.status', { provider: props.card.id })
           .then((account) => onDone.current(account))
+          .catch((cause) => {
+            // A failed status lookup after a successful login must not strand
+            // the pane on "waiting" with no way forward.
+            setPhase('failed')
+            setError(cause instanceof Error ? cause.message : String(cause))
+          })
       } else {
         setPhase('failed')
         setError(event.error ?? 'Sign-in was cancelled.')
       }
     })
-  }, [props.transport, props.card.id, loginId])
+  }, [props.transport, props.card.id])
 
   const startBrowserLogin = async () => {
     setError(undefined)
@@ -488,7 +499,11 @@ function SignIn(props: {
         provider: props.card.id,
       })
       setLoginId(id)
-      window.open(authUrl, '_blank', 'noopener')
+      const opened = window.open(authUrl, '_blank', 'noopener')
+      if (!opened && authUrl) {
+        setPhase('failed')
+        setError(`Your browser blocked the sign-in window. Open it yourself: ${authUrl}`)
+      }
     } catch (e) {
       setPhase('failed')
       setError(e instanceof Error ? e.message : String(e))
