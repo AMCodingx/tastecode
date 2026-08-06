@@ -2,6 +2,7 @@ mod app;
 mod assets;
 mod chat;
 mod client_state;
+mod preferences;
 mod sidebar;
 mod theme;
 

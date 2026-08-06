@@ -1,4 +1,5 @@
 use gpui::{Hsla, rgb};
+use serde::{Deserialize, Serialize};
 use std::time::Duration;
 
 pub const RAIL_WIDTH: f32 = 248.0;
@@ -35,7 +36,8 @@ pub enum ThemeMode {
     Light,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum Backdrop {
     Default,
     Slate,
@@ -45,7 +47,8 @@ pub enum Backdrop {
     Plum,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum Accent {
     Neutral,
     Ocean,
