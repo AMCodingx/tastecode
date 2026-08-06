@@ -111,8 +111,7 @@ export async function detectAgents(): Promise<Array<AcpAgentSpec & { installed: 
 export async function discoverAgentModels(agentId: string): Promise<Model[]> {
   if (agentId === 'gemini') {
     return [
-      model('auto', 'Auto (Gemini)', 'Let Gemini CLI route each task', true),
-      model('gemini-3-pro-preview', 'Gemini 3 Pro (Preview)', 'Most capable Gemini model'),
+      model('gemini-3-pro-preview', 'Gemini 3 Pro (Preview)', 'Most capable Gemini model', true),
       model('gemini-3-flash-preview', 'Gemini 3 Flash (Preview)', 'Fast Gemini 3 model'),
       model('gemini-2.5-pro', 'Gemini 2.5 Pro', 'Stable Pro model'),
       model('gemini-2.5-flash', 'Gemini 2.5 Flash', 'Stable fast model'),
