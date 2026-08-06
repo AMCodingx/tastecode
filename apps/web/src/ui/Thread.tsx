@@ -231,8 +231,12 @@ export function Thread(props: {
     const onKey = (event: KeyboardEvent) => {
       if (isEditableTarget(event.target)) return
       if (!event.altKey || (event.key !== 'ArrowUp' && event.key !== 'ArrowDown')) return
+      // The first VISIBLE row, not rows[0] — that one is up to `overscan`
+      // items above the viewport, and navigating from it could send the user
+      // backwards to a turn they had already scrolled past.
       const rows = virtualizer.getVirtualItems()
-      const current = rows[0]?.index ?? 0
+      const scrollTop = scroller.current?.scrollTop ?? 0
+      const current = (rows.find((row) => row.end > scrollTop) ?? rows[0])?.index ?? 0
       const target = neighbourTurn(turns, current, event.key === 'ArrowUp' ? 'prev' : 'next')
       if (target === undefined) return
       event.preventDefault()

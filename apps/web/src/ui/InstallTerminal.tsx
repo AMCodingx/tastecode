@@ -46,7 +46,9 @@ export const InstallTerminal = memo(function InstallTerminal(props: {
         // replay from the start rather than appending nonsense.
         shownTerminalId = state.terminalId
         written = 0
-        instance.clear()
+        // reset(), not clear(): clear() keeps the cursor line, so the last
+        // line of a failed install stayed pinned above the fresh retry.
+        instance.reset()
       }
       if (state.log.length > written) {
         instance.write(state.log.slice(written))

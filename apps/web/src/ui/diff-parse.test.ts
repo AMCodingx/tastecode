@@ -32,6 +32,22 @@ describe('diff parsing', () => {
     expect(kinds).toContain('ctx')
   })
 
+  it('does not mistake content that merely starts with -- or ++ for a header', () => {
+    // A deleted SQL comment and an added pre-increment. Git headers always
+    // carry a trailing space; these do not, and they are real changes.
+    const tricky = `diff --git a/db.sql b/db.sql
+--- a/db.sql
++++ b/db.sql
+@@ -1,2 +1,2 @@
+--- reset the sequence
++++i;
+ SELECT 1`
+    const parsed = parseDiff(tricky)
+    expect(parsed.added).toBe(1)
+    expect(parsed.removed).toBe(1)
+    expect(parsed.fileEntries).toEqual([{ path: 'db.sql', added: 1, removed: 1 }])
+  })
+
   it('counts multiple files', () => {
     const two = `${SAMPLE}\ndiff --git a/b.ts b/b.ts\n+x`
     const parsed = parseDiff(two)

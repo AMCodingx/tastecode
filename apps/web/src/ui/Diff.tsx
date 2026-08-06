@@ -127,23 +127,33 @@ export function parseDiff(diff: string): {
   let removed = 0
   let currentFile: FileEntry | undefined
 
+  // `--- a/x` (a header) and `--- reset the sequence` (a deleted `-- reset`
+  // comment) are textually indistinguishable. Position is the discriminator:
+  // headers only appear before a file's first hunk. Inside a hunk, a leading
+  // +/- is always a change — which is what git's own parsers assume.
+  let inHunk = false
+
   const addFile = (path: string) => {
     currentFile = { path, added: 0, removed: 0 }
     fileEntries.push(currentFile)
+    inHunk = false
   }
 
   for (const text of diff.split('\n')) {
-    // Order matters: `+++`/`---` are file headers, not additions and deletions.
     if (text.startsWith('diff --git')) {
       addFile(pathFromGitHeader(text))
       lines.push({ text, kind: 'meta' })
-    } else if (text.startsWith('+++') || text.startsWith('---') || text.startsWith('index ')) {
+    } else if (
+      !inHunk &&
+      (text.startsWith('+++ ') || text.startsWith('--- ') || text.startsWith('index '))
+    ) {
       if (text.startsWith('+++ ') && currentFile) {
         const destination = text.slice(4).trim()
         if (destination !== '/dev/null') currentFile.path = stripGitPrefix(destination)
       }
       lines.push({ text, kind: 'meta' })
     } else if (text.startsWith('@@')) {
+      inHunk = true
       lines.push({ text, kind: 'hunk' })
     } else if (text.startsWith('+')) {
       added += 1
