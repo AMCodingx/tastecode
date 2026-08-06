@@ -34,27 +34,26 @@ export const CLAUDE_CAPABILITIES: Capabilities = {
 }
 
 /**
- * The aliases `claude --model` documents, not concrete model ids: each one
- * tracks the newest model of its family, so the list survives releases. The
- * empty id means "pass no --model flag" and lets the CLI use its own default.
+ * The aliases `claude --model` documents, not concrete model ids: each alias
+ * tracks the newest model of its family, so the ids survive releases. The
+ * display names DO name the current version — users pick "Fable 5", not a
+ * vague family word — which makes them the one thing to touch when Anthropic
+ * ships a new generation. Current as of claude-code 2.1.222.
  */
 export const CLAUDE_MODELS: Model[] = [
-  {
-    id: '',
-    displayName: 'Automatic',
-    description: 'Let Claude Code use its configured default model',
-    isDefault: true,
-    reasoningEfforts: [],
-    serviceTiers: [],
-  },
-  claudeAlias('fable', 'Fable', 'Latest Fable — the most capable tier'),
-  claudeAlias('opus', 'Opus', 'Latest Opus — deep reasoning'),
-  claudeAlias('sonnet', 'Sonnet', 'Latest Sonnet — balanced speed and capability'),
-  claudeAlias('haiku', 'Haiku', 'Latest Haiku — fastest and cheapest'),
+  claudeAlias('fable', 'Fable 5', 'Most capable — flagship tier', true),
+  claudeAlias('opus', 'Opus 5', 'Deep reasoning'),
+  claudeAlias('sonnet', 'Sonnet 5', 'Balanced speed and capability'),
+  claudeAlias('haiku', 'Haiku 4.5', 'Fastest and cheapest'),
 ]
 
-function claudeAlias(id: string, displayName: string, description: string): Model {
-  return { id, displayName, description, isDefault: false, reasoningEfforts: [], serviceTiers: [] }
+function claudeAlias(
+  id: string,
+  displayName: string,
+  description: string,
+  isDefault = false,
+): Model {
+  return { id, displayName, description, isDefault, reasoningEfforts: [], serviceTiers: [] }
 }
 
 /** Claude Code names its permission modes differently; ours map on cleanly. */
