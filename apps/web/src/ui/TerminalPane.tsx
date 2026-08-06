@@ -133,7 +133,10 @@ export const TerminalPane = memo(function TerminalPane(props: {
     const offState = props.transport.onState(onConnection)
     const offOutput = props.transport.on('terminal.output', (event) => {
       if (event.terminalId === terminalId) instance.write(event.data)
-      else if (!terminalId) {
+      // Only while our own open is in flight. terminal.output is a global
+      // broadcast, so buffering whenever we have no id meant a pane left on
+      // an exited terminal accumulated every other session's output forever.
+      else if (!terminalId && opening) {
         const buffered = earlyOutput.get(event.terminalId) ?? []
         buffered.push(event.data)
         earlyOutput.set(event.terminalId, buffered)
@@ -142,6 +145,7 @@ export const TerminalPane = memo(function TerminalPane(props: {
     const offExit = props.transport.on('terminal.exit', (event) => {
       if (event.terminalId !== terminalId) return
       terminalId = undefined
+      earlyOutput.clear()
       setStatus({ state: 'exited', exitCode: event.exitCode })
     })
     const input = instance.onData((data) => {
