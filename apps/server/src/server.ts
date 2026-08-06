@@ -19,6 +19,7 @@ import {
 import { StaleDiffSnapshotError } from './diff-review.js'
 import { Orchestrator } from './orchestrator.js'
 import { detectProviders, installCommandFor, launchCommandFor } from './providers.js'
+import { checkForUpdates } from './update-check.js'
 import { PushBus } from './push-bus.js'
 import { Store } from './store.js'
 import { listWorkspaceBranches, readWorkspace, switchWorkspaceBranch } from './workspace.js'
@@ -192,6 +193,9 @@ export function startServer(
 
       case 'system.panicStop':
         return orchestrator.panicStop()
+
+      case 'system.updateCheck':
+        return checkForUpdates()
 
       case 'search.sessions':
         return store.searchSessions(
