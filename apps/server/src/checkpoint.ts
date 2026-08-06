@@ -6,6 +6,9 @@ import { promisify } from 'node:util'
 
 const run = promisify(execFile)
 
+/** Snapshot commits by (repo, head, tree), so identical state reuses one. */
+const snapshotCommits = new Map<string, string>()
+
 /**
  * A point a session can be returned to.
  *
@@ -67,11 +70,23 @@ export async function takeSnapshot(repoPath: string): Promise<Snapshot> {
     const headTree = await git(repoPath, ['rev-parse', 'HEAD^{tree}'])
     if (tree.trim() === headTree) return { commit: head, clean: true }
 
+    // Identical working state must reuse its snapshot commit: commit objects
+    // embed a timestamp, so re-running commit-tree for the same tree litters
+    // the object database with a fresh dangling commit per diff render.
+    const cacheKey = `${repoPath}\0${head}\0${tree.trim()}`
+    const cached = snapshotCommits.get(cacheKey)
+    if (cached) return { commit: cached, clean: false }
+
     const { stdout: commit } = await run(
       'git',
       ['commit-tree', tree.trim(), '-p', head, '-m', 'harness checkpoint'],
       { cwd: repoPath, windowsHide: true },
     )
+    snapshotCommits.set(cacheKey, commit.trim())
+    if (snapshotCommits.size > 64) {
+      const oldest = snapshotCommits.keys().next().value
+      if (oldest !== undefined) snapshotCommits.delete(oldest)
+    }
     return { commit: commit.trim(), clean: false }
   } finally {
     await rm(indexDir, { recursive: true, force: true }).catch(() => undefined)
