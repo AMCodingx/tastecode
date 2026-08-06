@@ -57,14 +57,21 @@ export async function takeSnapshot(repoPath: string): Promise<Snapshot> {
 
   try {
     const env = { ...process.env, GIT_INDEX_FILE: indexFile }
-    // Seed from HEAD so the snapshot is a diff against it rather than a tree
-    // built from nothing.
-    await run('git', ['read-tree', 'HEAD'], { cwd: repoPath, env, windowsHide: true })
-    await run('git', ['add', '-A'], { cwd: repoPath, env, windowsHide: true })
+    // Timeouts throughout: a hung git here leaves every diff/review RPC above
+    // this pending forever. Seed from HEAD so the snapshot is a diff against
+    // it rather than a tree built from nothing.
+    await run('git', ['read-tree', 'HEAD'], {
+      cwd: repoPath,
+      env,
+      windowsHide: true,
+      timeout: 60_000,
+    })
+    await run('git', ['add', '-A'], { cwd: repoPath, env, windowsHide: true, timeout: 60_000 })
     const { stdout: tree } = await run('git', ['write-tree'], {
       cwd: repoPath,
       env,
       windowsHide: true,
+      timeout: 60_000,
     })
 
     const headTree = await git(repoPath, ['rev-parse', 'HEAD^{tree}'])
@@ -80,7 +87,7 @@ export async function takeSnapshot(repoPath: string): Promise<Snapshot> {
     const { stdout: commit } = await run(
       'git',
       ['commit-tree', tree.trim(), '-p', head, '-m', 'harness checkpoint'],
-      { cwd: repoPath, windowsHide: true },
+      { cwd: repoPath, windowsHide: true, timeout: 60_000 },
     )
     snapshotCommits.set(cacheKey, commit.trim())
     if (snapshotCommits.size > 64) {
@@ -107,14 +114,18 @@ export async function restoreSnapshot(repoPath: string, commit: string): Promise
   // Anything that exists now and did not exist at the checkpoint. Computed
   // against the snapshot we just took rather than the live tree, so untracked
   // files are included.
+  // `-z`: with git's default quotePath, a non-ASCII filename comes out
+  // escape-quoted, the rm below silently no-ops, and the restore is partial
+  // without any error. NUL-delimited output is always the literal path.
   const added = await git(repoPath, [
     'diff',
     '--name-only',
+    '-z',
     '--diff-filter=A',
     commit,
     replaced.commit,
   ])
-  for (const file of (added ?? '').split('\n').filter((line) => line.trim() !== '')) {
+  for (const file of (added ?? '').split('\0').filter((line) => line.trim() !== '')) {
     await rm(path.join(repoPath, file), { force: true }).catch(() => undefined)
   }
 
@@ -125,6 +136,7 @@ export async function restoreSnapshot(repoPath: string, commit: string): Promise
   await run('git', ['restore', '--source', commit, '--worktree', '--', '.'], {
     cwd: repoPath,
     windowsHide: true,
+    timeout: 60_000,
   })
 
   return replaced
@@ -133,8 +145,8 @@ export async function restoreSnapshot(repoPath: string, commit: string): Promise
 /** Files that differ between a snapshot and the working tree right now. */
 export async function changedSince(repoPath: string, commit: string): Promise<string[]> {
   const now = await takeSnapshot(repoPath)
-  const out = await git(repoPath, ['diff', '--name-only', commit, now.commit])
-  return (out ?? '').split('\n').filter((line) => line.trim() !== '')
+  const out = await git(repoPath, ['diff', '--name-only', '-z', commit, now.commit])
+  return (out ?? '').split('\0').filter((line) => line.trim() !== '')
 }
 
 async function git(cwd: string, args: string[]): Promise<string | undefined> {

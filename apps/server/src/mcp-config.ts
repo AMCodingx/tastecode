@@ -5,6 +5,7 @@ import {
   readFileSync,
   realpathSync,
   renameSync,
+  rmSync,
   writeFileSync,
 } from 'node:fs'
 import os from 'node:os'
@@ -148,10 +149,17 @@ export class McpConfigStore {
       this.#readLossy = false
     }
     const temporary = `${this.location}.${randomUUID()}.tmp`
-    writeFileSync(temporary, `${JSON.stringify(file, null, 2)}\n`, {
-      encoding: 'utf8',
-      mode: 0o600,
-    })
-    renameSync(temporary, this.location)
+    try {
+      writeFileSync(temporary, `${JSON.stringify(file, null, 2)}\n`, {
+        encoding: 'utf8',
+        mode: 0o600,
+      })
+      renameSync(temporary, this.location)
+    } catch (error) {
+      // A failed atomic write (disk full, AV holding the handle) must not
+      // leave a stray .tmp behind on every retry.
+      rmSync(temporary, { force: true })
+      throw error
+    }
   }
 }

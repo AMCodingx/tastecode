@@ -77,41 +77,49 @@ async function parseDiff(repoPath: string, threadId: string, store: Store): Prom
   const snapshot = await takeSnapshot(repoPath)
   const version = (await git(repoPath, ['rev-parse', `${snapshot.commit}^{tree}`])).trim()
   const files = await changedFiles(repoPath, snapshot.commit)
-  const parsed = await Promise.all(
-    files.map(async (file) => {
-      const paths = file.previousPath ? [file.previousPath, file.path] : [file.path]
-      const patch = await git(repoPath, [
-        'diff',
-        '--binary',
-        '--no-color',
-        '--no-ext-diff',
-        '--no-textconv',
-        '--src-prefix=a/',
-        '--dst-prefix=b/',
-        '--find-renames',
-        '--unified=3',
-        'HEAD',
-        snapshot.commit,
-        '--',
-        ...paths,
-      ])
-      const hunks = parseHunks(file.path, patch, file.status === 'renamed')
-      const targetId = digest(`file\0${file.path}\0${patch}`)
-      const fileDecision = store.diffDecision(threadId, fileTarget(targetId))
-      const value: DiffFile = {
-        path: file.path,
-        ...(file.previousPath ? { previousPath: file.previousPath } : {}),
-        status: file.status,
-        binary: patch.includes('GIT binary patch') || patch.includes('Binary files '),
-        hunks: hunks.map((hunk) => {
-          const decision = store.diffDecision(threadId, hunkTarget(hunk.value.id))
-          return { ...hunk.value, ...(decision ? { decision } : {}) }
-        }),
-        ...(fileDecision ? { decision: fileDecision } : {}),
-      }
-      return { value, patch, targetId, hunks }
-    }),
-  )
+  // Bounded fan-out: a formatter sweep can touch thousands of files, and one
+  // git process per file all at once hits Windows process-creation limits.
+  const parsed: ParsedFile[] = []
+  const batch = 8
+  for (let offset = 0; offset < files.length; offset += batch) {
+    parsed.push(...(await Promise.all(files.slice(offset, offset + batch).map(parseFile))))
+  }
+
+  async function parseFile(
+    file: Awaited<ReturnType<typeof changedFiles>>[number],
+  ): Promise<ParsedFile> {
+    const paths = file.previousPath ? [file.previousPath, file.path] : [file.path]
+    const patch = await git(repoPath, [
+      'diff',
+      '--binary',
+      '--no-color',
+      '--no-ext-diff',
+      '--no-textconv',
+      '--src-prefix=a/',
+      '--dst-prefix=b/',
+      '--find-renames',
+      '--unified=3',
+      'HEAD',
+      snapshot.commit,
+      '--',
+      ...paths,
+    ])
+    const hunks = parseHunks(file.path, patch, file.status === 'renamed')
+    const targetId = digest(`file\0${file.path}\0${patch}`)
+    const fileDecision = store.diffDecision(threadId, fileTarget(targetId))
+    const value: DiffFile = {
+      path: file.path,
+      ...(file.previousPath ? { previousPath: file.previousPath } : {}),
+      status: file.status,
+      binary: patch.includes('GIT binary patch') || patch.includes('Binary files '),
+      hunks: hunks.map((hunk) => {
+        const decision = store.diffDecision(threadId, hunkTarget(hunk.value.id))
+        return { ...hunk.value, ...(decision ? { decision } : {}) }
+      }),
+      ...(fileDecision ? { decision: fileDecision } : {}),
+    }
+    return { value, patch, targetId, hunks }
+  }
 
   return {
     value: { threadId, version, files: parsed.map((file) => file.value) },
@@ -224,6 +232,10 @@ async function applyReverse(repoPath: string, patch: string): Promise<void> {
     child.stderr.setEncoding('utf8')
     child.stderr.on('data', (chunk: string) => (stderr += chunk))
     child.once('error', reject)
+    // stdin is a Socket; an unhandled EPIPE/ENOENT on it is an uncaught
+    // exception that takes the whole server down. The child's error/close
+    // path already reports the failure.
+    child.stdin.on('error', () => {})
     child.once('close', (code) => {
       if (code === 0) resolve()
       else reject(new Error(stderr.trim() || 'could not apply diff decision'))

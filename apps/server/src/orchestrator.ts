@@ -86,7 +86,12 @@ import type {
   ThreadLifecycle,
   UserInputQuestion,
 } from '@harness/contracts'
-import { readSessionDiff, reviewDiffFile, reviewDiffHunk } from './diff-review.js'
+import {
+  readSessionDiff,
+  reviewDiffFile,
+  reviewDiffHunk,
+  StaleDiffSnapshotError,
+} from './diff-review.js'
 import { McpConfigStore } from './mcp-config.js'
 import { readCredential } from './credentials.js'
 import { ModelConnectionStore } from './model-connections.js'
@@ -1245,6 +1250,11 @@ export class Orchestrator {
     if (this.isTurnRunning(threadId)) {
       throw new Error('cannot reject a diff while the agent turn is running')
     }
+    // One rejection at a time per thread: two concurrent reverse-applies pass
+    // the same staleness check and then patch the same worktree, and git's
+    // fuzz can land the second one at the wrong offset silently. The client
+    // retries with a fresh diff on this error.
+    if (this.#reviewingDiffs.has(threadId)) throw new StaleDiffSnapshotError()
     this.#reviewingDiffs.add(threadId)
     try {
       return await review()
