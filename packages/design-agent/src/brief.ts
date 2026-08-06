@@ -71,7 +71,29 @@ function parseDesignBrief(value: unknown): DesignBrief {
   ) {
     throw new Error('design brief field explicitAnswers must contain question and answer strings')
   }
-  return record as unknown as DesignBrief
+  // Rebuilt field-by-field like every other parser in this package: the raw
+  // cast kept arbitrary model-authored extra keys, which were persisted and
+  // re-serialized verbatim into the Build agent's instruction block.
+  return {
+    originalRequest: record['originalRequest'] as string,
+    subject: record['subject'] as string,
+    pageType: record['pageType'] as string,
+    scope: record['scope'] as string,
+    primaryGoal: record['primaryGoal'] as string,
+    audience: record['audience'] as string,
+    offer: record['offer'] as string,
+    primaryAction: record['primaryAction'] as string,
+    creativeControl: record['creativeControl'] as string,
+    requiredContent: record['requiredContent'] as string[],
+    constraints: record['constraints'] as string[],
+    brandInputs: record['brandInputs'] as string[],
+    assumptions: record['assumptions'] as string[],
+    unresolved: record['unresolved'] as string[],
+    explicitAnswers: (record['explicitAnswers'] as ExplicitBriefAnswer[]).map((item) => ({
+      question: item.question,
+      answer: item.answer,
+    })),
+  }
 }
 
 function briefPath(workspacePath: string): string {

@@ -33,6 +33,15 @@ import { isZoomAction, nextZoomFactor, type ZoomAction, zoomShortcut } from './z
  */
 
 const here = path.dirname(fileURLToPath(import.meta.url))
+
+function isWebUrl(value: string): boolean {
+  try {
+    const url = new URL(value)
+    return url.protocol === 'https:' || url.protocol === 'http:'
+  } catch {
+    return false
+  }
+}
 const devServer = process.env['HARNESS_DEV_SERVER']
 const MAX_PASTED_IMAGE_BYTES = 25 * 1024 * 1024
 const CAPTURE_SETTLE_SCRIPT = `new Promise(resolve => requestAnimationFrame(resolve))
@@ -80,8 +89,10 @@ function createWindow(): void {
 
   // Nothing in this app should ever open a second window, and any external
   // link belongs in the user's browser, not in a chromeless Electron window.
+  // Web links only: renderer content includes agent- and vendor-authored
+  // URLs, and handing a file:/smb:/ms-*: URL to the OS is code execution.
   window.webContents.setWindowOpenHandler(({ url }) => {
-    void shell.openExternal(url)
+    if (isWebUrl(url)) void shell.openExternal(url)
     return { action: 'deny' }
   })
 
@@ -89,7 +100,7 @@ function createWindow(): void {
     const allowed = devServer !== undefined && url.startsWith(devServer)
     if (!allowed) {
       event.preventDefault()
-      void shell.openExternal(url)
+      if (isWebUrl(url)) void shell.openExternal(url)
     }
   })
 
@@ -109,6 +120,7 @@ function createWindow(): void {
 }
 
 ipcMain.handle('harness:setZoom', (event, action: unknown) => {
+  requireOwnRenderer(event.sender)
   if (!isZoomAction(action)) throw new Error('Invalid zoom action')
   const window = BrowserWindow.fromWebContents(event.sender)
   if (!window) throw new Error('No window for zoom action')
@@ -116,6 +128,7 @@ ipcMain.handle('harness:setZoom', (event, action: unknown) => {
 })
 
 ipcMain.handle('harness:setTheme', (event, theme: unknown) => {
+  requireOwnRenderer(event.sender)
   const window = BrowserWindow.fromWebContents(event.sender)
   if (!window) throw new Error('No window for theme change')
   const options = windowThemeOptions(theme)
@@ -167,14 +180,26 @@ async function capturePreview(request: PreviewCaptureRequest): Promise<PreviewCa
     if (!allowsPreviewNavigation(request.url, url)) event.preventDefault()
   })
 
+  // A pending webfont or a throttled hidden renderer can stall the settle
+  // script forever; the whole capture races a hard deadline instead of
+  // leaving a hidden BrowserWindow alive and the caller's promise pending.
+  const deadline = new Promise<never>((_, reject) =>
+    setTimeout(() => reject(new Error('preview capture timed out')), 30_000).unref?.(),
+  )
   try {
     await mkdir(directory, { recursive: true, mode: 0o700 })
-    await preview.loadURL(request.url)
+    await Promise.race([preview.loadURL(request.url), deadline])
     const screenshots = []
+    // Duplicate viewports would collide on the wx-flagged filename and fail
+    // the entire request.
+    const seen = new Set<string>()
     for (const viewport of request.viewports) {
+      const key = `${viewport.width}x${viewport.height}`
+      if (seen.has(key)) continue
+      seen.add(key)
       preview.setContentSize(viewport.width, viewport.height)
-      await preview.webContents.executeJavaScript(CAPTURE_SETTLE_SCRIPT)
-      const destination = path.join(directory, `${viewport.width}x${viewport.height}.png`)
+      await Promise.race([preview.webContents.executeJavaScript(CAPTURE_SETTLE_SCRIPT), deadline])
+      const destination = path.join(directory, `${key}.png`)
       await writeFile(destination, (await preview.webContents.capturePage()).toPNG(), {
         flag: 'wx',
         mode: 0o600,
@@ -221,11 +246,13 @@ ipcMain.handle('harness:pickFiles', async () => {
   return result.canceled ? [] : result.filePaths
 })
 
-ipcMain.handle('harness:revealPath', (_event, value: unknown) => {
+ipcMain.handle('harness:revealPath', (event, value: unknown) => {
+  requireOwnRenderer(event.sender)
   shell.showItemInFolder(revealablePath(value))
 })
 
-ipcMain.handle('harness:savePastedImage', async (_event, payload: unknown) => {
+ipcMain.handle('harness:savePastedImage', async (event, payload: unknown) => {
+  requireOwnRenderer(event.sender)
   const image = pastedImage(payload)
   const directory = path.join(app.getPath('temp'), 'Personal Harness', 'pasted-images')
   await mkdir(directory, { recursive: true, mode: 0o700 })
@@ -270,6 +297,11 @@ function configureMediaPermissions(): void {
       }
     },
   )
+}
+
+/** Privileged IPC is for our renderer only — applied to every handler. */
+function requireOwnRenderer(webContents: WebContents): void {
+  if (!isOwnRenderer(webContents)) throw new Error('Not allowed from this renderer')
 }
 
 function isOwnRenderer(webContents: WebContents): boolean {
