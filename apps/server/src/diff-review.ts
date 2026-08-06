@@ -234,7 +234,14 @@ async function applyReverse(repoPath: string, patch: string): Promise<void> {
 
 async function git(cwd: string, args: string[]): Promise<string> {
   try {
-    const { stdout } = await run('git', args, { cwd, windowsHide: true, timeout: 20_000 })
+    // Sessions that touch a lot of code produce diffs well past Node's 1 MiB
+    // default, and ENOBUFS would break review for exactly those sessions.
+    const { stdout } = await run('git', args, {
+      cwd,
+      windowsHide: true,
+      timeout: 20_000,
+      maxBuffer: 64 * 1024 * 1024,
+    })
     return stdout
   } catch (error) {
     const stderr = (error as { stderr?: string }).stderr

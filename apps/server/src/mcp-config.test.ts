@@ -1,4 +1,4 @@
-import { mkdtempSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
+import { mkdtempSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { describe, expect, it } from 'vitest'
@@ -37,7 +37,7 @@ describe('project MCP config', () => {
     expect(readFileSync(location, 'utf8')).not.toContain('example.com')
   })
 
-  it('rejects malformed hand-edited config instead of overwriting it', () => {
+  it('skips malformed entries but parks the original before rewriting', () => {
     const { project, location, store } = setup()
     mkdirSync(path.dirname(location))
     writeFileSync(
@@ -45,6 +45,13 @@ describe('project MCP config', () => {
       '{"version":1,"projects":{"bad":{"codex":{"x":{"id":"y","enabled":false}}}}}',
     )
 
-    expect(() => store.list('codex', project)).toThrow('invalid MCP server "x"')
+    // The bad entry must not brick every MCP operation…
+    expect(store.list('codex', project)).toEqual([])
+
+    // …and the first rewrite must keep the hand-edited original around.
+    store.add('codex', project, { id: 'fresh', enabled: false })
+    const backups = readdirSync(path.dirname(location)).filter((name) => name.includes('.invalid-'))
+    expect(backups).toHaveLength(1)
+    expect(store.list('codex', project)).toEqual([{ id: 'fresh', enabled: false }])
   })
 })
