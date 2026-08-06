@@ -220,5 +220,9 @@ describe('overnight regression pins', () => {
     const assistant = session.snapshot().messages.find((message) => message.role === 'assistant')
     expect(assistant?.content).toContain('[REDACTED]')
     expect(assistant?.content).not.toContain(secret)
+    // The rolling-window redaction must not eat the tail: everything after
+    // the secret still arrives, in the deltas and in the final message.
+    expect(assistant?.content).toBe('prefix [REDACTED] suffix')
+    expect(deltas.join('')).toBe('prefix [REDACTED] suffix')
   })
 })
