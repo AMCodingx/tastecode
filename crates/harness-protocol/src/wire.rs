@@ -79,6 +79,10 @@ pub mod method {
     pub const ACP_AGENTS: &str = "acp.agents";
     pub const PROJECTS_LIST: &str = "projects.list";
     pub const PROJECTS_ADD: &str = "projects.add";
+    pub const TERMINAL_OPEN: &str = "terminal.open";
+    pub const TERMINAL_INPUT: &str = "terminal.input";
+    pub const TERMINAL_RESIZE: &str = "terminal.resize";
+    pub const TERMINAL_CLOSE: &str = "terminal.close";
     pub const MODELS_LIST: &str = "models.list";
     pub const THREAD_START: &str = "thread.start";
     pub const THREAD_RENAME: &str = "thread.rename";
@@ -144,5 +148,15 @@ mod tests {
 
         assert!(matches!(response, InboundFrame::Response(_)));
         assert!(matches!(push, InboundFrame::Push(_)));
+    }
+
+    #[test]
+    fn terminal_contract_keeps_the_existing_method_and_push_names() {
+        assert_eq!(method::TERMINAL_OPEN, "terminal.open");
+        assert_eq!(method::TERMINAL_INPUT, "terminal.input");
+        assert_eq!(method::TERMINAL_RESIZE, "terminal.resize");
+        assert_eq!(method::TERMINAL_CLOSE, "terminal.close");
+        assert_eq!(channel::TERMINAL_OUTPUT, "terminal.output");
+        assert_eq!(channel::TERMINAL_EXIT, "terminal.exit");
     }
 }

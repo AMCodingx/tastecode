@@ -677,6 +677,26 @@ pub struct ThreadLifecyclePush {
     pub lifecycle: ThreadLifecycle,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TerminalOpenedResult {
+    pub terminal_id: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TerminalOutputPush {
+    pub terminal_id: String,
+    pub data: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TerminalExitPush {
+    pub terminal_id: String,
+    pub exit_code: Option<i32>,
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SequencedDomainEvent {
@@ -839,5 +859,22 @@ mod tests {
             diff.files[0].hunks[0].lines[1],
             DiffLine::Addition { new_line: 1, .. }
         ));
+    }
+
+    #[test]
+    fn terminal_pushes_match_the_typescript_wire_shape() {
+        let output: TerminalOutputPush = serde_json::from_value(json!({
+            "terminalId": "terminal-1",
+            "data": "\u{1b}[31mred\u{1b}[0m"
+        }))
+        .unwrap();
+        let exit: TerminalExitPush = serde_json::from_value(json!({
+            "terminalId": "terminal-1",
+            "exitCode": null
+        }))
+        .unwrap();
+
+        assert_eq!(output.terminal_id, "terminal-1");
+        assert_eq!(exit.exit_code, None);
     }
 }
