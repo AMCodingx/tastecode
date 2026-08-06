@@ -1,5 +1,8 @@
+mod diff;
+
 use crate::client_state::{ChatUpdate, ModelChoice};
 use crate::theme::{CHAT_WIDTH, Theme};
+use diff::DiffUiState;
 use gpui::{
     Animation, AnimationExt, AnyElement, App, Context, Entity, EventEmitter, FontWeight,
     ListAlignment, ListState, Render, SharedString, Window, div, ease_out_quint, list, prelude::*,
@@ -7,9 +10,9 @@ use gpui::{
 };
 use gpui_component::input::{Input, InputEvent, InputState};
 use harness_protocol::{
-    ApprovalDecision, ApprovalKind, ApprovalMode, ApprovalReview, ApprovalReviewStatus, Item,
-    ItemStatus, ItemType, MessageRole, ProviderId, RiskLevel, ThreadEventPush, ThreadQueueResult,
-    UserInputQuestion,
+    ApprovalDecision, ApprovalKind, ApprovalMode, ApprovalReview, ApprovalReviewStatus,
+    DiffDecision, Item, ItemStatus, ItemType, MessageRole, ProviderId, RiskLevel, ThreadEventPush,
+    ThreadQueueResult, UserInputQuestion,
 };
 use harness_state::{ApplyOutcome, HistoryError, ThreadState};
 use std::collections::{HashMap, HashSet};
@@ -69,6 +72,16 @@ pub(crate) enum ChatEvent {
         thread_id: String,
         request_id: String,
         answers: HashMap<String, Vec<String>>,
+    },
+    RequestDiff {
+        thread_id: String,
+    },
+    ReviewHunk {
+        thread_id: String,
+        version: String,
+        path: String,
+        hunk_id: String,
+        decision: DiffDecision,
     },
 }
 
@@ -139,6 +152,7 @@ pub(crate) struct ChatView {
     pending_approvals: HashSet<String>,
     pending_user_inputs: HashSet<String>,
     action_errors: HashMap<String, String>,
+    diff_ui: DiffUiState,
 }
 
 impl ChatView {
@@ -198,6 +212,7 @@ impl ChatView {
             pending_approvals: HashSet::new(),
             pending_user_inputs: HashSet::new(),
             action_errors: HashMap::new(),
+            diff_ui: DiffUiState::default(),
         }
     }
 
@@ -231,6 +246,7 @@ impl ChatView {
         self.pending_approvals.clear();
         self.pending_user_inputs.clear();
         self.action_errors.clear();
+        self.diff_ui.reset();
         cx.notify();
     }
 
@@ -302,6 +318,7 @@ impl ChatView {
                         self.history_in_flight = false;
                         self.error = None;
                         self.sync_structured_requests();
+                        self.sync_diff_summary();
                         self.flush_pending_live(cx);
                     }
                     Err(error) => self.reconcile_after_error(error, cx),
@@ -388,6 +405,21 @@ impl ChatView {
                 self.action_errors.insert(request_id, message);
                 cx.notify();
             }
+            ChatUpdate::DiffSnapshot { thread_id, diff } if self.is_selected(&thread_id) => {
+                self.diff_ui.apply_snapshot(diff);
+                cx.notify();
+            }
+            ChatUpdate::DiffError {
+                thread_id,
+                message,
+                stale,
+            } if self.is_selected(&thread_id) => {
+                let refresh = self.diff_ui.apply_error(message, stale);
+                if refresh {
+                    cx.emit(ChatEvent::RequestDiff { thread_id });
+                }
+                cx.notify();
+            }
             ChatUpdate::History { .. }
             | ChatUpdate::Queue { .. }
             | ChatUpdate::Event(_)
@@ -395,7 +427,9 @@ impl ChatView {
             | ChatUpdate::DraftError { .. }
             | ChatUpdate::TurnError { .. }
             | ChatUpdate::ApprovalError { .. }
-            | ChatUpdate::UserInputError { .. } => {}
+            | ChatUpdate::UserInputError { .. }
+            | ChatUpdate::DiffSnapshot { .. }
+            | ChatUpdate::DiffError { .. } => {}
         }
     }
 
@@ -484,6 +518,7 @@ impl ChatView {
             self.loading = false;
             self.error = None;
             self.sync_structured_requests();
+            self.sync_diff_summary();
             cx.notify();
         }
 
@@ -838,7 +873,7 @@ impl ChatView {
             .find(|choice| choice.key == *key)
     }
 
-    fn header(&self) -> impl IntoElement {
+    fn header(&self, cx: &Context<Self>) -> impl IntoElement {
         let theme = self.theme;
         let session = self.session.clone();
         div()
@@ -876,7 +911,7 @@ impl ChatView {
                 },
             )
             .child(header_button("Terminal", theme))
-            .child(header_button("Review", theme))
+            .child(self.review_header_button(cx))
     }
 
     fn timeline(&self, cx: &mut Context<Self>) -> AnyElement {
@@ -2141,15 +2176,17 @@ impl Render for ChatView {
             });
         }
         let structured_surfaces = self.structured_surfaces(cx);
+        let control_surface = self.control_surface(cx);
         div()
             .size_full()
             .min_w(px(0.0))
             .flex()
             .flex_col()
             .bg(self.theme.background.hsla())
-            .child(self.header())
+            .child(self.header(cx))
             .child(div().flex_1().min_h(px(0.0)).child(self.timeline(cx)))
             .when_some(structured_surfaces, |view, surfaces| view.child(surfaces))
+            .when_some(control_surface, |view, surface| view.child(surface))
             .when(!self.queue.items.is_empty(), |view| {
                 view.child(queue_summary(self.queue.items.len(), self.theme))
             })

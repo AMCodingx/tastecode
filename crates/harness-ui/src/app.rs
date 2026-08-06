@@ -1,7 +1,7 @@
 use crate::assets::{HarnessAssets, register_fonts};
 use crate::chat::{ChatEvent, ChatView, ComposerSettings, SessionContext};
 use crate::client_state::{
-    ClientState, ClientUpdate, NewThreadRequest, SendTurnRequest, ShellEvent,
+    ClientState, ClientUpdate, NewThreadRequest, ReviewHunkRequest, SendTurnRequest, ShellEvent,
 };
 use crate::sidebar::{SidebarActions, SidebarProps, sidebar};
 use crate::theme::{TITLEBAR_HEIGHT, Theme};
@@ -159,6 +159,28 @@ impl HarnessApp {
                 let update =
                     this.state
                         .respond_to_user_input(thread_id, request_id, answers.clone());
+                this.apply_client_update(update, cx);
+            }
+            ChatEvent::RequestDiff { thread_id } => {
+                let update = this.state.request_diff(thread_id);
+                this.apply_client_update(update, cx);
+            }
+            ChatEvent::ReviewHunk {
+                thread_id,
+                version,
+                path,
+                hunk_id,
+                decision,
+            } => {
+                let update = this.state.review_hunk(
+                    thread_id,
+                    ReviewHunkRequest {
+                        version: version.clone(),
+                        path: path.clone(),
+                        hunk_id: hunk_id.clone(),
+                        decision: *decision,
+                    },
+                );
                 this.apply_client_update(update, cx);
             }
         })

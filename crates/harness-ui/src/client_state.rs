@@ -1,12 +1,12 @@
 use async_channel::Receiver as EventReceiver;
 use harness_client::{ClientEvent, ClientHandle, ConnectionState, Endpoint};
 use harness_protocol::{
-    AcpAgentsResult, ApprovalDecision, ApprovalMode, DomainEvent, Model, ModelConnectionsResult,
-    ModelsListResult, PROTOCOL_VERSION, ProjectAddedResult, ProjectSummary, ProjectsListResult,
-    ProviderId, ProviderStatus, ProvidersListResult, Response, SendTurnResult, ServerWelcome,
-    SessionSummary, SidebarMode, SidebarSettings, ThreadEventPush, ThreadHistoryResult,
-    ThreadInboxStatus, ThreadLifecycle, ThreadLifecyclePush, ThreadQueuePush, ThreadQueueResult,
-    ThreadStartResult, channel, method,
+    AcpAgentsResult, ApprovalDecision, ApprovalMode, DiffDecision, DomainEvent, ErrorCode, Model,
+    ModelConnectionsResult, ModelsListResult, PROTOCOL_VERSION, ProjectAddedResult, ProjectSummary,
+    ProjectsListResult, ProviderId, ProviderStatus, ProvidersListResult, Response,
+    ReviewDiffResult, SendTurnResult, ServerWelcome, SessionDiff, SessionSummary, SidebarMode,
+    SidebarSettings, ThreadEventPush, ThreadHistoryResult, ThreadInboxStatus, ThreadLifecycle,
+    ThreadLifecyclePush, ThreadQueuePush, ThreadQueueResult, ThreadStartResult, channel, method,
 };
 use serde_json::{Value, json};
 use std::collections::HashMap;
@@ -75,6 +75,13 @@ pub(crate) struct SendTurnRequest {
     pub(crate) service_tier: Option<String>,
 }
 
+pub(crate) struct ReviewHunkRequest {
+    pub(crate) version: String,
+    pub(crate) path: String,
+    pub(crate) hunk_id: String,
+    pub(crate) decision: DiffDecision,
+}
+
 enum PendingRequest {
     Capabilities,
     Projects,
@@ -118,6 +125,12 @@ enum PendingRequest {
     RespondUserInput {
         thread_id: String,
         request_id: String,
+    },
+    Diff {
+        thread_id: String,
+    },
+    ReviewHunk {
+        thread_id: String,
     },
 }
 
@@ -176,6 +189,15 @@ pub(crate) enum ChatUpdate {
         thread_id: String,
         request_id: String,
         message: String,
+    },
+    DiffSnapshot {
+        thread_id: String,
+        diff: SessionDiff,
+    },
+    DiffError {
+        thread_id: String,
+        message: String,
+        stale: bool,
     },
 }
 
@@ -394,6 +416,55 @@ impl ClientState {
         }
     }
 
+    pub(crate) fn request_diff(&mut self, thread_id: &str) -> ClientUpdate {
+        if self.send_request(
+            method::THREAD_DIFF,
+            json!({ "threadId": thread_id }),
+            PendingRequest::Diff {
+                thread_id: thread_id.into(),
+            },
+        ) {
+            ClientUpdate::default()
+        } else {
+            self.immediate_diff_error(thread_id)
+        }
+    }
+
+    pub(crate) fn review_hunk(
+        &mut self,
+        thread_id: &str,
+        request: ReviewHunkRequest,
+    ) -> ClientUpdate {
+        if self.send_request(
+            method::THREAD_REVIEW_HUNK,
+            json!({
+                "threadId": thread_id,
+                "version": request.version,
+                "path": request.path,
+                "hunkId": request.hunk_id,
+                "decision": request.decision,
+            }),
+            PendingRequest::ReviewHunk {
+                thread_id: thread_id.into(),
+            },
+        ) {
+            ClientUpdate::default()
+        } else {
+            self.immediate_diff_error(thread_id)
+        }
+    }
+
+    fn immediate_diff_error(&self, thread_id: &str) -> ClientUpdate {
+        ClientUpdate::chat(ChatUpdate::DiffError {
+            thread_id: thread_id.into(),
+            message: self
+                .notice
+                .clone()
+                .unwrap_or_else(|| "The diff request could not be sent.".into()),
+            stale: false,
+        })
+    }
+
     pub(crate) fn add_project(&mut self, path: String) {
         self.send_request(
             method::PROJECTS_ADD,
@@ -520,6 +591,7 @@ impl ClientState {
                     self.finish_catalog_request(pending.as_ref().expect("checked above"));
                     return ClientUpdate::shell_changed();
                 }
+                let stale = error.code == ErrorCode::StaleSnapshot;
                 let message = match error.detail {
                     Some(detail) => format!("{} ({detail})", error.message),
                     None => error.message,
@@ -559,6 +631,14 @@ impl ClientState {
                         request_id,
                         message,
                     }),
+                    Some(PendingRequest::Diff { thread_id })
+                    | Some(PendingRequest::ReviewHunk { thread_id }) => {
+                        ClientUpdate::chat(ChatUpdate::DiffError {
+                            thread_id,
+                            message,
+                            stale,
+                        })
+                    }
                     Some(request) => match request.thread_id() {
                         Some(thread_id) => {
                             ClientUpdate::chat(ChatUpdate::Error { thread_id, message })
@@ -647,6 +727,31 @@ impl ClientState {
                         restore_attachments,
                     }),
                 },
+                Some(PendingRequest::Diff { thread_id }) => {
+                    match serde_json::from_value::<SessionDiff>(result) {
+                        Ok(diff) => {
+                            ClientUpdate::chat(ChatUpdate::DiffSnapshot { thread_id, diff })
+                        }
+                        Err(error) => ClientUpdate::chat(ChatUpdate::DiffError {
+                            thread_id,
+                            message: format!("thread.diff was invalid: {error}"),
+                            stale: false,
+                        }),
+                    }
+                }
+                Some(PendingRequest::ReviewHunk { thread_id }) => {
+                    match serde_json::from_value::<ReviewDiffResult>(result) {
+                        Ok(result) => ClientUpdate::chat(ChatUpdate::DiffSnapshot {
+                            thread_id,
+                            diff: result.diff,
+                        }),
+                        Err(error) => ClientUpdate::chat(ChatUpdate::DiffError {
+                            thread_id,
+                            message: format!("thread.reviewHunk was invalid: {error}"),
+                            stale: false,
+                        }),
+                    }
+                }
                 Some(PendingRequest::Interrupt { .. })
                 | Some(PendingRequest::Steer { .. })
                 | Some(PendingRequest::RespondApproval { .. })
@@ -700,6 +805,14 @@ impl ClientState {
                 message: "The server connection was lost before these answers were submitted."
                     .into(),
             }),
+            PendingRequest::Diff { thread_id } | PendingRequest::ReviewHunk { thread_id } => {
+                ClientUpdate::chat(ChatUpdate::DiffError {
+                    thread_id,
+                    message: "The server connection was lost before the diff request completed."
+                        .into(),
+                    stale: false,
+                })
+            }
             request => match request.thread_id() {
                 Some(thread_id) => ClientUpdate::chat(ChatUpdate::Error {
                     thread_id,
@@ -1185,7 +1298,9 @@ impl PendingRequest {
             | Self::Steer { thread_id }
             | Self::Interrupt { thread_id }
             | Self::RespondApproval { thread_id, .. }
-            | Self::RespondUserInput { thread_id, .. } => Some(thread_id),
+            | Self::RespondUserInput { thread_id, .. }
+            | Self::Diff { thread_id }
+            | Self::ReviewHunk { thread_id } => Some(thread_id),
             Self::Capabilities
             | Self::Projects
             | Self::SidebarSettings
@@ -1448,6 +1563,61 @@ mod tests {
             }] if thread_id == "thread-1"
                 && approval_id == "approval-1"
                 && message == "That approval is no longer pending"
+        ));
+    }
+
+    #[test]
+    fn diff_response_is_decoded_for_the_selected_chat() {
+        let mut state = ClientState::new(true);
+        state.pending.insert(
+            "native-diff".into(),
+            PendingRequest::Diff {
+                thread_id: "thread-1".into(),
+            },
+        );
+
+        let update = state.handle_response(Response::Success {
+            id: "native-diff".into(),
+            result: json!({
+                "threadId": "thread-1",
+                "version": "snapshot-1",
+                "files": []
+            }),
+        });
+
+        assert!(matches!(
+            update.chat.as_slice(),
+            [ChatUpdate::DiffSnapshot { thread_id, diff }]
+                if thread_id == "thread-1" && diff.version == "snapshot-1"
+        ));
+    }
+
+    #[test]
+    fn stale_hunk_decision_requests_an_authoritative_refresh() {
+        let mut state = ClientState::new(true);
+        state.pending.insert(
+            "native-review".into(),
+            PendingRequest::ReviewHunk {
+                thread_id: "thread-1".into(),
+            },
+        );
+
+        let update = state.handle_response(Response::Failure {
+            id: "native-review".into(),
+            error: harness_protocol::WireError {
+                code: ErrorCode::StaleSnapshot,
+                message: "Refresh the diff and try again.".into(),
+                detail: None,
+            },
+        });
+
+        assert!(matches!(
+            update.chat.as_slice(),
+            [ChatUpdate::DiffError {
+                thread_id,
+                stale: true,
+                ..
+            }] if thread_id == "thread-1"
         ));
     }
 }
