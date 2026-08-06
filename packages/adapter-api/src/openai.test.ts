@@ -121,7 +121,8 @@ describe('OpenAI Responses transport', () => {
     } catch (error) {
       message = error instanceof Error ? error.message : String(error)
     }
-    expect(message).toBe('OpenAI request failed with HTTP 401')
+    expect(message).toContain('request failed with HTTP 401')
+    expect(message).toContain('rejected')
     expect(message).not.toContain(secret)
   })
 })
