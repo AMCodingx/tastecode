@@ -122,8 +122,15 @@ export function startServer(
       protocolVersion: PROTOCOL_VERSION,
     })
 
-    socket.on('message', (raw) => void handleMessage(socket, raw.toString()))
+    socket.on('message', (raw) =>
+      handleMessage(socket, raw.toString()).catch((error) =>
+        console.error(`[server] request handling failed: ${String(error)}`),
+      ),
+    )
     socket.on('close', () => push.remove(socket))
+    // Without a handler, a client resetting its connection emits 'error' on a
+    // bare EventEmitter and crashes the whole server.
+    socket.on('error', () => push.remove(socket))
   })
 
   async function handleMessage(socket: WebSocket, raw: string): Promise<void> {
@@ -162,7 +169,7 @@ export function startServer(
 
     try {
       const result = await route(method as MethodName, decoded.data)
-      socket.send(JSON.stringify({ id, result }))
+      if (socket.readyState === socket.OPEN) socket.send(JSON.stringify({ id, result }))
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error)
       respondError(
@@ -749,6 +756,7 @@ export function startServer(
     message: string,
     detail?: string,
   ): void {
+    if (socket.readyState !== socket.OPEN) return
     socket.send(JSON.stringify({ id, error: { code, message, ...(detail ? { detail } : {}) } }))
   }
 
