@@ -593,14 +593,11 @@ function ProjectRow(props: {
         />
       ) : null}
 
-      <div
-        className="proj__drawer"
-        data-open={expanded && count > 0}
-        // Generous cap per row: rows can exceed the nominal height (wrapped
-        // titles, the inline rename input) and a tight cap clips the last row
-        // mid-animation. The transition end state is identical either way.
-        style={{ maxHeight: expanded ? `${count * 56}px` : '0px' }}
-      >
+      {/* Height comes from grid-template-rows in CSS, so the animation covers
+          the drawer's real height. The old per-row cap was double the actual
+          row height, which spent half the duration moving nothing — the main
+          reason the sidebar read as sluggish. */}
+      <div className="proj__drawer" data-open={expanded && count > 0}>
         <ul className="proj__sessions">
           {props.project.sessions.map((session) => (
             <SessionRow
