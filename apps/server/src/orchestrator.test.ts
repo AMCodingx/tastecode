@@ -18,13 +18,18 @@ import { Orchestrator } from './orchestrator.js'
 import { Store } from './store.js'
 import * as checkpoint from './checkpoint.js'
 
+/** Counts stops, so tests can prove the dev server does not outlive its flow. */
+const previewStops = vi.hoisted(() => ({ count: 0 }))
+
 vi.mock('./design-preview-runner.js', () => ({
   startDesignPreview: vi.fn(
     async (_workspace: string, plan: { url: string; viewports: unknown[] }) => ({
       url: plan.url,
       viewports: plan.viewports,
       output: () => 'ready',
-      stop: async () => {},
+      stop: async () => {
+        previewStops.count += 1
+      },
     }),
   ),
 }))
@@ -534,6 +539,10 @@ describe('provider-neutral design briefing', () => {
           'review.json',
         ])
         expect(store.designRun(thread.id)).toBeUndefined()
+        // The preview is a real dev server with its cwd in the session's
+        // worktree. Left running it holds a port and, on Windows, a lock that
+        // makes removing that worktree fail.
+        expect(previewStops.count).toBeGreaterThan(0)
         expect(capturePreview).toHaveBeenCalledTimes(2)
         expect(
           JSON.parse(readFileSync(path.join(workspace, '.taste', 'review.json'), 'utf8')),
