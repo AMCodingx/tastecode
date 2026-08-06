@@ -980,7 +980,7 @@ function AboutSettings(props: { transport: Transport }) {
       : result.upToDate
         ? `Up to date · ${short(result.remote?.sha ?? '')} is the newest commit.`
         : result.remote
-          ? `Newer commit on GitHub: "${result.remote.message}" (${short(result.remote.sha)}). Pull and restart to update.`
+          ? `Newer commit on GitHub${result.remote.message ? `: "${result.remote.message}"` : ''} (${short(result.remote.sha)}). Pull and restart to update.`
           : 'Could not determine a verdict.'
 
   return (

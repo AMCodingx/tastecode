@@ -29,19 +29,42 @@ const REAL_PROBE: Probe = {
     const response = await fetch(`https://api.github.com/repos/${REPO}/commits/main`, {
       headers: { accept: 'application/vnd.github+json' },
       signal: AbortSignal.timeout(8_000),
-    })
-    if (!response.ok) return { error: `GitHub answered ${response.status}` }
-    const data = (await response.json()) as {
-      sha?: string
-      commit?: { message?: string; committer?: { date?: string } }
+    }).catch(() => undefined)
+    if (response?.ok) {
+      const data = (await response.json()) as {
+        sha?: string
+        commit?: { message?: string; committer?: { date?: string } }
+      }
+      if (data.sha) {
+        return {
+          sha: data.sha,
+          message: (data.commit?.message ?? '').split('\n')[0] ?? '',
+          date: data.commit?.committer?.date ?? '',
+        }
+      }
     }
-    if (!data.sha) return { error: 'GitHub sent an unexpected reply' }
-    return {
-      sha: data.sha,
-      message: (data.commit?.message ?? '').split('\n')[0] ?? '',
-      date: data.commit?.committer?.date ?? '',
-    }
+    // The repo is private (404 for anonymous callers) or GitHub is down.
+    // git ls-remote uses the user's own credentials and answers with the sha
+    // alone — less detail, but a correct verdict beats a rich error.
+    return lsRemoteHead()
   },
+}
+
+function lsRemoteHead(): Promise<
+  { sha: string; message: string; date: string } | { error: string }
+> {
+  return new Promise((resolve) => {
+    execFile(
+      'git',
+      ['ls-remote', 'origin', 'refs/heads/main'],
+      { windowsHide: true, timeout: 10_000 },
+      (error, stdout) => {
+        const sha = stdout?.split(/\s/)[0]
+        if (error || !sha) resolve({ error: 'Could not reach GitHub.' })
+        else resolve({ sha, message: '', date: '' })
+      },
+    )
+  })
 }
 
 export async function checkForUpdates(
