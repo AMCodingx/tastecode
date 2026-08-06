@@ -50,16 +50,17 @@ pin and search.
 
 ## Docs
 
-|                                        |                                       |
-| -------------------------------------- | ------------------------------------- |
-| [VISION](./docs/VISION.md)             | What we're building and why           |
-| [FEATURES](./docs/FEATURES.md)         | Every feature, as a list              |
-| [ROADMAP](./docs/ROADMAP.md)           | M0–M8 and the open questions          |
-| [ARCHITECTURE](./docs/ARCHITECTURE.md) | How it's built, and what we rejected  |
-| [PROVIDERS](./docs/PROVIDERS.md)       | Agent and direct API integration plan |
-| [DESIGN-AGENT](./docs/DESIGN-AGENT.md) | The differentiator _(written at M4)_  |
-| [CREDITS](./CREDITS.md)                | Contributors and project references   |
-| [LICENSING](./docs/LICENSING.md)       | License status and release checklist  |
+|                                        |                                        |
+| -------------------------------------- | -------------------------------------- |
+| [VISION](./docs/VISION.md)             | What we're building and why            |
+| [FEATURES](./docs/FEATURES.md)         | Every feature, as a list               |
+| [ROADMAP](./docs/ROADMAP.md)           | M0–M8 and the open questions           |
+| [ARCHITECTURE](./docs/ARCHITECTURE.md) | How it's built, and what we rejected   |
+| [PROVIDERS](./docs/PROVIDERS.md)       | Agent and direct API integration plan  |
+| [DESIGN-AGENT](./docs/DESIGN-AGENT.md) | The differentiator _(written at M4)_   |
+| [UI-HANDOFF](./docs/UI-HANDOFF.md)     | Chat surface: invariants and open work |
+| [CREDITS](./CREDITS.md)                | Contributors and project references    |
+| [LICENSING](./docs/LICENSING.md)       | License status and release checklist   |
 
 ## Layout
 
