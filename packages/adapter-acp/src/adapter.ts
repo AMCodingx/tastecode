@@ -174,7 +174,7 @@ export class AcpAdapter extends EventEmitter<AcpAdapterEvents> {
         sessionId: this.#sessionId,
         prompt: [{ type: 'text', text: prompt }],
       })
-      .then((result) => this.#finishTurn(turnId, result.stopReason, streamer))
+      .then((result) => this.#finishTurn(threadId, turnId, result.stopReason, streamer))
       .catch((error: unknown) => {
         this.emit('event', {
           type: 'thread.error',
@@ -373,7 +373,12 @@ export class AcpAdapter extends EventEmitter<AcpAdapterEvents> {
     return undefined
   }
 
-  #finishTurn(turnId: string, stopReason: PromptResult['stopReason'], streamer?: Streamer): void {
+  #finishTurn(
+    threadId: string,
+    turnId: string,
+    stopReason: PromptResult['stopReason'],
+    streamer?: Streamer,
+  ): void {
     // Finish the streamer this turn owns, never whichever one is current —
     // a late completion must not close the next turn's open items.
     const owned = streamer ?? this.#streamer
@@ -390,14 +395,33 @@ export class AcpAdapter extends EventEmitter<AcpAdapterEvents> {
     this.#pendingApprovals.clear()
     this.#optionsById.clear()
 
-    if (stopReason && stopReason !== 'end_turn' && stopReason !== 'cancelled') {
+    // A refused or truncated turn must not look identical to a successful
+    // one — the stop reason goes to the user, not into a log nobody reads.
+    if (stopReason === 'refusal') {
+      this.emit('event', {
+        type: 'thread.error',
+        threadId,
+        message: 'The agent refused to continue this turn.',
+      })
+    } else if (stopReason === 'max_tokens' || stopReason === 'max_turn_requests') {
+      this.emit('event', {
+        type: 'thread.error',
+        threadId,
+        message: `The turn stopped early (${stopReason.replace(/_/g, ' ')}).`,
+      })
+    } else if (stopReason && stopReason !== 'end_turn' && stopReason !== 'cancelled') {
       this.emit('log', `turn ended: ${stopReason}`)
     }
 
     this.emit('event', {
       type: 'turn.completed',
       turnId,
-      status: stopReason === 'cancelled' ? 'interrupted' : 'completed',
+      status:
+        stopReason === 'cancelled'
+          ? 'interrupted'
+          : stopReason === 'refusal'
+            ? 'failed'
+            : 'completed',
     })
   }
 }

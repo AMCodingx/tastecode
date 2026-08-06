@@ -18,7 +18,20 @@ export function mapSkillList(
   cwd: string,
   configuredMcpIds?: ReadonlySet<string>,
 ): SkillInventory {
-  const entry = response.data.find((candidate) => path.resolve(candidate.cwd) === path.resolve(cwd))
+  // Windows paths compare case-insensitively — Codex echoing `c:\proj` for a
+  // requested `C:\proj` made the whole skills list silently disappear. A
+  // single-entry response is trusted as ours regardless, since we only ever
+  // ask about one cwd.
+  const samePath = (a: string, b: string) => {
+    const left = path.resolve(a)
+    const right = path.resolve(b)
+    return process.platform === 'win32'
+      ? left.toLowerCase() === right.toLowerCase()
+      : left === right
+  }
+  const entry =
+    response.data.find((candidate) => samePath(candidate.cwd, cwd)) ??
+    (response.data.length === 1 ? response.data[0] : undefined)
   if (!entry) return { skills: [], errors: [] }
 
   return {
