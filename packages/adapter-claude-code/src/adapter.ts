@@ -1,7 +1,7 @@
 import { EventEmitter } from 'node:events'
 import type { ChildProcessWithoutNullStreams } from 'node:child_process'
 import type { ApprovalMode, Capabilities, DomainEvent, Model, Thread } from '@harness/contracts'
-import { readNdjson, spawnCli } from '@harness/proc'
+import { killTree, readNdjson, spawnCli } from '@harness/proc'
 import { toDomainEvents, type ClaudeEvent } from './events.js'
 
 /**
@@ -127,6 +127,9 @@ export class ClaudeCodeAdapter extends EventEmitter<ClaudeAdapterEvents> {
       ...(this.#sessionId ? ['--resume', this.#sessionId] : []),
     ]
 
+    // A turn already in flight would be orphaned by the reassignment below —
+    // its exit handler must also not clobber the new child's reference.
+    if (this.#child) killTree(this.#child)
     const child = spawnCli('claude', args, { cwd: this.#workspacePath })
     this.#child = child
 
@@ -145,7 +148,7 @@ export class ClaudeCodeAdapter extends EventEmitter<ClaudeAdapterEvents> {
     child.stderr.on('data', (chunk: string) => this.emit('log', chunk.trimEnd()))
 
     child.on('exit', (code) => {
-      this.#child = undefined
+      if (this.#child === child) this.#child = undefined
       // A non-zero exit without a `result` event means the CLI failed before
       // it could report anything, and silence would look like a hang.
       if (code !== 0 && code !== null) {
@@ -158,11 +161,19 @@ export class ClaudeCodeAdapter extends EventEmitter<ClaudeAdapterEvents> {
       }
     })
 
+    // A spawn failure emits 'error' on the child; without a listener that
+    // throws out of the event loop and takes the whole server down.
+    child.on('error', (error) => {
+      if (this.#child === child) this.#child = undefined
+      this.emit('event', { type: 'thread.error', threadId, message: String(error) })
+      this.emit('event', { type: 'turn.completed', turnId, status: 'failed' })
+    })
+
     return turnId
   }
 
   async interrupt(): Promise<void> {
-    this.#child?.kill()
+    if (this.#child) killTree(this.#child)
   }
 
   /**
@@ -177,7 +188,7 @@ export class ClaudeCodeAdapter extends EventEmitter<ClaudeAdapterEvents> {
   }
 
   dispose(): void {
-    this.#child?.kill()
+    if (this.#child) killTree(this.#child)
     this.#child = undefined
   }
 

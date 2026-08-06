@@ -256,7 +256,9 @@ export class Orchestrator {
     // Codex has a control adapter already running; everything else asks its
     // own runtime, which is free to answer with nothing.
     if (provider === 'codex') return (await this.#controlAdapter()).listModels()
-    return providerRuntime(provider, this.#onLog).listModels(agent)
+    // The injected seam, not the module function — otherwise tests spawn the
+    // real vendor CLIs just to draw a model list.
+    return this.#runtimeFor(provider, this.#onLog).listModels(agent)
   }
 
   listModelConnections() {
@@ -1164,7 +1166,11 @@ export class Orchestrator {
   }
 
   async interrupt(threadId: string): Promise<void> {
-    await this.#get(threadId).session.interrupt(threadId)
+    // "Stop" on a thread that is not live must be a no-op, not an error the
+    // user cannot act on.
+    const entry = this.#threads.get(threadId)
+    if (!entry) return
+    await entry.session.interrupt(threadId)
   }
 
   async panicStop(): Promise<PanicStopResult> {
@@ -1299,7 +1305,10 @@ export class Orchestrator {
     this.#designInputs.clear()
     this.#designInputByThread.clear()
     this.#resumingThreads.clear()
-    void this.#controlStarting?.then((adapter) => adapter.dispose())
+    void this.#controlStarting?.then(
+      (adapter) => adapter.dispose(),
+      () => undefined,
+    )
     this.#controlStarting = undefined
     this.#control?.dispose()
     this.#control = undefined
@@ -1534,6 +1543,9 @@ export class Orchestrator {
     projectPath: string,
     worktree?: Worktree,
   ): void {
+    // A racing double-attach must not silently drop the previous session's
+    // process — dispose it before overwriting.
+    this.#threads.get(thread.id)?.session.dispose()
     this.#threads.set(thread.id, { thread, session, ...(worktree ? { worktree } : {}) })
     session.onMcpOAuth?.((result) => this.#onMcpOAuth(thread.provider, projectPath, result))
     session.on('event', (event) => this.#handleSessionEvent(thread.id, event))
