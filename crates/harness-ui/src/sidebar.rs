@@ -31,6 +31,7 @@ pub(crate) struct SidebarProps<'a> {
     pub(crate) selected_scope: Option<&'a str>,
     pub(crate) scope_open: bool,
     pub(crate) new_thread_picker: bool,
+    pub(crate) glass: u8,
 }
 
 pub fn sidebar(props: SidebarProps<'_>, actions: SidebarActions) -> impl IntoElement {
@@ -44,6 +45,7 @@ pub fn sidebar(props: SidebarProps<'_>, actions: SidebarActions) -> impl IntoEle
         selected_scope,
         scope_open,
         new_thread_picker,
+        glass,
     } = props;
     div()
         .w(px(RAIL_WIDTH))
@@ -51,7 +53,10 @@ pub fn sidebar(props: SidebarProps<'_>, actions: SidebarActions) -> impl IntoEle
         .flex_none()
         .flex()
         .flex_col()
-        .bg(theme.rail.hsla())
+        .bg(theme
+            .rail
+            .hsla()
+            .opacity(1.0 - f32::from(glass.min(60)) / 200.0))
         .border_r_1()
         .border_color(theme.line.hsla())
         .child(sidebar_actions(

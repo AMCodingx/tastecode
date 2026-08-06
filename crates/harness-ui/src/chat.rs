@@ -299,6 +299,13 @@ impl ChatView {
         cx.notify();
     }
 
+    pub(crate) fn update_theme(&mut self, theme: Theme, cx: &mut Context<Self>) {
+        if self.theme != theme {
+            self.theme = theme;
+            cx.notify();
+        }
+    }
+
     pub(crate) fn update_draft_provider(&mut self, provider: ProviderId, cx: &mut Context<Self>) {
         if let Some(session) = &mut self.session
             && session.thread_id.is_none()

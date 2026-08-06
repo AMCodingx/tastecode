@@ -1,15 +1,19 @@
+mod settings;
+
 use crate::assets::{HarnessAssets, register_fonts};
 use crate::chat::{ChatEvent, ChatView, ComposerSettings, SessionContext};
 use crate::client_state::{
     ClientState, ClientUpdate, NewThreadRequest, ReviewHunkRequest, SendTurnRequest, ShellEvent,
 };
+use crate::preferences::{NativePreferences, ThemePreference};
 use crate::sidebar::{SidebarActions, SidebarProps, sidebar};
-use crate::theme::{TITLEBAR_HEIGHT, Theme};
+use crate::theme::{TITLEBAR_HEIGHT, Theme, ThemeMode};
 use anyhow::Result;
 use gpui::{
-    Animation, AnimationExt, App, Application, Bounds, Context, Entity, FontWeight, MouseButton,
-    PathPromptOptions, Render, TitlebarOptions, Window, WindowBackgroundAppearance, WindowBounds,
-    WindowOptions, div, ease_out_quint, point, prelude::*, px, size, svg,
+    Animation, AnimationExt, App, Application, Bounds, Context, Entity, FocusHandle, FontWeight,
+    KeyDownEvent, MouseButton, PathPromptOptions, Render, TitlebarOptions, Window,
+    WindowAppearance, WindowBackgroundAppearance, WindowBounds, WindowOptions, div, ease_out_quint,
+    point, prelude::*, px, size, svg,
 };
 use gpui_component::Root;
 use harness_protocol::{ApprovalMode, Model};
@@ -70,6 +74,14 @@ struct HarnessApp {
     new_thread_picker: bool,
     pending_new_chat_path: Option<String>,
     settings_open: bool,
+    settings_return_to_chat: bool,
+    settings_section: settings::SettingsSection,
+    settings_transition: u64,
+    settings_open_transition: u64,
+    settings_focus: FocusHandle,
+    settings_focus_pending: bool,
+    system_theme_mode: ThemeMode,
+    preferences: NativePreferences,
     fixture: bool,
 }
 
@@ -77,7 +89,21 @@ impl HarnessApp {
     fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
         let fixture = std::env::var_os("HARNESS_NATIVE_FIXTURE").is_some();
         let mut state = ClientState::new(fixture);
-        let chat = cx.new(|cx| ChatView::new(Theme::dark(), window, cx));
+        let preferences = match NativePreferences::load() {
+            Ok(preferences) => preferences,
+            Err(error) => {
+                state.notice = Some(format!("Could not load native preferences: {error}"));
+                NativePreferences::default()
+            }
+        };
+        let system_theme_mode = theme_mode_for_appearance(window.appearance());
+        let mode = match preferences.theme {
+            ThemePreference::System => system_theme_mode,
+            ThemePreference::Light => ThemeMode::Light,
+            ThemePreference::Dark => ThemeMode::Dark,
+        };
+        let theme = Theme::new(mode, preferences.backdrop, preferences.accent);
+        let chat = cx.new(|cx| ChatView::new(theme, window, cx));
 
         cx.subscribe(&chat, |this, _chat, event, cx| match event {
             ChatEvent::NeedHistory {
@@ -225,8 +251,19 @@ impl HarnessApp {
             .detach();
         }
 
+        cx.observe_window_appearance(window, |this, window, cx| {
+            let mode = theme_mode_for_appearance(window.appearance());
+            if this.system_theme_mode != mode {
+                this.system_theme_mode = mode;
+                if this.preferences.theme == ThemePreference::System {
+                    this.apply_native_theme(cx);
+                }
+            }
+        })
+        .detach();
+
         Self {
-            theme: Theme::dark(),
+            theme,
             sidebar_collapsed: false,
             sidebar_transition: 0,
             state,
@@ -245,6 +282,14 @@ impl HarnessApp {
             new_thread_picker: false,
             pending_new_chat_path: None,
             settings_open: false,
+            settings_return_to_chat: false,
+            settings_section: settings::SettingsSection::default(),
+            settings_transition: 0,
+            settings_open_transition: 0,
+            settings_focus: cx.focus_handle(),
+            settings_focus_pending: false,
+            system_theme_mode,
+            preferences,
             fixture,
         }
     }
@@ -279,10 +324,9 @@ impl HarnessApp {
             return;
         }
         if self.selected_model_key.as_ref().is_some_and(|selected| {
-            self.state
-                .model_catalog
-                .iter()
-                .any(|choice| choice.key == *selected)
+            self.state.model_catalog.iter().any(|choice| {
+                choice.key == *selected && !self.preferences.hidden_models.contains(&choice.key)
+            })
         }) {
             return;
         }
@@ -290,8 +334,14 @@ impl HarnessApp {
             .state
             .model_catalog
             .iter()
+            .filter(|choice| !self.preferences.hidden_models.contains(&choice.key))
             .find(|choice| choice.model.is_default)
-            .or_else(|| self.state.model_catalog.first())
+            .or_else(|| {
+                self.state
+                    .model_catalog
+                    .iter()
+                    .find(|choice| !self.preferences.hidden_models.contains(&choice.key))
+            })
         else {
             self.selected_model_key = None;
             self.effort = None;
@@ -376,7 +426,8 @@ impl HarnessApp {
             .model_catalog
             .iter()
             .find(|choice| {
-                choice.provider == context.provider
+                !self.preferences.hidden_models.contains(&choice.key)
+                    && choice.provider == context.provider
                     && (context.provider != harness_protocol::ProviderId::Acp
                         || choice.agent_id == agent)
             })
@@ -499,10 +550,9 @@ impl HarnessApp {
 
     fn selected_model_choice(&self) -> Option<&crate::client_state::ModelChoice> {
         let key = self.selected_model_key.as_ref()?;
-        self.state
-            .model_catalog
-            .iter()
-            .find(|choice| choice.key == *key)
+        self.state.model_catalog.iter().find(|choice| {
+            choice.key == *key && !self.preferences.hidden_models.contains(&choice.key)
+        })
     }
 
     fn select_model(&mut self, key: &str, cx: &mut Context<Self>) {
@@ -510,7 +560,9 @@ impl HarnessApp {
             .state
             .model_catalog
             .iter()
-            .find(|choice| choice.key == key)
+            .find(|choice| {
+                choice.key == key && !self.preferences.hidden_models.contains(&choice.key)
+            })
             .cloned()
         else {
             return;
@@ -568,7 +620,13 @@ impl HarnessApp {
         self.chat.update(cx, |chat, cx| {
             chat.update_composer_settings(
                 ComposerSettings {
-                    models: self.state.model_catalog.clone(),
+                    models: self
+                        .state
+                        .model_catalog
+                        .iter()
+                        .filter(|choice| !self.preferences.hidden_models.contains(&choice.key))
+                        .cloned()
+                        .collect(),
                     selected_model_key: self.selected_model_key.clone(),
                     effort: self.effort.clone(),
                     service_tier: self.service_tier.clone(),
@@ -658,10 +716,7 @@ impl HarnessApp {
             }),
             open_settings: Rc::new(move |cx| {
                 let _ = settings_view.update(cx, |this, cx| {
-                    this.settings_open = true;
-                    this.chat_visible = false;
-                    this.scope_open = false;
-                    cx.notify();
+                    this.open_settings(cx);
                 });
             }),
             toggle_scope: Rc::new(move |cx| {
@@ -742,6 +797,23 @@ impl HarnessApp {
             )
     }
 
+    fn settings_titlebar(&self) -> impl IntoElement {
+        div()
+            .h(px(TITLEBAR_HEIGHT))
+            .w_full()
+            .flex_none()
+            .bg(self.theme.titlebar.hsla())
+            .border_b_1()
+            .border_color(self.theme.line.hsla())
+            .on_mouse_down(MouseButton::Left, |event, window, _cx| {
+                if event.click_count == 2 {
+                    window.titlebar_double_click();
+                } else {
+                    window.start_window_move();
+                }
+            })
+    }
+
     fn stage(&self) -> impl IntoElement {
         div()
             .flex_1()
@@ -755,42 +827,15 @@ impl HarnessApp {
             .text_size(px(12.5))
             .child(self.state.stage_message(self.fixture))
     }
-
-    fn settings_panel(&self) -> impl IntoElement {
-        div()
-            .size_full()
-            .flex()
-            .flex_col()
-            .bg(self.theme.background.hsla())
-            .child(
-                div()
-                    .h(px(44.0))
-                    .flex()
-                    .items_center()
-                    .px(px(16.0))
-                    .text_size(px(12.0))
-                    .font_weight(FontWeight::MEDIUM)
-                    .text_color(self.theme.text_2.hsla())
-                    .child("Settings"),
-            )
-            .child(
-                div()
-                    .flex_1()
-                    .flex()
-                    .items_center()
-                    .justify_center()
-                    .text_size(px(12.5))
-                    .text_color(self.theme.text_3.hsla())
-                    .child("Native settings are being migrated into this surface."),
-            )
-    }
 }
 
 impl Render for HarnessApp {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let content = if self.settings_open {
-            self.settings_panel().into_any_element()
-        } else if self.chat_visible {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        if self.settings_open && self.settings_focus_pending {
+            self.settings_focus.focus(window);
+            self.settings_focus_pending = false;
+        }
+        let content = if self.chat_visible {
             self.chat.clone().into_any_element()
         } else {
             self.stage().into_any_element()
@@ -807,6 +852,7 @@ impl Render for HarnessApp {
                 selected_scope: self.sidebar_scope.as_deref(),
                 scope_open: self.scope_open,
                 new_thread_picker: self.new_thread_picker,
+                glass: self.preferences.sidebar_glass,
             },
             sidebar_actions,
         );
@@ -837,25 +883,51 @@ impl Render for HarnessApp {
                 )
                 .into_any_element()
         };
+        let normal_body = div()
+            .flex_1()
+            .min_h(px(0.0))
+            .w_full()
+            .flex()
+            .child(rail_slot)
+            .child(content)
+            .into_any_element();
+        let body = if self.settings_open {
+            self.settings_panel(cx)
+        } else {
+            normal_body
+        };
+        let settings_open = self.settings_open;
         div()
             .size_full()
             .flex()
             .flex_col()
             .overflow_hidden()
-            .font_family("Geist")
+            .font_family(self.interface_font())
             .text_size(px(13.5))
             .text_color(self.theme.text.hsla())
             .bg(self.theme.background.hsla())
-            .child(self.titlebar(cx))
-            .child(
-                div()
-                    .flex_1()
-                    .min_h(px(0.0))
-                    .w_full()
-                    .flex()
-                    .child(rail_slot)
-                    .child(content),
-            )
+            .when(settings_open, |root| {
+                root.track_focus(&self.settings_focus)
+                    .on_key_down(cx.listener(|this, event: &KeyDownEvent, _window, cx| {
+                        if event.keystroke.key.eq_ignore_ascii_case("escape") {
+                            cx.stop_propagation();
+                            this.close_settings(cx);
+                        }
+                    }))
+            })
+            .child(if settings_open {
+                self.settings_titlebar().into_any_element()
+            } else {
+                self.titlebar(cx).into_any_element()
+            })
+            .child(body)
+    }
+}
+
+fn theme_mode_for_appearance(appearance: WindowAppearance) -> ThemeMode {
+    match appearance {
+        WindowAppearance::Dark | WindowAppearance::VibrantDark => ThemeMode::Dark,
+        WindowAppearance::Light | WindowAppearance::VibrantLight => ThemeMode::Light,
     }
 }
 
