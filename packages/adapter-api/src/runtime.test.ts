@@ -159,3 +159,66 @@ describe('ApiAgentSession', () => {
     expect(events).toContainEqual({ type: 'turn.completed', turnId, status: 'failed' })
   })
 })
+
+describe('overnight regression pins', () => {
+  it('synthesizes error tool results for calls orphaned by a failing turn', async () => {
+    // Without this, the persisted history carries tool_use with no
+    // tool_result, and every later Anthropic request 400s - a bricked thread.
+    const session = new ApiAgentSession({
+      model: 'test-model',
+      // Budget of one: the second call trips the limit before running, which
+      // is exactly the state that used to persist an unanswered tool_use.
+      maxToolCalls: 1,
+      tools: [
+        {
+          name: 'boom',
+          description: 'never allowed to run',
+          inputSchema: {},
+          run: async () => ({ content: 'unused', isError: false }),
+        },
+      ],
+      transport: transport(
+        { type: 'tool_call', call: { id: 'call-1', name: 'boom', input: {} } },
+        { type: 'tool_call', call: { id: 'call-2', name: 'boom', input: {} } },
+        { type: 'finish', reason: 'tool_calls' },
+      ),
+    })
+    const thread = session.startThread('C:\repo', 'connection-1')
+    const turnId = await session.sendTurn(thread.id, 'Go')
+    await session.waitForTurn(turnId)
+
+    const toolResults = session.snapshot().messages.filter((message) => message.role === 'tool')
+    expect(toolResults).toContainEqual(
+      expect.objectContaining({
+        toolCallId: 'call-2',
+        isError: true,
+        content: 'Tool execution was interrupted.',
+      }),
+    )
+  })
+
+  it('holds back streamed chunks so a secret split across deltas never leaks', async () => {
+    const secret = 'sk-super-secret-key'
+    const session = new ApiAgentSession({
+      model: 'test-model',
+      secrets: [secret],
+      transport: transport(
+        { type: 'text', delta: `prefix ${secret.slice(0, 8)}` },
+        { type: 'text', delta: `${secret.slice(8)} suffix` },
+        { type: 'finish', reason: 'stop' },
+      ),
+    })
+    const deltas: string[] = []
+    session.on('event', (event) => {
+      if (event.type === 'item.delta') deltas.push(event.textDelta)
+    })
+    const thread = session.startThread('C:\repo', 'connection-1')
+    const turnId = await session.sendTurn(thread.id, 'Hi')
+    await session.waitForTurn(turnId)
+
+    expect(deltas.join('')).not.toContain(secret)
+    const assistant = session.snapshot().messages.find((message) => message.role === 'assistant')
+    expect(assistant?.content).toContain('[REDACTED]')
+    expect(assistant?.content).not.toContain(secret)
+  })
+})

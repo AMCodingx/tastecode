@@ -202,7 +202,9 @@ export class ApiAgentSession extends EventEmitter<Events> {
       // Orphaned tool_use blocks brick the thread: an assistant message with
       // tool calls but no tool results makes every later Anthropic request
       // fail with a 400. Close the books before this state can persist.
-      const last = this.#messages.at(-1)
+      // The last message may already be a tool result; the calls to close
+      // out live on the last *assistant* message, wherever it sits.
+      const last = this.#messages.findLast((message) => message.role === 'assistant')
       if (last?.role === 'assistant' && last.toolCalls?.length) {
         const answered = new Set(
           this.#messages
