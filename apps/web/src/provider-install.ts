@@ -97,13 +97,23 @@ export async function beginLogin(
   return begin(transport, 'providers.launch', target, loginKey(target), openUrl)
 }
 
-/** The first http(s) URL in a log, after stripping terminal control noise. */
+/**
+ * The first http(s) URL in a log, after stripping terminal control noise.
+ *
+ * Only a *terminated* URL counts: pty chunks split at arbitrary byte
+ * boundaries, and matching a chunk that ends mid-URL would open a truncated
+ * link and latch it as "already opened", blocking the real one forever. The
+ * login pty is spawned wide (LOGIN_COLUMNS) so URLs never soft-wrap
+ * mid-line, making the trailing whitespace or quote a reliable terminator.
+ */
 export function firstAuthUrl(log: string): string | undefined {
   const printable = log.replace(ANSI, '')
-  // Kill soft line wraps the pty inserts mid-URL before matching.
-  const match = printable.replace(/[\r\n]+\s*/g, '\n').match(/https?:\/\/[^\s'"<>)]+/)
-  return match?.[0]
+  const match = /(https?:\/\/[^\s'"<>)]+)[\s'"<>)]/.exec(printable)
+  return match?.[1]
 }
+
+/** Wide enough that no OAuth URL soft-wraps; an attached terminal resizes. */
+const LOGIN_COLUMNS = 320
 
 async function begin(
   transport: Transport,
@@ -118,7 +128,9 @@ async function begin(
   const { terminalId } = await transport.request(method, {
     provider: target.provider,
     ...(target.agent ? { agent: target.agent } : {}),
-    columns: 100,
+    // Logins get a wide pty so the OAuth URL is printed on one line — the
+    // URL detector depends on that. Installs render at a normal width.
+    columns: method === 'providers.launch' ? LOGIN_COLUMNS : 100,
     rows: 30,
   })
 

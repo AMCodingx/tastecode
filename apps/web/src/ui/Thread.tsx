@@ -90,9 +90,14 @@ export function Thread(props: {
    */
   const programmaticScroll = useRef(false)
   const writeScrollTop = useCallback((el: HTMLElement, top: number) => {
-    if (Math.abs(el.scrollTop - top) < 1) return
+    // Clamp before comparing: an out-of-range target gets clamped by the
+    // browser, no scroll event fires, and the flag would stay set — silently
+    // eating the user's next real scroll gesture.
+    const max = Math.max(0, el.scrollHeight - el.clientHeight)
+    const target = Math.min(Math.max(top, 0), max)
+    if (Math.abs(el.scrollTop - target) < 1) return
     programmaticScroll.current = true
-    el.scrollTop = top
+    el.scrollTop = target
   }, [])
   const enteringItemIds = useEnteringItemIds(props.items, props.threadId)
   const settledTurnId = useSettledTurnId(props.running, props.activeTurn?.id)
@@ -204,7 +209,10 @@ export function Thread(props: {
   const turns = useMemo(() => findTurns(props.items), [props.items])
   const presentations = useMemo(() => presentTurns(props.items), [props.items])
   const activePresentation = props.activeTurn ? presentations.get(props.activeTurn.id) : undefined
-  const activeWorkLabel = workLabel(props.items, props.activeTurn?.id, props.searching)
+  const activeWorkLabel = useMemo(
+    () => workLabel(props.items, props.activeTurn?.id, props.searching),
+    [props.items, props.activeTurn?.id, props.searching],
+  )
 
   useEffect(() => {
     const target = props.searchJump
@@ -238,93 +246,100 @@ export function Thread(props: {
   const rows = virtualizer.getVirtualItems()
 
   return (
-    <div className="thread" ref={scroller} onScroll={onScroll}>
+    // The overlays live OUTSIDE the scroller: an absolutely positioned child
+    // of a scroll container scrolls away with the content — Ctrl+F used to
+    // yank the transcript to the top just to show the find bar, and "Jump to
+    // latest" rendered below the viewport exactly when it was needed.
+    <div className="thread-shell">
       {finding ? (
         <ThreadSearch items={props.items} onJump={jumpTo} onClose={() => setFinding(false)} />
       ) : null}
-      <div className="thread__col">
-        <div className="thread__runway" style={{ height: virtualizer.getTotalSize() }}>
-          {rows.map((row) => {
-            const item = props.items[row.index]
-            if (!item) return null
-            const presentation = presentations.get(item.turnId)
-            const live = props.running && props.activeTurn?.id === item.turnId
-            const compactedActivity =
-              !live && presentation?.complete === true && presentation.activity.includes(item)
-            const activityLead = compactedActivity && presentation.firstActivityIndex === row.index
-            const responseLead =
-              !live &&
-              presentation?.complete === true &&
-              presentation.finalAnswerIndex === row.index
-            const suppressed = compactedActivity && !activityLead
-            const liveActivity = live && isActivity(item)
-            const settling = settledTurnId === item.turnId
-            return (
-              <div
-                key={row.key}
-                className={`thread__row${suppressed ? ' is-suppressed' : ''}${liveActivity ? ' is-live-activity' : ''}${enteringItemIds.has(item.id) ? ' is-entering' : ''}${settling ? ' is-settling' : ''}`}
-                data-index={row.index}
-                ref={virtualizer.measureElement}
-                style={{ transform: `translateY(${row.start}px)` }}
-              >
-                <Row
-                  item={item}
-                  hidden={suppressed}
-                  activity={activityLead ? presentation.activity : undefined}
-                  elapsedMs={presentation?.elapsedMs}
-                  live={live}
-                  responseText={responseLead ? presentation.responseText : undefined}
-                  settling={settling}
-                  showWorkingRail={live && presentation?.firstResponseIndex === row.index}
-                  workLabel={activeWorkLabel}
-                  startedAt={props.activeTurn?.startedAt}
-                  showCompletionRail={
-                    !live &&
-                    presentation?.complete === true &&
-                    presentation.activity.length === 0 &&
-                    presentation.finalAnswerIndex === row.index
-                  }
-                  onEditMessage={props.onEditMessage}
-                  checkpoint={checkpointFor(item, props.checkpoints ?? [])}
-                  onRevertCheckpoint={props.onRevertCheckpoint}
-                />
-              </div>
-            )
-          })}
-        </div>
+      <div className="thread" ref={scroller} onScroll={onScroll}>
+        <div className="thread__col">
+          <div className="thread__runway" style={{ height: virtualizer.getTotalSize() }}>
+            {rows.map((row) => {
+              const item = props.items[row.index]
+              if (!item) return null
+              const presentation = presentations.get(item.turnId)
+              const live = props.running && props.activeTurn?.id === item.turnId
+              const compactedActivity =
+                !live && presentation?.complete === true && presentation.activity.includes(item)
+              const activityLead =
+                compactedActivity && presentation.firstActivityIndex === row.index
+              const responseLead =
+                !live &&
+                presentation?.complete === true &&
+                presentation.finalAnswerIndex === row.index
+              const suppressed = compactedActivity && !activityLead
+              const liveActivity = live && isActivity(item)
+              const settling = settledTurnId === item.turnId
+              return (
+                <div
+                  key={row.key}
+                  className={`thread__row${suppressed ? ' is-suppressed' : ''}${liveActivity ? ' is-live-activity' : ''}${enteringItemIds.has(item.id) ? ' is-entering' : ''}${settling ? ' is-settling' : ''}`}
+                  data-index={row.index}
+                  ref={virtualizer.measureElement}
+                  style={{ transform: `translateY(${row.start}px)` }}
+                >
+                  <Row
+                    item={item}
+                    hidden={suppressed}
+                    activity={activityLead ? presentation.activity : undefined}
+                    elapsedMs={presentation?.elapsedMs}
+                    live={live}
+                    responseText={responseLead ? presentation.responseText : undefined}
+                    settling={settling}
+                    showWorkingRail={live && presentation?.firstResponseIndex === row.index}
+                    workLabel={activeWorkLabel}
+                    startedAt={props.activeTurn?.startedAt}
+                    showCompletionRail={
+                      !live &&
+                      presentation?.complete === true &&
+                      presentation.activity.length === 0 &&
+                      presentation.finalAnswerIndex === row.index
+                    }
+                    onEditMessage={props.onEditMessage}
+                    checkpoint={checkpointFor(item, props.checkpoints ?? [])}
+                    onRevertCheckpoint={props.onRevertCheckpoint}
+                  />
+                </div>
+              )
+            })}
+          </div>
 
-        {props.running &&
-        props.activeTurn &&
-        activePresentation?.firstResponseIndex === undefined ? (
-          <WorkingRail startedAt={props.activeTurn.startedAt} label={activeWorkLabel} />
-        ) : null}
+          {props.running &&
+          props.activeTurn &&
+          activePresentation?.firstResponseIndex === undefined ? (
+            <WorkingRail startedAt={props.activeTurn.startedAt} label={activeWorkLabel} />
+          ) : null}
 
-        {/* Above the plan and the diff: it is the only thing here that blocks
+          {/* Above the plan and the diff: it is the only thing here that blocks
             the agent, so it should be the first thing the eye lands on. */}
-        {props.userInputs.map((request) => (
-          <UserInput
-            key={request.id}
-            request={request}
-            onSubmit={(answers) => props.onAnswerUserInput(request.id, answers)}
-          />
-        ))}
+          {props.userInputs.map((request) => (
+            <UserInput
+              key={request.id}
+              request={request}
+              onSubmit={(answers) => props.onAnswerUserInput(request.id, answers)}
+            />
+          ))}
 
-        {props.approvals.map((request) => (
-          <Approval
-            key={request.id}
-            request={request}
-            onDecide={(d) => props.onDecide(request.id, d)}
-          />
-        ))}
+          {props.approvals.map((request) => (
+            <Approval
+              key={request.id}
+              request={request}
+              onDecide={(d) => props.onDecide(request.id, d)}
+            />
+          ))}
 
-        {props.reviews.map((review) => (
-          <AutomaticApprovalReview key={review.id} review={review} />
-        ))}
+          {props.reviews.map((review) => (
+            <AutomaticApprovalReview key={review.id} review={review} />
+          ))}
 
-        {props.running ? <Plan steps={props.plan} compact /> : null}
-        {!props.running ? (
-          <Diff diff={props.diff} threadId={props.threadId} transport={props.transport} />
-        ) : null}
+          {props.running ? <Plan steps={props.plan} compact /> : null}
+          {!props.running ? (
+            <Diff diff={props.diff} threadId={props.threadId} transport={props.transport} />
+          ) : null}
+        </div>
       </div>
 
       {mode === 'free' ? (
@@ -662,12 +677,17 @@ function ResponseActions({ text, createdAt }: { text: string; createdAt: number 
 
 function CopyAction({ text, label }: { text: string; label: string }) {
   const [copied, setCopied] = useState(false)
+  // Rows are virtualized, so this unmounts the moment it scrolls out of the
+  // overscan window — the tick-reset timer must not outlive it.
+  const resetTimer = useRef<number | undefined>(undefined)
+  useEffect(() => () => window.clearTimeout(resetTimer.current), [])
 
   const copy = async () => {
     try {
       await navigator.clipboard.writeText(text)
       setCopied(true)
-      window.setTimeout(() => setCopied(false), 1600)
+      window.clearTimeout(resetTimer.current)
+      resetTimer.current = window.setTimeout(() => setCopied(false), 1600)
     } catch {
       setCopied(false)
     }
@@ -710,11 +730,14 @@ export function workLabel(
   if (searching) return 'Searching'
   if (!turnId) return 'Working'
 
+  // The active turn's items are the tail of the transcript; once the walk
+  // leaves them there is nothing further back worth scanning — without the
+  // break this was a full-transcript scan per streamed frame.
   for (let index = items.length - 1; index >= 0; index--) {
     const item = items[index]
-    if (item?.turnId === turnId && item.status === 'started' && isActivity(item)) {
-      return summariseLive(item)
-    }
+    if (!item) continue
+    if (item.turnId !== turnId) break
+    if (item.status === 'started' && isActivity(item)) return summariseLive(item)
   }
 
   return 'Working'

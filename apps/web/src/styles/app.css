@@ -2896,8 +2896,17 @@
 
 /* ---------- thread ---------- */
 
-.thread {
+/* The overlay anchor: find bar and jump button position against this, not
+   the scroller, so they stay put while the transcript scrolls. */
+.thread-shell {
   position: relative;
+  display: grid;
+  grid-template-rows: minmax(0, 1fr);
+  min-height: 0;
+  min-width: 0;
+}
+
+.thread {
   overflow-y: auto;
   min-height: 0;
   padding: 2px 0 4px;

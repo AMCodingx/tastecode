@@ -344,7 +344,7 @@ describe('provider settings', () => {
     await waitFor(() =>
       expect(transport.request).toHaveBeenCalledWith('providers.launch', {
         provider: 'opencode',
-        columns: 100,
+        columns: 320,
         rows: 30,
       }),
     )
@@ -369,7 +369,7 @@ describe('provider settings', () => {
       expect(transport.request).toHaveBeenCalledWith('providers.launch', {
         provider: 'acp',
         agent: 'kimi',
-        columns: 100,
+        columns: 320,
         rows: 30,
       }),
     )

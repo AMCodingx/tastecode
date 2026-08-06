@@ -134,8 +134,32 @@ export function Settings(props: {
 }) {
   const [section, setSection] = useState<SettingsSection>('providers')
 
+  // A dialog owns the keyboard: focus moves into it on open (Tab must not
+  // walk the app hidden underneath), and Escape closes it.
+  const panel = useRef<HTMLDivElement>(null)
+  useEffect(() => {
+    panel.current?.focus()
+  }, [])
+  const { onClose } = props
+  useEffect(() => {
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key !== 'Escape' || event.defaultPrevented) return
+      event.preventDefault()
+      onClose()
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [onClose])
+
   return (
-    <div className="settings" role="dialog" aria-modal="true" aria-label="Settings">
+    <div
+      className="settings"
+      role="dialog"
+      aria-modal="true"
+      aria-label="Settings"
+      ref={panel}
+      tabIndex={-1}
+    >
       <div className="settings__titlebar" aria-hidden />
 
       <aside className="settings__sidebar">

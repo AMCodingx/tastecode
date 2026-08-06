@@ -357,12 +357,14 @@ export function Composer(props: {
   }
 
   const removeAttachment = (id: string) => {
-    setAttachments((current) => {
-      const removed = current.find((attachment) => attachment.id === id)
-      if (removed?.previewUrl === viewingImage?.src) setViewingImage(undefined)
-      releasePreview(removed?.previewUrl)
-      return current.filter((attachment) => attachment.id !== id)
-    })
+    // Side effects stay outside the updater — updaters run during render and
+    // replay under StrictMode. Pasted images use their preview URL as their
+    // id, so `id` is the URL; file attachments have no preview to release.
+    if (previewUrls.current.has(id)) {
+      if (viewingImage?.src === id) setViewingImage(undefined)
+      releasePreview(id)
+    }
+    setAttachments((current) => current.filter((attachment) => attachment.id !== id))
   }
 
   const clearAttachments = () => {
@@ -770,6 +772,9 @@ export function Composer(props: {
                     grow()
                   }}
                   onKeyDown={(e) => {
+                    // IME users press Escape to dismiss the candidate window;
+                    // that must never reach the shortcuts below (interrupt!).
+                    if (e.nativeEvent.isComposing) return
                     if (e.key === 'Escape' && slashOpen) {
                       setSlashOpen(false)
                       return
