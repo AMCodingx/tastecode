@@ -80,10 +80,21 @@ export async function startDesignPreview(
  */
 export function assertRunsWorkspaceCode(workspace: string, cwd: string, plan: PreviewPlan): void {
   if (plan.command === 'node') {
-    const entry = plan.args.find((arg) => !arg.startsWith('-'))
-    if (!entry) throw new Error('preview command must name a script in the workspace')
-    // Throws unless the file exists inside the workspace.
-    existingWorkspacePath(workspace, path.relative(workspace, path.resolve(cwd, entry)), false)
+    const entries = plan.args.filter((arg) => !arg.startsWith('-'))
+    if (entries.length === 0) throw new Error('preview command must name a script in the workspace')
+    // EVERY path argument, not just the first: `node --import ./local.mjs
+    // ../../outside.mjs` would otherwise pass on the local one and then run
+    // the other. Flag VALUES are checked too — they can be paths as well.
+    for (const entry of plan.args) {
+      if (entry.startsWith('-') && !entry.includes(path.sep) && !entry.includes('/')) continue
+      const candidate = entry.startsWith('-') ? entry.slice(entry.indexOf('=') + 1) : entry
+      // Throws unless the file exists inside the workspace.
+      existingWorkspacePath(
+        workspace,
+        path.relative(workspace, path.resolve(cwd, candidate)),
+        false,
+      )
+    }
     return
   }
 

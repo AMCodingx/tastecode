@@ -1070,7 +1070,8 @@ function basename(path: string): string {
 }
 
 /**
- * Memoised: the app root re-renders on every streamed frame, and this
- * subtree does not change while an answer arrives.
+ * Memoised: the app root re-renders on every streamed frame, and this subtree
+ * does not change while an answer arrives. Every handler the owner passes has
+ * a stable identity, which is what makes the shallow compare actually hold.
  */
 export const Composer = memo(ComposerComponent)

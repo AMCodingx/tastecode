@@ -1400,6 +1400,17 @@ export function App() {
     [transport, activePath, activeId],
   )
 
+  // Stable identities, so the memo around Composer is not defeated by a fresh
+  // arrow on every streamed frame — memo compares props shallowly, and an
+  // inline arrow fails that comparison every single time.
+  const changeBranch = useCallback((branch: string) => void selectBranch(branch), [selectBranch])
+  const requireProject = useCallback(() => setNotice('Choose a project before sending.'), [])
+  const sendTurn = useCallback((text: string, files: string[]) => void send(text, files), [send])
+  const steerTurn = useCallback(
+    (text: string, files: string[]) => void send(text, files, 'steer'),
+    [send],
+  )
+
   const selectSession = useCallback(
     async (id: string) => {
       const found = findSession(projects, id)
@@ -2134,10 +2145,10 @@ export function App() {
               onTranscribeVoice={transcribeVoice}
               onCancelVoice={cancelVoice}
               onProjectChange={selectProject}
-              onBranchChange={(branch) => void selectBranch(branch)}
-              onProjectRequired={() => setNotice('Choose a project before sending.')}
-              onSend={(t, files) => void send(t, files)}
-              onSteer={(t, files) => void send(t, files, 'steer')}
+              onBranchChange={changeBranch}
+              onProjectRequired={requireProject}
+              onSend={sendTurn}
+              onSteer={steerTurn}
               onInterrupt={interrupt}
               stopping={stopping}
               onDeleteQueuedTurn={deleteQueuedTurn}
