@@ -529,8 +529,14 @@ export class CodexAdapter extends EventEmitter<CodexAdapterEvents> {
     } catch {
       throw new Error('Codex could not hot-reload MCP config; start a new session to apply it')
     }
-    this.#mcpServers = prepared.servers
     await this.#call('config/mcpServer/reload', undefined)
+    // Only after the process actually reloaded: assigning earlier left the
+    // in-memory config disagreeing with the running Codex on failure. The
+    // inventory cache describes the pre-reload world, so it goes too.
+    this.#mcpServers = prepared.servers
+    this.#mcpInventory.delete(threadId)
+    this.#mcpInventoryLoads.delete(threadId)
+    this.emit('mcpChanged', { threadId })
   }
 
   async startMcpOAuth(
@@ -939,10 +945,14 @@ export class CodexAdapter extends EventEmitter<CodexAdapterEvents> {
 
       case 'mcpServer/oauthLogin/completed': {
         const p = params as McpServerOauthLoginCompletedNotification
-        if (!p.threadId) return
-        const key = mcpLoginKey(p.threadId, p.name)
-        const loginId = this.#mcpLogins.get(key)
-        if (!loginId) return
+        // A completion without a threadId still ends someone's login — match
+        // by server name across threads rather than leaving the browser flow
+        // finished and the UI waiting forever.
+        const key = p.threadId
+          ? mcpLoginKey(p.threadId, p.name)
+          : [...this.#mcpLogins.keys()].find((candidate) => candidate.endsWith(`\0${p.name}`))
+        const loginId = key ? this.#mcpLogins.get(key) : undefined
+        if (!key || !loginId) return
         this.#mcpLogins.delete(key)
         this.emit('mcpOAuth', {
           serverId: p.name,
