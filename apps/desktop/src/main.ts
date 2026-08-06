@@ -334,6 +334,13 @@ void app.whenReady().then(() => {
 
 /** Allow this app's own renderer to request audio, never video or another origin. */
 function configureMediaPermissions(): void {
+  // Chromium's synchronous check path (navigator.permissions.query, device
+  // enumeration) never consults the request handler below and defaults to
+  // permissive, so it needs its own answer.
+  session.defaultSession.setPermissionCheckHandler(
+    (webContents, permission) =>
+      permission === 'media' && webContents !== null && isOwnRenderer(webContents),
+  )
   session.defaultSession.setPermissionRequestHandler(
     (webContents, permission, callback, details) => {
       if (

@@ -811,16 +811,21 @@ export function startServer(
  * Browsers do not apply the same-origin policy to WebSocket, so binding to
  * loopback is not a trust boundary: any page the user visits could otherwise
  * connect and drive the agent — list their repos, start a thread with `full`
- * approval, or open a terminal. The Origin header is the one thing a page
- * cannot forge, so it is what we gate on.
+ * approval, or open a terminal.
  *
- * Allowed: no Origin at all (non-browser clients — the CLI, tests, the mobile
- * app), `null`/`file://` (the packaged Electron renderer), and loopback
- * origins (the dev server, and our own web UI). A hostile page always sends
- * its own public origin and is refused.
+ * Allowed: no Origin at all (non-browser clients — the CLI, tests, a native
+ * mobile client), `file://` (the packaged Electron renderer), and loopback
+ * origins (the dev server and our own web UI).
+ *
+ * `null` is NOT allowed, and must never be added back. It is the opaque
+ * origin, and any page can mint one on demand — `<iframe sandbox=
+ * "allow-scripts" srcdoc=…>` or a `data:` document — so allowing it hands the
+ * gate straight back to the attacker it exists to stop. If a renderer of ours
+ * ever reports an opaque origin, the answer is an access token for that
+ * surface, not a hole here.
  */
 export function allowedOrigin(origin: string | undefined): boolean {
-  if (!origin || origin === 'null' || origin === 'file://') return true
+  if (!origin || origin === 'file://') return true
   let hostname: string
   try {
     ;({ hostname } = new URL(origin))
