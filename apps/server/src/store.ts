@@ -732,30 +732,73 @@ export class Store {
     // streamed just to find the rare usage rows; the type check below still
     // decides for real. Substring match, so key order in the payload is
     // irrelevant and a false positive costs one JSON.parse, not correctness.
-    const rows = this.#db
-      .prepare(
-        `SELECT events.thread_id, events.at, events.payload
-         FROM events JOIN threads ON threads.id = events.thread_id
-         WHERE threads.provider = ? AND events.payload LIKE '%"usage.updated"%'
-         ORDER BY events.thread_id, events.seq`,
-      )
-      .all(thread.provider) as Array<{ thread_id: string; at: number; payload: string }>
-    const previous = new Map<string, UsageTotal>()
-    let session = emptyUsage()
-    let today = emptyUsage()
+    //
+    // Two bounded scans instead of one unbounded one: the session total only
+    // needs this thread's rows, and "today" only needs rows since midnight —
+    // across every provider, because the user's day is not provider-scoped.
+    const parseUsage = (payload: string): UsageTotal | undefined => {
+      const event = JSON.parse(payload) as DomainEvent
+      return event.type === 'usage.updated' ? withoutContext(event.usage) : undefined
+    }
 
-    for (const row of rows) {
-      const event = JSON.parse(row.payload) as DomainEvent
-      if (event.type !== 'usage.updated') continue
-      const current = withoutContext(event.usage)
-      // Codex reports a running thread total. Claude reports one completed turn.
-      const increment =
-        thread.provider === 'claude-code'
-          ? current
-          : usageIncrement(current, previous.get(row.thread_id))
-      previous.set(row.thread_id, current)
-      if (row.thread_id === threadId) session = addUsage(session, increment)
-      if (Number(row.at) >= since) today = addUsage(today, increment)
+    let session = emptyUsage()
+    {
+      const rows = this.#db
+        .prepare(
+          `SELECT payload FROM events
+           WHERE thread_id = ? AND payload LIKE '%"usage.updated"%' ORDER BY seq`,
+        )
+        .all(threadId) as Array<{ payload: string }>
+      let previous: UsageTotal | undefined
+      for (const row of rows) {
+        const current = parseUsage(row.payload)
+        if (!current) continue
+        // Codex reports a running thread total. Claude reports one completed turn.
+        const increment =
+          thread.provider === 'claude-code' ? current : usageIncrement(current, previous)
+        previous = current
+        session = addUsage(session, increment)
+      }
+    }
+
+    let today = emptyUsage()
+    {
+      // Seed each thread with its last usage row before the window, so a
+      // running-total provider's first in-window increment is a diff, not the
+      // whole session so far.
+      const previous = new Map<string, UsageTotal>()
+      const seeds = this.#db
+        .prepare(
+          `SELECT e.thread_id, e.payload
+           FROM events e
+           JOIN (SELECT thread_id, MAX(seq) AS seq FROM events
+                 WHERE payload LIKE '%"usage.updated"%' AND at < ? GROUP BY thread_id) last
+             ON e.thread_id = last.thread_id AND e.seq = last.seq`,
+        )
+        .all(since) as Array<{ thread_id: string; payload: string }>
+      for (const seed of seeds) {
+        const usage = parseUsage(seed.payload)
+        if (usage) previous.set(seed.thread_id, usage)
+      }
+
+      const rows = this.#db
+        .prepare(
+          `SELECT e.thread_id, e.payload, t.provider
+           FROM events e JOIN threads t ON t.id = e.thread_id
+           WHERE e.at >= ? AND e.payload LIKE '%"usage.updated"%'
+           ORDER BY e.thread_id, e.seq`,
+        )
+        .all(since) as Array<{ thread_id: string; payload: string; provider: string }>
+      for (const row of rows) {
+        const current = parseUsage(row.payload)
+        if (!current) continue
+        const increment =
+          row.provider === 'claude-code'
+            ? current
+            : usageIncrement(current, previous.get(row.thread_id))
+        previous.set(row.thread_id, current)
+        today = addUsage(today, increment)
+      }
     }
 
     return { session, today }
