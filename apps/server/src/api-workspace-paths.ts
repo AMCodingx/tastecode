@@ -22,7 +22,14 @@ export function writableWorkspacePath(workspace: string, relativePath: string): 
   const target = contained(workspace, relativePath)
   if (existsSync(target)) assertContained(workspace, realpathSync(target))
   let ancestor = path.dirname(target)
-  while (!existsSync(ancestor)) ancestor = path.dirname(ancestor)
+  while (!existsSync(ancestor)) {
+    const parent = path.dirname(ancestor)
+    // `\\server\share` and `Z:\` are their own dirname. On a network share or
+    // removable drive that disconnects mid-session this spun forever — and it
+    // is synchronous on the main thread, so it took every session with it.
+    if (parent === ancestor) throw new Error('workspace is unavailable')
+    ancestor = parent
+  }
   assertContained(workspace, realpathSync(ancestor))
   return target
 }

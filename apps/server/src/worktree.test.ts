@@ -117,6 +117,22 @@ describe('removeWorktree', () => {
     expect(git(repo, 'branch', '--list', worktree.branch).trim()).toContain(worktree.branch)
   })
 
+  it('never deletes the checkout when git refuses for a reason other than absence', async () => {
+    // git refuses `worktree remove` for two very different reasons: the
+    // directory is gone (fine, the caller's goal already holds) and the
+    // checkout still holds work (absolutely not fine). Treating every failure
+    // as the first one meant a user who declined to discard lost the work
+    // anyway. Simulated here by removing the repo's registration so the
+    // command fails while the directory — and its contents — still exist.
+    const worktree = await createWorktree(repo, 'thread-555555555555', root)
+    const keepMe = path.join(worktree.path, 'unsaved.txt')
+    writeFileSync(keepMe, 'work nobody has seen\n')
+    rmSync(path.join(repo, '.git', 'worktrees'), { recursive: true, force: true })
+
+    await expect(removeWorktree(worktree, true)).rejects.toThrow()
+    expect(existsSync(keepMe)).toBe(true)
+  })
+
   it('succeeds when the directory is already gone', async () => {
     const worktree = await createWorktree(repo, 'thread-333333333333', root)
     rmSync(worktree.path, { recursive: true, force: true })

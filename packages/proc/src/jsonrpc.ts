@@ -52,6 +52,8 @@ export class StdioJsonRpc {
   #buffer = ''
   #disposed = false
   #exited = false
+  /** Why the transport is finished, so late callers get an answer not a hang. */
+  #failure: Error | undefined
   #label: string
 
   #onNotification: (method: string, params: unknown) => void = () => {}
@@ -68,10 +70,12 @@ export class StdioJsonRpc {
     child.stderr.on('data', (chunk: string) => this.#onStderr(chunk))
     child.on('exit', (code) => {
       this.#exited = true
-      this.#failAll(new Error(`${this.#label} exited (code ${code})`))
+      this.#failure ??= new Error(`${this.#label} exited (code ${code})`)
+      this.#failAll(this.#failure)
     })
     child.on('error', (error) => {
       this.#exited = true
+      this.#failure ??= error
       this.#failAll(error)
     })
     // A write after the peer died raises EPIPE as a stream 'error' event;
@@ -92,6 +96,10 @@ export class StdioJsonRpc {
   }
 
   request<T = unknown>(method: string, params: unknown = {}): Promise<T> {
+    // Also when the process is gone: #write silently drops the frame once the
+    // child has exited, so a call made after a crash used to sit pending
+    // forever — the session stayed at "Working" with no error and no way out.
+    if (this.#failure) return Promise.reject(this.#failure)
     if (this.#disposed) return Promise.reject(new Error('transport disposed'))
     const id = this.#nextId++
     const promise = new Promise<unknown>((resolve, reject) => {
@@ -148,16 +156,24 @@ export class StdioJsonRpc {
       return
     }
 
-    if (id !== undefined && method !== undefined) {
-      // A request from the agent — approvals and file access arrive this way.
-      this.#onServerRequest(method, message['params'], (result) => {
-        this.#write({ jsonrpc: '2.0', id, result })
-      })
-      return
-    }
+    // Handlers cast frames to the shapes the protocol documents, so a frame
+    // that is valid JSON but the wrong shape throws a TypeError — and this
+    // runs inside a stdout listener, where an escaping throw would take down
+    // the whole server, every session, over one agent's bad frame.
+    try {
+      if (id !== undefined && method !== undefined) {
+        // A request from the agent — approvals and file access arrive this way.
+        this.#onServerRequest(method, message['params'], (result) => {
+          this.#write({ jsonrpc: '2.0', id, result })
+        })
+        return
+      }
 
-    if (method !== undefined) {
-      this.#onNotification(method, message['params'])
+      if (method !== undefined) {
+        this.#onNotification(method, message['params'])
+      }
+    } catch (error) {
+      this.#onStderr(`handler failed for ${method ?? 'response'}: ${String(error)}`)
     }
   }
 

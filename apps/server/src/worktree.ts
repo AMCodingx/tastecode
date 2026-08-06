@@ -1,6 +1,6 @@
 import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
-import { rm } from 'node:fs/promises'
+import { existsSync } from 'node:fs'
 import path from 'node:path'
 
 const run = promisify(execFile)
@@ -92,8 +92,14 @@ export async function removeWorktree(worktree: Worktree, force = false): Promise
 
   // The directory can already be gone — a manual delete, a cleaned temp dir.
   // git then refuses, but the outcome the caller wanted is already true.
+  //
+  // Only that case. `git worktree remove` refuses for a second, far more
+  // common reason: the checkout still holds modified or untracked files. This
+  // used to delete the tree for ANY failure, so a user who answered "no, keep
+  // my work" to the discard prompt could lose it anyway — the exact opposite
+  // of what this file promises.
   if (removed instanceof Error) {
-    await rm(worktree.path, { recursive: true, force: true }).catch(() => undefined)
+    if (existsSync(worktree.path)) throw removed
     await git(worktree.repoPath, ['worktree', 'prune'])
   }
 
@@ -104,7 +110,11 @@ export async function removeWorktree(worktree: Worktree, force = false): Promise
 
 export async function hasUncommittedChanges(worktreePath: string): Promise<boolean> {
   const status = await git(worktreePath, ['status', '--porcelain'])
-  return status !== undefined && status !== ''
+  // `git` swallows every failure into undefined — a timeout, a missing git, a
+  // corrupt index. Reading that as "clean" would green-light a destructive
+  // removal on no evidence, so unknown counts as dirty.
+  if (status === undefined) return true
+  return status !== ''
 }
 
 /**
