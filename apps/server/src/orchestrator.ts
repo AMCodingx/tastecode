@@ -155,6 +155,10 @@ export class Orchestrator {
   #onLifecycle: (threadId: string, lifecycle: ThreadLifecycle) => void
   #watchedSkillProjects = new Set<string>()
   #watchedMcpProjects = new Set<string>()
+  #inboxProjections = new Map<
+    string,
+    { seq: number; approvals: Set<string>; inputs: Set<string>; last: 'idle' | 'failed' }
+  >()
   #mcpConfig: McpConfigStore
   #modelConnections: ModelConnectionStore
   #readCredential: (reference: string) => string
@@ -866,25 +870,37 @@ export class Orchestrator {
     if (this.#activeTurns.has(threadId)) return 'working'
     if ((this.#queuedTurns.get(threadId)?.length ?? 0) > 0) return 'queued'
 
-    // ponytail: replay the durable log here; add a status projection only if large histories
-    // make project-list latency measurable.
-    const approvals = new Set<string>()
-    const inputs = new Set<string>()
-    let last: ThreadInboxStatus = 'idle'
-    for (const { event } of this.#store.history(threadId)) {
-      if (event.type === 'approval.requested') approvals.add(event.request.id)
-      if (event.type === 'approval.resolved') approvals.delete(event.id)
-      if (event.type === 'user_input.requested') inputs.add(event.request.id)
-      if (event.type === 'user_input.resolved') inputs.delete(event.id)
-      if (event.type === 'thread.error') last = 'failed'
+    // Incremental projection over the durable log. The fold is append-only,
+    // so each call replays only events after the last consumed seq — the
+    // full-history replay per sidebar refresh was the first thing to hurt on
+    // long transcripts. History rewrites (restore/undo) drop the projection.
+    const projection = this.#inboxProjections.get(threadId) ?? {
+      seq: 0,
+      approvals: new Set<string>(),
+      inputs: new Set<string>(),
+      last: 'idle' as 'idle' | 'failed',
+    }
+    for (const { seq, event } of this.#store.history(threadId, projection.seq)) {
+      projection.seq = seq
+      if (event.type === 'approval.requested') projection.approvals.add(event.request.id)
+      if (event.type === 'approval.resolved') projection.approvals.delete(event.id)
+      if (event.type === 'user_input.requested') projection.inputs.add(event.request.id)
+      if (event.type === 'user_input.resolved') projection.inputs.delete(event.id)
+      if (event.type === 'thread.error') projection.last = 'failed'
       if (event.type === 'turn.completed') {
-        last = event.status === 'failed' ? 'failed' : 'idle'
+        projection.last = event.status === 'failed' ? 'failed' : 'idle'
       }
     }
-    if (approvals.size > 0) return 'approval'
-    if (inputs.size > 0) return 'input'
-    if (last === 'failed') return 'failed'
-    return this.#store.thread(threadId)?.unread ? 'ready' : last
+    this.#inboxProjections.set(threadId, projection)
+    if (projection.approvals.size > 0) return 'approval'
+    if (projection.inputs.size > 0) return 'input'
+    if (projection.last === 'failed') return 'failed'
+    return this.#store.thread(threadId)?.unread ? 'ready' : projection.last
+  }
+
+  /** Forget the inbox projection after anything that rewrites history. */
+  #dropInboxProjection(threadId: string): void {
+    this.#inboxProjections.delete(threadId)
   }
 
   settleThread(threadId: string): ThreadLifecycle {
@@ -1123,6 +1139,7 @@ export class Orchestrator {
     // Rolling the files back without this would leave the transcript
     // describing work that no longer exists on disk.
     try {
+      this.#dropInboxProjection(threadId)
       return { undo: this.#store.saveRestoreUndo(threadId, checkpoint.seq, replaced.commit) }
     } catch (error) {
       await restoreSnapshot(repoPath, replaced.commit)
@@ -1141,6 +1158,7 @@ export class Orchestrator {
     const replaced = await restoreSnapshot(repoPath, undo.commit)
     try {
       this.#store.applyRestoreUndo(threadId, token)
+      this.#dropInboxProjection(threadId)
     } catch (error) {
       await restoreSnapshot(repoPath, replaced.commit)
       throw error
@@ -1255,6 +1273,7 @@ export class Orchestrator {
 
   close(threadId: string): void {
     this.#terminals.closeThread(threadId)
+    this.#inboxProjections.delete(threadId)
     const entry = this.#threads.get(threadId)
     if (!entry) return
     entry.session.dispose()

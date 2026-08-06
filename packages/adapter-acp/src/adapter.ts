@@ -150,8 +150,12 @@ export class AcpAdapter extends EventEmitter<AcpAdapterEvents> {
     const rpc = this.#rpc
     if (!rpc || !this.#sessionId) throw new Error('session not started')
 
-    const turnId = `${threadId}-turn-${++this.#turnCounter}`
-    this.#streamer = new Streamer(turnId)
+    // The random suffix keeps turn ids from a resumed process distinct from
+    // the persisted turns of the process it replaced — a bare counter reset
+    // to zero on every construction and merged two different turns' items.
+    const turnId = `${threadId}-turn-${++this.#turnCounter}-${crypto.randomUUID().slice(0, 8)}`
+    const streamer = new Streamer(turnId)
+    this.#streamer = streamer
 
     this.emit('event', {
       type: 'turn.started',
@@ -170,7 +174,7 @@ export class AcpAdapter extends EventEmitter<AcpAdapterEvents> {
         sessionId: this.#sessionId,
         prompt: [{ type: 'text', text: prompt }],
       })
-      .then((result) => this.#finishTurn(turnId, result.stopReason))
+      .then((result) => this.#finishTurn(turnId, result.stopReason, streamer))
       .catch((error: unknown) => {
         this.emit('event', {
           type: 'thread.error',
@@ -333,12 +337,19 @@ export class AcpAdapter extends EventEmitter<AcpAdapterEvents> {
     this.#pendingApprovals.set(id, respond)
     this.#optionsById.set(id, options)
 
+    // Deletes and moves are file work, not commands — typing them as
+    // 'command' rendered an approval card with an empty command field.
+    const kind =
+      call.kind === 'execute'
+        ? ('command' as const)
+        : call.kind === 'edit' || call.kind === 'delete' || call.kind === 'move'
+          ? ('file_change' as const)
+          : ('command' as const)
     this.emit('event', {
       type: 'approval.requested',
       request: {
         id,
-        kind:
-          call.kind === 'execute' ? 'command' : call.kind === 'edit' ? 'file_change' : 'command',
+        kind,
         // The title is what the agent says it wants to do, shown verbatim.
         ...(call.kind === 'execute' ? { command: call.title } : { path: call.title }),
         createdAt: Date.now(),
@@ -353,16 +364,27 @@ export class AcpAdapter extends EventEmitter<AcpAdapterEvents> {
    */
   #autoDecision(kind: string | undefined): PermissionOptionKind | undefined {
     if (this.#approval === 'full') return 'allow_always'
-    if (this.#approval === 'auto' && kind !== 'execute') return 'allow_once'
+    // `auto` has no sandbox under ACP, so it may only wave through actions
+    // that cannot mutate anything. Deletes, moves, edits and fetches stay
+    // questions for the user.
+    if (this.#approval === 'auto' && (kind === 'read' || kind === 'search' || kind === 'think')) {
+      return 'allow_once'
+    }
     return undefined
   }
 
-  #finishTurn(turnId: string, stopReason: PromptResult['stopReason']): void {
-    for (const event of this.#streamer?.finish() ?? []) this.emit('event', event)
+  #finishTurn(turnId: string, stopReason: PromptResult['stopReason'], streamer?: Streamer): void {
+    // Finish the streamer this turn owns, never whichever one is current —
+    // a late completion must not close the next turn's open items.
+    const owned = streamer ?? this.#streamer
+    if (owned === this.#streamer) this.#streamer = undefined
+    for (const event of owned?.finish() ?? []) this.emit('event', event)
 
     // Anything still waiting is now unanswerable — the turn it belonged to is
-    // over. Clearing them stops the UI showing a card that can never resolve.
-    for (const [id] of this.#pendingApprovals) {
+    // over. The agent is still blocked on its request, so it must hear
+    // "cancelled", not silence; the UI must hear "resolved".
+    for (const [id, respond] of [...this.#pendingApprovals]) {
+      respond({ outcome: { outcome: 'cancelled' } })
       this.emit('event', { type: 'approval.resolved', id })
     }
     this.#pendingApprovals.clear()
