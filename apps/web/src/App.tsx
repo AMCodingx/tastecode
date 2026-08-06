@@ -43,6 +43,8 @@ import { Sidebar, type Project } from './ui/Sidebar.js'
 import { StageHeader } from './ui/StageHeader.js'
 import { Thread } from './ui/Thread.js'
 import { TitleBar } from './ui/TitleBar.js'
+import { ShortcutsDialog } from './ui/ShortcutsDialog.js'
+import { chatToMarkdown, downloadText, exportFilename } from './chat-export.js'
 import { ZoomHud } from './ui/ZoomHud.js'
 import { serverUrl } from './server-url.js'
 import { addDesignBriefing } from './design-agent/briefing.js'
@@ -139,6 +141,7 @@ export function App() {
   // to the server and comes back through here.
   const [projects, setProjects] = useState<Project[]>([])
   const [projectsLoaded, setProjectsLoaded] = useState(false)
+  const [shortcutsOpen, setShortcutsOpen] = useState(false)
   const [activeId, setActiveId] = useState<string | undefined>()
   const [activePath, setActivePath] = useState<string | undefined>()
   const [thread, setThread] = useState<ThreadState>(emptyThread)
@@ -1758,6 +1761,15 @@ export function App() {
         }}
         onZoom={(action) => void setAppZoom(action)}
         zoomAvailable={isDesktop}
+        onExportChat={() => {
+          if (!activeId || thread.items.length === 0) {
+            setNotice('Nothing to export — open a chat first.')
+            return
+          }
+          const title = findSession(projects, activeId)?.session.title ?? 'Chat'
+          downloadText(exportFilename(title), chatToMarkdown(title, thread.items))
+        }}
+        onShowShortcuts={() => setShortcutsOpen(true)}
         onOpenHelp={(page) =>
           window.open(
             page === 'docs'
@@ -1769,6 +1781,7 @@ export function App() {
         }
       />
       {isDesktop ? <ZoomHud /> : null}
+      {shortcutsOpen ? <ShortcutsDialog onClose={() => setShortcutsOpen(false)} /> : null}
 
       <div className="shell__body">
         <Sidebar

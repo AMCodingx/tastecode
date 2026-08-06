@@ -23,6 +23,8 @@ export function TitleBar(props: {
   onZoom: (action: 'in' | 'out' | 'reset') => void
   zoomAvailable: boolean
   onOpenHelp: (page: 'docs' | 'issues') => void
+  onExportChat: () => void
+  onShowShortcuts: () => void
 }) {
   const macOS = isMacOS()
   const shortcut = shortcutLabel(SHORTCUTS.toggleSidebar, macOS)
@@ -89,6 +91,13 @@ export function TitleBar(props: {
               shortcut={shortcutLabel(SHORTCUTS.newProject, macOS)}
               onClick={() => {
                 props.onNewProject()
+                close()
+              }}
+            />
+            <MenuItem
+              title="Export chat as Markdown"
+              onClick={() => {
+                props.onExportChat()
                 close()
               }}
             />
@@ -195,6 +204,13 @@ export function TitleBar(props: {
         ))}
         {menu('Help', (close) => (
           <>
+            <MenuItem
+              title="Keyboard shortcuts"
+              onClick={() => {
+                props.onShowShortcuts()
+                close()
+              }}
+            />
             <MenuItem
               title="Documentation"
               onClick={() => {
