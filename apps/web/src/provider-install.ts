@@ -49,13 +49,27 @@ export function installState(key: string): InstallState | undefined {
 }
 
 export function clearInstall(key: string): void {
+  detachTransportListeners(key)
   if (installs.delete(key)) notify()
 }
 
 /** Test isolation only: module state must not leak between test cases. */
 export function resetInstalls(): void {
+  for (const key of [...transportListeners.keys()]) detachTransportListeners(key)
   installs.clear()
   notify()
+}
+
+/**
+ * Transport subscriptions per session. A pty that never reports exit would
+ * otherwise leak its output listener (and the rolling log it feeds) for the
+ * lifetime of the app.
+ */
+const transportListeners = new Map<string, Array<() => void>>()
+
+function detachTransportListeners(key: string): void {
+  for (const off of transportListeners.get(key) ?? []) off()
+  transportListeners.delete(key)
 }
 
 /**
@@ -101,6 +115,8 @@ async function begin(
   installs.set(key, state)
   notify()
 
+  // A retry replaces the session; the old session's listeners go with it.
+  detachTransportListeners(key)
   const offOutput = transport.on('terminal.output', (event) => {
     const current = installs.get(key)
     if (!current || event.terminalId !== terminalId) return
@@ -111,8 +127,7 @@ async function begin(
   })
   const offExit = transport.on('terminal.exit', (event) => {
     if (event.terminalId !== terminalId) return
-    offOutput()
-    offExit()
+    detachTransportListeners(key)
     const current = installs.get(key)
     if (!current) return
     installs.set(key, {
@@ -122,6 +137,7 @@ async function begin(
     })
     notify()
   })
+  transportListeners.set(key, [offOutput, offExit])
 }
 
 function notify(): void {

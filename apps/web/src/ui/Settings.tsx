@@ -1000,10 +1000,19 @@ function CliSignInRow(props: {
   const [startError, setStartError] = useState<string>()
   const { onSignedIn } = props
 
+  // Latched like InstallableRow: onSignedIn may get a new identity from any
+  // parent render, and firing more than once per success is the seed of the
+  // refresh loop fixed there.
+  const notifiedLogin = useRef(false)
   useEffect(() => {
     if (login?.phase === 'succeeded') {
-      clearInstall(key)
-      onSignedIn()
+      if (!notifiedLogin.current) {
+        notifiedLogin.current = true
+        clearInstall(key)
+        onSignedIn()
+      }
+    } else {
+      notifiedLogin.current = false
     }
   }, [login?.phase, key, onSignedIn])
 

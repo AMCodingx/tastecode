@@ -129,6 +129,7 @@ export function App() {
   // A cache of what the server says, not a source of truth. Every change goes
   // to the server and comes back through here.
   const [projects, setProjects] = useState<Project[]>([])
+  const [projectsLoaded, setProjectsLoaded] = useState(false)
   const [activeId, setActiveId] = useState<string | undefined>()
   const [activePath, setActivePath] = useState<string | undefined>()
   const [thread, setThread] = useState<ThreadState>(emptyThread)
@@ -161,6 +162,10 @@ export function App() {
       return new Set()
     }
   })
+  // Read via ref inside the catalog effect so toggling visibility does not
+  // refetch every provider's model list.
+  const hiddenModelsRef = useRef(hiddenModels)
+  hiddenModelsRef.current = hiddenModels
   const [autoReviewSupported, setAutoReviewSupported] = useState(false)
   const [userInputSupported, setUserInputSupported] = useState(false)
   const [modelId, setModelId] = useState<string | undefined>(
@@ -495,11 +500,18 @@ export function App() {
       setModels(catalog)
       setModelsLoaded(true)
       const stored = localStorage.getItem(MODEL_KEY)
+      // Fallbacks respect hidden models: adding an API key must not silently
+      // switch the user onto a model they explicitly hid. An explicit stored
+      // choice still wins — hiding is about the list, not about revoking a
+      // selection the user made themselves.
+      const hidden = hiddenModelsRef.current
+      const visible = catalog.filter((choice) => !hidden.has(choice.key))
+      const pool = visible.length > 0 ? visible : catalog
       const selected =
         catalog.find((choice) => choice.key === stored) ??
         catalog.find((choice) => choice.model.id === stored) ??
-        catalog.find((choice) => choice.model.isDefault) ??
-        catalog[0]
+        pool.find((choice) => choice.model.isDefault) ??
+        pool[0]
       if (!selected) return
       setModelId(selected.key)
       setProvider(selected.provider)
@@ -607,6 +619,7 @@ export function App() {
 
   const refreshProjects = useCallback(async () => {
     const { projects: list } = await transport.request('projects.list', {})
+    setProjectsLoaded(true)
     const savedOrder = loadSessionOrder()
     setProjects(
       list.map((project) => ({
@@ -1146,7 +1159,12 @@ export function App() {
   )
 
   const interrupt = useCallback(() => {
-    if (activeId) void transport.request('thread.interrupt', { threadId: activeId })
+    // A provisional id means the thread is still being created server-side;
+    // interrupting it would only produce an error nobody can act on.
+    if (!activeId || activeId.startsWith('pending:')) return
+    transport
+      .request('thread.interrupt', { threadId: activeId })
+      .catch((error) => setNotice(error instanceof Error ? error.message : String(error)))
   }, [transport, activeId])
 
   const transcribeVoice = useCallback(
@@ -1866,7 +1884,7 @@ export function App() {
                 }}
               />
             ) : (
-              <Empty projects={projects} activePath={activePath} />
+              <Empty projects={projects} activePath={activePath} loaded={projectsLoaded} />
             )}
 
             {active && terminalOpen ? (
@@ -2054,8 +2072,12 @@ function readRailWidth(): number {
   return Number.isFinite(stored) && stored >= 176 && stored <= 420 ? stored : 248
 }
 
-function Empty(props: { projects: Project[]; activePath: string | undefined }) {
+function Empty(props: { projects: Project[]; activePath: string | undefined; loaded: boolean }) {
   const activeProject = props.projects.find((project) => project.path === props.activePath)
+
+  // Before the first projects.list reply, "no projects" is not a fact yet —
+  // flashing the add-a-project prompt for one round trip reads as a glitch.
+  if (!props.loaded) return <div className="empty" />
 
   if (props.projects.length === 0) {
     return (
