@@ -1,5 +1,5 @@
 import type { Model, ProviderSetup } from '@harness/contracts'
-import { isInstalled, spawnCli } from '@harness/proc'
+import { isInstalled, killTree, spawnCli } from '@harness/proc'
 
 /**
  * Agents we know how to launch in ACP mode.
@@ -159,7 +159,7 @@ function captureCli(command: string, args: string[], timeoutMs = 5000): Promise<
       error ? reject(error) : resolve(output)
     }
     const timer = setTimeout(() => {
-      child.kill()
+      killTree(child)
       finish(new Error(`${command} model discovery timed out`))
     }, timeoutMs)
     child.stdout.setEncoding('utf8')
