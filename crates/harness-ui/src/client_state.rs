@@ -57,11 +57,22 @@ pub(crate) struct NewThreadRequest {
     pub(crate) project_path: String,
     pub(crate) text: String,
     pub(crate) title: String,
+    pub(crate) attachments: Vec<String>,
     pub(crate) choice: ModelChoice,
     pub(crate) effort: Option<String>,
     pub(crate) service_tier: Option<String>,
     pub(crate) approval: ApprovalMode,
     pub(crate) isolate: bool,
+}
+
+#[derive(Clone)]
+pub(crate) struct SendTurnRequest {
+    pub(crate) text: String,
+    pub(crate) steer: bool,
+    pub(crate) attachments: Vec<String>,
+    pub(crate) model: Option<String>,
+    pub(crate) effort: Option<String>,
+    pub(crate) service_tier: Option<String>,
 }
 
 enum PendingRequest {
@@ -71,15 +82,35 @@ enum PendingRequest {
     Providers,
     Connections,
     AcpAgents,
-    Models { source: ModelSource },
-    AddProject { path: String },
-    StartThread { request: NewThreadRequest },
+    Models {
+        source: ModelSource,
+    },
+    AddProject {
+        path: String,
+    },
+    StartThread {
+        request: NewThreadRequest,
+    },
     RenameThread,
-    History { thread_id: String, replace: bool },
-    Queue { thread_id: String },
-    SendTurn { thread_id: String, steer: bool },
-    Steer { thread_id: String },
-    Interrupt { thread_id: String },
+    History {
+        thread_id: String,
+        replace: bool,
+    },
+    Queue {
+        thread_id: String,
+    },
+    SendTurn {
+        thread_id: String,
+        steer: bool,
+        restore_text: String,
+        restore_attachments: Vec<String>,
+    },
+    Steer {
+        thread_id: String,
+    },
+    Interrupt {
+        thread_id: String,
+    },
 }
 
 #[derive(Default)]
@@ -120,6 +151,13 @@ pub(crate) enum ChatUpdate {
     DraftError {
         message: String,
         restore_text: String,
+        restore_attachments: Vec<String>,
+    },
+    TurnError {
+        thread_id: String,
+        message: String,
+        restore_text: String,
+        restore_attachments: Vec<String>,
     },
 }
 
@@ -250,13 +288,18 @@ impl ClientState {
         );
     }
 
-    pub(crate) fn send_turn(&mut self, thread_id: &str, text: String, steer: bool) {
+    pub(crate) fn send_turn(&mut self, thread_id: &str, request: SendTurnRequest) {
+        let steer = request.steer;
+        let restore_text = request.text.clone();
+        let restore_attachments = request.attachments.clone();
         self.send_request(
             method::THREAD_SEND_TURN,
-            json!({ "threadId": thread_id, "text": text }),
+            send_turn_params(thread_id, request),
             PendingRequest::SendTurn {
                 thread_id: thread_id.into(),
                 steer,
+                restore_text,
+                restore_attachments,
             },
         );
     }
@@ -406,8 +449,20 @@ impl ClientState {
                         ClientUpdate::chat(ChatUpdate::DraftError {
                             message,
                             restore_text: request.text,
+                            restore_attachments: request.attachments,
                         })
                     }
+                    Some(PendingRequest::SendTurn {
+                        thread_id,
+                        restore_text,
+                        restore_attachments,
+                        ..
+                    }) => ClientUpdate::chat(ChatUpdate::TurnError {
+                        thread_id,
+                        message,
+                        restore_text,
+                        restore_attachments,
+                    }),
                     Some(request) => match request.thread_id() {
                         Some(thread_id) => {
                             ClientUpdate::chat(ChatUpdate::Error { thread_id, message })
@@ -460,37 +515,42 @@ impl ClientState {
                         }),
                     }
                 }
-                Some(PendingRequest::SendTurn { thread_id, steer }) => {
-                    match serde_json::from_value::<SendTurnResult>(result) {
-                        Ok(SendTurnResult::Started { queued: false, .. }) => {
-                            ClientUpdate::default()
+                Some(PendingRequest::SendTurn {
+                    thread_id,
+                    steer,
+                    restore_text,
+                    restore_attachments,
+                }) => match serde_json::from_value::<SendTurnResult>(result) {
+                    Ok(SendTurnResult::Started { queued: false, .. }) => ClientUpdate::default(),
+                    Ok(SendTurnResult::Queued {
+                        queued: true,
+                        queued_turn,
+                    }) => {
+                        if steer {
+                            self.send_request(
+                                method::THREAD_STEER_QUEUED_TURN,
+                                json!({
+                                    "threadId": thread_id,
+                                    "queuedTurnId": queued_turn.id
+                                }),
+                                PendingRequest::Steer { thread_id },
+                            );
                         }
-                        Ok(SendTurnResult::Queued {
-                            queued: true,
-                            queued_turn,
-                        }) => {
-                            if steer {
-                                self.send_request(
-                                    method::THREAD_STEER_QUEUED_TURN,
-                                    json!({
-                                        "threadId": thread_id,
-                                        "queuedTurnId": queued_turn.id
-                                    }),
-                                    PendingRequest::Steer { thread_id },
-                                );
-                            }
-                            ClientUpdate::default()
-                        }
-                        Ok(_) => ClientUpdate::chat(ChatUpdate::Error {
-                            thread_id,
-                            message: "thread.sendTurn returned a contradictory queue state.".into(),
-                        }),
-                        Err(error) => ClientUpdate::chat(ChatUpdate::Error {
-                            thread_id,
-                            message: format!("thread.sendTurn was invalid: {error}"),
-                        }),
+                        ClientUpdate::default()
                     }
-                }
+                    Ok(_) => ClientUpdate::chat(ChatUpdate::TurnError {
+                        thread_id,
+                        message: "thread.sendTurn returned a contradictory queue state.".into(),
+                        restore_text,
+                        restore_attachments,
+                    }),
+                    Err(error) => ClientUpdate::chat(ChatUpdate::TurnError {
+                        thread_id,
+                        message: format!("thread.sendTurn was invalid: {error}"),
+                        restore_text,
+                        restore_attachments,
+                    }),
+                },
                 Some(PendingRequest::Interrupt { .. })
                 | Some(PendingRequest::Steer { .. })
                 | Some(PendingRequest::RenameThread)
@@ -512,6 +572,18 @@ impl ClientState {
             PendingRequest::StartThread { request } => ClientUpdate::chat(ChatUpdate::DraftError {
                 message: "The server connection was lost before the session was created.".into(),
                 restore_text: request.text,
+                restore_attachments: request.attachments,
+            }),
+            PendingRequest::SendTurn {
+                thread_id,
+                restore_text,
+                restore_attachments,
+                ..
+            } => ClientUpdate::chat(ChatUpdate::TurnError {
+                thread_id,
+                message: "The server connection was lost before this request completed.".into(),
+                restore_text,
+                restore_attachments,
             }),
             request => match request.thread_id() {
                 Some(thread_id) => ClientUpdate::chat(ChatUpdate::Error {
@@ -589,6 +661,7 @@ impl ClientState {
                 return ClientUpdate::chat(ChatUpdate::DraftError {
                     message: format!("thread.start was invalid: {error}"),
                     restore_text: request.text,
+                    restore_attachments: request.attachments,
                 });
             }
         };
@@ -630,7 +703,17 @@ impl ClientState {
             json!({ "threadId": thread_id, "title": request.title }),
             PendingRequest::RenameThread,
         );
-        self.send_turn(&thread_id, request.text, false);
+        self.send_turn(
+            &thread_id,
+            SendTurnRequest {
+                text: request.text,
+                steer: false,
+                attachments: request.attachments,
+                model: (!request.choice.model.id.is_empty()).then_some(request.choice.model.id),
+                effort: request.effort,
+                service_tier: request.service_tier,
+            },
+        );
         self.request_projects();
         ClientUpdate::shell_event(ShellEvent::ThreadStarted {
             thread_id,
@@ -1006,6 +1089,26 @@ fn unix_time_ms() -> f64 {
         .map_or(0.0, |duration| duration.as_millis() as f64)
 }
 
+fn send_turn_params(thread_id: &str, request: SendTurnRequest) -> Value {
+    let mut params = serde_json::Map::from_iter([
+        ("threadId".into(), json!(thread_id)),
+        ("text".into(), json!(request.text)),
+    ]);
+    if !request.attachments.is_empty() {
+        params.insert("attachments".into(), json!(request.attachments));
+    }
+    if let Some(model) = request.model {
+        params.insert("model".into(), json!(model));
+    }
+    if let Some(effort) = request.effort {
+        params.insert("effort".into(), json!(effort));
+    }
+    if let Some(service_tier) = request.service_tier {
+        params.insert("serviceTier".into(), json!(service_tier));
+    }
+    Value::Object(params)
+}
+
 fn provider_key(provider: ProviderId) -> &'static str {
     match provider {
         ProviderId::Codex => "codex",
@@ -1128,6 +1231,7 @@ mod tests {
                     project_path: "/workspace".into(),
                     text: "Build it".into(),
                     title: "Build it".into(),
+                    attachments: Vec::new(),
                     choice: ModelChoice {
                         key: "codex\u{1f}gpt-test".into(),
                         provider: ProviderId::Codex,
@@ -1168,6 +1272,33 @@ mod tests {
         assert_eq!(
             state.projects[0].sessions[0].status,
             Some(ThreadInboxStatus::Starting)
+        );
+    }
+
+    #[test]
+    fn turn_params_preserve_design_model_effort_and_fast_tier() {
+        let params = send_turn_params(
+            "thread-1",
+            SendTurnRequest {
+                text: "Design it".into(),
+                steer: false,
+                attachments: vec!["personal-harness://design-brief-v1".into()],
+                model: Some("gpt-test".into()),
+                effort: Some("high".into()),
+                service_tier: Some("priority".into()),
+            },
+        );
+
+        assert_eq!(
+            params,
+            json!({
+                "threadId": "thread-1",
+                "text": "Design it",
+                "attachments": ["personal-harness://design-brief-v1"],
+                "model": "gpt-test",
+                "effort": "high",
+                "serviceTier": "priority"
+            })
         );
     }
 }

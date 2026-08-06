@@ -1,15 +1,17 @@
-use crate::client_state::ChatUpdate;
+use crate::client_state::{ChatUpdate, ModelChoice};
 use crate::theme::{CHAT_WIDTH, Theme};
 use gpui::{
-    AnyElement, Context, Entity, EventEmitter, FontWeight, ListAlignment, ListState, Render,
-    SharedString, Window, div, list, prelude::*, px, relative,
+    AnyElement, App, Context, Entity, EventEmitter, FontWeight, ListAlignment, ListState, Render,
+    SharedString, Window, div, list, prelude::*, px, relative, svg,
 };
 use gpui_component::input::{Input, InputEvent, InputState};
 use harness_protocol::{
-    Item, ItemStatus, ItemType, MessageRole, ProviderId, ThreadEventPush, ThreadQueueResult,
+    ApprovalMode, Item, ItemStatus, ItemType, MessageRole, ProviderId, ThreadEventPush,
+    ThreadQueueResult,
 };
 use harness_state::{ApplyOutcome, HistoryError, ThreadState};
 use std::collections::HashSet;
+use std::rc::Rc;
 use std::time::Duration;
 
 const LIVE_FLUSH_INTERVAL: Duration = Duration::from_millis(16);
@@ -32,6 +34,7 @@ pub(crate) enum ChatEvent {
     Submit {
         thread_id: String,
         text: String,
+        attachments: Vec<String>,
         steer: bool,
     },
     Interrupt {
@@ -40,10 +43,57 @@ pub(crate) enum ChatEvent {
     Create {
         project_path: String,
         text: String,
+        attachments: Vec<String>,
     },
+    SelectModel {
+        key: String,
+    },
+    SelectEffort {
+        effort: String,
+    },
+    ToggleFast,
+    SelectApproval {
+        approval: ApprovalMode,
+    },
+    ToggleIsolation,
+    ToggleDesign,
+    PickAttachments,
 }
 
 impl EventEmitter<ChatEvent> for ChatView {}
+
+#[derive(Clone)]
+pub(crate) struct ComposerSettings {
+    pub(crate) models: Vec<ModelChoice>,
+    pub(crate) selected_model_key: Option<String>,
+    pub(crate) effort: Option<String>,
+    pub(crate) service_tier: Option<String>,
+    pub(crate) approval: ApprovalMode,
+    pub(crate) auto_review_supported: bool,
+    pub(crate) isolate: bool,
+    pub(crate) design_mode: bool,
+}
+
+impl Default for ComposerSettings {
+    fn default() -> Self {
+        Self {
+            models: Vec::new(),
+            selected_model_key: None,
+            effort: None,
+            service_tier: None,
+            approval: ApprovalMode::Ask,
+            auto_review_supported: false,
+            isolate: false,
+            design_mode: false,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ComposerMenu {
+    Permissions,
+    Model,
+}
 
 pub(crate) struct ChatView {
     theme: Theme,
@@ -60,6 +110,9 @@ pub(crate) struct ChatView {
     history_in_flight: bool,
     pending_live: Vec<ThreadEventPush>,
     delta_flush_scheduled: bool,
+    composer_settings: ComposerSettings,
+    composer_menu: Option<ComposerMenu>,
+    attachments: Vec<String>,
 }
 
 impl ChatView {
@@ -93,6 +146,9 @@ impl ChatView {
             history_in_flight: false,
             pending_live: Vec::new(),
             delta_flush_scheduled: false,
+            composer_settings: ComposerSettings::default(),
+            composer_menu: None,
+            attachments: Vec::new(),
         }
     }
 
@@ -113,6 +169,8 @@ impl ChatView {
             .is_some_and(|session| session.thread_id.is_some());
         self.pending_live.clear();
         self.delta_flush_scheduled = false;
+        self.attachments.clear();
+        self.composer_menu = None;
         cx.notify();
     }
 
@@ -129,6 +187,33 @@ impl ChatView {
         self.loading = true;
         self.history_in_flight = true;
         self.error = None;
+        cx.notify();
+    }
+
+    pub(crate) fn update_composer_settings(
+        &mut self,
+        settings: ComposerSettings,
+        cx: &mut Context<Self>,
+    ) {
+        self.composer_settings = settings;
+        cx.notify();
+    }
+
+    pub(crate) fn update_draft_provider(&mut self, provider: ProviderId, cx: &mut Context<Self>) {
+        if let Some(session) = &mut self.session
+            && session.thread_id.is_none()
+        {
+            session.provider = provider;
+            cx.notify();
+        }
+    }
+
+    pub(crate) fn add_attachments(&mut self, paths: Vec<String>, cx: &mut Context<Self>) {
+        for path in paths {
+            if !self.attachments.contains(&path) {
+                self.attachments.push(path);
+            }
+        }
         cx.notify();
     }
 
@@ -199,6 +284,7 @@ impl ChatView {
             ChatUpdate::DraftError {
                 message,
                 restore_text,
+                restore_attachments,
             } if self
                 .session
                 .as_ref()
@@ -208,13 +294,27 @@ impl ChatView {
                 self.creating = false;
                 self.error = Some(message);
                 self.restore_composer = Some(restore_text);
+                self.attachments = restore_attachments;
+                cx.notify();
+            }
+            ChatUpdate::TurnError {
+                thread_id,
+                message,
+                restore_text,
+                restore_attachments,
+            } if self.is_selected(&thread_id) => {
+                self.loading = false;
+                self.error = Some(message);
+                self.restore_composer = Some(restore_text);
+                self.attachments = restore_attachments;
                 cx.notify();
             }
             ChatUpdate::History { .. }
             | ChatUpdate::Queue { .. }
             | ChatUpdate::Event(_)
             | ChatUpdate::Error { .. }
-            | ChatUpdate::DraftError { .. } => {}
+            | ChatUpdate::DraftError { .. }
+            | ChatUpdate::TurnError { .. } => {}
         }
     }
 
@@ -354,10 +454,13 @@ impl ChatView {
             return;
         }
         self.clear_composer = true;
+        self.composer_menu = None;
+        let attachments = std::mem::take(&mut self.attachments);
         match &session.thread_id {
             Some(thread_id) => cx.emit(ChatEvent::Submit {
                 thread_id: thread_id.clone(),
                 text,
+                attachments,
                 steer,
             }),
             None => {
@@ -366,6 +469,7 @@ impl ChatView {
                 cx.emit(ChatEvent::Create {
                     project_path: session.project_path.clone(),
                     text,
+                    attachments,
                 });
             }
         }
@@ -387,6 +491,40 @@ impl ChatView {
         } else {
             self.submit(false, cx);
         }
+    }
+
+    fn toggle_composer_menu(&mut self, menu: ComposerMenu, cx: &mut Context<Self>) {
+        if self.state.running {
+            return;
+        }
+        self.composer_menu = if self.composer_menu == Some(menu) {
+            None
+        } else {
+            Some(menu)
+        };
+        cx.notify();
+    }
+
+    fn choose_model(&mut self, key: String, cx: &mut Context<Self>) {
+        cx.emit(ChatEvent::SelectModel { key });
+    }
+
+    fn choose_effort(&mut self, effort: String, cx: &mut Context<Self>) {
+        cx.emit(ChatEvent::SelectEffort { effort });
+    }
+
+    fn choose_approval(&mut self, approval: ApprovalMode, cx: &mut Context<Self>) {
+        self.composer_menu = None;
+        cx.emit(ChatEvent::SelectApproval { approval });
+        cx.notify();
+    }
+
+    fn selected_model(&self) -> Option<&ModelChoice> {
+        let key = self.composer_settings.selected_model_key.as_ref()?;
+        self.composer_settings
+            .models
+            .iter()
+            .find(|choice| choice.key == *key)
     }
 
     fn header(&self) -> impl IntoElement {
@@ -491,6 +629,18 @@ impl ChatView {
         let session = self.session.clone();
         let has_draft = !self.composer.read(cx).value().trim().is_empty();
         let running = self.state.running;
+        let is_new_session = session
+            .as_ref()
+            .is_some_and(|session| session.thread_id.is_none());
+        let popover = self.composer_popover(is_new_session, cx);
+        let attach_view = cx.weak_entity();
+        let attach_action: UiAction = Rc::new(move |cx| {
+            let _ = attach_view.update(cx, |_this, cx| cx.emit(ChatEvent::PickAttachments));
+        });
+        let design_view = cx.weak_entity();
+        let design_action: UiAction = Rc::new(move |cx| {
+            let _ = design_view.update(cx, |_this, cx| cx.emit(ChatEvent::ToggleDesign));
+        });
         div()
             .flex_none()
             .px(px(24.0))
@@ -498,79 +648,622 @@ impl ChatView {
             .pb(px(12.0))
             .child(
                 div()
+                    .relative()
                     .w_full()
                     .max_w(px(CHAT_WIDTH))
                     .mx_auto()
-                    .rounded(px(18.0))
-                    .border_1()
-                    .border_color(theme.line.hsla())
-                    .bg(theme.prompt.hsla())
-                    .overflow_hidden()
+                    .when_some(popover, |composer, popover| composer.child(popover))
                     .child(
                         div()
-                            .h(px(36.0))
-                            .flex()
-                            .items_center()
-                            .gap(px(7.0))
-                            .px(px(12.0))
-                            .bg(theme.surface_2.hsla())
-                            .text_size(px(12.0))
-                            .text_color(theme.text_2.hsla())
-                            .child(session.as_ref().map_or_else(
-                                || SharedString::from("Project"),
-                                |value| value.project_name.clone().into(),
-                            ))
-                            .child("·")
-                            .child(session.as_ref().map_or_else(
-                                || SharedString::from("Provider"),
-                                |value| provider_label(value.provider).into(),
-                            )),
-                    )
-                    .child(
-                        Input::new(&self.composer)
-                            .appearance(false)
-                            .bordered(false)
-                            .focus_bordered(false)
-                            .h(px(68.0))
-                            .px(px(14.0))
-                            .py(px(10.0))
-                            .text_size(px(14.0))
-                            .line_height(relative(1.55))
-                            .text_color(theme.text.hsla()),
-                    )
-                    .child(
-                        div()
-                            .h(px(38.0))
-                            .flex()
-                            .items_center()
-                            .gap(px(5.0))
-                            .px(px(10.0))
-                            .pb(px(6.0))
-                            .child(tool_button("+", theme))
-                            .child(tool_button("Permissions", theme))
-                            .child(tool_button("Model", theme))
-                            .child(div().flex_1())
+                            .rounded(px(18.0))
+                            .border_1()
+                            .border_color(theme.line.hsla())
+                            .bg(theme.prompt.hsla())
+                            .overflow_hidden()
+                            .when(is_new_session, |prompt| {
+                                prompt.child(
+                                    div()
+                                        .h(px(36.0))
+                                        .flex()
+                                        .items_center()
+                                        .gap(px(7.0))
+                                        .px(px(12.0))
+                                        .bg(theme.surface_2.hsla())
+                                        .text_size(px(12.0))
+                                        .text_color(theme.text_2.hsla())
+                                        .child(session.as_ref().map_or_else(
+                                            || SharedString::from("Project"),
+                                            |value| value.project_name.clone().into(),
+                                        ))
+                                        .child("·")
+                                        .child(
+                                            div()
+                                                .id("composer-isolation")
+                                                .h(px(26.0))
+                                                .px(px(5.0))
+                                                .flex()
+                                                .items_center()
+                                                .rounded(px(7.0))
+                                                .cursor_pointer()
+                                                .hover(move |style| {
+                                                    style
+                                                        .bg(theme.surface_3.hsla())
+                                                        .text_color(theme.text.hsla())
+                                                })
+                                                .on_click(cx.listener(
+                                                    |_this, _event, _window, cx| {
+                                                        cx.emit(ChatEvent::ToggleIsolation);
+                                                    },
+                                                ))
+                                                .child(if self.composer_settings.isolate {
+                                                    "Isolated"
+                                                } else {
+                                                    "Local"
+                                                }),
+                                        )
+                                        .child("·")
+                                        .child(session.as_ref().map_or_else(
+                                            || SharedString::from("Provider"),
+                                            |value| provider_label(value.provider).into(),
+                                        )),
+                                )
+                            })
+                            .when_some(self.attachment_chips(cx), |prompt, chips| {
+                                prompt.child(chips)
+                            })
+                            .child(
+                                Input::new(&self.composer)
+                                    .appearance(false)
+                                    .bordered(false)
+                                    .focus_bordered(false)
+                                    .h(px(68.0))
+                                    .px(px(14.0))
+                                    .py(px(10.0))
+                                    .text_size(px(14.0))
+                                    .line_height(relative(1.55))
+                                    .text_color(theme.text.hsla()),
+                            )
                             .child(
                                 div()
-                                    .id("composer-primary-action")
-                                    .size(px(28.0))
-                                    .rounded(px(9.0))
+                                    .h(px(38.0))
                                     .flex()
                                     .items_center()
-                                    .justify_center()
-                                    .bg(theme.text.hsla())
-                                    .text_color(theme.background.hsla())
-                                    .text_size(px(13.0))
-                                    .font_weight(FontWeight::SEMIBOLD)
-                                    .cursor_pointer()
-                                    .active(|style| style.opacity(0.72))
-                                    .on_click(cx.listener(|this, _event, _window, cx| {
-                                        this.primary_action(cx);
-                                    }))
-                                    .child(if running && !has_draft { "■" } else { "↑" }),
+                                    .gap(px(5.0))
+                                    .px(px(10.0))
+                                    .pb(px(6.0))
+                                    .child(icon_tool_button(
+                                        "composer-attach",
+                                        "icons/plus.svg",
+                                        None,
+                                        false,
+                                        theme,
+                                        Some(attach_action),
+                                    ))
+                                    .child(self.permission_trigger(running, cx))
+                                    .child(icon_tool_button(
+                                        "composer-design",
+                                        "icons/palette.svg",
+                                        Some("Design"),
+                                        self.composer_settings.design_mode,
+                                        theme,
+                                        Some(design_action),
+                                    ))
+                                    .child(div().flex_1())
+                                    .when_some(self.model_trigger(running, cx), |tools, trigger| {
+                                        tools.child(trigger)
+                                    })
+                                    .child(
+                                        div()
+                                            .id("composer-primary-action")
+                                            .size(px(28.0))
+                                            .rounded(px(9.0))
+                                            .flex()
+                                            .items_center()
+                                            .justify_center()
+                                            .bg(theme.text.hsla())
+                                            .text_color(theme.background.hsla())
+                                            .text_size(px(13.0))
+                                            .font_weight(FontWeight::SEMIBOLD)
+                                            .cursor_pointer()
+                                            .active(|style| style.opacity(0.72))
+                                            .on_click(cx.listener(|this, _event, _window, cx| {
+                                                this.primary_action(cx);
+                                            }))
+                                            .child(if running && !has_draft {
+                                                "■"
+                                            } else {
+                                                "↑"
+                                            }),
+                                    ),
                             ),
                     ),
             )
+    }
+
+    fn attachment_chips(&self, cx: &Context<Self>) -> Option<AnyElement> {
+        if self.attachments.is_empty() {
+            return None;
+        }
+        let theme = self.theme;
+        Some(
+            div()
+                .h(px(34.0))
+                .w_full()
+                .flex()
+                .items_center()
+                .gap(px(6.0))
+                .px(px(12.0))
+                .pt(px(6.0))
+                .children(self.attachments.iter().enumerate().map(|(index, path)| {
+                    let label = path_label(path).to_owned();
+                    div()
+                        .id(("attachment-chip", index))
+                        .h(px(25.0))
+                        .max_w(px(190.0))
+                        .flex()
+                        .items_center()
+                        .gap(px(6.0))
+                        .px(px(8.0))
+                        .rounded(px(8.0))
+                        .bg(theme.surface_2.hsla())
+                        .text_size(px(11.0))
+                        .text_color(theme.text_2.hsla())
+                        .child(div().min_w(px(0.0)).flex_1().truncate().child(label))
+                        .child(
+                            div()
+                                .id(("attachment-remove", index))
+                                .size(px(16.0))
+                                .flex()
+                                .items_center()
+                                .justify_center()
+                                .rounded(px(5.0))
+                                .cursor_pointer()
+                                .hover(move |style| {
+                                    style
+                                        .bg(theme.surface_3.hsla())
+                                        .text_color(theme.text.hsla())
+                                })
+                                .on_click(cx.listener(move |this, _event, _window, cx| {
+                                    if index < this.attachments.len() {
+                                        this.attachments.remove(index);
+                                        cx.notify();
+                                    }
+                                }))
+                                .child("×"),
+                        )
+                }))
+                .into_any_element(),
+        )
+    }
+
+    fn permission_trigger(&self, running: bool, cx: &Context<Self>) -> AnyElement {
+        let theme = self.theme;
+        let approval = self.composer_settings.approval;
+        let open = self.composer_menu == Some(ComposerMenu::Permissions);
+        let (icon_path, label) = approval_meta(approval);
+        div()
+            .id("composer-permissions")
+            .h(px(28.0))
+            .px(px(8.0))
+            .flex()
+            .items_center()
+            .gap(px(6.0))
+            .rounded(px(9.0))
+            .border_1()
+            .border_color(if open {
+                theme.line_strong.hsla()
+            } else {
+                theme.line.hsla()
+            })
+            .text_size(px(11.5))
+            .text_color(if approval == ApprovalMode::Full {
+                theme.error.hsla()
+            } else {
+                theme.text_2.hsla()
+            })
+            .opacity(if running { 0.42 } else { 1.0 })
+            .when(!running, |button| {
+                button
+                    .cursor_pointer()
+                    .hover(move |style| {
+                        style
+                            .bg(theme.surface_2.hsla())
+                            .border_color(theme.line_strong.hsla())
+                            .text_color(theme.text.hsla())
+                    })
+                    .on_click(cx.listener(|this, _event, _window, cx| {
+                        this.toggle_composer_menu(ComposerMenu::Permissions, cx);
+                    }))
+            })
+            .child(svg_icon(icon_path, 13.0))
+            .child(label)
+            .into_any_element()
+    }
+
+    fn model_trigger(&self, running: bool, cx: &Context<Self>) -> Option<AnyElement> {
+        let selected = self.selected_model()?.clone();
+        let theme = self.theme;
+        let open = self.composer_menu == Some(ComposerMenu::Model);
+        let effort = self
+            .composer_settings
+            .effort
+            .as_deref()
+            .map(title_case)
+            .unwrap_or_default();
+        let fast = self.composer_settings.service_tier.is_some();
+        Some(
+            div()
+                .id("composer-model")
+                .h(px(28.0))
+                .max_w(px(270.0))
+                .px(px(8.0))
+                .flex()
+                .items_center()
+                .gap(px(6.0))
+                .rounded(px(9.0))
+                .border_1()
+                .border_color(if open {
+                    theme.line_strong.hsla()
+                } else {
+                    theme.line.hsla()
+                })
+                .text_size(px(11.5))
+                .text_color(theme.text.hsla())
+                .opacity(if running { 0.42 } else { 1.0 })
+                .when(!running, |button| {
+                    button
+                        .cursor_pointer()
+                        .hover(move |style| {
+                            style
+                                .bg(theme.surface_2.hsla())
+                                .border_color(theme.line_strong.hsla())
+                        })
+                        .on_click(cx.listener(|this, _event, _window, cx| {
+                            this.toggle_composer_menu(ComposerMenu::Model, cx);
+                        }))
+                })
+                .when(fast, |button| {
+                    button.child(
+                        div()
+                            .text_color(theme.attention.hsla())
+                            .child(svg_icon("icons/zap.svg", 12.0)),
+                    )
+                })
+                .child(provider_mark(selected.provider, theme, 13.0))
+                .child(
+                    div()
+                        .min_w(px(0.0))
+                        .max_w(px(165.0))
+                        .truncate()
+                        .child(selected.model.display_name),
+                )
+                .when(!effort.is_empty(), |button| {
+                    button.child(div().text_color(theme.text_3.hsla()).child(effort))
+                })
+                .child(
+                    div()
+                        .text_color(theme.text_3.hsla())
+                        .child(svg_icon("icons/chevron-down.svg", 12.0)),
+                )
+                .into_any_element(),
+        )
+    }
+
+    fn composer_popover(&self, is_new_session: bool, cx: &Context<Self>) -> Option<AnyElement> {
+        match self.composer_menu {
+            Some(ComposerMenu::Permissions) => Some(self.permission_popover(is_new_session, cx)),
+            Some(ComposerMenu::Model) => Some(self.model_popover(is_new_session, cx)),
+            None => None,
+        }
+    }
+
+    fn permission_popover(&self, is_new_session: bool, cx: &Context<Self>) -> AnyElement {
+        let theme = self.theme;
+        let selected = self.composer_settings.approval;
+        let auto_review = self.composer_settings.auto_review_supported;
+        let attachment_offset = if self.attachments.is_empty() {
+            0.0
+        } else {
+            34.0
+        };
+        let options = [
+            (
+                ApprovalMode::Ask,
+                "Ask first",
+                "Read-only until you approve each action",
+            ),
+            (
+                ApprovalMode::Auto,
+                "Auto-approve",
+                "Edits and commands inside this folder",
+            ),
+            (
+                ApprovalMode::AutoReview,
+                "Auto-review",
+                "Reviews elevated actions before they run",
+            ),
+            (
+                ApprovalMode::Full,
+                "Full access",
+                "No sandbox, no prompts, no undo. Use with care.",
+            ),
+        ];
+        div()
+            .absolute()
+            .left(px(40.0))
+            .bottom(px(
+                (if is_new_session { 183.0 } else { 147.0 }) + attachment_offset
+            ))
+            .w(px(315.0))
+            .rounded(px(13.0))
+            .border_1()
+            .border_color(theme.line_strong.hsla())
+            .bg(theme.surface_2.hsla())
+            .shadow_lg()
+            .p(px(5.0))
+            .children(
+                options
+                    .into_iter()
+                    .filter(|(mode, _, _)| *mode != ApprovalMode::AutoReview || auto_review)
+                    .enumerate()
+                    .map(|(index, (mode, title, detail))| {
+                        let active = mode == selected;
+                        let (icon_path, _) = approval_meta(mode);
+                        div()
+                            .id(("permission-option", index))
+                            .min_h(px(48.0))
+                            .w_full()
+                            .flex()
+                            .items_center()
+                            .gap(px(9.0))
+                            .px(px(8.0))
+                            .rounded(px(8.0))
+                            .when(active, |row| row.bg(theme.surface_3.hsla()))
+                            .cursor_pointer()
+                            .hover(move |style| style.bg(theme.surface_3.hsla()))
+                            .on_click(cx.listener(move |this, _event, _window, cx| {
+                                this.choose_approval(mode, cx);
+                            }))
+                            .child(
+                                div()
+                                    .size(px(20.0))
+                                    .flex()
+                                    .items_center()
+                                    .justify_center()
+                                    .text_color(if mode == ApprovalMode::Full {
+                                        theme.error.hsla()
+                                    } else {
+                                        theme.text_2.hsla()
+                                    })
+                                    .child(svg_icon(icon_path, 14.0)),
+                            )
+                            .child(
+                                div()
+                                    .min_w(px(0.0))
+                                    .flex_1()
+                                    .flex()
+                                    .flex_col()
+                                    .child(
+                                        div()
+                                            .text_size(px(12.0))
+                                            .font_weight(FontWeight::MEDIUM)
+                                            .text_color(theme.text.hsla())
+                                            .child(title),
+                                    )
+                                    .child(
+                                        div()
+                                            .mt(px(2.0))
+                                            .truncate()
+                                            .text_size(px(10.5))
+                                            .text_color(theme.text_3.hsla())
+                                            .child(detail),
+                                    ),
+                            )
+                            .when(active, |row| row.child(svg_icon("icons/check.svg", 12.0)))
+                    }),
+            )
+            .into_any_element()
+    }
+
+    fn model_popover(&self, is_new_session: bool, cx: &Context<Self>) -> AnyElement {
+        let theme = self.theme;
+        let selected_key = self.composer_settings.selected_model_key.clone();
+        let selected = self.selected_model().cloned();
+        let mut last_source = None::<String>;
+        let attachment_offset = if self.attachments.is_empty() {
+            0.0
+        } else {
+            34.0
+        };
+        let mut rows = Vec::new();
+        for (index, choice) in self.composer_settings.models.iter().cloned().enumerate() {
+            if last_source.as_deref() != Some(choice.source_name.as_str()) {
+                last_source = Some(choice.source_name.clone());
+                rows.push(
+                    div()
+                        .mt(if rows.is_empty() { px(0.0) } else { px(4.0) })
+                        .h(px(27.0))
+                        .flex()
+                        .items_center()
+                        .gap(px(6.0))
+                        .px(px(8.0))
+                        .text_size(px(10.0))
+                        .font_weight(FontWeight::SEMIBOLD)
+                        .text_color(theme.text_3.hsla())
+                        .child(provider_mark(choice.provider, theme, 13.0))
+                        .child(choice.source_name.clone())
+                        .into_any_element(),
+                );
+            }
+            let active = selected_key.as_deref() == Some(choice.key.as_str());
+            let key = choice.key.clone();
+            rows.push(
+                div()
+                    .id(("model-option", index))
+                    .min_h(px(32.0))
+                    .w_full()
+                    .flex()
+                    .items_center()
+                    .gap(px(8.0))
+                    .px(px(8.0))
+                    .rounded(px(8.0))
+                    .when(active, |row| row.bg(theme.surface_3.hsla()))
+                    .cursor_pointer()
+                    .hover(move |style| style.bg(theme.surface_3.hsla()))
+                    .on_click(cx.listener(move |this, _event, _window, cx| {
+                        this.choose_model(key.clone(), cx);
+                    }))
+                    .child(
+                        div()
+                            .min_w(px(0.0))
+                            .flex_1()
+                            .truncate()
+                            .text_size(px(12.0))
+                            .text_color(theme.text.hsla())
+                            .child(choice.model.display_name),
+                    )
+                    .when(active, |row| row.child(svg_icon("icons/check.svg", 13.0)))
+                    .into_any_element(),
+            );
+        }
+
+        div()
+            .absolute()
+            .right(px(38.0))
+            .bottom(px(
+                (if is_new_session { 183.0 } else { 147.0 }) + attachment_offset
+            ))
+            .w(px(330.0))
+            .max_h(px(520.0))
+            .rounded(px(16.0))
+            .border_1()
+            .border_color(theme.line_strong.hsla())
+            .bg(theme.surface_2.hsla())
+            .shadow_lg()
+            .overflow_hidden()
+            .child(
+                div()
+                    .id("model-options-scroll")
+                    .max_h(px(246.0))
+                    .overflow_y_scroll()
+                    .p(px(6.0))
+                    .children(rows),
+            )
+            .when_some(selected, |menu, selected| {
+                menu.child(self.model_controls(selected, cx))
+            })
+            .into_any_element()
+    }
+
+    fn model_controls(&self, selected: ModelChoice, cx: &Context<Self>) -> AnyElement {
+        let theme = self.theme;
+        let selected_effort = self.composer_settings.effort.clone();
+        let fast = self.composer_settings.service_tier.is_some();
+        let efforts = selected.model.reasoning_efforts;
+        let has_fast = !selected.model.service_tiers.is_empty();
+        div()
+            .border_t_1()
+            .border_color(theme.line.hsla())
+            .bg(theme.surface.hsla())
+            .p(px(8.0))
+            .child(
+                div()
+                    .h(px(32.0))
+                    .flex()
+                    .items_center()
+                    .pl(px(6.0))
+                    .child(
+                        div()
+                            .flex_1()
+                            .flex()
+                            .items_center()
+                            .text_size(px(11.5))
+                            .font_weight(FontWeight::MEDIUM)
+                            .text_color(theme.text_3.hsla())
+                            .child("Effort: ")
+                            .child(
+                                div().text_color(theme.text.hsla()).child(
+                                    selected_effort
+                                        .as_deref()
+                                        .map_or_else(|| "Default".into(), title_case),
+                                ),
+                            ),
+                    )
+                    .when(has_fast, |row| {
+                        row.child(
+                            div()
+                                .id("model-fast-toggle")
+                                .size(px(30.0))
+                                .flex()
+                                .items_center()
+                                .justify_center()
+                                .rounded(px(15.0))
+                                .border_1()
+                                .border_color(if fast {
+                                    theme.attention.hsla()
+                                } else {
+                                    theme.line_strong.hsla()
+                                })
+                                .bg(if fast {
+                                    theme.attention.hsla().opacity(0.14)
+                                } else {
+                                    theme.surface_2.hsla()
+                                })
+                                .text_color(if fast {
+                                    theme.attention.hsla()
+                                } else {
+                                    theme.text_2.hsla()
+                                })
+                                .cursor_pointer()
+                                .active(|style| style.opacity(0.72))
+                                .on_click(cx.listener(|this, _event, _window, cx| {
+                                    cx.emit(ChatEvent::ToggleFast);
+                                    this.composer_menu = Some(ComposerMenu::Model);
+                                }))
+                                .child(svg_icon("icons/zap.svg", 15.0)),
+                        )
+                    }),
+            )
+            .when(!efforts.is_empty(), |controls| {
+                controls.child(
+                    div()
+                        .h(px(36.0))
+                        .w_full()
+                        .flex()
+                        .items_center()
+                        .justify_between()
+                        .px(px(12.0))
+                        .rounded(px(18.0))
+                        .border_1()
+                        .border_color(theme.line_strong.hsla())
+                        .bg(theme.surface_2.hsla())
+                        .children(efforts.into_iter().enumerate().map(|(index, effort)| {
+                            let active = selected_effort.as_deref() == Some(effort.as_str());
+                            let value = effort.clone();
+                            div()
+                                .id(("effort-stop", index))
+                                .size(px(20.0))
+                                .flex()
+                                .items_center()
+                                .justify_center()
+                                .cursor_pointer()
+                                .on_click(cx.listener(move |this, _event, _window, cx| {
+                                    this.choose_effort(value.clone(), cx);
+                                }))
+                                .child(
+                                    div()
+                                        .size(px(if active { 7.0 } else { 5.0 }))
+                                        .rounded(px(4.0))
+                                        .bg(if active {
+                                            theme.text_2.hsla()
+                                        } else {
+                                            theme.text_3.hsla().opacity(0.55)
+                                        }),
+                                )
+                        })),
+                )
+            })
+            .into_any_element()
     }
 }
 
@@ -712,22 +1405,106 @@ fn error_item(text: SharedString, theme: Theme) -> AnyElement {
         .into_any_element()
 }
 
-fn tool_button(label: &'static str, theme: Theme) -> impl IntoElement {
+fn icon_tool_button(
+    id: &'static str,
+    icon_path: &'static str,
+    label: Option<&'static str>,
+    active: bool,
+    theme: Theme,
+    action: Option<UiAction>,
+) -> impl IntoElement {
     div()
+        .id(id)
         .h(px(28.0))
-        .px(px(7.0))
+        .min_w(px(28.0))
+        .px(px(if label.is_some() { 8.0 } else { 6.0 }))
         .flex()
         .items_center()
-        .rounded(px(7.0))
+        .justify_center()
+        .gap(px(6.0))
+        .rounded(px(9.0))
+        .border_1()
+        .border_color(if active {
+            theme.attention.hsla().opacity(0.6)
+        } else {
+            theme.line.hsla()
+        })
         .text_size(px(11.5))
-        .text_color(theme.text_2.hsla())
+        .text_color(if active {
+            theme.attention.hsla()
+        } else {
+            theme.text_2.hsla()
+        })
         .cursor_pointer()
         .hover(move |style| {
             style
                 .bg(theme.surface_2.hsla())
+                .border_color(theme.line_strong.hsla())
                 .text_color(theme.text.hsla())
         })
-        .child(label)
+        .when_some(action, |button, action| {
+            button.on_click(move |_event, _window, cx| action(cx))
+        })
+        .child(svg_icon(icon_path, 14.0))
+        .when_some(label, |button, label| button.child(label))
+}
+
+type UiAction = Rc<dyn Fn(&mut App)>;
+
+fn svg_icon(path: &'static str, size: f32) -> impl IntoElement {
+    svg().path(path).size(px(size))
+}
+
+fn approval_meta(approval: ApprovalMode) -> (&'static str, &'static str) {
+    match approval {
+        ApprovalMode::Ask => ("icons/shield-question.svg", "Ask first"),
+        ApprovalMode::Auto => ("icons/shield-check.svg", "Auto"),
+        ApprovalMode::AutoReview => ("icons/scan-eye.svg", "Auto-review"),
+        ApprovalMode::Full => ("icons/lock-open.svg", "Full access"),
+    }
+}
+
+fn provider_mark(provider: ProviderId, theme: Theme, size: f32) -> AnyElement {
+    if provider == ProviderId::Codex {
+        return div()
+            .text_color(theme.text_3.hsla())
+            .child(svg_icon("icons/openai.svg", size))
+            .into_any_element();
+    }
+    div()
+        .size(px(size))
+        .flex()
+        .items_center()
+        .justify_center()
+        .rounded(px(4.0))
+        .bg(theme.surface_3.hsla())
+        .font_family("Geist Mono")
+        .text_size(px(8.0))
+        .font_weight(FontWeight::SEMIBOLD)
+        .text_color(theme.text_2.hsla())
+        .child(match provider {
+            ProviderId::ClaudeCode => "A",
+            ProviderId::Cursor => "C",
+            ProviderId::OpenCode => "O",
+            ProviderId::Acp => "A",
+            ProviderId::Api => "↔",
+            ProviderId::Codex => unreachable!(),
+        })
+        .into_any_element()
+}
+
+fn title_case(value: &str) -> String {
+    let mut chars = value.chars();
+    let Some(first) = chars.next() else {
+        return String::new();
+    };
+    first.to_uppercase().chain(chars).collect()
+}
+
+fn path_label(path: &str) -> &str {
+    path.rsplit(['/', '\\'])
+        .find(|component| !component.is_empty())
+        .unwrap_or(path)
 }
 
 fn queue_summary(count: usize, theme: Theme) -> impl IntoElement {

@@ -16,6 +16,15 @@ impl AssetSource for HarnessAssets {
             "icons/chevron-right.svg" => Some(include_bytes!("../assets/icons/chevron-right.svg")),
             "icons/chevron-down.svg" => Some(include_bytes!("../assets/icons/chevron-down.svg")),
             "icons/check.svg" => Some(include_bytes!("../assets/icons/check.svg")),
+            "icons/shield-question.svg" => {
+                Some(include_bytes!("../assets/icons/shield-question.svg"))
+            }
+            "icons/shield-check.svg" => Some(include_bytes!("../assets/icons/shield-check.svg")),
+            "icons/scan-eye.svg" => Some(include_bytes!("../assets/icons/scan-eye.svg")),
+            "icons/lock-open.svg" => Some(include_bytes!("../assets/icons/lock-open.svg")),
+            "icons/zap.svg" => Some(include_bytes!("../assets/icons/zap.svg")),
+            "icons/palette.svg" => Some(include_bytes!("../assets/icons/palette.svg")),
+            "icons/openai.svg" => Some(include_bytes!("../assets/icons/openai.svg")),
             _ => None,
         };
         Ok(bytes.map(Cow::Borrowed))

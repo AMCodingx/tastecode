@@ -1,6 +1,8 @@
 use crate::assets::{HarnessAssets, register_fonts};
-use crate::chat::{ChatEvent, ChatView, SessionContext};
-use crate::client_state::{ClientState, ClientUpdate, NewThreadRequest, ShellEvent};
+use crate::chat::{ChatEvent, ChatView, ComposerSettings, SessionContext};
+use crate::client_state::{
+    ClientState, ClientUpdate, NewThreadRequest, SendTurnRequest, ShellEvent,
+};
 use crate::sidebar::{SidebarActions, SidebarProps, sidebar};
 use crate::theme::{TITLEBAR_HEIGHT, Theme};
 use anyhow::Result;
@@ -10,11 +12,12 @@ use gpui::{
     WindowOptions, div, ease_out_quint, point, prelude::*, px, size, svg,
 };
 use gpui_component::Root;
-use harness_protocol::ApprovalMode;
+use harness_protocol::{ApprovalMode, Model};
 use std::rc::Rc;
 
 const APP_WIDTH: f32 = 1180.0;
 const APP_HEIGHT: f32 = 820.0;
+const DESIGN_BRIEF_ATTACHMENT: &str = "personal-harness://design-brief-v1";
 
 pub fn run() -> Result<()> {
     Application::new()
@@ -61,6 +64,7 @@ struct HarnessApp {
     service_tier: Option<String>,
     approval: ApprovalMode,
     isolate_session: bool,
+    design_mode: bool,
     sidebar_scope: Option<String>,
     scope_open: bool,
     new_thread_picker: bool,
@@ -75,7 +79,7 @@ impl HarnessApp {
         let mut state = ClientState::new(fixture);
         let chat = cx.new(|cx| ChatView::new(Theme::dark(), window, cx));
 
-        cx.subscribe(&chat, |this, _chat, event, _cx| match event {
+        cx.subscribe(&chat, |this, _chat, event, cx| match event {
             ChatEvent::NeedHistory {
                 thread_id,
                 after_seq,
@@ -83,12 +87,60 @@ impl HarnessApp {
             ChatEvent::Submit {
                 thread_id,
                 text,
+                attachments,
                 steer,
-            } => this.state.send_turn(thread_id, text.clone(), *steer),
-            ChatEvent::Interrupt { thread_id } => this.state.interrupt(thread_id),
-            ChatEvent::Create { project_path, text } => {
-                this.create_thread(project_path.clone(), text.clone(), _cx);
+            } => {
+                let mut attachments = attachments.clone();
+                if this.design_mode
+                    && !attachments
+                        .iter()
+                        .any(|path| path == DESIGN_BRIEF_ATTACHMENT)
+                {
+                    attachments.push(DESIGN_BRIEF_ATTACHMENT.into());
+                }
+                let model = this
+                    .selected_model_choice()
+                    .map(|choice| choice.model.id.clone())
+                    .filter(|model| !model.is_empty());
+                this.state.send_turn(
+                    thread_id,
+                    SendTurnRequest {
+                        text: text.clone(),
+                        steer: *steer,
+                        attachments,
+                        model,
+                        effort: this.effort.clone(),
+                        service_tier: this.service_tier.clone(),
+                    },
+                );
             }
+            ChatEvent::Interrupt { thread_id } => this.state.interrupt(thread_id),
+            ChatEvent::Create {
+                project_path,
+                text,
+                attachments,
+            } => {
+                this.create_thread(project_path.clone(), text.clone(), attachments.clone(), cx);
+            }
+            ChatEvent::SelectModel { key } => this.select_model(key, cx),
+            ChatEvent::SelectEffort { effort } => {
+                this.effort = Some(effort.clone());
+                this.sync_composer_settings(cx);
+            }
+            ChatEvent::ToggleFast => this.toggle_fast(cx),
+            ChatEvent::SelectApproval { approval } => {
+                this.approval = *approval;
+                this.sync_composer_settings(cx);
+            }
+            ChatEvent::ToggleIsolation => {
+                this.isolate_session = !this.isolate_session;
+                this.sync_composer_settings(cx);
+            }
+            ChatEvent::ToggleDesign => {
+                this.design_mode = !this.design_mode;
+                this.sync_composer_settings(cx);
+            }
+            ChatEvent::PickAttachments => this.pick_attachments(cx),
         })
         .detach();
 
@@ -121,6 +173,7 @@ impl HarnessApp {
             service_tier: None,
             approval: ApprovalMode::Ask,
             isolate_session: false,
+            design_mode: false,
             sidebar_scope: None,
             scope_open: false,
             new_thread_picker: false,
@@ -131,12 +184,15 @@ impl HarnessApp {
     }
 
     fn apply_client_update(&mut self, update: ClientUpdate, cx: &mut Context<Self>) {
+        let shell_changed = update.shell_changed;
         for chat_update in update.chat {
             self.chat.update(cx, |chat, cx| {
                 chat.apply_update(chat_update, cx);
             });
         }
-        self.sync_model_selection();
+        if shell_changed {
+            self.sync_model_selection();
+        }
         if self.state.model_catalog_loaded
             && self.selected_model_key.is_some()
             && let Some(path) = self.pending_new_chat_path.take()
@@ -146,7 +202,8 @@ impl HarnessApp {
         for event in update.shell_events {
             self.apply_shell_event(event, cx);
         }
-        if update.shell_changed {
+        if shell_changed {
+            self.sync_composer_settings(cx);
             cx.notify();
         }
     }
@@ -226,23 +283,41 @@ impl HarnessApp {
     }
 
     fn select_session(&mut self, thread_id: String, cx: &mut Context<Self>) {
-        let context = self.state.projects.iter().find_map(|project| {
+        let selection = self.state.projects.iter().find_map(|project| {
             project
                 .sessions
                 .iter()
                 .find(|session| session.id == thread_id)
-                .map(|session| SessionContext {
-                    thread_id: Some(session.id.clone()),
-                    title: session.title.clone(),
-                    project_path: project.path.clone(),
-                    project_name: project.name.clone(),
-                    provider: session.provider,
-                    branch: session.worktree_branch.clone(),
+                .map(|session| {
+                    (
+                        SessionContext {
+                            thread_id: Some(session.id.clone()),
+                            title: session.title.clone(),
+                            project_path: project.path.clone(),
+                            project_name: project.name.clone(),
+                            provider: session.provider,
+                            branch: session.worktree_branch.clone(),
+                        },
+                        session.agent.clone(),
+                    )
                 })
         });
-        let Some(context) = context else {
+        let Some((context, agent)) = selection else {
             return;
         };
+        let matching_model = self
+            .state
+            .model_catalog
+            .iter()
+            .find(|choice| {
+                choice.provider == context.provider
+                    && (context.provider != harness_protocol::ProviderId::Acp
+                        || choice.agent_id == agent)
+            })
+            .map(|choice| choice.key.clone());
+        if let Some(key) = matching_model {
+            self.select_model(&key, cx);
+        }
 
         self.selected_thread_id = Some(thread_id.clone());
         self.active_project_path = Some(context.project_path.clone());
@@ -316,22 +391,37 @@ impl HarnessApp {
         cx.notify();
     }
 
-    fn create_thread(&mut self, project_path: String, text: String, cx: &mut Context<Self>) {
+    fn create_thread(
+        &mut self,
+        project_path: String,
+        text: String,
+        mut attachments: Vec<String>,
+        cx: &mut Context<Self>,
+    ) {
         let Some(choice) = self.selected_model_choice().cloned() else {
             self.chat.update(cx, |chat, cx| {
                 chat.apply_update(
                     crate::client_state::ChatUpdate::DraftError {
                         message: "Choose a configured model before starting this chat.".into(),
                         restore_text: text,
+                        restore_attachments: attachments,
                     },
                     cx,
                 );
             });
             return;
         };
+        if self.design_mode
+            && !attachments
+                .iter()
+                .any(|path| path == DESIGN_BRIEF_ATTACHMENT)
+        {
+            attachments.push(DESIGN_BRIEF_ATTACHMENT.into());
+        }
         self.state.start_thread(NewThreadRequest {
             project_path,
             title: title_from(&text),
+            attachments,
             text,
             choice,
             effort: self.effort.clone(),
@@ -347,6 +437,83 @@ impl HarnessApp {
             .model_catalog
             .iter()
             .find(|choice| choice.key == *key)
+    }
+
+    fn select_model(&mut self, key: &str, cx: &mut Context<Self>) {
+        let Some(next) = self
+            .state
+            .model_catalog
+            .iter()
+            .find(|choice| choice.key == key)
+            .cloned()
+        else {
+            return;
+        };
+        let current_model = self
+            .selected_model_choice()
+            .map(|choice| choice.model.clone());
+        self.effort =
+            resolve_reasoning_effort(self.effort.as_deref(), current_model.as_ref(), &next.model);
+        self.service_tier = self
+            .service_tier
+            .clone()
+            .filter(|tier| {
+                next.model
+                    .service_tiers
+                    .iter()
+                    .any(|entry| entry.id == *tier)
+            })
+            .or_else(|| next.model.default_service_tier.clone());
+        self.selected_model_key = Some(next.key);
+        self.chat.update(cx, |chat, cx| {
+            chat.update_draft_provider(next.provider, cx);
+        });
+        self.sync_composer_settings(cx);
+    }
+
+    fn toggle_fast(&mut self, cx: &mut Context<Self>) {
+        if self.service_tier.is_some() {
+            self.service_tier = None;
+        } else if let Some(choice) = self.selected_model_choice() {
+            self.service_tier = choice.model.default_service_tier.clone().or_else(|| {
+                choice
+                    .model
+                    .service_tiers
+                    .first()
+                    .map(|tier| tier.id.clone())
+            });
+        }
+        self.sync_composer_settings(cx);
+    }
+
+    fn sync_composer_settings(&mut self, cx: &mut Context<Self>) {
+        let auto_review_supported = self.selected_model_choice().is_some_and(|choice| {
+            self.state
+                .provider_statuses
+                .iter()
+                .find(|provider| provider.id == choice.provider)
+                .and_then(|provider| provider.capabilities.as_ref())
+                .and_then(|capabilities| capabilities.auto_review)
+                .unwrap_or(false)
+        });
+        if self.approval == ApprovalMode::AutoReview && !auto_review_supported {
+            self.approval = ApprovalMode::Ask;
+        }
+        self.chat.update(cx, |chat, cx| {
+            chat.update_composer_settings(
+                ComposerSettings {
+                    models: self.state.model_catalog.clone(),
+                    selected_model_key: self.selected_model_key.clone(),
+                    effort: self.effort.clone(),
+                    service_tier: self.service_tier.clone(),
+                    approval: self.approval,
+                    auto_review_supported,
+                    isolate: self.isolate_session,
+                    design_mode: self.design_mode,
+                },
+                cx,
+            );
+        });
     }
 
     fn pick_project(&mut self, cx: &mut Context<Self>) {
@@ -381,6 +548,27 @@ impl HarnessApp {
                     });
                 }
             }
+        })
+        .detach();
+    }
+
+    fn pick_attachments(&mut self, cx: &mut Context<Self>) {
+        let receiver = cx.prompt_for_paths(PathPromptOptions {
+            files: true,
+            directories: true,
+            multiple: true,
+            prompt: Some("Attach".into()),
+        });
+        let chat = self.chat.clone();
+        cx.spawn(async move |_view, cx| {
+            let Ok(Ok(Some(paths))) = receiver.await else {
+                return;
+            };
+            let paths = paths
+                .into_iter()
+                .map(|path| path.to_string_lossy().into_owned())
+                .collect::<Vec<_>>();
+            let _ = chat.update(cx, |chat, cx| chat.add_attachments(paths, cx));
         })
         .detach();
     }
@@ -609,6 +797,77 @@ fn icon(path: &'static str, size: f32) -> impl IntoElement {
     svg().path(path).size(px(size))
 }
 
+fn resolve_reasoning_effort(
+    current: Option<&str>,
+    current_model: Option<&Model>,
+    next_model: &Model,
+) -> Option<String> {
+    let next = &next_model.reasoning_efforts;
+    if next.is_empty() {
+        return None;
+    }
+    let default = || {
+        next_model
+            .default_reasoning_effort
+            .as_ref()
+            .filter(|effort| next.contains(effort))
+            .cloned()
+            .or_else(|| next.first().cloned())
+    };
+    let Some(current) = current else {
+        return default();
+    };
+    let current_efforts = current_model
+        .map(|model| model.reasoning_efforts.as_slice())
+        .unwrap_or_default();
+    let current_index = current_efforts.iter().position(|effort| effort == current);
+    if current_efforts.len() > 1 && current_index == Some(current_efforts.len() - 1) {
+        return next.last().cloned();
+    }
+    if next.iter().any(|effort| effort == current) {
+        return Some(current.into());
+    }
+    if let Some(current_index) = current_index
+        && current_efforts.len() > 1
+    {
+        let relative = current_index as f32 / (current_efforts.len() - 1) as f32;
+        let next_index = (relative * (next.len() - 1) as f32).round() as usize;
+        return next.get(next_index).cloned();
+    }
+    if let Some(current_rank) = reasoning_effort_rank(current) {
+        return next
+            .iter()
+            .filter_map(|effort| {
+                let rank = reasoning_effort_rank(effort)?;
+                Some((effort, current_rank.abs_diff(rank), rank))
+            })
+            .min_by(|left, right| left.1.cmp(&right.1).then_with(|| right.2.cmp(&left.2)))
+            .map(|(effort, _, _)| effort.clone())
+            .or_else(default);
+    }
+    default()
+}
+
+fn reasoning_effort_rank(value: &str) -> Option<u8> {
+    let normalized = value
+        .chars()
+        .filter(|character| character.is_ascii_alphabetic())
+        .flat_map(char::to_lowercase)
+        .collect::<String>();
+    match normalized.as_str() {
+        "none" => Some(0),
+        "minimal" => Some(1),
+        "xlow" | "extralow" => Some(2),
+        "low" => Some(3),
+        "medium" => Some(4),
+        "high" => Some(5),
+        "xhigh" | "extrahigh" => Some(6),
+        "max" | "maximum" => Some(7),
+        "ultra" => Some(8),
+        _ => None,
+    }
+}
+
 fn title_from(text: &str) -> String {
     let clean = text.split_whitespace().collect::<Vec<_>>().join(" ");
     let mut chars = clean.chars();
@@ -617,5 +876,40 @@ fn title_from(text: &str) -> String {
         format!("{title}…")
     } else {
         title
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn model(efforts: &[&str], default: Option<&str>) -> Model {
+        Model {
+            id: "model".into(),
+            display_name: "Model".into(),
+            description: None,
+            is_default: true,
+            reasoning_efforts: efforts.iter().map(|effort| (*effort).into()).collect(),
+            default_reasoning_effort: default.map(str::to_owned),
+            service_tiers: Vec::new(),
+            default_service_tier: None,
+        }
+    }
+
+    #[test]
+    fn highest_effort_stays_highest_across_model_vocabularies() {
+        let current = model(&["low", "high"], Some("high"));
+        let next = model(&["low", "medium", "high", "max"], Some("medium"));
+
+        assert_eq!(
+            resolve_reasoning_effort(Some("high"), Some(&current), &next).as_deref(),
+            Some("max")
+        );
+    }
+
+    #[test]
+    fn first_prompt_title_is_whitespace_normalized_and_bounded() {
+        assert_eq!(title_from("  build\nthis   please "), "build this please");
+        assert_eq!(title_from(&"x".repeat(41)), format!("{}…", "x".repeat(40)));
     }
 }
