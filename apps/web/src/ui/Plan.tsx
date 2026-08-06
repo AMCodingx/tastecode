@@ -1,3 +1,4 @@
+import { useState } from 'react'
 import type { PlanStep } from '@harness/contracts'
 import { Check, Circle, LoaderCircle } from 'lucide-react'
 
@@ -9,6 +10,10 @@ import { Check, Circle, LoaderCircle } from 'lucide-react'
  * while it works — and a row that scrolls away cannot answer it.
  */
 export function Plan({ steps, compact = false }: { steps: PlanStep[]; compact?: boolean }) {
+  // Owned state, not a hardcoded `open` attribute: re-applying `open` on
+  // every plan-step update cancelled the user's collapse mid-turn.
+  const [open, setOpen] = useState(true)
+
   if (steps.length === 0) return null
 
   if (compact) {
@@ -21,7 +26,7 @@ export function Plan({ steps, compact = false }: { steps: PlanStep[]; compact?: 
   const done = steps.filter((step) => step.status === 'done').length
 
   return (
-    <details className="plan" open>
+    <details className="plan" open={open} onToggle={(event) => setOpen(event.currentTarget.open)}>
       <summary className="plan__head">
         <span className="plan__title">Plan</span>
         <span className="plan__count">

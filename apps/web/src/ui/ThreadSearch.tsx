@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import type { Item } from '@harness/contracts'
 import { ChevronDown, ChevronUp, X } from 'lucide-react'
 
@@ -17,23 +17,30 @@ export function ThreadSearch(props: {
   const [query, setQuery] = useState('')
   const [cursor, setCursor] = useState(0)
   const input = useRef<HTMLInputElement>(null)
+  const jumped = useRef(false)
 
   useEffect(() => {
     input.current?.focus()
   }, [])
 
   const term = query.trim().toLowerCase()
-  const hits = term
-    ? props.items
-        .map((item, index) => ({ item, index }))
-        .filter(
-          ({ item }) =>
-            item.text?.toLowerCase().includes(term) ||
-            item.command?.toLowerCase().includes(term) ||
-            item.path?.toLowerCase().includes(term),
-        )
-        .map(({ index }) => index)
-    : []
+  // Memoised: three toLowerCase passes over the whole thread per keystroke
+  // (and per render) is real work on long transcripts.
+  const hits = useMemo(
+    () =>
+      term
+        ? props.items
+            .map((item, index) => ({ item, index }))
+            .filter(
+              ({ item }) =>
+                item.text?.toLowerCase().includes(term) ||
+                item.command?.toLowerCase().includes(term) ||
+                item.path?.toLowerCase().includes(term),
+            )
+            .map(({ index }) => index)
+        : [],
+    [props.items, term],
+  )
 
   const go = (next: number) => {
     if (hits.length === 0) return
@@ -55,10 +62,20 @@ export function ThreadSearch(props: {
         onChange={(e) => {
           setQuery(e.target.value)
           setCursor(0)
+          jumped.current = false
         }}
         onKeyDown={(e) => {
           if (e.key === 'Escape') props.onClose()
-          if (e.key === 'Enter') go(e.shiftKey ? cursor - 1 : cursor + 1)
+          if (e.key === 'Enter') {
+            // The first Enter lands on match one; advancing before ever
+            // jumping skipped it while the counter claimed "2/n".
+            if (!jumped.current) {
+              jumped.current = true
+              go(e.shiftKey ? hits.length - 1 : 0)
+            } else {
+              go(e.shiftKey ? cursor - 1 : cursor + 1)
+            }
+          }
         }}
       />
       <span className="find__count">

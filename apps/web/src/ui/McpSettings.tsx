@@ -59,6 +59,8 @@ export function McpSettings(props: {
   useEffect(() => {
     setInventory(undefined)
     setError(undefined)
+    // "Server added." must not survive into an unrelated project's panel.
+    setNotice(undefined)
     if (!props.projectPath) {
       setLoading(false)
       return
@@ -183,7 +185,10 @@ export function McpSettings(props: {
         projectPath: props.projectPath,
         serverId: server.id,
       })
-      window.open(result.authUrl, '_blank', 'noopener,noreferrer')
+      const opened = window.open(result.authUrl, '_blank', 'noopener,noreferrer')
+      if (!opened) {
+        setNotice(`Your browser blocked the sign-in window. Open it yourself: ${result.authUrl}`)
+      }
       setNotice('Finish signing in in your browser.')
       setBusy(undefined)
     } catch (cause) {
