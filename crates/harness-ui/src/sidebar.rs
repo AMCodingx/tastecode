@@ -8,16 +8,43 @@ use std::rc::Rc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 pub(crate) type SelectSession = Rc<dyn Fn(String, &mut App)>;
+pub(crate) type SidebarAction = Rc<dyn Fn(&mut App)>;
+pub(crate) type SelectScope = Rc<dyn Fn(Option<String>, &mut App)>;
 
-pub fn sidebar(
-    theme: Theme,
-    projects: &[ProjectSummary],
-    connection: ConnectionState,
-    loaded: bool,
-    fixture: bool,
-    selected_thread_id: Option<&str>,
-    on_select: SelectSession,
-) -> impl IntoElement {
+#[derive(Clone)]
+pub(crate) struct SidebarActions {
+    pub(crate) select_session: SelectSession,
+    pub(crate) new_chat: SidebarAction,
+    pub(crate) new_project: SidebarAction,
+    pub(crate) open_settings: SidebarAction,
+    pub(crate) toggle_scope: SidebarAction,
+    pub(crate) select_scope: SelectScope,
+}
+
+pub(crate) struct SidebarProps<'a> {
+    pub(crate) theme: Theme,
+    pub(crate) projects: &'a [ProjectSummary],
+    pub(crate) connection: ConnectionState,
+    pub(crate) loaded: bool,
+    pub(crate) fixture: bool,
+    pub(crate) selected_thread_id: Option<&'a str>,
+    pub(crate) selected_scope: Option<&'a str>,
+    pub(crate) scope_open: bool,
+    pub(crate) new_thread_picker: bool,
+}
+
+pub fn sidebar(props: SidebarProps<'_>, actions: SidebarActions) -> impl IntoElement {
+    let SidebarProps {
+        theme,
+        projects,
+        connection,
+        loaded,
+        fixture,
+        selected_thread_id,
+        selected_scope,
+        scope_open,
+        new_thread_picker,
+    } = props;
     div()
         .w(px(RAIL_WIDTH))
         .h_full()
@@ -27,7 +54,14 @@ pub fn sidebar(
         .bg(theme.rail.hsla())
         .border_r_1()
         .border_color(theme.line.hsla())
-        .child(sidebar_actions(theme))
+        .child(sidebar_actions(
+            theme,
+            projects,
+            selected_scope,
+            scope_open,
+            new_thread_picker,
+            &actions,
+        ))
         .child(if fixture {
             fixture_sidebar_body(theme).into_any_element()
         } else {
@@ -37,7 +71,8 @@ pub fn sidebar(
                 connection,
                 loaded,
                 selected_thread_id,
-                on_select,
+                selected_scope,
+                actions.select_session.clone(),
             )
             .into_any_element()
         })
@@ -53,11 +88,19 @@ pub fn sidebar(
                     "Settings",
                     "Ctrl ,",
                     theme,
+                    Some(actions.open_settings.clone()),
                 )),
         )
 }
 
-fn sidebar_actions(theme: Theme) -> impl IntoElement {
+fn sidebar_actions(
+    theme: Theme,
+    projects: &[ProjectSummary],
+    selected_scope: Option<&str>,
+    scope_open: bool,
+    new_thread_picker: bool,
+    actions: &SidebarActions,
+) -> impl IntoElement {
     div()
         .flex_none()
         .flex()
@@ -71,6 +114,7 @@ fn sidebar_actions(theme: Theme) -> impl IntoElement {
             "New chat",
             "Ctrl N",
             theme,
+            Some(actions.new_chat.clone()),
         ))
         .child(nav_item(
             "new-project",
@@ -78,6 +122,7 @@ fn sidebar_actions(theme: Theme) -> impl IntoElement {
             "New project",
             "Ctrl Shift O",
             theme,
+            Some(actions.new_project.clone()),
         ))
         .child(
             div()
@@ -108,6 +153,15 @@ fn sidebar_actions(theme: Theme) -> impl IntoElement {
                         .child("Ctrl Shift F"),
                 ),
         )
+        .child(scope_control(
+            theme,
+            projects,
+            selected_scope,
+            scope_open,
+            new_thread_picker,
+            actions.toggle_scope.clone(),
+            actions.select_scope.clone(),
+        ))
 }
 
 fn fixture_sidebar_body(theme: Theme) -> impl IntoElement {
@@ -190,12 +244,16 @@ fn sidebar_body(
     connection: ConnectionState,
     loaded: bool,
     selected_thread_id: Option<&str>,
+    selected_scope: Option<&str>,
     on_select: SelectSession,
 ) -> impl IntoElement {
     let mut active = Vec::new();
     let mut snoozed = Vec::new();
     let mut settled = Vec::new();
     for project in projects {
+        if selected_scope.is_some_and(|scope| scope != project.path) {
+            continue;
+        }
         for session in &project.sessions {
             match session.lifecycle.as_ref() {
                 Some(ThreadLifecycle::Snoozed { .. }) => snoozed.push((project, session)),
@@ -281,6 +339,7 @@ fn nav_item(
     label: &'static str,
     shortcut: &'static str,
     theme: Theme,
+    action: Option<SidebarAction>,
 ) -> impl IntoElement {
     div()
         .id(id)
@@ -298,6 +357,9 @@ fn nav_item(
                 .text_color(theme.text.hsla())
         })
         .active(|style| style.opacity(0.72))
+        .when_some(action, |item, action| {
+            item.on_click(move |_event, _window, cx| action(cx))
+        })
         .child(
             div()
                 .size(px(16.0))
@@ -315,6 +377,159 @@ fn nav_item(
                 .text_color(theme.text_3.hsla())
                 .child(shortcut),
         )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn scope_control(
+    theme: Theme,
+    projects: &[ProjectSummary],
+    selected_scope: Option<&str>,
+    open: bool,
+    new_thread_picker: bool,
+    on_toggle: SidebarAction,
+    on_select: SelectScope,
+) -> impl IntoElement {
+    let selected_name = selected_scope
+        .and_then(|path| projects.iter().find(|project| project.path == path))
+        .map_or_else(
+            || SharedString::from("All projects"),
+            |project| SharedString::from(project.name.clone()),
+        );
+    let all_action = on_select.clone();
+
+    div()
+        .mt(px(8.0))
+        .w_full()
+        .flex()
+        .flex_col()
+        .child(
+            div()
+                .h(px(29.0))
+                .w_full()
+                .flex()
+                .items_center()
+                .child(
+                    div()
+                        .w(px(40.0))
+                        .pl(px(6.0))
+                        .text_size(px(10.5))
+                        .font_weight(FontWeight::MEDIUM)
+                        .text_color(theme.text_3.hsla())
+                        .child(if new_thread_picker {
+                            "Project"
+                        } else {
+                            "Scope"
+                        }),
+                )
+                .child(
+                    div()
+                        .id("sidebar-scope")
+                        .h(px(29.0))
+                        .min_w(px(0.0))
+                        .flex_1()
+                        .flex()
+                        .items_center()
+                        .px(px(8.0))
+                        .rounded(px(7.0))
+                        .border_1()
+                        .border_color(if open {
+                            theme.line_strong.hsla()
+                        } else {
+                            theme.line.hsla()
+                        })
+                        .bg(theme.surface.hsla())
+                        .text_size(px(11.5))
+                        .text_color(theme.text_2.hsla())
+                        .cursor_pointer()
+                        .hover(move |style| {
+                            style
+                                .border_color(theme.line_strong.hsla())
+                                .text_color(theme.text.hsla())
+                        })
+                        .on_click(move |_event, _window, cx| on_toggle(cx))
+                        .child(
+                            div()
+                                .min_w(px(0.0))
+                                .flex_1()
+                                .truncate()
+                                .child(selected_name),
+                        )
+                        .child(
+                            div()
+                                .ml(px(5.0))
+                                .text_color(theme.text_3.hsla())
+                                .child(icon("icons/chevron-down.svg", 11.0)),
+                        ),
+                ),
+        )
+        .when(open, |control| {
+            control.child(
+                div()
+                    .id("scope-options")
+                    .ml(px(40.0))
+                    .mt(px(4.0))
+                    .max_h(px(220.0))
+                    .overflow_y_scroll()
+                    .rounded(px(8.0))
+                    .border_1()
+                    .border_color(theme.line_strong.hsla())
+                    .bg(theme.surface_2.hsla())
+                    .p(px(4.0))
+                    .when(!new_thread_picker, |menu| {
+                        menu.child(scope_option(
+                            "scope:all".into(),
+                            "All projects".into(),
+                            selected_scope.is_none(),
+                            theme,
+                            Rc::new(move |cx| all_action(None, cx)),
+                        ))
+                    })
+                    .children(projects.iter().map(|project| {
+                        let path = project.path.clone();
+                        let option_action = on_select.clone();
+                        scope_option(
+                            format!("scope:{}", project.path).into(),
+                            project.name.clone().into(),
+                            selected_scope == Some(project.path.as_str()),
+                            theme,
+                            Rc::new(move |cx| option_action(Some(path.clone()), cx)),
+                        )
+                    })),
+            )
+        })
+}
+
+fn scope_option(
+    id: SharedString,
+    label: SharedString,
+    selected: bool,
+    theme: Theme,
+    action: SidebarAction,
+) -> impl IntoElement {
+    div()
+        .id(id)
+        .h(px(29.0))
+        .w_full()
+        .flex()
+        .items_center()
+        .px(px(7.0))
+        .rounded(px(6.0))
+        .when(selected, |item| item.bg(theme.surface_3.hsla()))
+        .text_size(px(11.5))
+        .text_color(if selected {
+            theme.text.hsla()
+        } else {
+            theme.text_2.hsla()
+        })
+        .cursor_pointer()
+        .hover(move |style| {
+            style
+                .bg(theme.surface_3.hsla())
+                .text_color(theme.text.hsla())
+        })
+        .on_click(move |_event, _window, cx| action(cx))
+        .child(div().min_w(px(0.0)).flex_1().truncate().child(label))
+        .when(selected, |item| item.child(icon("icons/check.svg", 11.0)))
 }
 
 fn section_label(label: SharedString, theme: Theme) -> impl IntoElement {

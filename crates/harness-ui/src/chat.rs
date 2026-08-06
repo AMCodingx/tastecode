@@ -12,8 +12,9 @@ use harness_state::{ApplyOutcome, HistoryError, ThreadState};
 
 #[derive(Clone)]
 pub(crate) struct SessionContext {
-    pub(crate) thread_id: String,
+    pub(crate) thread_id: Option<String>,
     pub(crate) title: String,
+    pub(crate) project_path: String,
     pub(crate) project_name: String,
     pub(crate) provider: ProviderId,
     pub(crate) branch: Option<String>,
@@ -32,6 +33,10 @@ pub(crate) enum ChatEvent {
     Interrupt {
         thread_id: String,
     },
+    Create {
+        project_path: String,
+        text: String,
+    },
 }
 
 impl EventEmitter<ChatEvent> for ChatView {}
@@ -46,6 +51,8 @@ pub(crate) struct ChatView {
     list_state: ListState,
     composer: Entity<InputState>,
     clear_composer: bool,
+    restore_composer: Option<String>,
+    creating: bool,
 }
 
 impl ChatView {
@@ -74,6 +81,8 @@ impl ChatView {
             list_state: ListState::new(0, ListAlignment::Bottom, px(500.0)),
             composer,
             clear_composer: false,
+            restore_composer: None,
+            creating: false,
         }
     }
 
@@ -85,6 +94,24 @@ impl ChatView {
         self.loading = true;
         self.error = None;
         self.list_state.reset(0);
+        self.clear_composer = true;
+        self.restore_composer = None;
+        self.creating = false;
+        cx.notify();
+    }
+
+    pub(crate) fn begin_draft(&mut self, session: SessionContext, cx: &mut Context<Self>) {
+        debug_assert!(session.thread_id.is_none());
+        self.begin_session(session, cx);
+        self.loading = false;
+    }
+
+    pub(crate) fn promote_draft(&mut self, session: SessionContext, cx: &mut Context<Self>) {
+        debug_assert!(session.thread_id.is_some());
+        self.session = Some(session);
+        self.creating = false;
+        self.loading = true;
+        self.error = None;
         cx.notify();
     }
 
@@ -124,9 +151,13 @@ impl ChatView {
                 self.apply_thread_event(push, cx);
             }
             ChatUpdate::Refresh => {
-                if let Some(session) = &self.session {
+                if let Some(thread_id) = self
+                    .session
+                    .as_ref()
+                    .and_then(|session| session.thread_id.as_ref())
+                {
                     cx.emit(ChatEvent::NeedHistory {
-                        thread_id: session.thread_id.clone(),
+                        thread_id: thread_id.clone(),
                         after_seq: Some(self.state.last_seq()),
                     });
                 }
@@ -136,10 +167,25 @@ impl ChatView {
                 self.error = Some(message);
                 cx.notify();
             }
+            ChatUpdate::DraftError {
+                message,
+                restore_text,
+            } if self
+                .session
+                .as_ref()
+                .is_some_and(|session| session.thread_id.is_none()) =>
+            {
+                self.loading = false;
+                self.creating = false;
+                self.error = Some(message);
+                self.restore_composer = Some(restore_text);
+                cx.notify();
+            }
             ChatUpdate::History { .. }
             | ChatUpdate::Queue { .. }
             | ChatUpdate::Event(_)
-            | ChatUpdate::Error { .. } => {}
+            | ChatUpdate::Error { .. }
+            | ChatUpdate::DraftError { .. } => {}
         }
     }
 
@@ -176,9 +222,13 @@ impl ChatView {
             }
             ApplyOutcome::Duplicate => {}
             ApplyOutcome::NeedsHistory { after_seq } => {
-                if let Some(session) = &self.session {
+                if let Some(thread_id) = self
+                    .session
+                    .as_ref()
+                    .and_then(|session| session.thread_id.as_ref())
+                {
                     cx.emit(ChatEvent::NeedHistory {
-                        thread_id: session.thread_id.clone(),
+                        thread_id: thread_id.clone(),
                         after_seq: Some(after_seq),
                     });
                 }
@@ -188,18 +238,25 @@ impl ChatView {
 
     fn reconcile_after_error(&mut self, error: HistoryError, cx: &mut Context<Self>) {
         self.error = Some(error.to_string());
-        if let Some(session) = &self.session {
+        if let Some(thread_id) = self
+            .session
+            .as_ref()
+            .and_then(|session| session.thread_id.as_ref())
+        {
             cx.emit(ChatEvent::NeedHistory {
-                thread_id: session.thread_id.clone(),
+                thread_id: thread_id.clone(),
                 after_seq: None,
             });
         }
     }
 
     fn is_selected(&self, thread_id: &str) -> bool {
-        self.session
-            .as_ref()
-            .is_some_and(|session| session.thread_id == thread_id)
+        self.session.as_ref().is_some_and(|session| {
+            session
+                .thread_id
+                .as_deref()
+                .is_some_and(|id| id == thread_id)
+        })
     }
 
     fn submit(&mut self, steer: bool, cx: &mut Context<Self>) {
@@ -210,21 +267,38 @@ impl ChatView {
         if text.is_empty() {
             return;
         }
+        if self.creating {
+            return;
+        }
         self.clear_composer = true;
-        cx.emit(ChatEvent::Submit {
-            thread_id: session.thread_id.clone(),
-            text,
-            steer,
-        });
+        match &session.thread_id {
+            Some(thread_id) => cx.emit(ChatEvent::Submit {
+                thread_id: thread_id.clone(),
+                text,
+                steer,
+            }),
+            None => {
+                self.creating = true;
+                self.loading = true;
+                cx.emit(ChatEvent::Create {
+                    project_path: session.project_path.clone(),
+                    text,
+                });
+            }
+        }
         cx.notify();
     }
 
     fn primary_action(&mut self, cx: &mut Context<Self>) {
         let has_draft = !self.composer.read(cx).value().trim().is_empty();
         if self.state.running && !has_draft {
-            if let Some(session) = &self.session {
+            if let Some(thread_id) = self
+                .session
+                .as_ref()
+                .and_then(|session| session.thread_id.as_ref())
+            {
                 cx.emit(ChatEvent::Interrupt {
-                    thread_id: session.thread_id.clone(),
+                    thread_id: thread_id.clone(),
                 });
             }
         } else {
@@ -419,7 +493,12 @@ impl ChatView {
 
 impl Render for ChatView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        if self.clear_composer {
+        if let Some(text) = self.restore_composer.take() {
+            self.composer.update(cx, |composer, cx| {
+                composer.set_value(text, window, cx);
+            });
+            self.clear_composer = false;
+        } else if self.clear_composer {
             self.composer.update(cx, |composer, cx| {
                 composer.set_value("", window, cx);
             });

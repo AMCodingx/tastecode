@@ -1,15 +1,16 @@
 use crate::assets::{HarnessAssets, register_fonts};
 use crate::chat::{ChatEvent, ChatView, SessionContext};
-use crate::client_state::{ClientState, ClientUpdate};
-use crate::sidebar::{SelectSession, sidebar};
+use crate::client_state::{ClientState, ClientUpdate, NewThreadRequest, ShellEvent};
+use crate::sidebar::{SidebarActions, SidebarProps, sidebar};
 use crate::theme::{TITLEBAR_HEIGHT, Theme};
 use anyhow::Result;
 use gpui::{
-    App, Application, Bounds, Context, Entity, FontWeight, MouseButton, Render, TitlebarOptions,
-    Window, WindowBackgroundAppearance, WindowBounds, WindowOptions, div, point, prelude::*, px,
-    size, svg,
+    Animation, AnimationExt, App, Application, Bounds, Context, Entity, FontWeight, MouseButton,
+    PathPromptOptions, Render, TitlebarOptions, Window, WindowBackgroundAppearance, WindowBounds,
+    WindowOptions, div, ease_out_quint, point, prelude::*, px, size, svg,
 };
 use gpui_component::Root;
+use harness_protocol::ApprovalMode;
 use std::rc::Rc;
 
 const APP_WIDTH: f32 = 1180.0;
@@ -49,9 +50,22 @@ pub fn run() -> Result<()> {
 struct HarnessApp {
     theme: Theme,
     sidebar_collapsed: bool,
+    sidebar_transition: u64,
     state: ClientState,
     chat: Entity<ChatView>,
     selected_thread_id: Option<String>,
+    active_project_path: Option<String>,
+    chat_visible: bool,
+    selected_model_key: Option<String>,
+    effort: Option<String>,
+    service_tier: Option<String>,
+    approval: ApprovalMode,
+    isolate_session: bool,
+    sidebar_scope: Option<String>,
+    scope_open: bool,
+    new_thread_picker: bool,
+    pending_new_chat_path: Option<String>,
+    settings_open: bool,
     fixture: bool,
 }
 
@@ -72,6 +86,9 @@ impl HarnessApp {
                 steer,
             } => this.state.send_turn(thread_id, text.clone(), *steer),
             ChatEvent::Interrupt { thread_id } => this.state.interrupt(thread_id),
+            ChatEvent::Create { project_path, text } => {
+                this.create_thread(project_path.clone(), text.clone(), _cx);
+            }
         })
         .detach();
 
@@ -93,9 +110,22 @@ impl HarnessApp {
         Self {
             theme: Theme::dark(),
             sidebar_collapsed: false,
+            sidebar_transition: 0,
             state,
             chat,
             selected_thread_id: None,
+            active_project_path: None,
+            chat_visible: false,
+            selected_model_key: None,
+            effort: None,
+            service_tier: None,
+            approval: ApprovalMode::Ask,
+            isolate_session: false,
+            sidebar_scope: None,
+            scope_open: false,
+            new_thread_picker: false,
+            pending_new_chat_path: None,
+            settings_open: false,
             fixture,
         }
     }
@@ -106,8 +136,92 @@ impl HarnessApp {
                 chat.apply_update(chat_update, cx);
             });
         }
+        self.sync_model_selection();
+        if self.state.model_catalog_loaded
+            && self.selected_model_key.is_some()
+            && let Some(path) = self.pending_new_chat_path.take()
+        {
+            self.begin_new_chat(path, cx);
+        }
+        for event in update.shell_events {
+            self.apply_shell_event(event, cx);
+        }
         if update.shell_changed {
             cx.notify();
+        }
+    }
+
+    fn sync_model_selection(&mut self) {
+        if !self.state.model_catalog_loaded {
+            return;
+        }
+        if self.selected_model_key.as_ref().is_some_and(|selected| {
+            self.state
+                .model_catalog
+                .iter()
+                .any(|choice| choice.key == *selected)
+        }) {
+            return;
+        }
+        let Some(choice) = self
+            .state
+            .model_catalog
+            .iter()
+            .find(|choice| choice.model.is_default)
+            .or_else(|| self.state.model_catalog.first())
+        else {
+            self.selected_model_key = None;
+            self.effort = None;
+            self.service_tier = None;
+            return;
+        };
+        self.selected_model_key = Some(choice.key.clone());
+        self.effort = choice
+            .model
+            .default_reasoning_effort
+            .clone()
+            .filter(|effort| choice.model.reasoning_efforts.contains(effort))
+            .or_else(|| choice.model.reasoning_efforts.first().cloned());
+        self.service_tier = choice.model.default_service_tier.clone();
+    }
+
+    fn apply_shell_event(&mut self, event: ShellEvent, cx: &mut Context<Self>) {
+        match event {
+            ShellEvent::ProjectAdded { path } => {
+                self.sidebar_scope = Some(path.clone());
+                self.begin_new_chat(path, cx);
+            }
+            ShellEvent::ThreadStarted {
+                thread_id,
+                project_path,
+                title,
+                provider,
+            } => {
+                let project_name = self
+                    .state
+                    .projects
+                    .iter()
+                    .find(|project| project.path == project_path)
+                    .map_or_else(|| project_path.clone(), |project| project.name.clone());
+                self.selected_thread_id = Some(thread_id.clone());
+                self.active_project_path = Some(project_path.clone());
+                self.chat_visible = true;
+                self.settings_open = false;
+                self.chat.update(cx, |chat, cx| {
+                    chat.promote_draft(
+                        SessionContext {
+                            thread_id: Some(thread_id.clone()),
+                            title,
+                            project_path,
+                            project_name,
+                            provider,
+                            branch: None,
+                        },
+                        cx,
+                    );
+                });
+                self.state.select_thread(&thread_id);
+            }
         }
     }
 
@@ -118,8 +232,9 @@ impl HarnessApp {
                 .iter()
                 .find(|session| session.id == thread_id)
                 .map(|session| SessionContext {
-                    thread_id: session.id.clone(),
+                    thread_id: Some(session.id.clone()),
                     title: session.title.clone(),
+                    project_path: project.path.clone(),
                     project_name: project.name.clone(),
                     provider: session.provider,
                     branch: session.worktree_branch.clone(),
@@ -130,6 +245,9 @@ impl HarnessApp {
         };
 
         self.selected_thread_id = Some(thread_id.clone());
+        self.active_project_path = Some(context.project_path.clone());
+        self.chat_visible = true;
+        self.settings_open = false;
         self.chat.update(cx, |chat, cx| {
             chat.begin_session(context, cx);
         });
@@ -137,13 +255,182 @@ impl HarnessApp {
         cx.notify();
     }
 
-    fn select_handler(&self, cx: &Context<Self>) -> SelectSession {
-        let view = cx.weak_entity();
-        Rc::new(move |thread_id, cx| {
-            let _ = view.update(cx, |this, cx| {
-                this.select_session(thread_id, cx);
+    fn start_new_chat(&mut self, cx: &mut Context<Self>) {
+        match self.state.projects.as_slice() {
+            [] => self.pick_project(cx),
+            [project] => self.begin_new_chat(project.path.clone(), cx),
+            _ => {
+                self.new_thread_picker = true;
+                self.scope_open = true;
+                cx.notify();
+            }
+        }
+    }
+
+    fn begin_new_chat(&mut self, project_path: String, cx: &mut Context<Self>) {
+        self.sync_model_selection();
+        let Some(choice) = self.selected_model_choice().cloned() else {
+            self.chat_visible = false;
+            self.settings_open = false;
+            if self.state.model_catalog_loaded {
+                self.pending_new_chat_path = None;
+                self.state.notice = Some(
+                    "No signed-in provider or configured model connection is available.".into(),
+                );
+            } else {
+                self.pending_new_chat_path = Some(project_path);
+                self.state.notice = Some("Loading available models…".into());
+            }
+            cx.notify();
+            return;
+        };
+        let Some(project) = self
+            .state
+            .projects
+            .iter()
+            .find(|project| project.path == project_path)
+        else {
+            self.state.notice = Some("That project is no longer available.".into());
+            cx.notify();
+            return;
+        };
+        let context = SessionContext {
+            thread_id: None,
+            title: "New chat".into(),
+            project_path: project.path.clone(),
+            project_name: project.name.clone(),
+            provider: choice.provider,
+            branch: None,
+        };
+        self.selected_thread_id = None;
+        self.active_project_path = Some(project.path.clone());
+        self.pending_new_chat_path = None;
+        self.chat_visible = true;
+        self.settings_open = false;
+        self.scope_open = false;
+        self.new_thread_picker = false;
+        self.state.notice = None;
+        self.chat.update(cx, |chat, cx| {
+            chat.begin_draft(context, cx);
+        });
+        cx.notify();
+    }
+
+    fn create_thread(&mut self, project_path: String, text: String, cx: &mut Context<Self>) {
+        let Some(choice) = self.selected_model_choice().cloned() else {
+            self.chat.update(cx, |chat, cx| {
+                chat.apply_update(
+                    crate::client_state::ChatUpdate::DraftError {
+                        message: "Choose a configured model before starting this chat.".into(),
+                        restore_text: text,
+                    },
+                    cx,
+                );
             });
+            return;
+        };
+        self.state.start_thread(NewThreadRequest {
+            project_path,
+            title: title_from(&text),
+            text,
+            choice,
+            effort: self.effort.clone(),
+            service_tier: self.service_tier.clone(),
+            approval: self.approval,
+            isolate: self.isolate_session,
+        });
+    }
+
+    fn selected_model_choice(&self) -> Option<&crate::client_state::ModelChoice> {
+        let key = self.selected_model_key.as_ref()?;
+        self.state
+            .model_catalog
+            .iter()
+            .find(|choice| choice.key == *key)
+    }
+
+    fn pick_project(&mut self, cx: &mut Context<Self>) {
+        let receiver = cx.prompt_for_paths(PathPromptOptions {
+            files: false,
+            directories: true,
+            multiple: false,
+            prompt: Some("Add Project".into()),
+        });
+        self.state.notice = None;
+        cx.spawn(async move |view, cx| {
+            let Ok(result) = receiver.await else {
+                return;
+            };
+            match result {
+                Ok(Some(paths)) => {
+                    let Some(path) = paths.into_iter().next() else {
+                        return;
+                    };
+                    let path = path.to_string_lossy().into_owned();
+                    let _ = view.update(cx, |this, cx| {
+                        this.state.add_project(path);
+                        cx.notify();
+                    });
+                }
+                Ok(None) => {}
+                Err(error) => {
+                    let message = error.to_string();
+                    let _ = view.update(cx, |this, cx| {
+                        this.state.notice = Some(format!("Could not open that project: {message}"));
+                        cx.notify();
+                    });
+                }
+            }
         })
+        .detach();
+    }
+
+    fn sidebar_actions(&self, cx: &Context<Self>) -> SidebarActions {
+        let select_view = cx.weak_entity();
+        let new_chat_view = select_view.clone();
+        let new_project_view = select_view.clone();
+        let settings_view = select_view.clone();
+        let toggle_scope_view = select_view.clone();
+        let select_scope_view = select_view.clone();
+        SidebarActions {
+            select_session: Rc::new(move |thread_id, cx| {
+                let _ = select_view.update(cx, |this, cx| this.select_session(thread_id, cx));
+            }),
+            new_chat: Rc::new(move |cx| {
+                let _ = new_chat_view.update(cx, |this, cx| this.start_new_chat(cx));
+            }),
+            new_project: Rc::new(move |cx| {
+                let _ = new_project_view.update(cx, |this, cx| this.pick_project(cx));
+            }),
+            open_settings: Rc::new(move |cx| {
+                let _ = settings_view.update(cx, |this, cx| {
+                    this.settings_open = true;
+                    this.chat_visible = false;
+                    this.scope_open = false;
+                    cx.notify();
+                });
+            }),
+            toggle_scope: Rc::new(move |cx| {
+                let _ = toggle_scope_view.update(cx, |this, cx| {
+                    this.new_thread_picker = false;
+                    this.scope_open = !this.scope_open;
+                    cx.notify();
+                });
+            }),
+            select_scope: Rc::new(move |path, cx| {
+                let _ = select_scope_view.update(cx, |this, cx| {
+                    let should_start = this.new_thread_picker && path.is_some();
+                    this.sidebar_scope = path.clone();
+                    this.scope_open = false;
+                    this.new_thread_picker = false;
+                    if should_start {
+                        this.begin_new_chat(path.expect("checked above"), cx);
+                    } else {
+                        cx.notify();
+                    }
+                });
+            }),
+        }
     }
 
     fn titlebar(&self, cx: &mut Context<Self>) -> impl IntoElement {
@@ -185,6 +472,7 @@ impl HarnessApp {
                     })
                     .on_click(cx.listener(|this, _event, _window, cx| {
                         this.sidebar_collapsed = !this.sidebar_collapsed;
+                        this.sidebar_transition = this.sidebar_transition.wrapping_add(1);
                         cx.notify();
                     }))
                     .child(icon("icons/panel-left.svg", 15.0)),
@@ -213,16 +501,88 @@ impl HarnessApp {
             .text_size(px(12.5))
             .child(self.state.stage_message(self.fixture))
     }
+
+    fn settings_panel(&self) -> impl IntoElement {
+        div()
+            .size_full()
+            .flex()
+            .flex_col()
+            .bg(self.theme.background.hsla())
+            .child(
+                div()
+                    .h(px(44.0))
+                    .flex()
+                    .items_center()
+                    .px(px(16.0))
+                    .text_size(px(12.0))
+                    .font_weight(FontWeight::MEDIUM)
+                    .text_color(self.theme.text_2.hsla())
+                    .child("Settings"),
+            )
+            .child(
+                div()
+                    .flex_1()
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .text_size(px(12.5))
+                    .text_color(self.theme.text_3.hsla())
+                    .child("Native settings are being migrated into this surface."),
+            )
+    }
 }
 
 impl Render for HarnessApp {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let content = if self.selected_thread_id.is_some() {
+        let content = if self.settings_open {
+            self.settings_panel().into_any_element()
+        } else if self.chat_visible {
             self.chat.clone().into_any_element()
         } else {
             self.stage().into_any_element()
         };
-        let select_session = self.select_handler(cx);
+        let sidebar_actions = self.sidebar_actions(cx);
+        let rail = sidebar(
+            SidebarProps {
+                theme: self.theme,
+                projects: &self.state.projects,
+                connection: self.state.connection,
+                loaded: self.state.projects_loaded,
+                fixture: self.fixture,
+                selected_thread_id: self.selected_thread_id.as_deref(),
+                selected_scope: self.sidebar_scope.as_deref(),
+                scope_open: self.scope_open,
+                new_thread_picker: self.new_thread_picker,
+            },
+            sidebar_actions,
+        );
+        let rail_slot = div()
+            .id("rail-slot")
+            .h_full()
+            .flex_none()
+            .overflow_hidden()
+            .child(rail);
+        let rail_slot = if self.sidebar_transition == 0 {
+            rail_slot
+                .w(px(if self.sidebar_collapsed {
+                    0.0
+                } else {
+                    crate::RAIL_WIDTH
+                }))
+                .into_any_element()
+        } else {
+            let collapsed = self.sidebar_collapsed;
+            rail_slot
+                .with_animation(
+                    ("rail-transition", self.sidebar_transition),
+                    Animation::new(self.theme.motion.slow).with_easing(ease_out_quint()),
+                    move |slot, delta| {
+                        let visible = if collapsed { 1.0 - delta } else { delta };
+                        slot.w(px(crate::RAIL_WIDTH * visible))
+                    },
+                )
+                .into_any_element()
+        };
         div()
             .size_full()
             .flex()
@@ -239,17 +599,7 @@ impl Render for HarnessApp {
                     .min_h(px(0.0))
                     .w_full()
                     .flex()
-                    .when(!self.sidebar_collapsed, |body| {
-                        body.child(sidebar(
-                            self.theme,
-                            &self.state.projects,
-                            self.state.connection,
-                            self.state.projects_loaded,
-                            self.fixture,
-                            self.selected_thread_id.as_deref(),
-                            select_session,
-                        ))
-                    })
+                    .child(rail_slot)
                     .child(content),
             )
     }
@@ -257,4 +607,15 @@ impl Render for HarnessApp {
 
 fn icon(path: &'static str, size: f32) -> impl IntoElement {
     svg().path(path).size(px(size))
+}
+
+fn title_from(text: &str) -> String {
+    let clean = text.split_whitespace().collect::<Vec<_>>().join(" ");
+    let mut chars = clean.chars();
+    let title = chars.by_ref().take(40).collect::<String>();
+    if chars.next().is_some() {
+        format!("{title}…")
+    } else {
+        title
+    }
 }

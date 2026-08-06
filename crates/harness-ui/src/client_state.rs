@@ -1,12 +1,16 @@
 use async_channel::Receiver as EventReceiver;
 use harness_client::{ClientEvent, ClientHandle, ConnectionState, Endpoint};
 use harness_protocol::{
-    DomainEvent, PROTOCOL_VERSION, ProjectSummary, ProjectsListResult, Response, SendTurnResult,
-    ServerWelcome, SidebarMode, SidebarSettings, ThreadEventPush, ThreadHistoryResult,
-    ThreadInboxStatus, ThreadLifecyclePush, ThreadQueuePush, ThreadQueueResult, channel, method,
+    AcpAgentsResult, ApprovalMode, DomainEvent, Model, ModelConnectionsResult, ModelsListResult,
+    PROTOCOL_VERSION, ProjectAddedResult, ProjectSummary, ProjectsListResult, ProviderId,
+    ProviderStatus, ProvidersListResult, Response, SendTurnResult, ServerWelcome, SessionSummary,
+    SidebarMode, SidebarSettings, ThreadEventPush, ThreadHistoryResult, ThreadInboxStatus,
+    ThreadLifecycle, ThreadLifecyclePush, ThreadQueuePush, ThreadQueueResult, ThreadStartResult,
+    channel, method,
 };
 use serde_json::{Value, json};
 use std::collections::HashMap;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 pub(crate) struct ClientState {
     client: Option<ClientHandle>,
@@ -14,14 +18,63 @@ pub(crate) struct ClientState {
     pub(crate) projects: Vec<ProjectSummary>,
     pub(crate) projects_loaded: bool,
     pub(crate) sidebar_settings: SidebarSettings,
+    pub(crate) provider_statuses: Vec<ProviderStatus>,
+    pub(crate) model_catalog: Vec<ModelChoice>,
+    pub(crate) model_catalog_loaded: bool,
     pending: HashMap<String, PendingRequest>,
+    catalog_discovery_pending: usize,
+    catalog_model_pending: usize,
     pub(crate) notice: Option<String>,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct ModelChoice {
+    pub(crate) key: String,
+    pub(crate) provider: ProviderId,
+    pub(crate) source_name: String,
+    pub(crate) connection_id: Option<String>,
+    pub(crate) agent_id: Option<String>,
+    pub(crate) agent_name: Option<String>,
+    pub(crate) model: Model,
+    catalog_order: (u8, usize, usize),
+}
+
+#[derive(Clone)]
+struct ModelSource {
+    key: String,
+    provider: ProviderId,
+    source_name: String,
+    connection_id: Option<String>,
+    agent_id: Option<String>,
+    agent_name: Option<String>,
+    fallback_model: Option<Model>,
+    catalog_group: u8,
+    source_index: usize,
+}
+
+#[derive(Clone)]
+pub(crate) struct NewThreadRequest {
+    pub(crate) project_path: String,
+    pub(crate) text: String,
+    pub(crate) title: String,
+    pub(crate) choice: ModelChoice,
+    pub(crate) effort: Option<String>,
+    pub(crate) service_tier: Option<String>,
+    pub(crate) approval: ApprovalMode,
+    pub(crate) isolate: bool,
 }
 
 enum PendingRequest {
     Capabilities,
     Projects,
     SidebarSettings,
+    Providers,
+    Connections,
+    AcpAgents,
+    Models { source: ModelSource },
+    AddProject { path: String },
+    StartThread { request: NewThreadRequest },
+    RenameThread,
     History { thread_id: String, replace: bool },
     Queue { thread_id: String },
     SendTurn { thread_id: String, steer: bool },
@@ -33,6 +86,19 @@ enum PendingRequest {
 pub(crate) struct ClientUpdate {
     pub(crate) shell_changed: bool,
     pub(crate) chat: Vec<ChatUpdate>,
+    pub(crate) shell_events: Vec<ShellEvent>,
+}
+
+pub(crate) enum ShellEvent {
+    ProjectAdded {
+        path: String,
+    },
+    ThreadStarted {
+        thread_id: String,
+        project_path: String,
+        title: String,
+        provider: ProviderId,
+    },
 }
 
 pub(crate) enum ChatUpdate {
@@ -51,6 +117,10 @@ pub(crate) enum ChatUpdate {
         thread_id: String,
         message: String,
     },
+    DraftError {
+        message: String,
+        restore_text: String,
+    },
 }
 
 impl ClientUpdate {
@@ -58,6 +128,7 @@ impl ClientUpdate {
         Self {
             shell_changed: true,
             chat: Vec::new(),
+            shell_events: Vec::new(),
         }
     }
 
@@ -65,6 +136,15 @@ impl ClientUpdate {
         Self {
             shell_changed: false,
             chat: vec![update],
+            shell_events: Vec::new(),
+        }
+    }
+
+    fn shell_event(event: ShellEvent) -> Self {
+        Self {
+            shell_changed: true,
+            chat: Vec::new(),
+            shell_events: vec![event],
         }
     }
 }
@@ -84,7 +164,12 @@ impl ClientState {
                 mode: SidebarMode::Inbox,
                 auto_settle_days: Some(3),
             },
+            provider_statuses: Vec::new(),
+            model_catalog: Vec::new(),
+            model_catalog_loaded: fixture,
             pending: HashMap::new(),
+            catalog_discovery_pending: 0,
+            catalog_model_pending: 0,
             notice: None,
         }
     }
@@ -113,6 +198,7 @@ impl ClientState {
                     return ClientUpdate {
                         shell_changed: true,
                         chat: vec![ChatUpdate::Refresh],
+                        shell_events: Vec::new(),
                     };
                 }
                 ClientUpdate::shell_changed()
@@ -127,6 +213,7 @@ impl ClientState {
                 ClientUpdate {
                     shell_changed: true,
                     chat: vec![ChatUpdate::Refresh],
+                    shell_events: Vec::new(),
                 }
             }
             ClientEvent::RequestAborted { id } => self.handle_aborted_request(&id),
@@ -184,6 +271,45 @@ impl ClientState {
         );
     }
 
+    pub(crate) fn add_project(&mut self, path: String) {
+        self.send_request(
+            method::PROJECTS_ADD,
+            json!({ "path": path }),
+            PendingRequest::AddProject { path },
+        );
+    }
+
+    pub(crate) fn start_thread(&mut self, request: NewThreadRequest) {
+        let mut params = serde_json::Map::from_iter([
+            ("provider".into(), json!(request.choice.provider)),
+            ("workspacePath".into(), json!(request.project_path)),
+            ("approval".into(), json!(request.approval)),
+        ]);
+        if let Some(agent) = &request.choice.agent_id {
+            params.insert("agent".into(), json!(agent));
+        }
+        if let Some(connection_id) = &request.choice.connection_id {
+            params.insert("connectionId".into(), json!(connection_id));
+        }
+        if !request.choice.model.id.is_empty() {
+            params.insert("model".into(), json!(request.choice.model.id));
+        }
+        if let Some(service_tier) = &request.service_tier {
+            params.insert("serviceTier".into(), json!(service_tier));
+        }
+        if let Some(effort) = &request.effort {
+            params.insert("effort".into(), json!(effort));
+        }
+        if request.isolate {
+            params.insert("isolate".into(), json!(true));
+        }
+        self.send_request(
+            method::THREAD_START,
+            Value::Object(params),
+            PendingRequest::StartThread { request },
+        );
+    }
+
     pub(crate) fn stage_message(&self, fixture: bool) -> String {
         self.notice
             .clone()
@@ -213,22 +339,49 @@ impl ClientState {
             json!({}),
             PendingRequest::SidebarSettings,
         );
+        self.request_model_catalog();
+    }
+
+    fn request_model_catalog(&mut self) {
+        self.pending
+            .retain(|_, request| !request.is_catalog_request());
+        self.provider_statuses.clear();
+        self.model_catalog.clear();
+        self.model_catalog_loaded = false;
+        self.catalog_discovery_pending = 0;
+        self.catalog_model_pending = 0;
+        if self.send_request(method::PROVIDERS_LIST, json!({}), PendingRequest::Providers) {
+            self.catalog_discovery_pending += 1;
+        }
+        if self.send_request(
+            method::CONNECTIONS_LIST,
+            json!({}),
+            PendingRequest::Connections,
+        ) {
+            self.catalog_discovery_pending += 1;
+        }
+        if self.send_request(method::ACP_AGENTS, json!({}), PendingRequest::AcpAgents) {
+            self.catalog_discovery_pending += 1;
+        }
+        self.update_catalog_loaded();
     }
 
     fn request_projects(&mut self) {
         self.send_request(method::PROJECTS_LIST, json!({}), PendingRequest::Projects);
     }
 
-    fn send_request(&mut self, method: &str, params: Value, request: PendingRequest) {
+    fn send_request(&mut self, method: &str, params: Value, request: PendingRequest) -> bool {
         let Some(client) = &self.client else {
-            return;
+            return false;
         };
         match client.request(method, params) {
             Ok(id) => {
                 self.pending.insert(id, request);
+                true
             }
             Err(error) => {
                 self.notice = Some(error.to_string());
+                false
             }
         }
     }
@@ -237,12 +390,33 @@ impl ClientState {
         let pending = self.pending.remove(response.id());
         match response {
             Response::Failure { error, .. } => {
+                if pending
+                    .as_ref()
+                    .is_some_and(PendingRequest::is_catalog_request)
+                {
+                    self.finish_catalog_request(pending.as_ref().expect("checked above"));
+                    return ClientUpdate::shell_changed();
+                }
                 let message = match error.detail {
                     Some(detail) => format!("{} ({detail})", error.message),
                     None => error.message,
                 };
-                match pending.and_then(PendingRequest::thread_id) {
-                    Some(thread_id) => ClientUpdate::chat(ChatUpdate::Error { thread_id, message }),
+                match pending {
+                    Some(PendingRequest::StartThread { request }) => {
+                        ClientUpdate::chat(ChatUpdate::DraftError {
+                            message,
+                            restore_text: request.text,
+                        })
+                    }
+                    Some(request) => match request.thread_id() {
+                        Some(thread_id) => {
+                            ClientUpdate::chat(ChatUpdate::Error { thread_id, message })
+                        }
+                        None => {
+                            self.notice = Some(message);
+                            ClientUpdate::shell_changed()
+                        }
+                    },
                     None => {
                         self.notice = Some(message);
                         ClientUpdate::shell_changed()
@@ -252,6 +426,18 @@ impl ClientState {
             Response::Success { result, .. } => match pending {
                 Some(PendingRequest::Projects) => self.handle_projects_response(result),
                 Some(PendingRequest::SidebarSettings) => self.handle_settings_response(result),
+                Some(PendingRequest::Providers) => self.handle_providers_response(result),
+                Some(PendingRequest::Connections) => self.handle_connections_response(result),
+                Some(PendingRequest::AcpAgents) => self.handle_acp_agents_response(result),
+                Some(PendingRequest::Models { source }) => {
+                    self.handle_models_response(result, source)
+                }
+                Some(PendingRequest::AddProject { path }) => {
+                    self.handle_add_project_response(result, path)
+                }
+                Some(PendingRequest::StartThread { request }) => {
+                    self.handle_start_thread_response(result, request)
+                }
                 Some(PendingRequest::History { thread_id, replace }) => {
                     match serde_json::from_value::<ThreadHistoryResult>(result) {
                         Ok(history) => ClientUpdate::chat(ChatUpdate::History {
@@ -307,6 +493,7 @@ impl ClientState {
                 }
                 Some(PendingRequest::Interrupt { .. })
                 | Some(PendingRequest::Steer { .. })
+                | Some(PendingRequest::RenameThread)
                 | Some(PendingRequest::Capabilities)
                 | None => ClientUpdate::default(),
             },
@@ -317,15 +504,25 @@ impl ClientState {
         let Some(pending) = self.pending.remove(id) else {
             return ClientUpdate::default();
         };
-        match pending.thread_id() {
-            Some(thread_id) => ClientUpdate::chat(ChatUpdate::Error {
-                thread_id,
-                message: "The server connection was lost before this request completed.".into(),
+        if pending.is_catalog_request() {
+            self.finish_catalog_request(&pending);
+            return ClientUpdate::shell_changed();
+        }
+        match pending {
+            PendingRequest::StartThread { request } => ClientUpdate::chat(ChatUpdate::DraftError {
+                message: "The server connection was lost before the session was created.".into(),
+                restore_text: request.text,
             }),
-            None => {
-                self.notice = Some("The server connection was lost; refreshing state.".into());
-                ClientUpdate::shell_changed()
-            }
+            request => match request.thread_id() {
+                Some(thread_id) => ClientUpdate::chat(ChatUpdate::Error {
+                    thread_id,
+                    message: "The server connection was lost before this request completed.".into(),
+                }),
+                None => {
+                    self.notice = Some("The server connection was lost; refreshing state.".into());
+                    ClientUpdate::shell_changed()
+                }
+            },
         }
     }
 
@@ -341,6 +538,292 @@ impl ClientState {
             }
         }
         ClientUpdate::shell_changed()
+    }
+
+    fn handle_add_project_response(
+        &mut self,
+        result: Value,
+        requested_path: String,
+    ) -> ClientUpdate {
+        match serde_json::from_value::<ProjectAddedResult>(result) {
+            Ok(project) => {
+                let path = project.path.clone();
+                if let Some(existing) = self
+                    .projects
+                    .iter_mut()
+                    .find(|existing| existing.path == project.path)
+                {
+                    existing.name = project.name;
+                    existing.pinned = project.pinned;
+                    existing.created_at = project.created_at;
+                } else {
+                    self.projects.push(ProjectSummary {
+                        path: project.path,
+                        name: project.name,
+                        pinned: project.pinned,
+                        created_at: project.created_at,
+                        sessions: Vec::new(),
+                    });
+                }
+                self.projects_loaded = true;
+                self.notice = None;
+                ClientUpdate::shell_event(ShellEvent::ProjectAdded { path })
+            }
+            Err(error) => {
+                self.notice = Some(format!(
+                    "projects.add returned invalid data for {requested_path}: {error}"
+                ));
+                ClientUpdate::shell_changed()
+            }
+        }
+    }
+
+    fn handle_start_thread_response(
+        &mut self,
+        result: Value,
+        request: NewThreadRequest,
+    ) -> ClientUpdate {
+        let started = match serde_json::from_value::<ThreadStartResult>(result) {
+            Ok(started) => started,
+            Err(error) => {
+                return ClientUpdate::chat(ChatUpdate::DraftError {
+                    message: format!("thread.start was invalid: {error}"),
+                    restore_text: request.text,
+                });
+            }
+        };
+        let thread_id = started.thread_id;
+        let now = unix_time_ms();
+        if let Some(project) = self
+            .projects
+            .iter_mut()
+            .find(|project| project.path == request.project_path)
+            && !project
+                .sessions
+                .iter()
+                .any(|session| session.id == thread_id)
+        {
+            project.sessions.insert(
+                0,
+                SessionSummary {
+                    id: thread_id.clone(),
+                    title: request.title.clone(),
+                    provider: request.choice.provider,
+                    agent: request.choice.agent_id.clone(),
+                    created_at: now,
+                    running: true,
+                    pinned: false,
+                    status: Some(ThreadInboxStatus::Starting),
+                    unread: Some(false),
+                    lifecycle: Some(ThreadLifecycle::Active {
+                        keep_active: false,
+                        woke_at: None,
+                    }),
+                    closed_at: None,
+                    worktree_branch: None,
+                },
+            );
+        }
+
+        self.send_request(
+            method::THREAD_RENAME,
+            json!({ "threadId": thread_id, "title": request.title }),
+            PendingRequest::RenameThread,
+        );
+        self.send_turn(&thread_id, request.text, false);
+        self.request_projects();
+        ClientUpdate::shell_event(ShellEvent::ThreadStarted {
+            thread_id,
+            project_path: request.project_path,
+            title: request.title,
+            provider: request.choice.provider,
+        })
+    }
+
+    fn handle_providers_response(&mut self, result: Value) -> ClientUpdate {
+        match serde_json::from_value::<ProvidersListResult>(result) {
+            Ok(result) => {
+                self.provider_statuses = result.providers;
+                let sources = self
+                    .provider_statuses
+                    .iter()
+                    .filter(|provider| {
+                        provider.installed
+                            && !matches!(provider.id, ProviderId::Acp | ProviderId::Api)
+                    })
+                    .enumerate()
+                    .map(|(source_index, provider)| ModelSource {
+                        key: provider_key(provider.id).into(),
+                        provider: provider.id,
+                        source_name: provider.display_name.clone(),
+                        connection_id: None,
+                        agent_id: None,
+                        agent_name: None,
+                        fallback_model: None,
+                        catalog_group: 0,
+                        source_index,
+                    })
+                    .collect::<Vec<_>>();
+                for source in sources {
+                    self.request_models(source, None);
+                }
+            }
+            Err(error) => {
+                self.notice = Some(format!("providers.list was invalid: {error}"));
+            }
+        }
+        self.finish_catalog_discovery();
+        ClientUpdate::shell_changed()
+    }
+
+    fn handle_connections_response(&mut self, result: Value) -> ClientUpdate {
+        match serde_json::from_value::<ModelConnectionsResult>(result) {
+            Ok(result) => {
+                for (source_index, connection) in result
+                    .connections
+                    .into_iter()
+                    .filter(|connection| connection.enabled && connection.credential_configured)
+                    .enumerate()
+                {
+                    let fallback_model = connection.default_model.as_ref().map(|id| Model {
+                        id: id.clone(),
+                        display_name: id.clone(),
+                        description: None,
+                        is_default: true,
+                        reasoning_efforts: Vec::new(),
+                        default_reasoning_effort: None,
+                        service_tiers: Vec::new(),
+                        default_service_tier: None,
+                    });
+                    let connection_id = connection.id;
+                    self.request_models(
+                        ModelSource {
+                            key: format!("api:{connection_id}"),
+                            provider: ProviderId::Api,
+                            source_name: connection.display_name,
+                            connection_id: Some(connection_id.clone()),
+                            agent_id: None,
+                            agent_name: None,
+                            fallback_model,
+                            catalog_group: 2,
+                            source_index,
+                        },
+                        Some(json!({ "connectionId": connection_id })),
+                    );
+                }
+            }
+            Err(error) => {
+                self.notice = Some(format!("connections.list was invalid: {error}"));
+            }
+        }
+        self.finish_catalog_discovery();
+        ClientUpdate::shell_changed()
+    }
+
+    fn handle_acp_agents_response(&mut self, result: Value) -> ClientUpdate {
+        match serde_json::from_value::<AcpAgentsResult>(result) {
+            Ok(result) => {
+                for (source_index, agent) in result
+                    .agents
+                    .into_iter()
+                    .filter(|agent| agent.installed)
+                    .enumerate()
+                {
+                    let agent_id = agent.id;
+                    self.request_models(
+                        ModelSource {
+                            key: format!("acp:{agent_id}"),
+                            provider: ProviderId::Acp,
+                            source_name: agent.name.clone(),
+                            connection_id: None,
+                            agent_id: Some(agent_id.clone()),
+                            agent_name: Some(agent.name),
+                            fallback_model: None,
+                            catalog_group: 1,
+                            source_index,
+                        },
+                        Some(json!({ "provider": "acp", "agent": agent_id })),
+                    );
+                }
+            }
+            Err(error) => {
+                self.notice = Some(format!("acp.agents was invalid: {error}"));
+            }
+        }
+        self.finish_catalog_discovery();
+        ClientUpdate::shell_changed()
+    }
+
+    fn request_models(&mut self, source: ModelSource, params: Option<Value>) {
+        let (request_method, params) = match (source.provider, params) {
+            (ProviderId::Api, Some(params)) => (method::CONNECTIONS_MODELS, params),
+            (_, Some(params)) => (method::MODELS_LIST, params),
+            (provider, None) => (
+                method::MODELS_LIST,
+                json!({ "provider": provider_key(provider) }),
+            ),
+        };
+        if self.send_request(request_method, params, PendingRequest::Models { source }) {
+            self.catalog_model_pending += 1;
+        }
+    }
+
+    fn handle_models_response(&mut self, result: Value, source: ModelSource) -> ClientUpdate {
+        match serde_json::from_value::<ModelsListResult>(result) {
+            Ok(result) => {
+                let models = if result.models.is_empty() {
+                    source.fallback_model.clone().into_iter().collect()
+                } else {
+                    result.models
+                };
+                self.model_catalog
+                    .extend(models.into_iter().enumerate().map(|(model_index, model)| {
+                        ModelChoice {
+                            key: format!("{}\u{1f}{}", source.key, model.id),
+                            provider: source.provider,
+                            source_name: source.source_name.clone(),
+                            connection_id: source.connection_id.clone(),
+                            agent_id: source.agent_id.clone(),
+                            agent_name: source.agent_name.clone(),
+                            model,
+                            catalog_order: (source.catalog_group, source.source_index, model_index),
+                        }
+                    }));
+            }
+            Err(error) => {
+                self.notice = Some(format!("models.list was invalid: {error}"));
+            }
+        }
+        self.catalog_model_pending = self.catalog_model_pending.saturating_sub(1);
+        self.update_catalog_loaded();
+        ClientUpdate::shell_changed()
+    }
+
+    fn finish_catalog_discovery(&mut self) {
+        self.catalog_discovery_pending = self.catalog_discovery_pending.saturating_sub(1);
+        self.update_catalog_loaded();
+    }
+
+    fn finish_catalog_request(&mut self, request: &PendingRequest) {
+        match request {
+            PendingRequest::Providers | PendingRequest::Connections | PendingRequest::AcpAgents => {
+                self.finish_catalog_discovery()
+            }
+            PendingRequest::Models { .. } => {
+                self.catalog_model_pending = self.catalog_model_pending.saturating_sub(1);
+                self.update_catalog_loaded();
+            }
+            _ => {}
+        }
+    }
+
+    fn update_catalog_loaded(&mut self) {
+        self.model_catalog_loaded =
+            self.catalog_discovery_pending == 0 && self.catalog_model_pending == 0;
+        if self.model_catalog_loaded {
+            self.model_catalog
+                .sort_by_key(|choice| choice.catalog_order);
+        }
     }
 
     fn handle_settings_response(&mut self, result: Value) -> ClientUpdate {
@@ -424,6 +907,7 @@ impl ClientState {
         ClientUpdate {
             shell_changed,
             chat: vec![ChatUpdate::Event(push)],
+            shell_events: Vec::new(),
         }
     }
 
@@ -488,6 +972,13 @@ impl ClientState {
 }
 
 impl PendingRequest {
+    fn is_catalog_request(&self) -> bool {
+        matches!(
+            self,
+            Self::Providers | Self::Connections | Self::AcpAgents | Self::Models { .. }
+        )
+    }
+
     fn thread_id(self) -> Option<String> {
         match self {
             Self::History { thread_id, .. }
@@ -495,8 +986,34 @@ impl PendingRequest {
             | Self::SendTurn { thread_id, .. }
             | Self::Steer { thread_id }
             | Self::Interrupt { thread_id } => Some(thread_id),
-            Self::Capabilities | Self::Projects | Self::SidebarSettings => None,
+            Self::Capabilities
+            | Self::Projects
+            | Self::SidebarSettings
+            | Self::AddProject { .. }
+            | Self::StartThread { .. }
+            | Self::RenameThread
+            | Self::Providers
+            | Self::Connections
+            | Self::AcpAgents
+            | Self::Models { .. } => None,
         }
+    }
+}
+
+fn unix_time_ms() -> f64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0.0, |duration| duration.as_millis() as f64)
+}
+
+fn provider_key(provider: ProviderId) -> &'static str {
+    match provider {
+        ProviderId::Codex => "codex",
+        ProviderId::ClaudeCode => "claude-code",
+        ProviderId::Cursor => "cursor",
+        ProviderId::OpenCode => "opencode",
+        ProviderId::Acp => "acp",
+        ProviderId::Api => "api",
     }
 }
 
@@ -551,5 +1068,106 @@ mod tests {
         assert!(update.shell_changed);
         assert!(state.projects_loaded);
         assert_eq!(state.projects[0].name, "Harness");
+    }
+
+    #[test]
+    fn model_response_builds_a_provider_owned_choice() {
+        let mut state = ClientState::new(true);
+        state.model_catalog_loaded = false;
+        state.catalog_model_pending = 1;
+        state.pending.insert(
+            "native-model".into(),
+            PendingRequest::Models {
+                source: ModelSource {
+                    key: "codex".into(),
+                    provider: ProviderId::Codex,
+                    source_name: "Codex".into(),
+                    connection_id: None,
+                    agent_id: None,
+                    agent_name: None,
+                    fallback_model: None,
+                    catalog_group: 0,
+                    source_index: 0,
+                },
+            },
+        );
+
+        let update = state.handle_response(Response::Success {
+            id: "native-model".into(),
+            result: json!({
+                "models": [{
+                    "id": "gpt-test",
+                    "displayName": "GPT Test",
+                    "isDefault": true,
+                    "reasoningEfforts": ["low", "high"],
+                    "serviceTiers": []
+                }]
+            }),
+        });
+
+        assert!(update.shell_changed);
+        assert!(state.model_catalog_loaded);
+        assert_eq!(state.model_catalog[0].provider, ProviderId::Codex);
+        assert_eq!(state.model_catalog[0].model.id, "gpt-test");
+    }
+
+    #[test]
+    fn starting_a_thread_promotes_the_draft_and_adds_the_sidebar_row() {
+        let mut state = ClientState::new(true);
+        state.projects.push(ProjectSummary {
+            path: "/workspace".into(),
+            name: "Harness".into(),
+            pinned: false,
+            created_at: 1.0,
+            sessions: Vec::new(),
+        });
+        state.pending.insert(
+            "native-start".into(),
+            PendingRequest::StartThread {
+                request: NewThreadRequest {
+                    project_path: "/workspace".into(),
+                    text: "Build it".into(),
+                    title: "Build it".into(),
+                    choice: ModelChoice {
+                        key: "codex\u{1f}gpt-test".into(),
+                        provider: ProviderId::Codex,
+                        source_name: "Codex".into(),
+                        connection_id: None,
+                        agent_id: None,
+                        agent_name: None,
+                        model: Model {
+                            id: "gpt-test".into(),
+                            display_name: "GPT Test".into(),
+                            description: None,
+                            is_default: true,
+                            reasoning_efforts: vec!["high".into()],
+                            default_reasoning_effort: Some("high".into()),
+                            service_tiers: Vec::new(),
+                            default_service_tier: None,
+                        },
+                        catalog_order: (0, 0, 0),
+                    },
+                    effort: Some("high".into()),
+                    service_tier: None,
+                    approval: ApprovalMode::Ask,
+                    isolate: false,
+                },
+            },
+        );
+
+        let update = state.handle_response(Response::Success {
+            id: "native-start".into(),
+            result: json!({ "threadId": "thread-1" }),
+        });
+
+        assert!(matches!(
+            update.shell_events.as_slice(),
+            [ShellEvent::ThreadStarted { thread_id, .. }] if thread_id == "thread-1"
+        ));
+        assert_eq!(state.projects[0].sessions[0].id, "thread-1");
+        assert_eq!(
+            state.projects[0].sessions[0].status,
+            Some(ThreadInboxStatus::Starting)
+        );
     }
 }
