@@ -13,7 +13,7 @@ import {
 import path from 'node:path'
 import type { ApiTool, ApiToolCall, ApiToolResult } from '@harness/adapter-api'
 import type { ApprovalMode, ApprovalRequest } from '@harness/contracts'
-import { spawnCli } from '@harness/proc'
+import { killTree, spawnCli } from '@harness/proc'
 import {
   assertPublicWorkspaceFile,
   existingWorkspacePath,
@@ -214,13 +214,25 @@ function runCommand(
     const append = (chunk: string) => {
       output = `${output}${chunk}`.slice(-MAX_OUTPUT_BYTES)
     }
+    // killTree, not kill: on Windows spawnCli runs through a cmd.exe shim, so
+    // kill() ends the shim and leaves the real npm/node running — holding
+    // locks in the worktree that later break its removal.
     const abort = () => {
-      child.kill()
+      killTree(child)
       finish(new DOMException('interrupted', 'AbortError'))
     }
     const timer = setTimeout(() => {
-      child.kill()
-      finish(new Error('command exceeded the 120 second limit'))
+      killTree(child)
+      // Keep what the command printed. A timeout is exactly the case where
+      // the agent most needs the output to work out what hung.
+      finish({
+        content: JSON.stringify({
+          code: null,
+          output,
+          error: 'command exceeded the 120 second limit',
+        }),
+        isError: true,
+      })
     }, 120_000)
     child.stdout.setEncoding('utf8')
     child.stderr.setEncoding('utf8')
