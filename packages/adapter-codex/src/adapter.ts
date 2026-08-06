@@ -602,7 +602,12 @@ export class CodexAdapter extends EventEmitter<CodexAdapterEvents> {
       id: response.thread.id,
       provider: 'codex',
       workspacePath,
-      createdAt: response.thread.createdAt * 1_000,
+      // Codex reports seconds; guard against it ever switching to millis,
+      // which the blind ×1000 would launch fifty millennia into the future.
+      createdAt:
+        response.thread.createdAt < 100_000_000_000
+          ? response.thread.createdAt * 1_000
+          : response.thread.createdAt,
     }
   }
 
