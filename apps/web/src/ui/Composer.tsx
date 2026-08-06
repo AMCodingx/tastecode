@@ -411,7 +411,10 @@ export function Composer(props: {
   }
 
   const editQueuedTurn = (queuedTurn: QueuedTurn) => {
-    setValue(queuedTurn.text)
+    // Never overwrite words the user is mid-way through typing — prepend the
+    // queued text so both survive the edit.
+    const draft = textRef.current.trim()
+    setValue(draft === '' ? queuedTurn.text : `${queuedTurn.text}\n\n${draft}`)
     addFiles(queuedTurn.attachments)
     props.onDeleteQueuedTurn(queuedTurn.id)
   }
@@ -769,6 +772,13 @@ export function Composer(props: {
                   onKeyDown={(e) => {
                     if (e.key === 'Escape' && slashOpen) {
                       setSlashOpen(false)
+                      return
+                    }
+                    // Typing turns the orb into Queue, which made the agent
+                    // unstoppable mid-draft. Esc stays the brake.
+                    if (e.key === 'Escape' && props.running) {
+                      e.preventDefault()
+                      props.onInterrupt()
                       return
                     }
                     if (e.key === 'Enter' && !e.shiftKey) {
