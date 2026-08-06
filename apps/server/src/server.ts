@@ -91,7 +91,7 @@ export function startServer(
 
   const store = new Store(storeLocation())
   const orchestrator = new Orchestrator(store, {
-    onEvent: (threadId, event) => push.broadcast('thread.event', { threadId, event }),
+    onEvent: (threadId, event, seq) => push.broadcast('thread.event', { threadId, event, seq }),
     onQueue: (threadId, state) => push.broadcast('thread.queue', { threadId, ...state }),
     onLog: (line) => console.log(`[agent] ${line}`),
     onLogin: (provider, result) => push.broadcast('auth.event', { provider, ...result }),

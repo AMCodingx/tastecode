@@ -176,7 +176,15 @@ export function Thread(props: {
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
       if (isEditableTarget(event.target)) return
-      if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'f') {
+      // Plain Ctrl+F only — Ctrl+Shift+F belongs to the global chat search,
+      // and swallowing it here killed that shortcut whenever a thread was
+      // open.
+      if (
+        (event.ctrlKey || event.metaKey) &&
+        !event.shiftKey &&
+        !event.altKey &&
+        event.key.toLowerCase() === 'f'
+      ) {
         event.preventDefault()
         setFinding(true)
       }

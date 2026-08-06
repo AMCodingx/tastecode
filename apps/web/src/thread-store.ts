@@ -81,7 +81,11 @@ export function reduce(state: ThreadState, event: DomainEvent): ThreadState {
       }
 
     case 'turn.completed':
-      return { ...state, running: false, activeTurn: undefined }
+      // Approvals the turn never answered are unanswerable now (the adapters
+      // resolve them server-side too; this covers logs written before that
+      // fix). userInputs stay: design-briefing questions legitimately outlive
+      // their turn and are answered to start the next one.
+      return { ...state, running: false, activeTurn: undefined, approvals: [] }
 
     case 'plan.updated':
       return { ...state, plan: event.steps }
@@ -123,7 +127,21 @@ export function reduce(state: ThreadState, event: DomainEvent): ThreadState {
                 (event.item.text === undefined || item.text === event.item.text),
             )
           : -1
-      if (optimisticIndex < 0) return { ...state, items: [...state.items, event.item] }
+      if (optimisticIndex < 0) {
+        // An early delta may already have created this item as a placeholder;
+        // fill it in rather than appending a duplicate row.
+        const existingIndex = state.items.findIndex((item) => item.id === event.item.id)
+        if (existingIndex >= 0) {
+          const items = state.items.slice()
+          const streamed = items[existingIndex]?.text
+          items[existingIndex] = {
+            ...event.item,
+            ...(event.item.text || !streamed ? {} : { text: streamed }),
+          }
+          return { ...state, items }
+        }
+        return { ...state, items: [...state.items, event.item] }
+      }
       const items = state.items.slice()
       items[optimisticIndex] = event.item
       return { ...state, items }
@@ -131,7 +149,26 @@ export function reduce(state: ThreadState, event: DomainEvent): ThreadState {
 
     case 'item.delta': {
       const index = state.items.findIndex((i) => i.id === event.itemId)
-      if (index === -1) return state
+      if (index === -1) {
+        // A delta ahead of its item.started (reconnect, replay boundary)
+        // must not be dropped — the text would be permanently missing from
+        // the message. Hold it in a placeholder the real item fills in.
+        return {
+          ...state,
+          items: [
+            ...state.items,
+            {
+              id: event.itemId,
+              turnId: state.activeTurn?.id ?? '',
+              type: 'message',
+              status: 'started',
+              role: 'assistant',
+              text: event.textDelta,
+              createdAt: Date.now(),
+            },
+          ],
+        }
+      }
       const existing = state.items[index]
       if (!existing) return state
       const items = state.items.slice()
@@ -155,6 +192,7 @@ export function reduce(state: ThreadState, event: DomainEvent): ThreadState {
         ...state,
         running: false,
         activeTurn: undefined,
+        approvals: [],
         userInputs: [],
         items: [
           ...state.items,
