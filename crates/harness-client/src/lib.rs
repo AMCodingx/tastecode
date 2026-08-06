@@ -7,7 +7,7 @@ use async_channel::{Receiver as EventReceiver, Sender as EventSender};
 use harness_protocol::{InboundFrame, Push, Request, Response};
 use serde::Serialize;
 use serde_json::Value;
-use std::collections::VecDeque;
+use std::collections::{HashSet, VecDeque};
 use std::io::ErrorKind;
 use std::net::TcpStream;
 use std::sync::Arc;
@@ -70,6 +70,7 @@ pub enum ClientEvent {
     Response(Response<Value>),
     Push(Push<Value>),
     SequenceGap { expected: u64, received: u64 },
+    RequestAborted { id: String },
     DecodeFailed { reason: String },
 }
 
@@ -102,8 +103,13 @@ impl Drop for ClientInner {
 }
 
 enum Command {
-    Send(String),
+    Send(Outbound),
     Shutdown,
+}
+
+struct Outbound {
+    id: String,
+    text: String,
 }
 
 impl ClientHandle {
@@ -133,7 +139,10 @@ impl ClientHandle {
         let text = serde_json::to_string(&request).map_err(ClientError::Serialize)?;
         self.inner
             .commands
-            .send(Command::Send(text))
+            .send(Command::Send(Outbound {
+                id: id.clone(),
+                text,
+            }))
             .map_err(|_| ClientError::Closed)?;
         Ok(id)
     }
@@ -144,7 +153,7 @@ fn run_transport(
     commands: Receiver<Command>,
     events: EventSender<ClientEvent>,
 ) {
-    let mut pending = VecDeque::new();
+    let mut pending: VecDeque<Outbound> = VecDeque::new();
     let mut state = ConnectionState::Connecting;
     let mut reconnect_delay = INITIAL_RECONNECT_DELAY;
     emit(&events, ClientEvent::StateChanged(state));
@@ -193,13 +202,14 @@ fn run_connection(
     socket: &mut WebSocket<MaybeTlsStream<TcpStream>>,
     commands: &Receiver<Command>,
     events: &EventSender<ClientEvent>,
-    pending: &mut VecDeque<String>,
+    pending: &mut VecDeque<Outbound>,
 ) -> bool {
     let mut sequence = SequenceTracker::default();
+    let mut in_flight = HashSet::new();
 
     loop {
         match commands.try_recv() {
-            Ok(Command::Send(text)) => pending.push_back(text),
+            Ok(Command::Send(outbound)) => pending.push_back(outbound),
             Ok(Command::Shutdown) | Err(TryRecvError::Disconnected) => {
                 let _ = socket.close(None);
                 return true;
@@ -207,16 +217,23 @@ fn run_connection(
             Err(TryRecvError::Empty) => {}
         }
 
-        while let Some(text) = pending.pop_front() {
-            if socket.send(Message::text(text.clone())).is_err() {
-                pending.push_front(text);
+        while let Some(outbound) = pending.pop_front() {
+            if socket.send(Message::text(outbound.text)).is_err() {
+                emit(events, ClientEvent::RequestAborted { id: outbound.id });
+                abort_in_flight(events, &mut in_flight);
                 return false;
             }
+            in_flight.insert(outbound.id);
         }
 
         match socket.read() {
-            Ok(Message::Text(text)) => decode_frame(text.as_str(), events, &mut sequence),
-            Ok(Message::Close(_)) => return false,
+            Ok(Message::Text(text)) => {
+                decode_frame(text.as_str(), events, &mut sequence, &mut in_flight)
+            }
+            Ok(Message::Close(_)) => {
+                abort_in_flight(events, &mut in_flight);
+                return false;
+            }
             Ok(Message::Ping(_) | Message::Pong(_)) => {
                 let _ = socket.flush();
             }
@@ -227,14 +244,25 @@ fn run_connection(
                 },
             ),
             Err(error) if is_read_timeout(&error) => {}
-            Err(_) => return false,
+            Err(_) => {
+                abort_in_flight(events, &mut in_flight);
+                return false;
+            }
         }
     }
 }
 
-fn decode_frame(text: &str, events: &EventSender<ClientEvent>, sequence: &mut SequenceTracker) {
+fn decode_frame(
+    text: &str,
+    events: &EventSender<ClientEvent>,
+    sequence: &mut SequenceTracker,
+    in_flight: &mut HashSet<String>,
+) {
     match serde_json::from_str::<InboundFrame>(text) {
-        Ok(InboundFrame::Response(response)) => emit(events, ClientEvent::Response(response)),
+        Ok(InboundFrame::Response(response)) => {
+            in_flight.remove(response.id());
+            emit(events, ClientEvent::Response(response));
+        }
         Ok(InboundFrame::Push(push)) => {
             if let Some((expected, received)) = sequence.observe(push.sequence) {
                 emit(events, ClientEvent::SequenceGap { expected, received });
@@ -258,10 +286,10 @@ fn is_read_timeout(error: &WebSocketError) -> bool {
     )
 }
 
-fn drain_commands(commands: &Receiver<Command>, pending: &mut VecDeque<String>) -> bool {
+fn drain_commands(commands: &Receiver<Command>, pending: &mut VecDeque<Outbound>) -> bool {
     loop {
         match commands.try_recv() {
-            Ok(Command::Send(text)) => pending.push_back(text),
+            Ok(Command::Send(outbound)) => pending.push_back(outbound),
             Ok(Command::Shutdown) | Err(TryRecvError::Disconnected) => return true,
             Err(TryRecvError::Empty) => return false,
         }
@@ -270,7 +298,7 @@ fn drain_commands(commands: &Receiver<Command>, pending: &mut VecDeque<String>) 
 
 fn collect_during_backoff(
     commands: &Receiver<Command>,
-    pending: &mut VecDeque<String>,
+    pending: &mut VecDeque<Outbound>,
     delay: Duration,
 ) -> bool {
     let deadline = Instant::now() + delay;
@@ -280,7 +308,7 @@ fn collect_during_backoff(
             return false;
         }
         match commands.recv_timeout(remaining) {
-            Ok(Command::Send(text)) => pending.push_back(text),
+            Ok(Command::Send(outbound)) => pending.push_back(outbound),
             Ok(Command::Shutdown) | Err(RecvTimeoutError::Disconnected) => return true,
             Err(RecvTimeoutError::Timeout) => return false,
         }
@@ -289,6 +317,12 @@ fn collect_during_backoff(
 
 fn emit(events: &EventSender<ClientEvent>, event: ClientEvent) {
     let _ = events.send_blocking(event);
+}
+
+fn abort_in_flight(events: &EventSender<ClientEvent>, in_flight: &mut HashSet<String>) {
+    for id in in_flight.drain() {
+        emit(events, ClientEvent::RequestAborted { id });
+    }
 }
 
 #[derive(Default)]
@@ -337,5 +371,21 @@ mod tests {
         let second = client.request("projects.list", json!({})).unwrap();
         assert_eq!(first, "native-1");
         assert_eq!(second, "native-2");
+    }
+
+    #[test]
+    fn disconnect_aborts_every_request_that_was_actually_sent() {
+        let (events, receiver) = async_channel::unbounded();
+        let mut in_flight = HashSet::from(["native-2".into(), "native-7".into()]);
+
+        abort_in_flight(&events, &mut in_flight);
+
+        let mut ids = vec![];
+        while let Ok(ClientEvent::RequestAborted { id }) = receiver.try_recv() {
+            ids.push(id);
+        }
+        ids.sort();
+        assert_eq!(ids, ["native-2", "native-7"]);
+        assert!(in_flight.is_empty());
     }
 }

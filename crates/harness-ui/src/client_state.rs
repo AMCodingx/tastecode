@@ -110,6 +110,10 @@ impl ClientState {
                 if state == ConnectionState::Open {
                     self.notice = None;
                     self.request_initial_state();
+                    return ClientUpdate {
+                        shell_changed: true,
+                        chat: vec![ChatUpdate::Refresh],
+                    };
                 }
                 ClientUpdate::shell_changed()
             }
@@ -125,6 +129,7 @@ impl ClientState {
                     chat: vec![ChatUpdate::Refresh],
                 }
             }
+            ClientEvent::RequestAborted { id } => self.handle_aborted_request(&id),
             ClientEvent::DecodeFailed { reason } => {
                 self.notice = Some(format!("The server sent an unreadable frame: {reason}"));
                 ClientUpdate::shell_changed()
@@ -305,6 +310,22 @@ impl ClientState {
                 | Some(PendingRequest::Capabilities)
                 | None => ClientUpdate::default(),
             },
+        }
+    }
+
+    fn handle_aborted_request(&mut self, id: &str) -> ClientUpdate {
+        let Some(pending) = self.pending.remove(id) else {
+            return ClientUpdate::default();
+        };
+        match pending.thread_id() {
+            Some(thread_id) => ClientUpdate::chat(ChatUpdate::Error {
+                thread_id,
+                message: "The server connection was lost before this request completed.".into(),
+            }),
+            None => {
+                self.notice = Some("The server connection was lost; refreshing state.".into());
+                ClientUpdate::shell_changed()
+            }
         }
     }
 
