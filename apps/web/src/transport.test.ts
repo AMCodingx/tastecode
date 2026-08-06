@@ -1,0 +1,102 @@
+// @vitest-environment happy-dom
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { Transport } from './transport.js'
+
+/**
+ * The client half of the wire protocol had zero coverage — and its edges are
+ * exactly where sessions used to hang at "starting" forever. These pin the
+ * reconnect and failure behavior fixed in the overnight batch.
+ */
+
+class FakeSocket {
+  static instances: FakeSocket[] = []
+  static OPEN = 1
+  static CONNECTING = 0
+  readonly OPEN = 1
+  readyState = 0
+  sent: string[] = []
+  onopen: (() => void) | null = null
+  onmessage: ((event: { data: string }) => void) | null = null
+  onclose: (() => void) | null = null
+
+  constructor(public url: string) {
+    FakeSocket.instances.push(this)
+  }
+
+  send(payload: string): void {
+    this.sent.push(payload)
+  }
+
+  close(): void {
+    this.readyState = 3
+    this.onclose?.()
+  }
+
+  open(): void {
+    this.readyState = 1
+    this.onopen?.()
+  }
+}
+
+beforeEach(() => {
+  FakeSocket.instances = []
+  vi.stubGlobal('WebSocket', FakeSocket)
+  vi.useFakeTimers()
+})
+
+afterEach(() => {
+  vi.unstubAllGlobals()
+  vi.useRealTimers()
+})
+
+const userFrames = (socket: FakeSocket): string[] =>
+  socket.sent.filter((frame) => !frame.includes('client.capabilities'))
+
+describe('Transport', () => {
+  it('rejects in-flight requests when the socket drops instead of hanging', async () => {
+    const transport = new Transport('ws://test')
+    transport.connect()
+    const socket = FakeSocket.instances[0]!
+    socket.open()
+
+    const pending = transport.request('system.info', {})
+    expect(userFrames(socket)).toHaveLength(1)
+
+    socket.close()
+    await expect(pending).rejects.toThrow('Connection to the server was lost.')
+  })
+
+  it('flushes requests queued while disconnected exactly once after reconnect', async () => {
+    const transport = new Transport('ws://test')
+    transport.connect()
+    const first = FakeSocket.instances[0]!
+
+    // Still CONNECTING: the frame must queue, not vanish. The later drop
+    // rejects it (transmitted frames die with their socket) — expected here.
+    transport.request('system.info', {}).catch(() => undefined)
+    expect(userFrames(first)).toHaveLength(0)
+
+    first.open()
+    expect(userFrames(first)).toHaveLength(1)
+
+    // A drop and reconnect must not resend the already-transmitted frame.
+    first.close()
+    vi.advanceTimersByTime(600)
+    const second = FakeSocket.instances[1]!
+    second.open()
+    expect(userFrames(second)).toHaveLength(0)
+  })
+
+  it('never surfaces the literal string "undefined" for a message-less error frame', async () => {
+    const transport = new Transport('ws://test')
+    transport.connect()
+    const socket = FakeSocket.instances[0]!
+    socket.open()
+
+    const pending = transport.request('system.info', {})
+    const frame = JSON.parse(userFrames(socket)[0]!) as { id: string }
+    socket.onmessage?.({ data: JSON.stringify({ id: frame.id, error: {} }) })
+
+    await expect(pending).rejects.toThrow('The server reported an error.')
+  })
+})

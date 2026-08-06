@@ -552,3 +552,19 @@ describe('usage totals', () => {
     })
   })
 })
+
+describe('usage totals across providers', () => {
+  it("counts every provider in today's total, not only the selected thread's", () => {
+    // The bug this pins: the day total was provider-scoped by accident, so a
+    // Codex+Claude user saw only one side of their day.
+    store.addProject('/repo')
+    store.addThread({ id: 'one', projectPath: '/repo', provider: 'codex', title: 'One' })
+    store.addThread({ id: 'two', projectPath: '/repo', provider: 'claude-code', title: 'Two' })
+    store.append('one', usage(100))
+    store.append('two', usage(40))
+
+    const summary = store.usageSummary('one', 0)
+    expect(summary.session).toEqual(expect.objectContaining({ totalTokens: 100 }))
+    expect(summary.today).toEqual(expect.objectContaining({ totalTokens: 140 }))
+  })
+})

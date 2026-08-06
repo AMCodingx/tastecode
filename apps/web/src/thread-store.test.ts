@@ -206,3 +206,49 @@ describe('thread reducer', () => {
     expect(replayed.reviews['review-1']).toEqual(completed.review)
   })
 })
+
+describe('overnight regression pins', () => {
+  it('clears unanswerable approvals when the turn ends, however it ends', () => {
+    const requested = reduce(emptyThread, {
+      type: 'approval.requested',
+      request: { id: 'a1', kind: 'command', command: 'rm x', createdAt: 1 },
+    })
+    for (const status of ['completed', 'interrupted', 'failed'] as const) {
+      const ended = reduce(requested, { type: 'turn.completed', turnId: 't1', status })
+      expect(ended.approvals).toEqual([])
+    }
+  })
+
+  it('parks an early delta in a placeholder the real item fills without duplicating', () => {
+    const early = reduce(emptyThread, {
+      type: 'item.delta',
+      turnId: 't1',
+      itemId: 'x',
+      textDelta: 'Hel',
+    })
+    expect(early.items).toHaveLength(1)
+    expect(early.items[0]?.text).toBe('Hel')
+
+    const started = reduce(early, {
+      type: 'item.started',
+      item: {
+        id: 'x',
+        turnId: 't1',
+        type: 'message',
+        role: 'assistant',
+        status: 'started',
+        createdAt: 2,
+      },
+    })
+    expect(started.items).toHaveLength(1)
+    expect(started.items[0]?.text).toBe('Hel')
+
+    const delta = reduce(started, {
+      type: 'item.delta',
+      turnId: 't1',
+      itemId: 'x',
+      textDelta: 'lo',
+    })
+    expect(delta.items[0]?.text).toBe('Hello')
+  })
+})
