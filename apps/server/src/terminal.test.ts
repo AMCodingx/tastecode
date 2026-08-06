@@ -112,3 +112,25 @@ async function within<T>(promise: Promise<T>): Promise<T> {
     if (timeout) clearTimeout(timeout)
   }
 }
+
+it('closing a stale terminal id does not unmap a newer pty under the same key', async () => {
+  const cwd = mkdtempSync(path.join(os.tmpdir(), 'harness-terminal-stale-'))
+  const manager = new TerminalManager({ onOutput: () => {}, onExit: () => {} })
+
+  try {
+    const first = manager.open('thread-1', cwd, 80, 24)
+    // Simulate the respawn race: the first pty is closed directly, a new
+    // one is opened under the same key, and then someone closes the stale
+    // first id again (a late client, a double-click).
+    manager.close(first)
+    const second = manager.open('thread-1', cwd, 80, 24)
+    manager.close(first)
+
+    // The newer pty must still be mapped: asking for the thread's terminal
+    // reattaches instead of spawning a third.
+    expect(manager.open('thread-1', cwd, 80, 24)).toBe(second)
+  } finally {
+    manager.closeAll()
+    rmSync(cwd, { recursive: true, force: true })
+  }
+}, 15_000)
