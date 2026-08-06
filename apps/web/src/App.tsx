@@ -564,6 +564,15 @@ export function App() {
       setProvider(selected.provider)
       setAcpAgent(selected.agent?.id)
       setAcpAgentName(selected.agent?.name)
+      // Persist the whole selection together, exactly like selectModel does.
+      // Persisting only the model key left provider and agent to come from
+      // stale storage on the next launch — a boot where the model belongs to
+      // one provider and the session goes to another.
+      writeSetting(SETUP_KEY, selected.provider)
+      if (selected.agent) {
+        writeSetting(AGENT_KEY, selected.agent.id)
+        writeSetting(AGENT_NAME_KEY, selected.agent.name)
+      }
       setEffort((current) =>
         current && selected.model.reasoningEfforts.includes(current)
           ? current
@@ -1352,7 +1361,23 @@ export function App() {
           agentId: found.session.agent,
         })
         const matchingChoice = models.find((choice) => choice.key.startsWith(`${source}:`))
-        if (matchingChoice) setModelId(matchingChoice.key)
+        if (matchingChoice) {
+          setModelId(matchingChoice.key)
+          // Same reconciliation as selectModel: carrying the previous model's
+          // effort/tier into one that does not offer them sends a parameter
+          // the server rejects.
+          setEffort((current) =>
+            current && matchingChoice.model.reasoningEfforts.includes(current)
+              ? current
+              : (matchingChoice.model.defaultReasoningEffort ??
+                matchingChoice.model.reasoningEfforts[0]),
+          )
+          setServiceTier((current) =>
+            current && matchingChoice.model.serviceTiers.some((tier) => tier.id === current)
+              ? current
+              : (matchingChoice.model.defaultServiceTier ?? undefined),
+          )
+        }
       }
       setNotice(undefined)
       setUndoRestore(undefined)
