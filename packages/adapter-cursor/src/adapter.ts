@@ -29,7 +29,6 @@ export class CursorAdapter extends EventEmitter<Events> {
   #turnId: string | undefined
   #turnCounter = 0
   #instructionsPending = false
-  #terminalEvent = false
   readonly #spawn: Spawn
 
   constructor(options: { spawn?: Spawn } = {}) {
@@ -76,8 +75,11 @@ export class CursorAdapter extends EventEmitter<Events> {
     if (!this.#workspacePath || threadId !== this.#threadId) {
       throw new Error('Cursor session has not started')
     }
-    if (this.#child) throw new Error('a turn is already running')
+    if (this.#turnId) throw new Error('a turn is already running')
     if (attachments.length) throw new Error('Cursor CLI attachments are not supported')
+    // The previous turn's process can outlive its `result` event by a moment;
+    // a lingering child must not block or clobber the new turn.
+    if (this.#child) killTree(this.#child)
     const turnId = `${threadId}-turn-${++this.#turnCounter}`
     const prompt =
       this.#instructionsPending && this.#options.instructions
@@ -99,7 +101,6 @@ export class CursorAdapter extends EventEmitter<Events> {
     this.#child = child
     this.#turnId = turnId
     this.#mapper = new CursorEventMapper(turnId)
-    this.#terminalEvent = false
     this.emit('event', {
       type: 'turn.started',
       turn: { id: turnId, threadId, status: 'running', createdAt: Date.now() },
@@ -111,12 +112,16 @@ export class CursorAdapter extends EventEmitter<Events> {
     )
     child.stderr.setEncoding('utf8')
     child.stderr.on('data', (chunk: string) => this.emit('log', chunk.trimEnd()))
-    child.on('error', () => this.#fail('Cursor Agent CLI could not start.'))
-    child.on('exit', (code) => {
-      this.#child = undefined
-      if (!this.#terminalEvent && this.#turnId) {
-        this.#fail(`cursor-agent exited with code ${code ?? 'unknown'}`)
-      }
+    child.on('error', () => this.#fail(turnId, 'Cursor Agent CLI could not start.'))
+    child.on('exit', () => {
+      if (this.#child === child) this.#child = undefined
+    })
+    // 'close', not 'exit': at exit the stdio pipes may still hold the final
+    // `result` chunk, and failing here would report a successful turn as a
+    // crash. 'close' fires only once all output has been delivered.
+    child.on('close', (code) => {
+      if (this.#child === child) this.#child = undefined
+      this.#fail(turnId, `cursor-agent exited with code ${code ?? 'unknown'}`)
     })
     return turnId
   }
@@ -124,8 +129,8 @@ export class CursorAdapter extends EventEmitter<Events> {
   async interrupt(): Promise<void> {
     if (!this.#child || !this.#turnId) return
     const turnId = this.#turnId
-    this.#terminalEvent = true
     killTree(this.#child)
+    this.#child = undefined
     for (const event of this.#mapper?.finish() ?? []) this.emit('event', event)
     this.emit('event', { type: 'turn.completed', turnId, status: 'interrupted' })
     this.#turnId = undefined
@@ -139,7 +144,6 @@ export class CursorAdapter extends EventEmitter<Events> {
   }
 
   dispose(): void {
-    this.#terminalEvent = true
     if (this.#child) killTree(this.#child)
     this.#child = undefined
     this.#threadId = undefined
@@ -156,17 +160,16 @@ export class CursorAdapter extends EventEmitter<Events> {
     for (const domainEvent of this.#mapper.translate(event)) {
       this.emit('event', domainEvent)
       if (domainEvent.type === 'turn.completed') {
-        this.#terminalEvent = true
         this.#turnId = undefined
         this.#mapper = undefined
       }
     }
   }
 
-  #fail(message: string): void {
-    if (!this.#turnId) return
-    const turnId = this.#turnId
-    this.#terminalEvent = true
+  /** No-op unless `turnId` is still the live turn — late exits from a
+   *  finished or replaced turn must not fail whatever runs now. */
+  #fail(turnId: string, message: string): void {
+    if (this.#turnId !== turnId) return
     for (const event of this.#mapper?.finish() ?? []) this.emit('event', event)
     this.emit('event', { type: 'thread.error', threadId: this.#threadId!, message })
     this.emit('event', { type: 'turn.completed', turnId, status: 'failed' })

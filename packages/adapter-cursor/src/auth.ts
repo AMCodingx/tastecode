@@ -16,12 +16,26 @@ export function startCursorLogin(
 ): { loginId: string; cancel: () => void } {
   const loginId = crypto.randomUUID()
   const child = spawnCli('cursor-agent', ['login'])
+  // Nothing reads these pipes; an undrained pipe blocks the CLI once it has
+  // written a buffer's worth (device codes, verbose retries) and the sign-in
+  // would hang forever.
+  child.stdout.resume()
+  child.stderr.resume()
   let settled = false
   const finish = (success: boolean, error: string | null) => {
     if (settled) return
     settled = true
+    clearTimeout(deadline)
     onComplete({ loginId, success, error })
   }
+  const deadline = setTimeout(
+    () => {
+      killTree(child)
+      finish(false, 'Cursor sign-in timed out.')
+    },
+    10 * 60 * 1000,
+  )
+  deadline.unref?.()
   child.on('error', () => finish(false, 'Cursor could not start its sign-in flow.'))
   child.on('exit', (code) => finish(code === 0, code === 0 ? null : 'Cursor sign-in failed.'))
   return { loginId, cancel: () => killTree(child) }
