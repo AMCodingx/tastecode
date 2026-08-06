@@ -19,6 +19,23 @@ default. This is a public promise and it constrains future product decisions —
 cloud, team, or mobile-relay feature. Accept that now, or renegotiate it explicitly with
 users later.
 
+## Loopback is not a trust boundary
+
+Binding the server to `127.0.0.1` keeps other machines out. It does **not** keep other
+_pages_ out: browsers deliberately exempt `WebSocket` from the same-origin policy, so any
+site the user happens to be visiting can open `ws://127.0.0.1:4311` and speak our protocol.
+Everything the UI can do — enumerate projects, start a thread with `full` approval, open a
+terminal — it could do too.
+
+The gate is the `Origin` header, because it is the one thing a page cannot forge. Allowed:
+absent (non-browser clients — the CLI, tests, a native mobile client), `null`/`file://` (the
+packaged renderer), and loopback origins (the dev server and our own web UI). Anything else
+is refused with 1008.
+
+**Any new listener inherits this rule**, and so does any future HTTP surface — a fetch from a
+hostile page carries an `Origin` too. Check it at the point of accept, before a single frame
+is handled.
+
 ## Electron hardening
 
 In the scaffold from day one, not "later": `contextIsolation: true`, `nodeIntegration:
