@@ -60,6 +60,7 @@ export function createOpenAiCompatibleTransport(options: OpenAiCompatibleOptions
 
     const calls = new Map<number, { id: string; name: string; arguments: string }>()
     let finish: 'stop' | 'tool_calls' | undefined
+    let truncated = false
     for await (const event of serverSentEvents(response.body)) {
       if (event.error) throw new Error('OpenAI-compatible response failed')
       const choice = object(array(event.choices)[0])
@@ -94,9 +95,18 @@ export function createOpenAiCompatibleTransport(options: OpenAiCompatibleOptions
       const reason = string(choice.finish_reason)
       if (reason === 'tool_calls') finish = 'tool_calls'
       // 'length' is a truncated answer, not a failure worth discarding it for.
-      else if (reason === 'stop' || reason === 'length') finish = 'stop'
-      else if (reason) throw new Error(`OpenAI-compatible response did not complete (${reason})`)
+      else if (reason === 'stop' || reason === 'length') {
+        finish = 'stop'
+        if (reason === 'length') truncated = true
+      } else if (reason) {
+        throw new Error(`OpenAI-compatible response did not complete (${reason})`)
+      }
     }
+
+    // A cut at max_tokens can land mid tool-call. Executing a tool with
+    // truncated JSON arguments is worse than surfacing the truncation — drop
+    // the incomplete calls and let 'stop' report what happened.
+    if (truncated) calls.clear()
 
     for (const call of [...calls.values()]) {
       if (!call.id || !call.name)

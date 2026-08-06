@@ -1693,7 +1693,17 @@ export class Orchestrator {
       return
     }
 
-    const prompt = flow.pendingPrompt ?? this.#designPromptFor(flow)
+    // Building the prompt reads .design/*.json from the workspace — files the
+    // user may have deleted since the run was persisted. A throw here would
+    // leave #designFlows set with nothing to ever clear it, and the send
+    // guard would silently queue every future prompt on this thread forever.
+    let prompt: string
+    try {
+      prompt = flow.pendingPrompt ?? this.#designPromptFor(flow)
+    } catch (error) {
+      this.#failDesignFlow(threadId, error)
+      return
+    }
     delete flow.pendingPrompt
     this.#saveDesignFlow(threadId)
     void this.#sendDesignTurn(
@@ -2153,6 +2163,10 @@ export class Orchestrator {
       threadId,
       message: `Design mode failed: ${error instanceof Error ? error.message : String(error)}`,
     })
+    // Prompts typed during the flow queued behind the design guard; every
+    // other design exit drains, and this one stranding them meant a failed
+    // design run left "queued" messages sitting until the user sent another.
+    void this.#drainQueue(threadId)
   }
 
   #queueDesignCorrection(threadId: string, flow: DesignFlow, error: unknown): string | undefined {

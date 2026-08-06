@@ -33,6 +33,8 @@ export class Streamer {
    */
   #tools = new Map<string, { kind?: ToolKind; title?: string; output?: string }>()
   #counter = 0
+  /** Distinguishes successive id-less tool calls within one turn. */
+  #anonymousSeq = 0
 
   constructor(turnId: string) {
     this.#turnId = turnId
@@ -128,8 +130,10 @@ export class Streamer {
 
   #toolCall(update: SessionUpdate): DomainEvent[] {
     // One shared slot for id-less frames: a fresh id per update would split a
-    // call and its completion into two items, the first spinning forever.
-    const id = update.toolCallId ?? `${this.#turnId}-tool-anonymous`
+    // call and its completion into two items, the first spinning forever. The
+    // sequence number advances when a call finishes, so the NEXT id-less call
+    // gets its own item instead of inheriting this one's identity and output.
+    const id = update.toolCallId ?? `${this.#turnId}-tool-anonymous-${this.#anonymousSeq}`
 
     // An update carries only what changed. Fall back to what we recorded when
     // this call started, so a completion does not erase its own identity —
@@ -171,6 +175,11 @@ export class Streamer {
     }
 
     if (output) item.text = item.text ? `${item.text}\n${output}` : output
+
+    if (finished && !update.toolCallId) {
+      this.#tools.delete(id)
+      this.#anonymousSeq++
+    }
 
     const events: DomainEvent[] = [
       ...(completedMessage ? [completedMessage] : []),

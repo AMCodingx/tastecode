@@ -259,19 +259,22 @@ export class ApiAgentSession extends EventEmitter<Events> {
     let finish: 'stop' | 'tool_calls' | undefined
     let state: unknown
     const calls: ApiToolCall[] = []
-    // Per-delta redaction misses a secret split across two chunks. Emit from
-    // the redaction of the accumulated raw text instead, holding back enough
-    // tail to cover the longest secret still possibly mid-arrival.
+    // Per-delta redaction misses a secret split across two chunks. Redact a
+    // rolling window instead: only the unemitted tail is scanned, holding
+    // back enough to cover the longest secret still possibly mid-arrival.
+    // (Redacting the full accumulated text per delta was O(n²) — hundreds of
+    // MB of scanning on a long response.) The held-back tail is safe to keep
+    // in redacted form: complete secrets are already replaced, and a partial
+    // secret at the very end is untouched by redaction so it still matches
+    // once the rest arrives.
     const holdback =
       this.#secrets.length > 0 ? Math.max(...this.#secrets.map((secret) => secret.length)) - 1 : 0
-    let rawText = ''
-    let emittedText = 0
-    let rawReasoning = ''
-    let emittedReasoning = 0
-    const safeDelta = (raw: string, emitted: number): { chunk: string; emitted: number } => {
-      const redacted = this.#redact(raw)
-      const safe = Math.max(emitted, redacted.length - holdback)
-      return { chunk: redacted.slice(emitted, safe), emitted: safe }
+    let pendingText = ''
+    let pendingReasoning = ''
+    const safeDelta = (pending: string): { chunk: string; pending: string } => {
+      const redacted = this.#redact(pending)
+      const safe = Math.max(0, redacted.length - holdback)
+      return { chunk: redacted.slice(0, safe), pending: redacted.slice(safe) }
     }
     for await (const event of this.#transport({
       model: this.#model,
@@ -295,11 +298,12 @@ export class ApiAgentSession extends EventEmitter<Events> {
             },
           })
         }
-        rawText += event.delta
-        const { chunk, emitted } = safeDelta(rawText, emittedText)
-        emittedText = emitted
-        text = this.#redact(rawText)
-        if (chunk) this.emit('event', { type: 'item.delta', turnId, itemId, textDelta: chunk })
+        const step = safeDelta(pendingText + event.delta)
+        pendingText = step.pending
+        text += step.chunk
+        if (step.chunk) {
+          this.emit('event', { type: 'item.delta', turnId, itemId, textDelta: step.chunk })
+        }
       } else if (event.type === 'reasoning') {
         if (!reasoningStarted) {
           reasoningStarted = true
@@ -315,16 +319,15 @@ export class ApiAgentSession extends EventEmitter<Events> {
             },
           })
         }
-        rawReasoning += event.delta
-        const { chunk, emitted } = safeDelta(rawReasoning, emittedReasoning)
-        emittedReasoning = emitted
-        reasoning = this.#redact(rawReasoning)
-        if (chunk) {
+        const step = safeDelta(pendingReasoning + event.delta)
+        pendingReasoning = step.pending
+        reasoning += step.chunk
+        if (step.chunk) {
           this.emit('event', {
             type: 'item.delta',
             turnId,
             itemId: reasoningId,
-            textDelta: chunk,
+            textDelta: step.chunk,
           })
         }
       } else if (event.type === 'tool_call') {
@@ -338,6 +341,25 @@ export class ApiAgentSession extends EventEmitter<Events> {
       }
     }
     if (!finish) throw new Error('transport ended without a finish event')
+    // The stream is over — nothing is mid-arrival, so the held-back tails can
+    // be redacted one last time and emitted.
+    const tailText = this.#redact(pendingText)
+    if (tailText) {
+      text += tailText
+      if (started) this.emit('event', { type: 'item.delta', turnId, itemId, textDelta: tailText })
+    }
+    const tailReasoning = this.#redact(pendingReasoning)
+    if (tailReasoning) {
+      reasoning += tailReasoning
+      if (reasoningStarted) {
+        this.emit('event', {
+          type: 'item.delta',
+          turnId,
+          itemId: reasoningId,
+          textDelta: tailReasoning,
+        })
+      }
+    }
     if (started) {
       this.emit('event', {
         type: 'item.completed',
