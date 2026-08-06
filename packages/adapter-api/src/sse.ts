@@ -40,8 +40,10 @@ export async function* serverSentEvents(
     }
   } finally {
     // An early generator exit (throw, break in the consumer) must release the
-    // connection instead of leaking the socket.
-    reader.releaseLock()
+    // connection instead of leaking the socket. cancel(), not releaseLock():
+    // releasing the lock alone leaves the stream — and the fetch behind it —
+    // open until garbage collection.
+    await reader.cancel().catch(() => undefined)
   }
 }
 

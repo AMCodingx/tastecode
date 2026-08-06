@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto'
-import { mkdir, rm, writeFile } from 'node:fs/promises'
+import { mkdir, readdir, rm, stat, writeFile } from 'node:fs/promises'
 import { fileURLToPath } from 'node:url'
 import path from 'node:path'
 import {
@@ -250,10 +250,30 @@ async function capturePreview(request: PreviewCaptureRequest): Promise<PreviewCa
     }
   } finally {
     clearTimeout(deadlineTimer)
-    const previewSession = preview.webContents.session
-    preview.destroy()
+    // The closed-last-window handler may have destroyed us already; touching
+    // a destroyed webContents throws, which would eat a successful result.
+    if (!preview.isDestroyed() && !preview.webContents.isDestroyed()) {
+      const previewSession = preview.webContents.session
+      preview.destroy()
+      void previewSession.clearStorageData().catch(() => undefined)
+    }
     captureWindows.delete(preview)
-    void previewSession.clearStorageData().catch(() => undefined)
+  }
+}
+
+/** Screenshot directories older than a day have no consumer left — the design
+ *  flow reads them within seconds of the capture. */
+async function sweepStaleCaptures(): Promise<void> {
+  const root = path.join(app.getPath('temp'), 'Personal Harness', 'preview-captures')
+  const dayAgo = Date.now() - 24 * 60 * 60 * 1000
+  try {
+    for (const entry of await readdir(root)) {
+      const target = path.join(root, entry)
+      const info = await stat(target)
+      if (info.mtimeMs < dayAgo) await rm(target, { recursive: true, force: true })
+    }
+  } catch {
+    // Missing directory or a file in use — nothing worth failing startup over.
   }
 }
 
@@ -305,6 +325,7 @@ ipcMain.handle('harness:savePastedImage', async (event, payload: unknown) => {
 
 void app.whenReady().then(() => {
   configureMediaPermissions()
+  void sweepStaleCaptures()
   createWindow()
   app.on('activate', () => {
     if (appWindows().length === 0) createWindow()

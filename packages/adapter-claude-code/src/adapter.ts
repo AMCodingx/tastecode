@@ -80,6 +80,8 @@ export class ClaudeCodeAdapter extends EventEmitter<ClaudeAdapterEvents> {
   /** Claude Code's own session id, so follow-up turns resume rather than restart. */
   #sessionId: string | undefined
   #child: ChildProcessWithoutNullStreams | undefined
+  /** Children we killed on purpose — their non-zero exits are not failures. */
+  #intentionalKills = new WeakSet<ChildProcessWithoutNullStreams>()
   #turnCounter = 0
 
   get capabilities(): Capabilities {
@@ -129,7 +131,7 @@ export class ClaudeCodeAdapter extends EventEmitter<ClaudeAdapterEvents> {
 
     // A turn already in flight would be orphaned by the reassignment below —
     // its exit handler must also not clobber the new child's reference.
-    if (this.#child) killTree(this.#child)
+    if (this.#child) this.#stop(this.#child)
     const child = spawnCli('claude', args, { cwd: this.#workspacePath })
     this.#child = child
 
@@ -150,7 +152,11 @@ export class ClaudeCodeAdapter extends EventEmitter<ClaudeAdapterEvents> {
     child.on('exit', (code) => {
       if (this.#child === child) this.#child = undefined
       // A non-zero exit without a `result` event means the CLI failed before
-      // it could report anything, and silence would look like a hang.
+      // it could report anything, and silence would look like a hang. But an
+      // exit WE caused is not a failure: taskkill reports code 1, and the old
+      // check wrote a phantom "claude exited with code 1" into the transcript
+      // on every Stop, close, and turn replacement.
+      if (this.#intentionalKills.has(child)) return
       if (code !== 0 && code !== null) {
         this.emit('event', {
           type: 'thread.error',
@@ -173,7 +179,7 @@ export class ClaudeCodeAdapter extends EventEmitter<ClaudeAdapterEvents> {
   }
 
   async interrupt(): Promise<void> {
-    if (this.#child) killTree(this.#child)
+    if (this.#child) this.#stop(this.#child)
   }
 
   /**
@@ -188,8 +194,14 @@ export class ClaudeCodeAdapter extends EventEmitter<ClaudeAdapterEvents> {
   }
 
   dispose(): void {
-    if (this.#child) killTree(this.#child)
+    if (this.#child) this.#stop(this.#child)
     this.#child = undefined
+  }
+
+  /** Kill a child we own on purpose, and remember that its exit is ours. */
+  #stop(child: ChildProcessWithoutNullStreams): void {
+    this.#intentionalKills.add(child)
+    killTree(child)
   }
 
   #onEvent(event: ClaudeEvent, turnId: string): void {
