@@ -2,7 +2,8 @@ import { describe, expect, it } from 'vitest'
 import { existsSync, readFileSync, rmSync } from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
-import { killTree, runCli, spawnCli } from './index.js'
+import { PassThrough } from 'node:stream'
+import { killTree, readNdjson, runCli, spawnCli } from './index.js'
 
 describe('runCli', () => {
   it('captures a short command without invoking a platform shell directly', async () => {
@@ -45,6 +46,20 @@ describe('spawnCli', () => {
     } finally {
       delete process.env['HARNESS_HIDDEN']
     }
+  })
+})
+
+describe('readNdjson', () => {
+  it('parses a final line that has no trailing newline once the stream ends', async () => {
+    // CLIs that die right after their last write often leave it unterminated;
+    // dropping it deterministically lost the result of the whole run.
+    const stream = new PassThrough()
+    const values: unknown[] = []
+    readNdjson(stream, (value) => values.push(value))
+    stream.write('{"first":1}\n{"seco')
+    stream.end('nd":2}')
+    await new Promise((resolve) => stream.on('end', resolve))
+    expect(values).toEqual([{ first: 1 }, { second: 2 }])
   })
 })
 

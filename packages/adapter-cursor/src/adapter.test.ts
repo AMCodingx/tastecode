@@ -95,6 +95,67 @@ describe('Cursor adapter', () => {
     await expect(adapter.listModels()).resolves.toEqual([])
   })
 
+  it('completes a turn whose result rides the final unterminated chunk', async () => {
+    // cursor-agent writes its result line and exits immediately. The exit
+    // races the stdout flush; failing on 'exit' (the pre-fix behavior)
+    // reported this successful turn as a crash.
+    const child = new FakeChild()
+    const adapter = new CursorAdapter({
+      spawn: () => child as unknown as ChildProcessWithoutNullStreams,
+    })
+    const events: DomainEvent[] = []
+    adapter.on('event', (event) => events.push(event))
+    const thread = await adapter.startThread('C:\\repo')
+    await adapter.sendTurn(thread.id, 'go')
+
+    // No trailing newline — the process died mid-write of its last byte.
+    child.stdout.end(
+      '{"type":"result","subtype":"success","duration_ms":1,"duration_api_ms":1,"is_error":false,"result":"done","session_id":"s1"}',
+    )
+    await new Promise((resolve) => setImmediate(resolve))
+    child.emit('exit', 0)
+    child.emit('close', 0)
+    await new Promise((resolve) => setImmediate(resolve))
+
+    expect(events.filter((event) => event.type === 'turn.completed')).toEqual([
+      expect.objectContaining({ status: 'completed' }),
+    ])
+    expect(events.some((event) => event.type === 'thread.error')).toBe(false)
+  })
+
+  it('lets the next turn start while the finished process is still exiting', async () => {
+    const children: FakeChild[] = []
+    const adapter = new CursorAdapter({
+      spawn: () => {
+        const child = new FakeChild()
+        children.push(child)
+        return child as unknown as ChildProcessWithoutNullStreams
+      },
+    })
+    const events: DomainEvent[] = []
+    adapter.on('event', (event) => events.push(event))
+    const thread = await adapter.startThread('C:\\repo')
+    await adapter.sendTurn(thread.id, 'first')
+
+    // The result arrives, but the process lingers: no exit/close yet.
+    children[0]!.stdout.write(
+      '{"type":"result","subtype":"success","duration_ms":1,"duration_api_ms":1,"is_error":false,"result":"done","session_id":"s1"}\n',
+    )
+    await new Promise((resolve) => setImmediate(resolve))
+
+    // Pre-fix this threw 'a turn is already running' and the queued prompt
+    // stalled forever. Now the lingering child is reaped and turn 2 starts.
+    await adapter.sendTurn(thread.id, 'second')
+    expect(children).toHaveLength(2)
+    expect(children[0]!.killed).toBe(true)
+
+    // The old child's close must not fail the new live turn.
+    children[0]!.emit('close', 0)
+    await new Promise((resolve) => setImmediate(resolve))
+    expect(events.some((event) => event.type === 'thread.error')).toBe(false)
+    expect(events.filter((event) => event.type === 'turn.started')).toHaveLength(2)
+  })
+
   it('rejects capabilities the CLI cannot provide', async () => {
     const adapter = new CursorAdapter()
     await expect(adapter.startThread('C:\\repo', { approval: 'auto-review' })).rejects.toThrow(
