@@ -1,6 +1,6 @@
 import { ModelEndpointSchema, type Model } from '@harness/contracts'
 import type { ApiMessage, ApiStreamEvent, ApiTool, ApiTransport } from './runtime.js'
-import { serverSentEvents } from './sse.js'
+import { httpError, serverSentEvents } from './sse.js'
 
 type JsonObject = Record<string, unknown>
 
@@ -29,7 +29,7 @@ export function createAnthropicMessagesTransport(options: AnthropicOptions): Api
       }),
       signal,
     })
-    if (!response.ok) throw new Error(`Anthropic request failed with HTTP ${response.status}`)
+    if (!response.ok) throw new Error(await httpError('Anthropic', response, [apiKey]))
     if (!response.body) throw new Error('Anthropic response had no stream')
 
     const blocks = new Map<number, JsonObject>()
@@ -85,9 +85,12 @@ export function createAnthropicMessagesTransport(options: AnthropicOptions): Api
         if (
           stopReason !== 'end_turn' &&
           stopReason !== 'stop_sequence' &&
-          stopReason !== 'tool_use'
+          stopReason !== 'tool_use' &&
+          // Hitting the output cap truncates the answer; throwing here threw
+          // the whole streamed text away with it.
+          stopReason !== 'max_tokens'
         ) {
-          throw new Error('Anthropic response stopped before completion')
+          throw new Error(`Anthropic response stopped before completion (${stopReason})`)
         }
         yield {
           type: 'state',

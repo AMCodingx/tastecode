@@ -1,6 +1,6 @@
 import { ModelEndpointSchema, type Model } from '@harness/contracts'
 import type { ApiMessage, ApiStreamEvent, ApiTool, ApiToolCall, ApiTransport } from './runtime.js'
-import { serverSentEvents } from './sse.js'
+import { httpError, serverSentEvents } from './sse.js'
 
 type JsonObject = Record<string, unknown>
 
@@ -55,9 +55,7 @@ export function createOpenAiCompatibleTransport(options: OpenAiCompatibleOptions
       }),
       signal,
     })
-    if (!response.ok) {
-      throw new Error(`OpenAI-compatible request failed with HTTP ${response.status}`)
-    }
+    if (!response.ok) throw new Error(await httpError('OpenAI-compatible', response, [apiKey]))
     if (!response.body) throw new Error('OpenAI-compatible response had no stream')
 
     const calls = new Map<number, { id: string; name: string; arguments: string }>()
@@ -95,8 +93,9 @@ export function createOpenAiCompatibleTransport(options: OpenAiCompatibleOptions
       }
       const reason = string(choice.finish_reason)
       if (reason === 'tool_calls') finish = 'tool_calls'
-      else if (reason === 'stop') finish = 'stop'
-      else if (reason) throw new Error('OpenAI-compatible response did not complete')
+      // 'length' is a truncated answer, not a failure worth discarding it for.
+      else if (reason === 'stop' || reason === 'length') finish = 'stop'
+      else if (reason) throw new Error(`OpenAI-compatible response did not complete (${reason})`)
     }
 
     for (const call of [...calls.values()]) {
@@ -114,6 +113,9 @@ export function createOpenAiCompatibleTransport(options: OpenAiCompatibleOptions
       } satisfies ApiStreamEvent
     }
     if (!finish) throw new Error('OpenAI-compatible response ended without a finish reason')
+    // Providers sometimes report 'stop' while still emitting tool calls;
+    // honoring the reported reason would orphan those calls.
+    if (calls.size > 0) finish = 'tool_calls'
     yield { type: 'finish', reason: finish } satisfies ApiStreamEvent
   }
 }

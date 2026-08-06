@@ -199,12 +199,36 @@ export class ApiAgentSession extends EventEmitter<Events> {
       })
     } catch (error) {
       const interrupted = signal.aborted
+      // Orphaned tool_use blocks brick the thread: an assistant message with
+      // tool calls but no tool results makes every later Anthropic request
+      // fail with a 400. Close the books before this state can persist.
+      const last = this.#messages.at(-1)
+      if (last?.role === 'assistant' && last.toolCalls?.length) {
+        const answered = new Set(
+          this.#messages
+            .filter((message) => message.role === 'tool')
+            .map((message) => message.toolCallId),
+        )
+        for (const call of last.toolCalls) {
+          if (!answered.has(call.id)) {
+            this.#messages.push({
+              role: 'tool',
+              toolCallId: call.id,
+              content: 'Tool execution was interrupted.',
+              isError: true,
+            })
+          }
+        }
+      }
       if (!interrupted) {
-        this.emit('log', 'direct API model request failed')
+        const detail = error instanceof Error ? error.message : String(error)
+        this.emit('log', `direct API model request failed: ${detail}`)
         this.emit('event', {
           type: 'thread.error',
           threadId: thread.id,
-          message: 'The model request failed.',
+          // The redacted real cause, not a shrug — "credit balance too low"
+          // and "invalid api key" are actionable; "request failed" is not.
+          message: this.#redact(detail) || 'The model request failed.',
         })
       }
       this.emit('event', {
@@ -233,6 +257,20 @@ export class ApiAgentSession extends EventEmitter<Events> {
     let finish: 'stop' | 'tool_calls' | undefined
     let state: unknown
     const calls: ApiToolCall[] = []
+    // Per-delta redaction misses a secret split across two chunks. Emit from
+    // the redaction of the accumulated raw text instead, holding back enough
+    // tail to cover the longest secret still possibly mid-arrival.
+    const holdback =
+      this.#secrets.length > 0 ? Math.max(...this.#secrets.map((secret) => secret.length)) - 1 : 0
+    let rawText = ''
+    let emittedText = 0
+    let rawReasoning = ''
+    let emittedReasoning = 0
+    const safeDelta = (raw: string, emitted: number): { chunk: string; emitted: number } => {
+      const redacted = this.#redact(raw)
+      const safe = Math.max(emitted, redacted.length - holdback)
+      return { chunk: redacted.slice(emitted, safe), emitted: safe }
+    }
     for await (const event of this.#transport({
       model: this.#model,
       messages: this.#messages,
@@ -255,9 +293,11 @@ export class ApiAgentSession extends EventEmitter<Events> {
             },
           })
         }
-        const delta = this.#redact(event.delta)
-        text += delta
-        this.emit('event', { type: 'item.delta', turnId, itemId, textDelta: delta })
+        rawText += event.delta
+        const { chunk, emitted } = safeDelta(rawText, emittedText)
+        emittedText = emitted
+        text = this.#redact(rawText)
+        if (chunk) this.emit('event', { type: 'item.delta', turnId, itemId, textDelta: chunk })
       } else if (event.type === 'reasoning') {
         if (!reasoningStarted) {
           reasoningStarted = true
@@ -273,14 +313,18 @@ export class ApiAgentSession extends EventEmitter<Events> {
             },
           })
         }
-        const delta = this.#redact(event.delta)
-        reasoning += delta
-        this.emit('event', {
-          type: 'item.delta',
-          turnId,
-          itemId: reasoningId,
-          textDelta: delta,
-        })
+        rawReasoning += event.delta
+        const { chunk, emitted } = safeDelta(rawReasoning, emittedReasoning)
+        emittedReasoning = emitted
+        reasoning = this.#redact(rawReasoning)
+        if (chunk) {
+          this.emit('event', {
+            type: 'item.delta',
+            turnId,
+            itemId: reasoningId,
+            textDelta: chunk,
+          })
+        }
       } else if (event.type === 'tool_call') {
         calls.push(event.call)
       } else if (event.type === 'usage') {
@@ -369,7 +413,13 @@ export class ApiAgentSession extends EventEmitter<Events> {
 
   async #approved(call: ApiToolCall, signal: AbortSignal): Promise<boolean> {
     const review = this.#reviewTool(call)
-    if (!review || this.#approvedTools.has(call.name)) return true
+    // Session approval is keyed on what the user actually reviewed — command
+    // plus path plus reason — not on the tool name. Approving one `bash`
+    // invocation must not silently approve every future one.
+    const approvalKey = review
+      ? `${call.name}\0${review.command ?? ''}\0${review.path ?? ''}\0${review.reason ?? ''}`
+      : call.name
+    if (!review || this.#approvedTools.has(approvalKey)) return true
     const request: ApprovalRequest = {
       ...review,
       id: crypto.randomUUID(),
@@ -390,7 +440,7 @@ export class ApiAgentSession extends EventEmitter<Events> {
     const decision = await pending
     this.emit('event', { type: 'approval.resolved', id: request.id })
     if (decision === 'abort') throw new DOMException('interrupted', 'AbortError')
-    if (decision === 'approve-session') this.#approvedTools.add(call.name)
+    if (decision === 'approve-session') this.#approvedTools.add(approvalKey)
     return decision === 'approve' || decision === 'approve-session'
   }
 

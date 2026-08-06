@@ -177,7 +177,8 @@ describe('OpenAI-compatible transport', () => {
     } catch (error) {
       message = error instanceof Error ? error.message : String(error)
     }
-    expect(message).toBe('OpenAI-compatible request failed with HTTP 401')
+    expect(message).toContain('request failed with HTTP 401')
+    expect(message).toContain('rejected')
     expect(message).not.toContain(secret)
   })
 })

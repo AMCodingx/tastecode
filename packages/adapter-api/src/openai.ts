@@ -1,6 +1,6 @@
 import { ModelEndpointSchema, type Model } from '@harness/contracts'
 import type { ApiMessage, ApiStreamEvent, ApiTool, ApiToolCall, ApiTransport } from './runtime.js'
-import { serverSentEvents } from './sse.js'
+import { httpError, serverSentEvents } from './sse.js'
 
 type JsonObject = Record<string, unknown>
 
@@ -30,7 +30,7 @@ export function createOpenAiResponsesTransport(options: OpenAiOptions): ApiTrans
       }),
       signal,
     })
-    if (!response.ok) throw new Error(`OpenAI request failed with HTTP ${response.status}`)
+    if (!response.ok) throw new Error(await httpError('OpenAI', response, [apiKey]))
     if (!response.body) throw new Error('OpenAI response had no stream')
 
     const calls = new Map<string, { callId: string; name: string }>()
