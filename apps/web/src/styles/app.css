@@ -1328,6 +1328,10 @@
   border-top: 1px solid var(--line);
 }
 
+.model-visibility__source .switch--source {
+  margin-left: auto;
+}
+
 .model-visibility__source {
   display: flex;
   align-items: center;

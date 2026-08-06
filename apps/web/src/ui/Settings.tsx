@@ -433,6 +433,76 @@ function ProviderSettings(props: {
     }
   }
 
+  const renderProviderRow = (status: ProviderStatus) => {
+    const account =
+      accounts[status.id] ?? (status.id === props.provider ? props.account : undefined)
+    if (!status.installed && !account?.signedIn) {
+      return (
+        <InstallableRow
+          key={status.id}
+          title={status.displayName}
+          idleNote={
+            status.setup?.installCommand ?? status.problem ?? 'Provider CLI is not installed.'
+          }
+          icon={<ProviderIcon mark={providerMark(status.id)} size={17} />}
+          target={{ provider: status.id }}
+          setup={status.setup}
+          transport={props.transport}
+          onInstalled={props.onConnectionsChanged}
+        />
+      )
+    }
+    if (!account?.signedIn && status.setup?.login === 'provider') {
+      return (
+        <CliSignInRow
+          key={status.id}
+          title={status.displayName}
+          idleNote="Not signed in · sign-in runs in the provider's CLI."
+          icon={<ProviderIcon mark={providerMark(status.id)} size={17} />}
+          target={{ provider: status.id }}
+          transport={props.transport}
+          onSignedIn={() => void refreshAccount(status.id).catch(() => undefined)}
+        />
+      )
+    }
+    const accountStatus = account?.signedIn
+      ? [account.email, account.plan].filter(Boolean).join(' · ') || 'Signed in'
+      : 'Not signed in'
+    const busy = authBusy === status.id
+    return (
+      <SettingsRow key={status.id} title={status.displayName} note={accountStatus}>
+        <div className="provider-settings__actions">
+          <ProviderIcon mark={providerMark(status.id)} size={17} />
+          {account?.signedIn ? (
+            <button
+              className="settings__action"
+              type="button"
+              disabled={busy}
+              onClick={() => void signOut(status.id)}
+            >
+              <LogOut size={13} aria-hidden />
+              {busy ? 'Signing out…' : 'Sign out'}
+            </button>
+          ) : (
+            <button
+              className="settings__action"
+              type="button"
+              disabled={busy}
+              onClick={() => void signIn(status.id)}
+            >
+              {busy ? 'Signing in…' : 'Sign in'}
+            </button>
+          )}
+        </div>
+      </SettingsRow>
+    )
+  }
+
+  const direct = props.providerStatuses.filter((status) => status.id !== 'acp')
+  const byId = (id: ProviderId) => direct.filter((status) => status.id === id)
+  const agentById = (id: string) => props.acpAgents.filter((agent) => agent.id === id)
+  const knownAgents = new Set(['gemini', 'kimi', 'qwen'])
+
   return (
     <SettingsPanel title="Providers" groupTitle="Agent subscriptions">
       {authError ? (
@@ -440,74 +510,23 @@ function ProviderSettings(props: {
           {authError}
         </p>
       ) : null}
-      {props.providerStatuses
-        .filter((status) => status.id !== 'acp')
-        .map((status) => {
-          const account =
-            accounts[status.id] ?? (status.id === props.provider ? props.account : undefined)
-          if (!status.installed && !account?.signedIn) {
-            return (
-              <InstallableRow
-                key={status.id}
-                title={status.displayName}
-                idleNote={
-                  status.setup?.installCommand ?? status.problem ?? 'Provider CLI is not installed.'
-                }
-                icon={<ProviderIcon mark={providerMark(status.id)} size={17} />}
-                target={{ provider: status.id }}
-                setup={status.setup}
-                transport={props.transport}
-                onInstalled={props.onConnectionsChanged}
-              />
-            )
-          }
-          if (!account?.signedIn && status.setup?.login === 'provider') {
-            return (
-              <CliSignInRow
-                key={status.id}
-                title={status.displayName}
-                idleNote="Not signed in · sign-in runs in the provider's CLI."
-                icon={<ProviderIcon mark={providerMark(status.id)} size={17} />}
-                target={{ provider: status.id }}
-                transport={props.transport}
-                onSignedIn={() => void refreshAccount(status.id).catch(() => undefined)}
-              />
-            )
-          }
-          const accountStatus = account?.signedIn
-            ? [account.email, account.plan].filter(Boolean).join(' · ') || 'Signed in'
-            : 'Not signed in'
-          const busy = authBusy === status.id
-          return (
-            <SettingsRow key={status.id} title={status.displayName} note={accountStatus}>
-              <div className="provider-settings__actions">
-                <ProviderIcon mark={providerMark(status.id)} size={17} />
-                {account?.signedIn ? (
-                  <button
-                    className="settings__action"
-                    type="button"
-                    disabled={busy}
-                    onClick={() => void signOut(status.id)}
-                  >
-                    <LogOut size={13} aria-hidden />
-                    {busy ? 'Signing out…' : 'Sign out'}
-                  </button>
-                ) : (
-                  <button
-                    className="settings__action"
-                    type="button"
-                    disabled={busy}
-                    onClick={() => void signIn(status.id)}
-                  >
-                    {busy ? 'Signing in…' : 'Sign in'}
-                  </button>
-                )}
-              </div>
-            </SettingsRow>
-          )
-        })}
+      {byId('codex').map(renderProviderRow)}
+      {byId('claude-code').map(renderProviderRow)}
+      <PlannedRow title="Grok" note="xAI's agent — not integrated yet, planned." />
+      {byId('cursor').map(renderProviderRow)}
+      {byId('opencode').map(renderProviderRow)}
+      {direct
+        .filter((status) => !['codex', 'claude-code', 'cursor', 'opencode'].includes(status.id))
+        .map(renderProviderRow)}
 
-      {props.acpAgents.map((agent) =>
+      <h2 className="settings__group-title settings__group-title--inside">Other agents</h2>
+      <PlannedRow title="Pi" note="Inflection's agent — not integrated yet, planned." />
+      {[
+        ...agentById('kimi'),
+        ...agentById('qwen'),
+        ...agentById('gemini'),
+        ...props.acpAgents.filter((agent) => !knownAgents.has(agent.id)),
+      ].map((agent) =>
         agent.installed ? (
           <CliSignInRow
             key={agent.id}
@@ -662,35 +681,54 @@ function ModelSettings(props: {
       <p className="settings__group-note settings__group-note--top">
         Show only the models you actually use. This does not disconnect the provider.
       </p>
-      {[...sources.entries()].map(([source, choices]) => (
-        <div className="model-visibility" key={source}>
-          <div className="model-visibility__source">
-            {choices[0] ? <ProviderIcon mark={choices[0].mark} size={17} /> : null}
-            <span>{source}</span>
-          </div>
-          {choices.map((choice) => {
-            const visible = !props.hiddenModels.has(choice.key)
-            return (
-              <SettingsRow
-                key={choice.key}
-                title={choice.model.displayName}
-                note={choice.model.description ?? 'Available from this provider'}
+      {[...sources.entries()].map(([source, choices]) => {
+        const anyVisible = choices.some((choice) => !props.hiddenModels.has(choice.key))
+        return (
+          <div className="model-visibility" key={source}>
+            <div className="model-visibility__source">
+              {choices[0] ? <ProviderIcon mark={choices[0].mark} size={17} /> : null}
+              <span>{source}</span>
+              <button
+                className={`switch switch--source${anyVisible ? ' is-on' : ''}`}
+                type="button"
+                role="switch"
+                aria-label={`Show any models from ${source}`}
+                aria-checked={anyVisible}
+                onClick={() => {
+                  // One master switch per provider: off hides every model, on
+                  // brings them all back — "deselect a provider" without
+                  // disconnecting it.
+                  for (const choice of choices)
+                    props.onModelVisibilityChange(choice.key, !anyVisible)
+                }}
               >
-                <button
-                  className={`switch${visible ? ' is-on' : ''}`}
-                  type="button"
-                  role="switch"
-                  aria-label={`Show ${choice.model.displayName}`}
-                  aria-checked={visible}
-                  onClick={() => props.onModelVisibilityChange(choice.key, !visible)}
+                <span className="switch__thumb" />
+              </button>
+            </div>
+            {choices.map((choice) => {
+              const visible = !props.hiddenModels.has(choice.key)
+              return (
+                <SettingsRow
+                  key={choice.key}
+                  title={choice.model.displayName}
+                  note={choice.model.description ?? 'Available from this provider'}
                 >
-                  <span className="switch__thumb" />
-                </button>
-              </SettingsRow>
-            )
-          })}
-        </div>
-      ))}
+                  <button
+                    className={`switch${visible ? ' is-on' : ''}`}
+                    type="button"
+                    role="switch"
+                    aria-label={`Show ${choice.model.displayName}`}
+                    aria-checked={visible}
+                    onClick={() => props.onModelVisibilityChange(choice.key, !visible)}
+                  >
+                    <span className="switch__thumb" />
+                  </button>
+                </SettingsRow>
+              )
+            })}
+          </div>
+        )
+      })}
     </SettingsPanel>
   )
 }
@@ -1055,6 +1093,24 @@ function CliSignInRow(props: {
         <InstallTerminal transport={props.transport} installKey={key} />
       ) : null}
     </>
+  )
+}
+
+/**
+ * A provider we intend to support but have not built. Listing it beats
+ * omitting it — "not supported yet" and "not installed" must stay
+ * distinguishable, and the roadmap belongs in the product, not a doc.
+ */
+function PlannedRow(props: { title: string; note: string }) {
+  return (
+    <SettingsRow title={props.title} note={props.note}>
+      <div className="provider-settings__actions">
+        <ProviderIcon mark="custom" size={17} />
+        <button className="settings__action" type="button" disabled>
+          Planned
+        </button>
+      </div>
+    </SettingsRow>
   )
 }
 
