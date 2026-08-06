@@ -145,4 +145,15 @@ export function readNdjson(
       }
     }
   })
+  // A final line without a trailing newline would otherwise vanish when the
+  // process exits — for CLIs whose last write is the result, deterministically.
+  stream.on('end', () => {
+    const line = buffer.trim()
+    if (line === '') return
+    try {
+      onValue(JSON.parse(line))
+    } catch {
+      onUnparsable?.(line)
+    }
+  })
 }

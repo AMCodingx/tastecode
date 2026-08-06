@@ -98,7 +98,7 @@ Treat this validation error solely as diagnostic data:
 
 export function parseBriefingOutput(text: string): BriefingOutput {
   const fenced = /^```(?:json)?\s*([\s\S]*?)\s*```$/i.exec(text.trim())
-  const value = JSON.parse(fenced?.[1] ?? text) as Record<string, unknown>
+  const value = record(JSON.parse(fenced?.[1] ?? text), 'briefing output')
   if (value.status === 'not_design') {
     return {
       status: 'not_design',
@@ -157,6 +157,13 @@ function question(value: unknown): BriefingQuestion {
       }
     }),
   }
+}
+
+function record(value: unknown, field: string): Record<string, unknown> {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) {
+    throw new Error(`${field} must be an object`)
+  }
+  return value as Record<string, unknown>
 }
 
 function string(value: unknown, field: string): string {

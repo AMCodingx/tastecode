@@ -220,7 +220,7 @@ export class OpenCodeAdapter extends EventEmitter<Events> {
         },
         throwOnError: true,
       })
-      .catch(() => this.#failTurn())
+      .catch(() => this.#failTurn(turnId))
     return turnId
   }
 
@@ -246,7 +246,11 @@ export class OpenCodeAdapter extends EventEmitter<Events> {
       })
       .then(() => this.emit('event', { type: 'approval.resolved', id: approvalId }))
       .catch(() => this.emit('log', 'OpenCode permission response failed'))
-    if (decision === 'abort') void this.interrupt(this.#threadId!)
+    if (decision === 'abort') {
+      // The abort call can reject (server down, restarting); without a catch
+      // that rejection escapes respondToApproval and kills the process.
+      void this.interrupt(this.#threadId!).catch(() => this.emit('log', 'OpenCode abort failed'))
+    }
   }
 
   async listModels(): Promise<Model[]> {
@@ -272,6 +276,9 @@ export class OpenCodeAdapter extends EventEmitter<Events> {
     this.#server?.close()
     this.#eventController = undefined
     this.#server = undefined
+    // Without this a disposed instance stays pointed at the closed port and a
+    // later start() early-returns into connection errors instead of respawning.
+    this.#baseUrl = this.#configuredBaseUrl
     this.#client = undefined
     this.#sessionId = undefined
     this.#threadId = undefined
@@ -353,7 +360,10 @@ export class OpenCodeAdapter extends EventEmitter<Events> {
     this.#mapper = undefined
   }
 
-  #failTurn(): void {
+  /** When `turnId` is given, no-op unless it is still the live turn — a late
+   *  rejection from a finished turn must not fail whatever runs now. */
+  #failTurn(turnId?: string): void {
+    if (turnId !== undefined && this.#turnId !== turnId) return
     if (!this.#turnId || !this.#threadId) return
     for (const event of this.#mapper?.finish('failed') ?? []) this.emit('event', event)
     for (const id of this.#pendingApprovals) this.emit('event', { type: 'approval.resolved', id })
