@@ -415,6 +415,59 @@ pub struct ThreadLifecyclePush {
     pub lifecycle: ThreadLifecycle,
 }
 
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SequencedDomainEvent {
+    pub seq: u64,
+    pub event: DomainEvent,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ThreadHistoryResult {
+    pub events: Vec<SequencedDomainEvent>,
+    pub running: bool,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct QueuedTurn {
+    pub id: String,
+    pub text: String,
+    pub attachments: Vec<String>,
+    pub created_at: f64,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ThreadQueueResult {
+    pub items: Vec<QueuedTurn>,
+    pub can_steer: bool,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ThreadQueuePush {
+    pub thread_id: String,
+    pub items: Vec<QueuedTurn>,
+    pub can_steer: bool,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum SendTurnResult {
+    Started {
+        queued: bool,
+        #[serde(rename = "turnId")]
+        turn_id: String,
+    },
+    Queued {
+        queued: bool,
+        #[serde(rename = "queuedTurn")]
+        queued_turn: QueuedTurn,
+    },
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

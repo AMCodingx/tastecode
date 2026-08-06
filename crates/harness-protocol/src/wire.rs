@@ -81,6 +81,7 @@ pub mod method {
     pub const THREAD_SEND_TURN: &str = "thread.sendTurn";
     pub const THREAD_INTERRUPT: &str = "thread.interrupt";
     pub const THREAD_QUEUE: &str = "thread.queue";
+    pub const THREAD_STEER_QUEUED_TURN: &str = "thread.steerQueuedTurn";
     pub const SIDEBAR_SETTINGS: &str = "sidebar.settings";
 }
 
