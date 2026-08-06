@@ -26,14 +26,22 @@ export class PushBus {
    */
   send<C extends ChannelName>(socket: WebSocket, channel: C, data: DataOf<C>): void {
     if (socket.readyState !== socket.OPEN) return
-    const sequence = (this.#sockets.get(socket) ?? 0) + 1
+    // Never re-register a socket we have already dropped: restarting its
+    // counter at 1 would send sequence numbers backwards mid-connection.
+    const previous = this.#sockets.get(socket)
+    if (previous === undefined) return
+    const sequence = previous + 1
     this.#sockets.set(socket, sequence)
+    // A failed write closes the connection rather than quietly unsubscribing
+    // it. Dropping it from the map left the socket OPEN and silent: the
+    // client's onclose never fired, its gap detector only fires on a frame it
+    // does receive, and the thread simply froze with no warning.
     try {
       socket.send(JSON.stringify({ channel, sequence, data }), (error) => {
-        if (error) this.remove(socket)
+        if (error) socket.terminate()
       })
     } catch {
-      this.remove(socket)
+      socket.terminate()
     }
   }
 

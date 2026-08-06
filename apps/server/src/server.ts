@@ -165,7 +165,11 @@ export function startServer(
     }
     const { id, method, params } = envelope.data
 
-    const spec = methods[method as MethodName]
+    // hasOwn, not truthiness: `methods` is a plain object, so 'constructor',
+    // 'toString' and friends pass a truthy check and then blow up on
+    // spec.params — outside the try below, so no reply is ever sent and the
+    // client's call hangs until the socket closes.
+    const spec = Object.hasOwn(methods, method) ? methods[method as MethodName] : undefined
     if (!spec) {
       respondError(socket, id, ErrorCode.BAD_REQUEST, `unknown method: ${method}`)
       return
