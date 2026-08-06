@@ -148,7 +148,15 @@ export function reduce(state: ThreadState, event: DomainEvent): ThreadState {
     }
 
     case 'item.delta': {
-      const index = state.items.findIndex((i) => i.id === event.itemId)
+      // Deltas almost always land on the item that is still streaming, which
+      // is the last one. Scanning the whole transcript per delta — hundreds a
+      // second on a token-granularity provider — is what makes a long session
+      // feel worse than a short one.
+      const last = state.items.length - 1
+      const index =
+        state.items[last]?.id === event.itemId
+          ? last
+          : state.items.findIndex((i) => i.id === event.itemId)
       if (index === -1) {
         // A delta ahead of its item.started (reconnect, replay boundary)
         // must not be dropped — the text would be permanently missing from
