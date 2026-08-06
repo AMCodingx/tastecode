@@ -38,6 +38,14 @@ export function parseAssetManifest(value: unknown): AssetManifest {
     const status = member(asset.status, ASSET_STATUSES, `assets[${index}].status`)
     const source = optionalSource(asset.source, `assets[${index}].source`)
     const destination = optionalString(asset.destination, `assets[${index}].destination`)
+    // Model-authored and later handed to the Build agent as a write target:
+    // absolute paths and .. segments must never leave the workspace.
+    if (
+      destination !== undefined &&
+      (/^(?:[a-z]:|[\\/])/i.test(destination) || destination.split(/[\\/]/).includes('..'))
+    ) {
+      throw new Error(`assets[${index}].destination must stay inside the workspace`)
+    }
 
     if (status === 'ready' && (!source || !destination)) {
       throw new Error(`assets[${index}] ready assets require source and destination`)
