@@ -1997,6 +1997,7 @@ export function App() {
             void transport.request('projects.rename', { path, name }).catch(() => undefined)
           }}
           onRemoveProject={(path) => {
+            const previousActivePath = activePath
             setProjects((c) => c.filter((p) => p.path !== path))
             if (activePath === path) setActivePath(undefined)
             void transport
@@ -2004,6 +2005,11 @@ export function App() {
               .then(refreshProjects)
               .catch((error) => {
                 setNotice(error instanceof Error ? error.message : String(error))
+                // Put the selection back too, not just the list. Removal can
+                // now be refused, and refreshProjects would otherwise fill the
+                // cleared selection with an arbitrary other project while the
+                // open session still belongs to this one.
+                setActivePath(previousActivePath)
                 void refreshProjects().catch(() => undefined)
               })
           }}
