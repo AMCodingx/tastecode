@@ -6922,3 +6922,66 @@
 .install-terminal:focus-within {
   border-color: color-mix(in srgb, var(--attention) 45%, var(--line));
 }
+
+/* ---------------------------------------------------------------------------
+   Keyboard shortcuts dialog.
+   --------------------------------------------------------------------------- */
+
+.shortcuts-overlay {
+  position: fixed;
+  z-index: 60;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  background: color-mix(in srgb, var(--bg) 55%, transparent);
+  animation: fade-in var(--dur-fast) var(--ease-out);
+}
+
+.shortcuts-dialog {
+  width: min(360px, calc(100vw - 48px));
+  padding: 14px 16px 16px;
+  background: var(--menu-bg, var(--surface));
+  border: 1px solid var(--line);
+  border-radius: var(--r-lg, 12px);
+  box-shadow: 0 18px 48px -18px rgb(0 0 0 / 0.55);
+}
+
+.shortcuts-dialog__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 10px;
+}
+
+.shortcuts-dialog__head h2 {
+  margin: 0;
+  font-size: var(--t-md, 14px);
+  font-weight: 600;
+}
+
+.shortcuts-dialog__list {
+  display: grid;
+  gap: 2px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.shortcuts-dialog__list li {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 5px 2px;
+  color: var(--text-2);
+  font-size: var(--t-sm);
+}
+
+.shortcuts-dialog__list kbd {
+  padding: 2px 7px;
+  background: var(--surface-2);
+  border: 1px solid var(--line);
+  border-radius: 5px;
+  color: var(--text);
+  font-family: var(--font-mono);
+  font-size: var(--t-xs);
+}
