@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useRef, useState, type CSSProperties } from 'react'
+import { useEffect, useLayoutEffect, useRef, useState, type CSSProperties, memo } from 'react'
 import type { ApprovalMode, QueuedTurn, Usage } from '@harness/contracts'
 import type { ModelChoice } from '../model-catalog.js'
 import { BorderBeam } from 'border-beam'
@@ -143,7 +143,7 @@ type ComposerAttachment = {
 
 type RunningSubmission = 'queue' | 'steer'
 
-export function Composer(props: {
+function ComposerComponent(props: {
   projects: Project[]
   projectPath: string | undefined
   projectName: string | undefined
@@ -1068,3 +1068,9 @@ function basename(path: string): string {
   const parts = path.split(/[\\/]/).filter(Boolean)
   return parts[parts.length - 1] ?? path
 }
+
+/**
+ * Memoised: the app root re-renders on every streamed frame, and this
+ * subtree does not change while an answer arrives.
+ */
+export const Composer = memo(ComposerComponent)

@@ -1,3 +1,4 @@
+import { memo } from 'react'
 import { ChevronDown, GitBranch, History, SquareTerminal } from 'lucide-react'
 import { SHORTCUTS, shortcutAria } from '../shortcuts.js'
 import type { Project } from './Sidebar.js'
@@ -8,7 +9,7 @@ import { Menu, MenuItem } from './Menu.js'
  * switcher for moving between them. It sits at the top because "where am I
  * working" must never require a glance elsewhere.
  */
-export function StageHeader(props: {
+function StageHeaderComponent(props: {
   projects: Project[]
   activePath: string | undefined
   title: string | undefined
@@ -85,3 +86,9 @@ function basename(path: string): string {
   const parts = path.split(/[\\/]/).filter(Boolean)
   return parts[parts.length - 1] ?? path
 }
+
+/**
+ * Memoised: the app root re-renders on every streamed frame, and this
+ * subtree does not change while an answer arrives.
+ */
+export const StageHeader = memo(StageHeaderComponent)

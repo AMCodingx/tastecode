@@ -1,8 +1,10 @@
 import {
+  memo,
   type DragEvent,
   type KeyboardEvent,
   type PointerEvent,
   useEffect,
+  useMemo,
   useRef,
   useState,
 } from 'react'
@@ -55,7 +57,7 @@ const MIN_RAIL_WIDTH = 148
 const COLLAPSE_RAIL_WIDTH = 176
 const MAX_RAIL_WIDTH = 420
 
-export function Sidebar(props: {
+function SidebarComponent(props: {
   projects: Project[]
   activeProjectPath: string | undefined
   activeSessionId: string | undefined
@@ -103,18 +105,29 @@ export function Sidebar(props: {
     if (scope && !props.projects.some((project) => project.path === scope)) setScope('')
   }, [props.projects, scope])
 
-  const pinnedSessions = props.projects.flatMap((project) =>
-    project.sessions
-      .filter((session) => session.pinned)
-      .map((session) => ({ projectPath: project.path, session })),
+  // Memoised because the sidebar re-renders with every streamed frame: these
+  // three passes over every project and session ran 60 times a second while
+  // an answer arrived, for a list that had not changed.
+  const pinnedSessions = useMemo(
+    () =>
+      props.projects.flatMap((project) =>
+        project.sessions
+          .filter((session) => session.pinned)
+          .map((session) => ({ projectPath: project.path, session })),
+      ),
+    [props.projects],
   )
-  const orderedProjects = [
-    ...props.projects.filter((project) => project.pinned),
-    ...props.projects.filter((project) => !project.pinned),
-  ].map((project) => ({
-    ...project,
-    sessions: project.sessions.filter((session) => !session.pinned),
-  }))
+  const orderedProjects = useMemo(
+    () =>
+      [
+        ...props.projects.filter((project) => project.pinned),
+        ...props.projects.filter((project) => !project.pinned),
+      ].map((project) => ({
+        ...project,
+        sessions: project.sessions.filter((session) => !session.pinned),
+      })),
+    [props.projects],
+  )
 
   return (
     <div
@@ -871,3 +884,9 @@ function initial(account: Account | undefined, fallback: string): string {
   const source = account?.email ?? fallback
   return source.slice(0, 1).toUpperCase()
 }
+
+/**
+ * Memoised: the app root re-renders on every streamed frame, and this
+ * subtree does not change while an answer arrives.
+ */
+export const Sidebar = memo(SidebarComponent)

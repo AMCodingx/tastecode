@@ -154,6 +154,8 @@ export function App() {
   const [activeId, setActiveId] = useState<string | undefined>()
   const [activePath, setActivePath] = useState<string | undefined>()
   const [thread, setThread] = useState<ThreadState>(emptyThread)
+  /** A fresh array every streamed frame would defeat any memo below it. */
+  const reviewList = useMemo(() => Object.values(thread.reviews), [thread.reviews])
   const [usageSummary, setUsageSummary] = useState<ResultOf<'usage.summary'> | undefined>()
   // Every live session keeps reducing events while it is off screen. A ref is
   // intentional: streamed deltas for a background session should not rerender
@@ -2053,7 +2055,7 @@ export function App() {
                 revealRequest={threadRevealRequest}
                 approvals={thread.approvals}
                 userInputs={thread.userInputs}
-                reviews={Object.values(thread.reviews)}
+                reviews={reviewList}
                 checkpoints={thread.running ? EMPTY_CHECKPOINTS : checkpoints}
                 onDecide={(approvalId, decision) => {
                   if (!activeId) return
