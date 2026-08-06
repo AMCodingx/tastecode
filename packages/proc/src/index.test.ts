@@ -1,5 +1,8 @@
 import { describe, expect, it } from 'vitest'
-import { runCli, spawnCli } from './index.js'
+import { existsSync, readFileSync, rmSync } from 'node:fs'
+import os from 'node:os'
+import path from 'node:path'
+import { killTree, runCli, spawnCli } from './index.js'
 
 describe('runCli', () => {
   it('captures a short command without invoking a platform shell directly', async () => {
@@ -44,3 +47,35 @@ describe('spawnCli', () => {
     }
   })
 })
+
+describe('killTree', () => {
+  it('kills the real process behind the shim, not only the shim', async () => {
+    // The grandchild heartbeats into a temp file; if only the cmd.exe shim
+    // died (the pre-fix Windows behavior), the heartbeat keeps ticking.
+    const beat = path.join(os.tmpdir(), `harness-killtree-${Date.now()}.txt`)
+    const script = `const fs=require('fs');setInterval(()=>fs.writeFileSync(${JSON.stringify(
+      beat,
+    )},String(Date.now())),150)`
+    const child = spawnCli('node', ['-e', script])
+    await waitFor(() => existsSync(beat), 5_000)
+
+    killTree(child)
+    await sleep(700)
+    const afterKill = readFileSync(beat, 'utf8')
+    await sleep(700)
+    expect(readFileSync(beat, 'utf8')).toBe(afterKill)
+    rmSync(beat, { force: true })
+  })
+})
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms))
+}
+
+async function waitFor(check: () => boolean, timeoutMs: number): Promise<void> {
+  const deadline = Date.now() + timeoutMs
+  while (!check()) {
+    if (Date.now() > deadline) throw new Error('condition never became true')
+    await sleep(100)
+  }
+}
