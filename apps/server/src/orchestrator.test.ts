@@ -1574,3 +1574,32 @@ describe('overnight race pins', () => {
     expect(session.disposed).toBe(true)
   })
 })
+
+describe('panic versus an in-flight queue drain', () => {
+  it('a drain that already grabbed a prompt cannot start it after panic', async () => {
+    const { orchestrator, sessions, store } = harness()
+    store.addProject('/repo')
+    const thread = await orchestrator.startThread('codex', '/repo')
+    const session = sessions[0]!
+
+    // Turn A active, turn B queued behind it.
+    await orchestrator.submitTurn(thread.id, 'turn A')
+    const queued = await orchestrator.submitTurn(thread.id, 'turn B')
+    expect(queued.queued).toBe(true)
+
+    // Hold the next sendTurn open, then complete A so the drain grabs B and
+    // blocks inside the adapter call.
+    session.release = () => {}
+    session.emit({ type: 'turn.completed', turnId: 's1-turn', status: 'completed' })
+    await new Promise((resolve) => setTimeout(resolve, 0))
+
+    const panic = orchestrator.panicStop()
+    session.release?.()
+    await panic
+    await new Promise((resolve) => setTimeout(resolve, 0))
+
+    // The panicked drain must not leave turn B running or re-queued.
+    expect(orchestrator.inboxStatus(thread.id)).not.toBe('working')
+    expect(orchestrator.queue(thread.id).items).toEqual([])
+  })
+})

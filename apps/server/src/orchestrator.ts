@@ -1271,12 +1271,23 @@ export class Orchestrator {
 
     this.#drainingQueues.add(threadId)
     this.#notifyQueue(threadId)
+    const generation = this.#panicGeneration
     try {
       await this.sendTurn(threadId, next.text, next.attachments, next.options)
+      if (generation !== this.#panicGeneration) {
+        // A panic landed while the adapter call was in flight: the user said
+        // stop-everything, so this turn must neither run on nor re-queue.
+        await this.#threads.get(threadId)?.session.interrupt(threadId)
+        return
+      }
       this.#activeTurns.add(threadId)
     } catch (error) {
-      queue.unshift(next)
-      this.#notifyQueue(threadId)
+      // After a panic the queue was emptied on purpose; putting the grabbed
+      // prompt back would resurrect it.
+      if (generation === this.#panicGeneration) {
+        queue.unshift(next)
+        this.#notifyQueue(threadId)
+      }
       this.#onLog(
         `could not start queued turn: ${error instanceof Error ? error.message : String(error)}`,
       )
