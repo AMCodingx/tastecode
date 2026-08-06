@@ -4326,9 +4326,7 @@
   border: 1px solid var(--line);
   border-radius: var(--r-2xl);
   box-shadow: var(--composer-shadow);
-  transition:
-    border-color var(--dur-fast) var(--ease-out),
-    margin-top var(--dur-slow) var(--ease-out);
+  transition: border-color var(--dur-fast) var(--ease-out);
 }
 
 .composer__design-beam.is-shelved {
@@ -6117,6 +6115,9 @@
 
 .notice {
   position: fixed;
+  /* Above every modal surface (settings 60, palette 70, image viewer 100) —
+     an error raised while one of them is open must still be visible. */
+  z-index: 110;
   bottom: 18px;
   left: 50%;
   transform: translateX(-50%);
@@ -6132,9 +6133,12 @@
 }
 
 .notice__text {
+  /* Server error messages are the point of this toast; clamping to three
+     lines beats truncating them to an unreadable single one. */
+  display: -webkit-box;
   overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 3;
 }
 
 @media (max-width: 700px) {
@@ -6743,7 +6747,9 @@
   margin-top: 9px;
 }
 
-.chip {
+/* Scoped: an unscoped .chip here silently restyled the composer's
+   attachment chips to onboarding-card metrics. */
+.card .chip {
   background: var(--surface-2);
   border-radius: var(--r-sm);
   color: var(--text-2);

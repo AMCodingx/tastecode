@@ -233,6 +233,10 @@
 :root[data-theme='light'] {
   color-scheme: light;
 
+  /* Meaning colors need light twins or they inherit dark-tuned values. */
+  --file-reference: #4a53a8;
+  --on-danger: #fefefe;
+
   --bg: #fdfdfd;
   --bg-rail: #f9f9f9;
   --bg-prompt: #fefefe;
@@ -440,7 +444,11 @@ html.is-macos-font-smoothing {
   *::before,
   *::after {
     animation-duration: 0.01ms !important;
+    /* Without this, infinite spinners restart every 0.01ms — a CPU burn
+       instead of stillness. */
+    animation-iteration-count: 1 !important;
     transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
   }
 }
 
