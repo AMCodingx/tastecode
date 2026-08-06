@@ -74,9 +74,14 @@ pub mod method {
     pub const CLIENT_CAPABILITIES: &str = "client.capabilities";
     pub const SYSTEM_INFO: &str = "system.info";
     pub const PROVIDERS_LIST: &str = "providers.list";
+    pub const CONNECTIONS_LIST: &str = "connections.list";
+    pub const CONNECTIONS_MODELS: &str = "connections.models";
+    pub const ACP_AGENTS: &str = "acp.agents";
     pub const PROJECTS_LIST: &str = "projects.list";
+    pub const PROJECTS_ADD: &str = "projects.add";
     pub const MODELS_LIST: &str = "models.list";
     pub const THREAD_START: &str = "thread.start";
+    pub const THREAD_RENAME: &str = "thread.rename";
     pub const THREAD_HISTORY: &str = "thread.history";
     pub const THREAD_SEND_TURN: &str = "thread.sendTurn";
     pub const THREAD_INTERRUPT: &str = "thread.interrupt";

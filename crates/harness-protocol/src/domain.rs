@@ -299,6 +299,148 @@ pub struct ServiceTier {
     pub description: String,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Capabilities {
+    pub steer: bool,
+    pub fork: bool,
+    pub interrupt: bool,
+    pub reasoning_items: bool,
+    pub approvals: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub user_input: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub auto_review: Option<bool>,
+    pub images: bool,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ProviderAuth {
+    Authenticated,
+    Unauthenticated,
+    Unknown,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ProviderLogin {
+    App,
+    Provider,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProviderSetup {
+    pub install_url: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub install_command: Option<String>,
+    pub login: ProviderLogin,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProviderStatus {
+    pub id: ProviderId,
+    pub display_name: String,
+    pub installed: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub version: Option<String>,
+    pub auth: ProviderAuth,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub capabilities: Option<Capabilities>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub setup: Option<ProviderSetup>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub problem: Option<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProvidersListResult {
+    pub providers: Vec<ProviderStatus>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum ModelTransport {
+    OpenaiResponses,
+    AnthropicMessages,
+    OpenaiCompatible,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ModelConnectionPreset {
+    Openai,
+    Anthropic,
+    Openrouter,
+    Kimi,
+    Zai,
+    Custom,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ModelTransportCapabilities {
+    pub streaming: bool,
+    pub tools: bool,
+    pub images: bool,
+    pub reasoning: bool,
+    pub model_discovery: bool,
+    pub usage: bool,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ModelConnection {
+    pub id: String,
+    pub display_name: String,
+    pub preset: ModelConnectionPreset,
+    pub transport: ModelTransport,
+    pub base_url: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub default_model: Option<String>,
+    pub enabled: bool,
+    pub credential_configured: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub capabilities: Option<ModelTransportCapabilities>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub problem: Option<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ModelConnectionsResult {
+    pub connections: Vec<ModelConnection>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AcpAgent {
+    pub id: String,
+    pub name: String,
+    pub installed: bool,
+    pub verified: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub install: Option<String>,
+    pub setup: ProviderSetup,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub problem: Option<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AcpAgentsResult {
+    pub agents: Vec<AcpAgent>,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ModelsListResult {
+    pub models: Vec<Model>,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ThreadInboxStatus {
@@ -376,6 +518,21 @@ pub struct SessionSummary {
 #[serde(rename_all = "camelCase")]
 pub struct ProjectsListResult {
     pub projects: Vec<ProjectSummary>,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProjectAddedResult {
+    pub path: String,
+    pub name: String,
+    pub pinned: bool,
+    pub created_at: f64,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ThreadStartResult {
+    pub thread_id: String,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -501,6 +658,43 @@ mod tests {
         assert_eq!(
             serde_json::to_value(ApprovalMode::AutoReview).unwrap(),
             "auto-review"
+        );
+    }
+
+    #[test]
+    fn provider_catalog_matches_the_typescript_wire_shape() {
+        let providers: ProvidersListResult = serde_json::from_value(json!({
+            "providers": [{
+                "id": "codex",
+                "displayName": "Codex",
+                "installed": true,
+                "version": "1.2.3",
+                "auth": "authenticated"
+            }]
+        }))
+        .unwrap();
+        let connections: ModelConnectionsResult = serde_json::from_value(json!({
+            "connections": [{
+                "id": "local",
+                "displayName": "Local",
+                "preset": "custom",
+                "transport": "openai-compatible",
+                "baseUrl": "http://127.0.0.1:8080/v1",
+                "defaultModel": "local-model",
+                "enabled": true,
+                "credentialConfigured": true
+            }]
+        }))
+        .unwrap();
+
+        assert_eq!(providers.providers[0].id, ProviderId::Codex);
+        assert_eq!(
+            connections.connections[0].transport,
+            ModelTransport::OpenaiCompatible
+        );
+        assert_eq!(
+            connections.connections[0].default_model.as_deref(),
+            Some("local-model")
         );
     }
 }
