@@ -1,4 +1,5 @@
 mod diff;
+mod terminal;
 
 use crate::client_state::{ChatUpdate, ModelChoice};
 use crate::theme::{CHAT_WIDTH, Theme};
@@ -18,6 +19,7 @@ use harness_state::{ApplyOutcome, HistoryError, ThreadState};
 use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 use std::time::Duration;
+use terminal::TerminalUiState;
 
 const LIVE_FLUSH_INTERVAL: Duration = Duration::from_millis(16);
 
@@ -82,6 +84,23 @@ pub(crate) enum ChatEvent {
         path: String,
         hunk_id: String,
         decision: DiffDecision,
+    },
+    TerminalOpen {
+        thread_id: String,
+        columns: u16,
+        rows: u16,
+    },
+    TerminalInput {
+        terminal_id: String,
+        data: String,
+    },
+    TerminalResize {
+        terminal_id: String,
+        columns: u16,
+        rows: u16,
+    },
+    TerminalClose {
+        terminal_id: String,
     },
 }
 
@@ -153,6 +172,7 @@ pub(crate) struct ChatView {
     pending_user_inputs: HashSet<String>,
     action_errors: HashMap<String, String>,
     diff_ui: DiffUiState,
+    terminal_ui: TerminalUiState,
 }
 
 impl ChatView {
@@ -213,10 +233,12 @@ impl ChatView {
             pending_user_inputs: HashSet::new(),
             action_errors: HashMap::new(),
             diff_ui: DiffUiState::default(),
+            terminal_ui: TerminalUiState::new(cx),
         }
     }
 
     pub(crate) fn begin_session(&mut self, session: SessionContext, cx: &mut Context<Self>) {
+        self.release_terminal_for_session_change(cx);
         self.session = Some(session);
         self.state = ThreadState::default();
         self.queue.items.clear();
@@ -247,6 +269,7 @@ impl ChatView {
         self.pending_user_inputs.clear();
         self.action_errors.clear();
         self.diff_ui.reset();
+        self.reopen_visible_terminal(cx);
         cx.notify();
     }
 
@@ -263,6 +286,7 @@ impl ChatView {
         self.loading = true;
         self.history_in_flight = true;
         self.error = None;
+        self.reopen_visible_terminal(cx);
         cx.notify();
     }
 
@@ -420,6 +444,26 @@ impl ChatView {
                 }
                 cx.notify();
             }
+            ChatUpdate::Connection(connection) => {
+                self.apply_terminal_connection(connection, cx);
+            }
+            ChatUpdate::TerminalOpened {
+                thread_id,
+                terminal_id,
+            } => self.apply_terminal_opened(thread_id, terminal_id, cx),
+            ChatUpdate::TerminalOutput(push) => {
+                self.apply_terminal_output(push.terminal_id, push.data, cx);
+            }
+            ChatUpdate::TerminalExit(push) => {
+                self.apply_terminal_exit(push.terminal_id, push.exit_code, cx);
+            }
+            ChatUpdate::TerminalOpenError { thread_id, message } => {
+                self.apply_terminal_open_error(thread_id, message, cx);
+            }
+            ChatUpdate::TerminalError {
+                terminal_id,
+                message,
+            } => self.apply_terminal_error(terminal_id, message, cx),
             ChatUpdate::History { .. }
             | ChatUpdate::Queue { .. }
             | ChatUpdate::Event(_)
@@ -910,7 +954,7 @@ impl ChatView {
                     )
                 },
             )
-            .child(header_button("Terminal", theme))
+            .child(self.terminal_header_button(cx))
             .child(self.review_header_button(cx))
     }
 
@@ -2177,12 +2221,22 @@ impl Render for ChatView {
         }
         let structured_surfaces = self.structured_surfaces(cx);
         let control_surface = self.control_surface(cx);
+        let terminal_pane = self.terminal_pane(window, cx);
         div()
             .size_full()
             .min_w(px(0.0))
             .flex()
             .flex_col()
             .bg(self.theme.background.hsla())
+            .on_mouse_move(cx.listener(|this, event, window, cx| {
+                this.update_terminal_resize(event, window, cx);
+            }))
+            .on_mouse_up(
+                gpui::MouseButton::Left,
+                cx.listener(|this, _event, _window, cx| {
+                    this.finish_terminal_resize(cx);
+                }),
+            )
             .child(self.header(cx))
             .child(div().flex_1().min_h(px(0.0)).child(self.timeline(cx)))
             .when_some(structured_surfaces, |view, surfaces| view.child(surfaces))
@@ -2190,22 +2244,9 @@ impl Render for ChatView {
             .when(!self.queue.items.is_empty(), |view| {
                 view.child(queue_summary(self.queue.items.len(), self.theme))
             })
+            .when_some(terminal_pane, |view, terminal| view.child(terminal))
             .child(self.composer(cx))
     }
-}
-
-fn header_button(label: &'static str, theme: Theme) -> impl IntoElement {
-    div()
-        .h(px(28.0))
-        .px(px(7.0))
-        .flex()
-        .items_center()
-        .rounded(px(7.0))
-        .text_size(px(11.5))
-        .text_color(theme.text_3.hsla())
-        .cursor_pointer()
-        .hover(move |style| style.bg(theme.surface.hsla()).text_color(theme.text.hsla()))
-        .child(label)
 }
 
 fn centered_label(label: impl Into<SharedString>, theme: Theme) -> AnyElement {

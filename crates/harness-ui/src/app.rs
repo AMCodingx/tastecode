@@ -183,6 +183,30 @@ impl HarnessApp {
                 );
                 this.apply_client_update(update, cx);
             }
+            ChatEvent::TerminalOpen {
+                thread_id,
+                columns,
+                rows,
+            } => {
+                let update = this.state.open_terminal(thread_id, *columns, *rows);
+                this.apply_client_update(update, cx);
+            }
+            ChatEvent::TerminalInput { terminal_id, data } => {
+                let update = this.state.write_terminal(terminal_id, data.clone());
+                this.apply_client_update(update, cx);
+            }
+            ChatEvent::TerminalResize {
+                terminal_id,
+                columns,
+                rows,
+            } => {
+                let update = this.state.resize_terminal(terminal_id, *columns, *rows);
+                this.apply_client_update(update, cx);
+            }
+            ChatEvent::TerminalClose { terminal_id } => {
+                let update = this.state.close_terminal(terminal_id);
+                this.apply_client_update(update, cx);
+            }
         })
         .detach();
 

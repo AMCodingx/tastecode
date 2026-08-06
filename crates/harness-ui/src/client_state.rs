@@ -5,8 +5,9 @@ use harness_protocol::{
     ModelConnectionsResult, ModelsListResult, PROTOCOL_VERSION, ProjectAddedResult, ProjectSummary,
     ProjectsListResult, ProviderId, ProviderStatus, ProvidersListResult, Response,
     ReviewDiffResult, SendTurnResult, ServerWelcome, SessionDiff, SessionSummary, SidebarMode,
-    SidebarSettings, ThreadEventPush, ThreadHistoryResult, ThreadInboxStatus, ThreadLifecycle,
-    ThreadLifecyclePush, ThreadQueuePush, ThreadQueueResult, ThreadStartResult, channel, method,
+    SidebarSettings, TerminalExitPush, TerminalOpenedResult, TerminalOutputPush, ThreadEventPush,
+    ThreadHistoryResult, ThreadInboxStatus, ThreadLifecycle, ThreadLifecyclePush, ThreadQueuePush,
+    ThreadQueueResult, ThreadStartResult, channel, method,
 };
 use serde_json::{Value, json};
 use std::collections::HashMap;
@@ -132,6 +133,18 @@ enum PendingRequest {
     ReviewHunk {
         thread_id: String,
     },
+    TerminalOpen {
+        thread_id: String,
+    },
+    TerminalInput {
+        terminal_id: String,
+    },
+    TerminalResize {
+        terminal_id: String,
+    },
+    TerminalClose {
+        terminal_id: String,
+    },
 }
 
 #[derive(Default)]
@@ -198,6 +211,21 @@ pub(crate) enum ChatUpdate {
         thread_id: String,
         message: String,
         stale: bool,
+    },
+    Connection(ConnectionState),
+    TerminalOpened {
+        thread_id: String,
+        terminal_id: String,
+    },
+    TerminalOutput(TerminalOutputPush),
+    TerminalExit(TerminalExitPush),
+    TerminalOpenError {
+        thread_id: String,
+        message: String,
+    },
+    TerminalError {
+        terminal_id: String,
+        message: String,
     },
 }
 
@@ -275,11 +303,15 @@ impl ClientState {
                     self.request_initial_state();
                     return ClientUpdate {
                         shell_changed: true,
-                        chat: vec![ChatUpdate::Refresh],
+                        chat: vec![ChatUpdate::Connection(state), ChatUpdate::Refresh],
                         shell_events: Vec::new(),
                     };
                 }
-                ClientUpdate::shell_changed()
+                ClientUpdate {
+                    shell_changed: true,
+                    chat: vec![ChatUpdate::Connection(state)],
+                    shell_events: Vec::new(),
+                }
             }
             ClientEvent::Response(response) => self.handle_response(response),
             ClientEvent::Push(push) => self.handle_push(&push.channel, push.data),
@@ -352,6 +384,93 @@ impl ClientState {
                 thread_id: thread_id.into(),
             },
         );
+    }
+
+    pub(crate) fn open_terminal(
+        &mut self,
+        thread_id: &str,
+        columns: u16,
+        rows: u16,
+    ) -> ClientUpdate {
+        if self.send_request(
+            method::TERMINAL_OPEN,
+            json!({
+                "threadId": thread_id,
+                "columns": columns,
+                "rows": rows,
+            }),
+            PendingRequest::TerminalOpen {
+                thread_id: thread_id.into(),
+            },
+        ) {
+            ClientUpdate::default()
+        } else {
+            ClientUpdate::chat(ChatUpdate::TerminalOpenError {
+                thread_id: thread_id.into(),
+                message: self
+                    .notice
+                    .clone()
+                    .unwrap_or_else(|| "The terminal could not be opened.".into()),
+            })
+        }
+    }
+
+    pub(crate) fn write_terminal(&mut self, terminal_id: &str, data: String) -> ClientUpdate {
+        if self.send_request(
+            method::TERMINAL_INPUT,
+            json!({ "terminalId": terminal_id, "data": data }),
+            PendingRequest::TerminalInput {
+                terminal_id: terminal_id.into(),
+            },
+        ) {
+            ClientUpdate::default()
+        } else {
+            self.immediate_terminal_error(terminal_id, "The terminal input could not be sent.")
+        }
+    }
+
+    pub(crate) fn resize_terminal(
+        &mut self,
+        terminal_id: &str,
+        columns: u16,
+        rows: u16,
+    ) -> ClientUpdate {
+        if self.send_request(
+            method::TERMINAL_RESIZE,
+            json!({
+                "terminalId": terminal_id,
+                "columns": columns,
+                "rows": rows,
+            }),
+            PendingRequest::TerminalResize {
+                terminal_id: terminal_id.into(),
+            },
+        ) {
+            ClientUpdate::default()
+        } else {
+            self.immediate_terminal_error(terminal_id, "The terminal resize could not be sent.")
+        }
+    }
+
+    pub(crate) fn close_terminal(&mut self, terminal_id: &str) -> ClientUpdate {
+        if self.send_request(
+            method::TERMINAL_CLOSE,
+            json!({ "terminalId": terminal_id }),
+            PendingRequest::TerminalClose {
+                terminal_id: terminal_id.into(),
+            },
+        ) {
+            ClientUpdate::default()
+        } else {
+            self.immediate_terminal_error(terminal_id, "The terminal could not be closed.")
+        }
+    }
+
+    fn immediate_terminal_error(&self, terminal_id: &str, fallback: &str) -> ClientUpdate {
+        ClientUpdate::chat(ChatUpdate::TerminalError {
+            terminal_id: terminal_id.into(),
+            message: self.notice.clone().unwrap_or_else(|| fallback.to_owned()),
+        })
     }
 
     pub(crate) fn respond_to_approval(
@@ -639,6 +758,17 @@ impl ClientState {
                             stale,
                         })
                     }
+                    Some(PendingRequest::TerminalOpen { thread_id }) => {
+                        ClientUpdate::chat(ChatUpdate::TerminalOpenError { thread_id, message })
+                    }
+                    Some(PendingRequest::TerminalInput { terminal_id })
+                    | Some(PendingRequest::TerminalResize { terminal_id })
+                    | Some(PendingRequest::TerminalClose { terminal_id }) => {
+                        ClientUpdate::chat(ChatUpdate::TerminalError {
+                            terminal_id,
+                            message,
+                        })
+                    }
                     Some(request) => match request.thread_id() {
                         Some(thread_id) => {
                             ClientUpdate::chat(ChatUpdate::Error { thread_id, message })
@@ -752,10 +882,25 @@ impl ClientState {
                         }),
                     }
                 }
+                Some(PendingRequest::TerminalOpen { thread_id }) => {
+                    match serde_json::from_value::<TerminalOpenedResult>(result) {
+                        Ok(opened) => ClientUpdate::chat(ChatUpdate::TerminalOpened {
+                            thread_id,
+                            terminal_id: opened.terminal_id,
+                        }),
+                        Err(error) => ClientUpdate::chat(ChatUpdate::TerminalOpenError {
+                            thread_id,
+                            message: format!("terminal.open was invalid: {error}"),
+                        }),
+                    }
+                }
                 Some(PendingRequest::Interrupt { .. })
                 | Some(PendingRequest::Steer { .. })
                 | Some(PendingRequest::RespondApproval { .. })
                 | Some(PendingRequest::RespondUserInput { .. })
+                | Some(PendingRequest::TerminalInput { .. })
+                | Some(PendingRequest::TerminalResize { .. })
+                | Some(PendingRequest::TerminalClose { .. })
                 | Some(PendingRequest::RenameThread)
                 | Some(PendingRequest::Capabilities)
                 | None => ClientUpdate::default(),
@@ -811,6 +956,22 @@ impl ClientState {
                     message: "The server connection was lost before the diff request completed."
                         .into(),
                     stale: false,
+                })
+            }
+            PendingRequest::TerminalOpen { thread_id } => {
+                ClientUpdate::chat(ChatUpdate::TerminalOpenError {
+                    thread_id,
+                    message: "The server connection was lost before the terminal opened.".into(),
+                })
+            }
+            PendingRequest::TerminalInput { terminal_id }
+            | PendingRequest::TerminalResize { terminal_id }
+            | PendingRequest::TerminalClose { terminal_id } => {
+                ClientUpdate::chat(ChatUpdate::TerminalError {
+                    terminal_id,
+                    message:
+                        "The server connection was lost before the terminal request completed."
+                            .into(),
                 })
             }
             request => match request.thread_id() {
@@ -1188,6 +1349,20 @@ impl ClientState {
                     ClientUpdate::shell_changed()
                 }
             },
+            channel::TERMINAL_OUTPUT => match serde_json::from_value::<TerminalOutputPush>(data) {
+                Ok(push) => ClientUpdate::chat(ChatUpdate::TerminalOutput(push)),
+                Err(error) => {
+                    self.notice = Some(format!("terminal.output push was invalid: {error}"));
+                    ClientUpdate::shell_changed()
+                }
+            },
+            channel::TERMINAL_EXIT => match serde_json::from_value::<TerminalExitPush>(data) {
+                Ok(push) => ClientUpdate::chat(ChatUpdate::TerminalExit(push)),
+                Err(error) => {
+                    self.notice = Some(format!("terminal.exit push was invalid: {error}"));
+                    ClientUpdate::shell_changed()
+                }
+            },
             _ => ClientUpdate::default(),
         }
     }
@@ -1300,7 +1475,8 @@ impl PendingRequest {
             | Self::RespondApproval { thread_id, .. }
             | Self::RespondUserInput { thread_id, .. }
             | Self::Diff { thread_id }
-            | Self::ReviewHunk { thread_id } => Some(thread_id),
+            | Self::ReviewHunk { thread_id }
+            | Self::TerminalOpen { thread_id } => Some(thread_id),
             Self::Capabilities
             | Self::Projects
             | Self::SidebarSettings
@@ -1310,7 +1486,10 @@ impl PendingRequest {
             | Self::Providers
             | Self::Connections
             | Self::AcpAgents
-            | Self::Models { .. } => None,
+            | Self::Models { .. }
+            | Self::TerminalInput { .. }
+            | Self::TerminalResize { .. }
+            | Self::TerminalClose { .. } => None,
         }
     }
 }
@@ -1618,6 +1797,46 @@ mod tests {
                 stale: true,
                 ..
             }] if thread_id == "thread-1"
+        ));
+    }
+
+    #[test]
+    fn terminal_open_response_keeps_the_owning_thread() {
+        let mut state = ClientState::new(true);
+        state.pending.insert(
+            "native-terminal".into(),
+            PendingRequest::TerminalOpen {
+                thread_id: "thread-1".into(),
+            },
+        );
+
+        let update = state.handle_response(Response::Success {
+            id: "native-terminal".into(),
+            result: json!({ "terminalId": "terminal-1" }),
+        });
+
+        assert!(matches!(
+            update.chat.as_slice(),
+            [ChatUpdate::TerminalOpened {
+                thread_id,
+                terminal_id,
+            }] if thread_id == "thread-1" && terminal_id == "terminal-1"
+        ));
+    }
+
+    #[test]
+    fn terminal_output_routes_without_invalidating_the_shell() {
+        let mut state = ClientState::new(true);
+        let update = state.handle_push(
+            channel::TERMINAL_OUTPUT,
+            json!({ "terminalId": "terminal-1", "data": "hello" }),
+        );
+
+        assert!(!update.shell_changed);
+        assert!(matches!(
+            update.chat.as_slice(),
+            [ChatUpdate::TerminalOutput(push)]
+                if push.terminal_id == "terminal-1" && push.data == "hello"
         ));
     }
 }

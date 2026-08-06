@@ -14,6 +14,7 @@ rust-version = "1.91.1"
 publish = false
 
 [workspace.dependencies]
+alacritty_terminal = { version = "=0.26.0", default-features = false }
 anyhow = "1.0.100"
 async-channel = "2.5.0"
 gpui = "=0.2.2"
