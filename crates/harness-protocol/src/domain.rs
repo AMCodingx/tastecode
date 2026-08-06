@@ -131,6 +131,102 @@ pub struct Usage {
     pub context_window: Option<f64>,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum DiffLine {
+    Context {
+        #[serde(rename = "oldLine")]
+        old_line: u32,
+        #[serde(rename = "newLine")]
+        new_line: u32,
+        text: String,
+        #[serde(
+            rename = "noNewlineAtEnd",
+            default,
+            skip_serializing_if = "Option::is_none"
+        )]
+        no_newline_at_end: Option<bool>,
+    },
+    Addition {
+        #[serde(rename = "newLine")]
+        new_line: u32,
+        text: String,
+        #[serde(
+            rename = "noNewlineAtEnd",
+            default,
+            skip_serializing_if = "Option::is_none"
+        )]
+        no_newline_at_end: Option<bool>,
+    },
+    Deletion {
+        #[serde(rename = "oldLine")]
+        old_line: u32,
+        text: String,
+        #[serde(
+            rename = "noNewlineAtEnd",
+            default,
+            skip_serializing_if = "Option::is_none"
+        )]
+        no_newline_at_end: Option<bool>,
+    },
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum DiffDecision {
+    Accept,
+    Reject,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DiffHunk {
+    pub id: String,
+    pub header: String,
+    pub old_start: u32,
+    pub old_lines: u32,
+    pub new_start: u32,
+    pub new_lines: u32,
+    pub lines: Vec<DiffLine>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub decision: Option<DiffDecision>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum DiffFileStatus {
+    Added,
+    Modified,
+    Deleted,
+    Renamed,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DiffFile {
+    pub path: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub previous_path: Option<String>,
+    pub status: DiffFileStatus,
+    pub binary: bool,
+    pub hunks: Vec<DiffHunk>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub decision: Option<DiffDecision>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SessionDiff {
+    pub thread_id: String,
+    pub version: String,
+    pub files: Vec<DiffFile>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ReviewDiffResult {
+    pub diff: SessionDiff,
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ApprovalRequest {
@@ -709,5 +805,39 @@ mod tests {
             connections.connections[0].default_model.as_deref(),
             Some("local-model")
         );
+    }
+
+    #[test]
+    fn structured_diff_matches_the_review_contract() {
+        let diff: SessionDiff = serde_json::from_value(json!({
+            "threadId": "thread-1",
+            "version": "snapshot-1",
+            "files": [{
+                "path": "src/app.rs",
+                "status": "modified",
+                "binary": false,
+                "hunks": [{
+                    "id": "hunk-1",
+                    "header": "@@ -1 +1 @@",
+                    "oldStart": 1,
+                    "oldLines": 1,
+                    "newStart": 1,
+                    "newLines": 1,
+                    "lines": [
+                        { "kind": "deletion", "oldLine": 1, "text": "old" },
+                        { "kind": "addition", "newLine": 1, "text": "new" }
+                    ],
+                    "decision": "accept"
+                }]
+            }]
+        }))
+        .unwrap();
+
+        assert_eq!(diff.files[0].status, DiffFileStatus::Modified);
+        assert_eq!(diff.files[0].hunks[0].decision, Some(DiffDecision::Accept));
+        assert!(matches!(
+            diff.files[0].hunks[0].lines[1],
+            DiffLine::Addition { new_line: 1, .. }
+        ));
     }
 }

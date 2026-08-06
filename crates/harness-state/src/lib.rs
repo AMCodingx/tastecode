@@ -183,6 +183,8 @@ impl ThreadState {
             }
             DomainEvent::TurnStarted { turn } => {
                 self.running = true;
+                self.plan = None;
+                self.diff = None;
                 self.upsert_turn(turn);
                 ChangeSet::ALL
             }
@@ -529,5 +531,61 @@ mod tests {
             ApplyOutcome::Applied(_)
         ));
         assert!(state.user_inputs.is_empty());
+    }
+
+    #[test]
+    fn a_new_turn_clears_the_previous_plan_and_diff() {
+        let mut state = ThreadState::default();
+        for (seq, value) in [
+            json!({
+                "type": "turn.started",
+                "turn": {
+                    "id": "turn-1",
+                    "threadId": "thread-1",
+                    "status": "running",
+                    "createdAt": 1
+                }
+            }),
+            json!({
+                "type": "plan.updated",
+                "turnId": "turn-1",
+                "steps": [{ "text": "Build it", "status": "running" }]
+            }),
+            json!({
+                "type": "diff.updated",
+                "turnId": "turn-1",
+                "diff": "diff --git a/a b/a"
+            }),
+            json!({
+                "type": "turn.completed",
+                "turnId": "turn-1",
+                "status": "completed"
+            }),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            assert!(matches!(
+                state.apply_live(Some(seq as u64 + 1), event(value)),
+                ApplyOutcome::Applied(_)
+            ));
+        }
+        assert!(state.plan.is_some());
+        assert!(state.diff.is_some());
+
+        state.apply_live(
+            Some(5),
+            event(json!({
+                "type": "turn.started",
+                "turn": {
+                    "id": "turn-2",
+                    "threadId": "thread-1",
+                    "status": "running",
+                    "createdAt": 2
+                }
+            })),
+        );
+        assert!(state.plan.is_none());
+        assert!(state.diff.is_none());
     }
 }
