@@ -1525,3 +1525,52 @@ function text(entries: Array<{ event: DomainEvent }>): Array<string | undefined>
     .filter((entry) => entry.event.type === 'item.completed')
     .map((entry) => (entry.event.type === 'item.completed' ? entry.event.item.text : undefined))
 }
+
+describe('overnight race pins', () => {
+  it('disposes a resume that lands after the thread was closed', async () => {
+    const store = new Store(':memory:')
+    store.addProject('/repo')
+    store.addThread({ id: 'thread-1', projectPath: '/repo', provider: 'codex', title: 'T' })
+    let release!: () => void
+    const barrier = new Promise<void>((resolve) => {
+      release = resolve
+    })
+    const session = new FakeSession('s1')
+    const orchestrator = new Orchestrator(store, {
+      onEvent: () => {},
+      onLog: () => {},
+      onLogin: () => {},
+      mcpConfig: new McpConfigStore(
+        path.join(mkdtempSync(path.join(os.tmpdir(), 'harness-mcp-')), 'mcp.json'),
+      ),
+      readCredential: () => '',
+      runtimeFor: () => ({
+        async start() {
+          throw new Error('start is not under test')
+        },
+        async listModels() {
+          return []
+        },
+        async resume(threadId: string, workspacePath: string) {
+          await barrier
+          return {
+            thread: { id: threadId, provider: 'codex' as const, workspacePath, createdAt: 1 },
+            session,
+          }
+        },
+      }),
+    })
+
+    const resuming = orchestrator.submitTurn('thread-1', 'hello')
+    resuming.catch(() => undefined)
+    // Let the resume begin, close the thread underneath it, then let the
+    // provider "answer".
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    orchestrator.close('thread-1')
+    release()
+
+    await expect(resuming).rejects.toThrow(/closed while resuming/)
+    // The late session must be disposed, never attached as a zombie.
+    expect(session.disposed).toBe(true)
+  })
+})
