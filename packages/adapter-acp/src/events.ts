@@ -31,7 +31,7 @@ export class Streamer {
    * arrives as an anonymous "tool" and replaces the row that showed what was
    * actually run.
    */
-  #tools = new Map<string, { kind?: ToolKind; title?: string }>()
+  #tools = new Map<string, { kind?: ToolKind; title?: string; output?: string }>()
   #counter = 0
 
   constructor(turnId: string) {
@@ -127,14 +127,23 @@ export class Streamer {
   }
 
   #toolCall(update: SessionUpdate): DomainEvent[] {
-    const id = update.toolCallId ?? `${this.#turnId}-tool-${++this.#counter}`
+    // One shared slot for id-less frames: a fresh id per update would split a
+    // call and its completion into two items, the first spinning forever.
+    const id = update.toolCallId ?? `${this.#turnId}-tool-anonymous`
 
     // An update carries only what changed. Fall back to what we recorded when
-    // this call started, so a completion does not erase its own identity.
+    // this call started, so a completion does not erase its own identity —
+    // and accumulate output, because each frame carries only its own chunk.
     const known = this.#tools.get(id)
     const kind = update.kind ?? known?.kind
     const title = update.title ?? known?.title
-    this.#tools.set(id, { ...(kind ? { kind } : {}), ...(title ? { title } : {}) })
+    const chunk = outputOf(update.content)
+    const output = chunk ? (known?.output ? `${known.output}${chunk}` : chunk) : known?.output
+    this.#tools.set(id, {
+      ...(kind ? { kind } : {}),
+      ...(title ? { title } : {}),
+      ...(output ? { output } : {}),
+    })
 
     const type = (kind && KIND_TO_ITEM[kind]) ?? 'tool_call'
     const finished = update.status === 'completed' || update.status === 'failed'
@@ -161,7 +170,6 @@ export class Streamer {
       item.text = title ?? 'tool'
     }
 
-    const output = outputOf(update.content)
     if (output) item.text = item.text ? `${item.text}\n${output}` : output
 
     const events: DomainEvent[] = [
