@@ -126,9 +126,14 @@ function takeLegacyProjects(): Array<{ path: string; name?: string }> {
 export function App() {
   const [connectionUrl, setConnectionUrl] = useState(() => serverUrl(SERVER_BASE_URL))
   const transport = useMemo(() => new Transport(connectionUrl), [connectionUrl])
-  const [provider, setProvider] = useState<ProviderId | null>(
-    () => localStorage.getItem(SETUP_KEY) as ProviderId | null,
-  )
+  const [provider, setProvider] = useState<ProviderId | null>(() => {
+    // Validated like every other stored key: a provider id from an older
+    // build would skip onboarding and send every request somewhere the
+    // server rejects — a broken app whose only cure was a full reset.
+    const stored = localStorage.getItem(SETUP_KEY)
+    const known: string[] = ['codex', 'claude-code', 'cursor', 'opencode', 'acp', 'api']
+    return stored !== null && known.includes(stored) ? (stored as ProviderId) : null
+  })
   const [acpAgent, setAcpAgent] = useState<string | undefined>(
     () => localStorage.getItem(AGENT_KEY) ?? undefined,
   )
@@ -200,6 +205,15 @@ export function App() {
   const [collapsed, setCollapsed] = useState(
     () => globalThis.matchMedia?.('(max-width: 700px)').matches ?? false,
   )
+  // Sampled once was not enough: resizing under the breakpoint left the
+  // absolutely-positioned rail permanently overlaying the thread.
+  useEffect(() => {
+    const media = globalThis.matchMedia?.('(max-width: 700px)')
+    if (!media) return
+    const onChange = (event: MediaQueryListEvent) => setCollapsed(event.matches)
+    media.addEventListener('change', onChange)
+    return () => media.removeEventListener('change', onChange)
+  }, [])
   const [railWidth, setRailWidth] = useState(readRailWidth)
   const [workspace, setWorkspace] = useState<WorkspaceInfo | undefined>()
   const [branches, setBranches] = useState<string[]>([])
@@ -289,27 +303,27 @@ export function App() {
   }, [theme])
 
   useEffect(() => {
-    localStorage.setItem(THEME_KEY, themePreference)
+    writeSetting(THEME_KEY, themePreference)
   }, [themePreference])
 
   useLayoutEffect(() => {
     applyFontPreference(fontPreference)
-    localStorage.setItem(FONT_KEY, fontPreference)
+    writeSetting(FONT_KEY, fontPreference)
   }, [fontPreference])
 
   useLayoutEffect(() => {
     applyAccentPreference(accentPreference)
-    localStorage.setItem(ACCENT_KEY, accentPreference)
+    writeSetting(ACCENT_KEY, accentPreference)
   }, [accentPreference])
 
   useLayoutEffect(() => {
     applyBackdropPreference(backdropPreference)
-    localStorage.setItem(BACKDROP_KEY, backdropPreference)
+    writeSetting(BACKDROP_KEY, backdropPreference)
   }, [backdropPreference])
 
   useLayoutEffect(() => {
     applyGlassPreference(sidebarGlass)
-    localStorage.setItem(GLASS_KEY, String(sidebarGlass))
+    writeSetting(GLASS_KEY, String(sidebarGlass))
   }, [sidebarGlass])
 
   useEffect(() => {
@@ -331,15 +345,15 @@ export function App() {
   }, [macOS, macOSFontSmoothing])
 
   useEffect(() => {
-    if (macOS) localStorage.setItem(MACOS_FONT_SMOOTHING_KEY, String(macOSFontSmoothing))
+    if (macOS) writeSetting(MACOS_FONT_SMOOTHING_KEY, String(macOSFontSmoothing))
   }, [macOS, macOSFontSmoothing])
 
   useEffect(() => {
-    localStorage.setItem(TERMINAL_OPEN_KEY, String(terminalOpen))
+    writeSetting(TERMINAL_OPEN_KEY, String(terminalOpen))
   }, [terminalOpen])
 
   useEffect(() => {
-    localStorage.setItem(TERMINAL_HEIGHT_KEY, String(terminalHeight))
+    writeSetting(TERMINAL_HEIGHT_KEY, String(terminalHeight))
   }, [terminalHeight])
 
   const activeIdRef = useRef(activeId)
@@ -789,11 +803,11 @@ export function App() {
   }, [projects])
 
   useEffect(() => {
-    if (modelId) localStorage.setItem(MODEL_KEY, modelId)
+    if (modelId) writeSetting(MODEL_KEY, modelId)
   }, [modelId])
 
   useEffect(() => {
-    localStorage.setItem(HIDDEN_MODELS_KEY, JSON.stringify([...hiddenModels]))
+    writeSetting(HIDDEN_MODELS_KEY, JSON.stringify([...hiddenModels]))
     if (selectedModelChoice && hiddenModels.has(selectedModelChoice.key)) {
       const fallback = visibleModels[0]
       if (fallback) setModelId(fallback.key)
@@ -802,7 +816,7 @@ export function App() {
 
   useEffect(() => {
     if (effort) {
-      localStorage.setItem(EFFORT_KEY, effort)
+      writeSetting(EFFORT_KEY, effort)
     } else {
       localStorage.removeItem(EFFORT_KEY)
     }
@@ -810,14 +824,14 @@ export function App() {
 
   useEffect(() => {
     if (serviceTier) {
-      localStorage.setItem(SERVICE_TIER_KEY, serviceTier)
+      writeSetting(SERVICE_TIER_KEY, serviceTier)
     } else {
       localStorage.removeItem(SERVICE_TIER_KEY)
     }
   }, [serviceTier])
 
   useEffect(() => {
-    localStorage.setItem(APPROVAL_KEY, approval)
+    writeSetting(APPROVAL_KEY, approval)
   }, [approval])
 
   const selectModel = useCallback(
@@ -828,10 +842,10 @@ export function App() {
       setProvider(selected.provider)
       setAcpAgent(selected.agent?.id)
       setAcpAgentName(selected.agent?.name)
-      localStorage.setItem(SETUP_KEY, selected.provider)
+      writeSetting(SETUP_KEY, selected.provider)
       if (selected.agent) {
-        localStorage.setItem(AGENT_KEY, selected.agent.id)
-        localStorage.setItem(AGENT_NAME_KEY, selected.agent.name)
+        writeSetting(AGENT_KEY, selected.agent.id)
+        writeSetting(AGENT_NAME_KEY, selected.agent.name)
       }
       setEffort((current) =>
         current && selected.model.reasoningEfforts.includes(current)
@@ -1658,10 +1672,10 @@ export function App() {
           }}
           onRefreshModels={refreshCatalog}
           onDone={(id, agent) => {
-            localStorage.setItem(SETUP_KEY, id)
+            writeSetting(SETUP_KEY, id)
             if (agent) {
-              localStorage.setItem(AGENT_KEY, agent.id)
-              localStorage.setItem(AGENT_NAME_KEY, agent.name)
+              writeSetting(AGENT_KEY, agent.id)
+              writeSetting(AGENT_NAME_KEY, agent.name)
             }
             setAcpAgent(agent?.id)
             setAcpAgentName(agent?.name)
@@ -1851,7 +1865,7 @@ export function App() {
           onClose={() => setCollapsed(true)}
           onWidthChange={(width) => {
             setRailWidth(width)
-            localStorage.setItem(RAIL_WIDTH_KEY, String(width))
+            writeSetting(RAIL_WIDTH_KEY, String(width))
           }}
           onAddProject={() => void addProject()}
           onNewSession={(path) => {
@@ -2359,13 +2373,30 @@ function applySessionOrder(
   return [...byId.values(), ...known]
 }
 
+let lastSavedSessionOrder: string | undefined
+
 function saveSessionOrder(projects: Project[]): void {
-  localStorage.setItem(
-    SESSION_ORDER_KEY,
-    JSON.stringify(
-      Object.fromEntries(
-        projects.map((project) => [project.path, project.sessions.map((session) => session.id)]),
-      ),
+  const serialized = JSON.stringify(
+    Object.fromEntries(
+      projects.map((project) => [project.path, project.sessions.map((session) => session.id)]),
     ),
   )
+  // `projects` is replaced on every status event of every thread; skipping
+  // unchanged orders keeps this from writing to disk on each streamed frame.
+  if (serialized === lastSavedSessionOrder) return
+  lastSavedSessionOrder = serialized
+  writeSetting(SESSION_ORDER_KEY, serialized)
+}
+
+/**
+ * localStorage writes fail in private windows and at quota — several of ours
+ * ran inside layout effects, where an uncaught throw unmounts the whole app.
+ * Reads were always defensive; writes get the same courtesy.
+ */
+function writeSetting(key: string, value: string): void {
+  try {
+    localStorage.setItem(key, value)
+  } catch {
+    // A lost preference beats a white screen.
+  }
 }
