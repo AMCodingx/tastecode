@@ -95,6 +95,12 @@ Each of these cost someone hours. They are not preferences.
 - **Adapters are written against captured output**, not against published schemas. When a
   protocol and its documentation disagree, the wire wins — capture frames from the real
   binary before writing types.
+- **Never put an unstable callback identity in an effect dependency list when the effect's
+  trigger condition persists across renders.** Notify → parent re-renders → new identity →
+  effect refires → notify: an invisible infinite loop. One of these hammered `models.list`
+  until ~170 `opencode serve` processes were alive at once and the pagefile was exhausted
+  (#283). Latch one-shot notifications with a ref, and give callbacks that end up in
+  dependency lists a stable identity (`useCallback` in the owner).
 
 ## When unsure
 
