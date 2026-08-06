@@ -27,10 +27,15 @@ site the user happens to be visiting can open `ws://127.0.0.1:4311` and speak ou
 Everything the UI can do — enumerate projects, start a thread with `full` approval, open a
 terminal — it could do too.
 
-The gate is the `Origin` header, because it is the one thing a page cannot forge. Allowed:
-absent (non-browser clients — the CLI, tests, a native mobile client), `null`/`file://` (the
-packaged renderer), and loopback origins (the dev server and our own web UI). Anything else
-is refused with 1008.
+The gate is the `Origin` header. Allowed: absent (non-browser clients — the CLI, tests, a
+native mobile client), `file://` (the packaged renderer), and loopback origins (the dev
+server and our own web UI). Anything else is refused with 1008.
+
+**`null` is not allowed, and must never be added back.** A page cannot forge an arbitrary
+origin, but it can always mint the _opaque_ one — `<iframe sandbox="allow-scripts" srcdoc=…>`
+or a `data:` document both serialize to `Origin: null`. Allowing it hands the gate back to
+the attacker it exists to stop. If one of our own renderers ever reports an opaque origin,
+the answer is an access token for that surface, not a hole here.
 
 **Any new listener inherits this rule**, and so does any future HTTP surface — a fetch from a
 hostile page carries an `Origin` too. Check it at the point of accept, before a single frame
