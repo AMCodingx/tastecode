@@ -141,6 +141,26 @@ impl HarnessApp {
                 this.sync_composer_settings(cx);
             }
             ChatEvent::PickAttachments => this.pick_attachments(cx),
+            ChatEvent::RespondApproval {
+                thread_id,
+                approval_id,
+                decision,
+            } => {
+                let update = this
+                    .state
+                    .respond_to_approval(thread_id, approval_id, *decision);
+                this.apply_client_update(update, cx);
+            }
+            ChatEvent::RespondUserInput {
+                thread_id,
+                request_id,
+                answers,
+            } => {
+                let update =
+                    this.state
+                        .respond_to_user_input(thread_id, request_id, answers.clone());
+                this.apply_client_update(update, cx);
+            }
         })
         .detach();
 

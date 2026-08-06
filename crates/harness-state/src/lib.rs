@@ -87,8 +87,8 @@ pub struct ThreadState {
     pub plan: Option<(String, Vec<PlanStep>)>,
     pub usage: Option<Usage>,
     pub diff: Option<(String, String)>,
-    pub approval: Option<ApprovalRequest>,
-    pub user_input: Option<UserInputRequest>,
+    pub approvals: Vec<ApprovalRequest>,
+    pub user_inputs: Vec<UserInputRequest>,
     pub reviews: Vec<ApprovalReview>,
     review_index: HashMap<String, usize>,
     pub errors: Vec<String>,
@@ -215,12 +215,13 @@ impl ThreadState {
                     .turns
                     .iter()
                     .any(|turn| turn.turn.status == TurnStatus::Running);
-                self.approval = None;
-                self.user_input = None;
+                self.approvals.clear();
                 ChangeSet::ALL
             }
             DomainEvent::ThreadError { message, .. } => {
                 self.running = false;
+                self.approvals.clear();
+                self.user_inputs.clear();
                 self.errors.push(message);
                 ChangeSet::ALL
             }
@@ -237,31 +238,19 @@ impl ThreadState {
                 ChangeSet::CONTROLS
             }
             DomainEvent::ApprovalRequested { request } => {
-                self.approval = Some(request);
+                upsert_by_id(&mut self.approvals, request, |request| &request.id);
                 ChangeSet::ALL
             }
             DomainEvent::ApprovalResolved { id } => {
-                if self
-                    .approval
-                    .as_ref()
-                    .is_some_and(|request| request.id == id)
-                {
-                    self.approval = None;
-                }
+                self.approvals.retain(|request| request.id != id);
                 ChangeSet::ALL
             }
             DomainEvent::UserInputRequested { request } => {
-                self.user_input = Some(request);
+                upsert_by_id(&mut self.user_inputs, request, |request| &request.id);
                 ChangeSet::ALL
             }
             DomainEvent::UserInputResolved { id } => {
-                if self
-                    .user_input
-                    .as_ref()
-                    .is_some_and(|request| request.id == id)
-                {
-                    self.user_input = None;
-                }
+                self.user_inputs.retain(|request| request.id != id);
                 ChangeSet::ALL
             }
             DomainEvent::ApprovalReviewStarted { review }
@@ -336,6 +325,17 @@ impl ThreadState {
         self.reviews
             .iter()
             .filter(|review| review.status == ApprovalReviewStatus::InProgress)
+    }
+}
+
+fn upsert_by_id<T, F>(values: &mut Vec<T>, next: T, id: F)
+where
+    F: Fn(&T) -> &str,
+{
+    if let Some(index) = values.iter().position(|value| id(value) == id(&next)) {
+        values[index] = next;
+    } else {
+        values.push(next);
     }
 }
 
@@ -443,5 +443,91 @@ mod tests {
             ),
             ApplyOutcome::NeedsHistory { after_seq: 0 }
         );
+    }
+
+    #[test]
+    fn structured_requests_queue_and_follow_turn_lifecycle_rules() {
+        let mut state = ThreadState::default();
+        let events = [
+            json!({
+                "type": "turn.started",
+                "turn": {
+                    "id": "turn-1",
+                    "threadId": "thread-1",
+                    "status": "running",
+                    "createdAt": 1
+                }
+            }),
+            json!({
+                "type": "approval.requested",
+                "request": {
+                    "id": "approval-1",
+                    "kind": "command",
+                    "command": "pnpm test",
+                    "createdAt": 2
+                }
+            }),
+            json!({
+                "type": "approval.requested",
+                "request": {
+                    "id": "approval-2",
+                    "kind": "file_change",
+                    "path": "/workspace/src/app.ts",
+                    "createdAt": 3
+                }
+            }),
+            json!({
+                "type": "user_input.requested",
+                "request": {
+                    "id": "input-1",
+                    "turnId": "turn-1",
+                    "questions": [{
+                        "id": "tone",
+                        "header": "Tone",
+                        "question": "How should it feel?",
+                        "allowOther": true,
+                        "secret": false,
+                        "options": null
+                    }],
+                    "autoResolutionMs": null,
+                    "createdAt": 4
+                }
+            }),
+        ];
+        for (index, value) in events.into_iter().enumerate() {
+            assert!(matches!(
+                state.apply_live(Some(index as u64 + 1), event(value)),
+                ApplyOutcome::Applied(_)
+            ));
+        }
+
+        assert_eq!(state.approvals.len(), 2);
+        assert_eq!(state.user_inputs.len(), 1);
+        assert!(matches!(
+            state.apply_live(
+                Some(5),
+                event(json!({
+                    "type": "turn.completed",
+                    "turnId": "turn-1",
+                    "status": "completed"
+                }))
+            ),
+            ApplyOutcome::Applied(_)
+        ));
+        assert!(state.approvals.is_empty());
+        assert_eq!(state.user_inputs.len(), 1);
+
+        assert!(matches!(
+            state.apply_live(
+                Some(6),
+                event(json!({
+                    "type": "thread.error",
+                    "threadId": "thread-1",
+                    "message": "failed"
+                }))
+            ),
+            ApplyOutcome::Applied(_)
+        ));
+        assert!(state.user_inputs.is_empty());
     }
 }

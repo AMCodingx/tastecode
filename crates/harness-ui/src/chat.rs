@@ -1,16 +1,18 @@
 use crate::client_state::{ChatUpdate, ModelChoice};
 use crate::theme::{CHAT_WIDTH, Theme};
 use gpui::{
-    AnyElement, App, Context, Entity, EventEmitter, FontWeight, ListAlignment, ListState, Render,
-    SharedString, Window, div, list, prelude::*, px, relative, svg,
+    Animation, AnimationExt, AnyElement, App, Context, Entity, EventEmitter, FontWeight,
+    ListAlignment, ListState, Render, SharedString, Window, div, ease_out_quint, list, prelude::*,
+    px, relative, svg,
 };
 use gpui_component::input::{Input, InputEvent, InputState};
 use harness_protocol::{
-    ApprovalMode, Item, ItemStatus, ItemType, MessageRole, ProviderId, ThreadEventPush,
-    ThreadQueueResult,
+    ApprovalDecision, ApprovalKind, ApprovalMode, ApprovalReview, ApprovalReviewStatus, Item,
+    ItemStatus, ItemType, MessageRole, ProviderId, RiskLevel, ThreadEventPush, ThreadQueueResult,
+    UserInputQuestion,
 };
 use harness_state::{ApplyOutcome, HistoryError, ThreadState};
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 use std::time::Duration;
 
@@ -58,6 +60,16 @@ pub(crate) enum ChatEvent {
     ToggleIsolation,
     ToggleDesign,
     PickAttachments,
+    RespondApproval {
+        thread_id: String,
+        approval_id: String,
+        decision: ApprovalDecision,
+    },
+    RespondUserInput {
+        thread_id: String,
+        request_id: String,
+        answers: HashMap<String, Vec<String>>,
+    },
 }
 
 impl EventEmitter<ChatEvent> for ChatView {}
@@ -95,6 +107,11 @@ enum ComposerMenu {
     Model,
 }
 
+struct InputFieldSync {
+    value: String,
+    masked: bool,
+}
+
 pub(crate) struct ChatView {
     theme: Theme,
     session: Option<SessionContext>,
@@ -104,6 +121,7 @@ pub(crate) struct ChatView {
     error: Option<String>,
     list_state: ListState,
     composer: Entity<InputState>,
+    user_input_custom: Entity<InputState>,
     clear_composer: bool,
     restore_composer: Option<String>,
     creating: bool,
@@ -113,6 +131,14 @@ pub(crate) struct ChatView {
     composer_settings: ComposerSettings,
     composer_menu: Option<ComposerMenu>,
     attachments: Vec<String>,
+    active_user_input_id: Option<String>,
+    user_input_step: usize,
+    user_input_answers: HashMap<String, String>,
+    user_input_custom_question: Option<String>,
+    user_input_field_sync: Option<InputFieldSync>,
+    pending_approvals: HashSet<String>,
+    pending_user_inputs: HashSet<String>,
+    action_errors: HashMap<String, String>,
 }
 
 impl ChatView {
@@ -122,9 +148,23 @@ impl ChatView {
                 .auto_grow(2, 11)
                 .placeholder("Do anything")
         });
+        let user_input_custom =
+            cx.new(|cx| InputState::new(window, cx).placeholder("Type your answer…"));
         cx.subscribe(&composer, |this, _composer, event, cx| match event {
             InputEvent::PressEnter { secondary } => this.submit(*secondary, cx),
             InputEvent::Change | InputEvent::Focus | InputEvent::Blur => cx.notify(),
+        })
+        .detach();
+        cx.subscribe(&user_input_custom, |this, input, event, cx| match event {
+            InputEvent::PressEnter { .. } => this.advance_user_input(cx),
+            InputEvent::Change => {
+                if let Some(question_id) = this.user_input_custom_question.clone() {
+                    let value = input.read(cx).value().to_string();
+                    this.user_input_answers.insert(question_id, value);
+                }
+                cx.notify();
+            }
+            InputEvent::Focus | InputEvent::Blur => cx.notify(),
         })
         .detach();
 
@@ -140,6 +180,7 @@ impl ChatView {
             error: None,
             list_state: ListState::new(0, ListAlignment::Bottom, px(500.0)),
             composer,
+            user_input_custom,
             clear_composer: false,
             restore_composer: None,
             creating: false,
@@ -149,6 +190,14 @@ impl ChatView {
             composer_settings: ComposerSettings::default(),
             composer_menu: None,
             attachments: Vec::new(),
+            active_user_input_id: None,
+            user_input_step: 0,
+            user_input_answers: HashMap::new(),
+            user_input_custom_question: None,
+            user_input_field_sync: None,
+            pending_approvals: HashSet::new(),
+            pending_user_inputs: HashSet::new(),
+            action_errors: HashMap::new(),
         }
     }
 
@@ -171,6 +220,17 @@ impl ChatView {
         self.delta_flush_scheduled = false;
         self.attachments.clear();
         self.composer_menu = None;
+        self.active_user_input_id = None;
+        self.user_input_step = 0;
+        self.user_input_answers.clear();
+        self.user_input_custom_question = None;
+        self.user_input_field_sync = Some(InputFieldSync {
+            value: String::new(),
+            masked: false,
+        });
+        self.pending_approvals.clear();
+        self.pending_user_inputs.clear();
+        self.action_errors.clear();
         cx.notify();
     }
 
@@ -241,6 +301,7 @@ impl ChatView {
                         self.loading = false;
                         self.history_in_flight = false;
                         self.error = None;
+                        self.sync_structured_requests();
                         self.flush_pending_live(cx);
                     }
                     Err(error) => self.reconcile_after_error(error, cx),
@@ -309,12 +370,32 @@ impl ChatView {
                 self.attachments = restore_attachments;
                 cx.notify();
             }
+            ChatUpdate::ApprovalError {
+                thread_id,
+                approval_id,
+                message,
+            } if self.is_selected(&thread_id) => {
+                self.pending_approvals.remove(&approval_id);
+                self.action_errors.insert(approval_id, message);
+                cx.notify();
+            }
+            ChatUpdate::UserInputError {
+                thread_id,
+                request_id,
+                message,
+            } if self.is_selected(&thread_id) => {
+                self.pending_user_inputs.remove(&request_id);
+                self.action_errors.insert(request_id, message);
+                cx.notify();
+            }
             ChatUpdate::History { .. }
             | ChatUpdate::Queue { .. }
             | ChatUpdate::Event(_)
             | ChatUpdate::Error { .. }
             | ChatUpdate::DraftError { .. }
-            | ChatUpdate::TurnError { .. } => {}
+            | ChatUpdate::TurnError { .. }
+            | ChatUpdate::ApprovalError { .. }
+            | ChatUpdate::UserInputError { .. } => {}
         }
     }
 
@@ -402,6 +483,7 @@ impl ChatView {
             }
             self.loading = false;
             self.error = None;
+            self.sync_structured_requests();
             cx.notify();
         }
 
@@ -440,6 +522,235 @@ impl ChatView {
                 .as_deref()
                 .is_some_and(|id| id == thread_id)
         })
+    }
+
+    fn sync_structured_requests(&mut self) {
+        let live_ids = self
+            .state
+            .approvals
+            .iter()
+            .map(|request| request.id.as_str())
+            .chain(
+                self.state
+                    .user_inputs
+                    .iter()
+                    .map(|request| request.id.as_str()),
+            )
+            .collect::<HashSet<_>>();
+        self.pending_approvals
+            .retain(|request_id| live_ids.contains(request_id.as_str()));
+        self.pending_user_inputs
+            .retain(|request_id| live_ids.contains(request_id.as_str()));
+        self.action_errors
+            .retain(|request_id, _| live_ids.contains(request_id.as_str()));
+
+        let next_id = self
+            .state
+            .user_inputs
+            .first()
+            .map(|request| request.id.clone());
+        if self.active_user_input_id != next_id {
+            self.active_user_input_id = next_id;
+            self.user_input_step = 0;
+            self.user_input_answers.clear();
+            self.user_input_custom_question = None;
+            self.user_input_field_sync = Some(InputFieldSync {
+                value: String::new(),
+                masked: false,
+            });
+        }
+    }
+
+    fn active_user_input(&self) -> Option<&harness_protocol::UserInputRequest> {
+        let request_id = self.active_user_input_id.as_deref()?;
+        self.state
+            .user_inputs
+            .iter()
+            .find(|request| request.id == request_id)
+    }
+
+    fn current_user_input_question(&self) -> Option<&UserInputQuestion> {
+        self.active_user_input()?
+            .questions
+            .get(self.user_input_step)
+    }
+
+    fn prepare_user_input_field(&mut self) {
+        let Some(question) = self.current_user_input_question().cloned() else {
+            self.user_input_custom_question = None;
+            return;
+        };
+        let answer = self.user_input_answers.get(&question.id).cloned();
+        let is_option = answer.as_ref().is_some_and(|answer| {
+            question
+                .options
+                .as_ref()
+                .is_some_and(|options| options.iter().any(|option| option.label == *answer))
+        });
+        if answer.is_some() && !is_option {
+            self.user_input_custom_question = Some(question.id);
+            self.user_input_field_sync = Some(InputFieldSync {
+                value: answer.unwrap_or_default(),
+                masked: question.secret,
+            });
+        } else {
+            self.user_input_custom_question = None;
+        }
+    }
+
+    fn select_user_input_option(
+        &mut self,
+        question_id: String,
+        answer: String,
+        cx: &mut Context<Self>,
+    ) {
+        if self
+            .current_user_input_question()
+            .is_none_or(|question| question.id != question_id)
+        {
+            return;
+        }
+        self.user_input_answers.insert(question_id, answer);
+        self.user_input_custom_question = None;
+        if let Some(request_id) = &self.active_user_input_id {
+            self.action_errors.remove(request_id);
+        }
+        cx.notify();
+    }
+
+    fn select_user_input_custom(&mut self, question_id: String, cx: &mut Context<Self>) {
+        let Some(question) = self.current_user_input_question().cloned() else {
+            return;
+        };
+        if question.id != question_id {
+            return;
+        }
+        if self.user_input_custom_question.as_deref() == Some(question.id.as_str()) {
+            return;
+        }
+        let value =
+            self.user_input_answers
+                .get(&question.id)
+                .filter(|answer| {
+                    question.options.as_ref().is_none_or(|options| {
+                        !options.iter().any(|option| option.label == **answer)
+                    })
+                })
+                .cloned()
+                .unwrap_or_default();
+        self.user_input_answers
+            .insert(question.id.clone(), value.clone());
+        self.user_input_custom_question = Some(question.id);
+        self.user_input_field_sync = Some(InputFieldSync {
+            value,
+            masked: question.secret,
+        });
+        if let Some(request_id) = &self.active_user_input_id {
+            self.action_errors.remove(request_id);
+        }
+        cx.notify();
+    }
+
+    fn back_user_input(&mut self, cx: &mut Context<Self>) {
+        if self.user_input_step == 0 || self.pending_user_input() {
+            return;
+        }
+        self.user_input_step -= 1;
+        self.prepare_user_input_field();
+        cx.notify();
+    }
+
+    fn advance_user_input(&mut self, cx: &mut Context<Self>) {
+        let Some(request) = self.active_user_input().cloned() else {
+            return;
+        };
+        if self.pending_user_inputs.contains(&request.id) {
+            return;
+        }
+        let Some(question) = request.questions.get(self.user_input_step) else {
+            return;
+        };
+        let Some(_answer) = self
+            .user_input_answers
+            .get(&question.id)
+            .map(|answer| answer.trim())
+            .filter(|answer| !answer.is_empty())
+        else {
+            return;
+        };
+        if self.user_input_step + 1 < request.questions.len() {
+            self.user_input_step += 1;
+            self.prepare_user_input_field();
+            cx.notify();
+            return;
+        }
+
+        let answers = request
+            .questions
+            .iter()
+            .map(|question| {
+                self.user_input_answers
+                    .get(&question.id)
+                    .map(|answer| (question.id.clone(), vec![answer.trim().to_owned()]))
+                    .filter(|(_, answers)| !answers[0].is_empty())
+            })
+            .collect::<Option<HashMap<_, _>>>();
+        let Some(answers) = answers else {
+            return;
+        };
+        let Some(thread_id) = self
+            .session
+            .as_ref()
+            .and_then(|session| session.thread_id.clone())
+        else {
+            return;
+        };
+        self.pending_user_inputs.insert(request.id.clone());
+        self.action_errors.remove(&request.id);
+        cx.emit(ChatEvent::RespondUserInput {
+            thread_id,
+            request_id: request.id,
+            answers,
+        });
+        cx.notify();
+    }
+
+    fn pending_user_input(&self) -> bool {
+        self.active_user_input_id
+            .as_ref()
+            .is_some_and(|request_id| self.pending_user_inputs.contains(request_id))
+    }
+
+    fn decide_approval(
+        &mut self,
+        approval_id: String,
+        decision: ApprovalDecision,
+        cx: &mut Context<Self>,
+    ) {
+        if self.pending_approvals.contains(&approval_id)
+            || !self
+                .state
+                .approvals
+                .iter()
+                .any(|request| request.id == approval_id)
+        {
+            return;
+        }
+        let Some(thread_id) = self
+            .session
+            .as_ref()
+            .and_then(|session| session.thread_id.clone())
+        else {
+            return;
+        };
+        self.pending_approvals.insert(approval_id.clone());
+        self.action_errors.remove(&approval_id);
+        cx.emit(ChatEvent::RespondApproval {
+            thread_id,
+            approval_id,
+            decision,
+        });
+        cx.notify();
     }
 
     fn submit(&mut self, steer: bool, cx: &mut Context<Self>) {
@@ -624,6 +935,545 @@ impl ChatView {
             .into_any_element()
     }
 
+    fn structured_surfaces(&self, cx: &Context<Self>) -> Option<AnyElement> {
+        if self.state.approvals.is_empty() && self.state.reviews.is_empty() {
+            return None;
+        }
+        let approval_count = self.state.approvals.len();
+        let approvals = self
+            .state
+            .approvals
+            .iter()
+            .enumerate()
+            .map(|(index, request)| self.approval_card(request, index, cx));
+        let reviews = self
+            .state
+            .reviews
+            .iter()
+            .enumerate()
+            .map(|(index, review)| self.approval_review_card(review, approval_count + index));
+
+        Some(
+            div()
+                .id("structured-surfaces")
+                .flex_none()
+                .max_h(px(290.0))
+                .overflow_y_scroll()
+                .px(px(24.0))
+                .pb(px(7.0))
+                .child(
+                    div()
+                        .w_full()
+                        .max_w(px(CHAT_WIDTH))
+                        .mx_auto()
+                        .children(approvals)
+                        .children(reviews),
+                )
+                .into_any_element(),
+        )
+    }
+
+    fn approval_card(
+        &self,
+        request: &harness_protocol::ApprovalRequest,
+        card_index: usize,
+        cx: &Context<Self>,
+    ) -> AnyElement {
+        let theme = self.theme;
+        let pending = self.pending_approvals.contains(&request.id);
+        let weak = cx.weak_entity();
+        let actions = [
+            ("Deny", ApprovalDecision::Deny, false),
+            ("Stop the turn", ApprovalDecision::Abort, true),
+            (
+                "Always this session",
+                ApprovalDecision::ApproveSession,
+                true,
+            ),
+            ("Allow once", ApprovalDecision::Approve, false),
+        ]
+        .into_iter()
+        .enumerate()
+        .map(|(action_index, (label, decision, quiet))| {
+            let approval_id = request.id.clone();
+            let weak = weak.clone();
+            let action: Option<UiAction> = (!pending).then(|| {
+                Rc::new(move |cx: &mut App| {
+                    let approval_id = approval_id.clone();
+                    let _ = weak.update(cx, |this, cx| {
+                        this.decide_approval(approval_id, decision, cx);
+                    });
+                }) as UiAction
+            });
+            approval_action_button(
+                card_index * 4 + action_index,
+                label,
+                action_index == 3,
+                quiet,
+                action_index == 2,
+                theme,
+                action,
+            )
+            .into_any_element()
+        })
+        .collect::<Vec<_>>();
+
+        div()
+            .w_full()
+            .mb(px(8.0))
+            .rounded(px(9.0))
+            .border_1()
+            .border_color(theme.line_strong.hsla())
+            .bg(theme.surface.hsla())
+            .px(px(14.0))
+            .py(px(12.0))
+            .child(
+                div()
+                    .mb(px(10.0))
+                    .flex()
+                    .items_center()
+                    .gap(px(8.0))
+                    .text_color(theme.text_2.hsla())
+                    .child(svg_icon("icons/shield-question.svg", 14.0))
+                    .child(
+                        div()
+                            .text_color(theme.text.hsla())
+                            .font_weight(FontWeight::MEDIUM)
+                            .child(approval_title(request.kind)),
+                    )
+                    .when(pending, |head| {
+                        head.child(
+                            div()
+                                .ml_auto()
+                                .text_size(px(11.0))
+                                .text_color(theme.text_3.hsla())
+                                .child("Submitting…"),
+                        )
+                    }),
+            )
+            .when_some(request.command.clone(), |card, command| {
+                card.child(
+                    div()
+                        .w_full()
+                        .mb(px(8.0))
+                        .rounded(px(6.0))
+                        .border_1()
+                        .border_color(theme.line.hsla())
+                        .bg(theme.background.hsla())
+                        .px(px(10.0))
+                        .py(px(8.0))
+                        .font_family("Geist Mono")
+                        .text_size(px(11.5))
+                        .line_height(relative(1.45))
+                        .whitespace_normal()
+                        .child(command),
+                )
+            })
+            .when_some(request.path.clone(), |card, path| {
+                card.child(
+                    div()
+                        .mb(px(8.0))
+                        .font_family("Geist Mono")
+                        .text_size(px(11.5))
+                        .line_height(relative(1.45))
+                        .whitespace_normal()
+                        .child(path),
+                )
+            })
+            .when_some(request.cwd.clone(), |card, cwd| {
+                card.child(
+                    div()
+                        .mb(px(8.0))
+                        .flex()
+                        .gap(px(5.0))
+                        .text_size(px(11.5))
+                        .text_color(theme.text_3.hsla())
+                        .child("in")
+                        .child(
+                            div()
+                                .font_family("Geist Mono")
+                                .whitespace_normal()
+                                .child(cwd),
+                        ),
+                )
+            })
+            .when_some(request.reason.clone(), |card, reason| {
+                card.child(
+                    div()
+                        .mb(px(12.0))
+                        .rounded(px(6.0))
+                        .bg(theme.surface_2.hsla())
+                        .px(px(10.0))
+                        .py(px(8.0))
+                        .text_size(px(11.5))
+                        .line_height(relative(1.55))
+                        .text_color(theme.text_2.hsla())
+                        .whitespace_normal()
+                        .child(reason),
+                )
+            })
+            .when_some(
+                self.action_errors.get(&request.id).cloned(),
+                |card, error| {
+                    card.child(
+                        div()
+                            .mb(px(9.0))
+                            .text_size(px(11.0))
+                            .text_color(theme.error.hsla())
+                            .child(error),
+                    )
+                },
+            )
+            .child(
+                div()
+                    .flex()
+                    .flex_wrap()
+                    .items_center()
+                    .gap(px(6.0))
+                    .children(actions),
+            )
+            .into_any_element()
+    }
+
+    fn approval_review_card(&self, review: &ApprovalReview, card_index: usize) -> AnyElement {
+        let theme = self.theme;
+        let (status, icon_path, tone) = review_status(review.status, theme);
+        div()
+            .id(("approval-review", card_index))
+            .w_full()
+            .mb(px(8.0))
+            .rounded(px(9.0))
+            .border_1()
+            .border_color(theme.line_strong.hsla())
+            .bg(theme.surface.hsla())
+            .px(px(14.0))
+            .py(px(12.0))
+            .child(
+                div()
+                    .mb(px(6.0))
+                    .flex()
+                    .items_center()
+                    .gap(px(8.0))
+                    .text_color(tone)
+                    .child(svg_icon(icon_path, 14.0))
+                    .child(
+                        div()
+                            .font_weight(FontWeight::MEDIUM)
+                            .text_color(theme.text.hsla())
+                            .child(status),
+                    )
+                    .when_some(review.risk_level, |head, risk| {
+                        head.child(
+                            div()
+                                .ml_auto()
+                                .text_size(px(10.5))
+                                .text_color(theme.text_3.hsla())
+                                .child(format!("{} risk", risk_label(risk))),
+                        )
+                    }),
+            )
+            .child(
+                div()
+                    .font_family("Geist Mono")
+                    .text_size(px(11.5))
+                    .line_height(relative(1.5))
+                    .whitespace_normal()
+                    .child(review.description.clone()),
+            )
+            .when_some(review.rationale.clone(), |card, rationale| {
+                card.child(
+                    div()
+                        .mt(px(6.0))
+                        .text_size(px(11.5))
+                        .line_height(relative(1.5))
+                        .text_color(theme.text_2.hsla())
+                        .whitespace_normal()
+                        .child(rationale),
+                )
+            })
+            .into_any_element()
+    }
+
+    fn user_input_card(&self, is_new_session: bool, cx: &Context<Self>) -> Option<AnyElement> {
+        let request = self.active_user_input()?;
+        let question = request.questions.get(self.user_input_step)?;
+        let theme = self.theme;
+        let pending = self.pending_user_inputs.contains(&request.id);
+        let attachment_offset = if self.attachments.is_empty() {
+            0.0
+        } else {
+            34.0
+        };
+        let bottom = (if is_new_session { 150.0 } else { 114.0 }) + attachment_offset;
+
+        if pending {
+            return Some(
+                div()
+                    .absolute()
+                    .left(px(0.0))
+                    .bottom(px(bottom))
+                    .h(px(36.0))
+                    .flex()
+                    .items_center()
+                    .gap(px(9.0))
+                    .rounded(px(18.0))
+                    .border_1()
+                    .border_color(theme.line_strong.hsla())
+                    .bg(theme.surface.hsla())
+                    .shadow_lg()
+                    .px(px(13.0))
+                    .text_size(px(11.5))
+                    .text_color(theme.text_2.hsla())
+                    .child(
+                        div()
+                            .size(px(8.0))
+                            .rounded(px(4.0))
+                            .bg(theme.attention.hsla()),
+                    )
+                    .child("Submitting answers…")
+                    .into_any_element(),
+            );
+        }
+
+        let selected = self.user_input_answers.get(&question.id);
+        let options = question.options.as_deref().unwrap_or_default();
+        let custom_available = question.allow_other || options.is_empty();
+        let custom_selected = self.user_input_custom_question.as_deref() == Some(&question.id);
+        let weak = cx.weak_entity();
+        let option_rows = options.iter().enumerate().map(|(index, option)| {
+            let active = selected.is_some_and(|answer| answer == &option.label);
+            let question_id = question.id.clone();
+            let answer = option.label.clone();
+            let weak = weak.clone();
+            div()
+                .id(("brief-option", index))
+                .min_h(px(38.0))
+                .w_full()
+                .flex()
+                .items_center()
+                .gap(px(9.0))
+                .px(px(10.0))
+                .py(px(7.0))
+                .rounded(px(8.0))
+                .border_1()
+                .border_color(if active {
+                    theme.text_2.hsla().opacity(0.74)
+                } else {
+                    theme.line_strong.hsla().opacity(0.68)
+                })
+                .bg(if active {
+                    theme.surface_3.hsla()
+                } else {
+                    theme.surface_2.hsla().opacity(0.58)
+                })
+                .cursor_pointer()
+                .hover(move |style| {
+                    style
+                        .border_color(theme.line_strong.hsla())
+                        .bg(theme.surface_3.hsla())
+                        .text_color(theme.text.hsla())
+                })
+                .active(|style| style.opacity(0.78))
+                .on_click(move |_event, _window, cx| {
+                    let question_id = question_id.clone();
+                    let answer = answer.clone();
+                    let _ = weak.update(cx, |this, cx| {
+                        this.select_user_input_option(question_id, answer, cx);
+                    });
+                })
+                .child(radio_mark(active, theme))
+                .child(
+                    div()
+                        .min_w(px(0.0))
+                        .truncate()
+                        .text_size(px(11.5))
+                        .font_weight(FontWeight::MEDIUM)
+                        .text_color(if active {
+                            theme.text.hsla()
+                        } else {
+                            theme.text_2.hsla()
+                        })
+                        .child(option.label.clone()),
+                )
+                .into_any_element()
+        });
+
+        let custom_row = custom_available.then(|| {
+            let question_id = question.id.clone();
+            let weak = cx.weak_entity();
+            div()
+                .id("brief-custom-option")
+                .min_h(px(38.0))
+                .w_full()
+                .flex()
+                .items_center()
+                .gap(px(9.0))
+                .px(px(10.0))
+                .py(px(5.0))
+                .rounded(px(8.0))
+                .border_1()
+                .border_color(if custom_selected {
+                    theme.text_2.hsla().opacity(0.74)
+                } else {
+                    theme.line_strong.hsla().opacity(0.68)
+                })
+                .bg(if custom_selected {
+                    theme.surface_3.hsla()
+                } else {
+                    theme.surface_2.hsla().opacity(0.58)
+                })
+                .cursor_pointer()
+                .on_click(move |_event, _window, cx| {
+                    let question_id = question_id.clone();
+                    let _ = weak.update(cx, |this, cx| {
+                        this.select_user_input_custom(question_id, cx);
+                    });
+                })
+                .child(radio_mark(custom_selected, theme))
+                .when(custom_selected, |row| {
+                    row.child(
+                        Input::new(&self.user_input_custom)
+                            .appearance(false)
+                            .bordered(false)
+                            .focus_bordered(false)
+                            .h(px(28.0))
+                            .w_full()
+                            .text_size(px(11.5))
+                            .text_color(theme.text.hsla()),
+                    )
+                })
+                .when(!custom_selected, |row| {
+                    row.child(
+                        div()
+                            .flex_1()
+                            .rounded(px(6.0))
+                            .border_1()
+                            .border_color(theme.line.hsla())
+                            .bg(theme.surface.hsla().opacity(0.72))
+                            .px(px(8.0))
+                            .py(px(5.0))
+                            .text_size(px(11.5))
+                            .text_color(theme.text_3.hsla())
+                            .child("Write your own answer…"),
+                    )
+                })
+                .into_any_element()
+        });
+
+        let answer_ready = selected.is_some_and(|answer| !answer.trim().is_empty());
+        let last_step = self.user_input_step + 1 == request.questions.len();
+        let back_action: Option<UiAction> = (self.user_input_step > 0).then(|| {
+            let weak = cx.weak_entity();
+            Rc::new(move |cx: &mut App| {
+                let _ = weak.update(cx, |this, cx| this.back_user_input(cx));
+            }) as UiAction
+        });
+        let next_action: Option<UiAction> = answer_ready.then(|| {
+            let weak = cx.weak_entity();
+            Rc::new(move |cx: &mut App| {
+                let _ = weak.update(cx, |this, cx| this.advance_user_input(cx));
+            }) as UiAction
+        });
+        let request_animation_id = request.created_at.max(0.0) as u64;
+        let error = self.action_errors.get(&request.id).cloned();
+
+        Some(
+            div()
+                .absolute()
+                .left(px(0.0))
+                .right(px(0.0))
+                .bottom(px(bottom))
+                .w_full()
+                .overflow_hidden()
+                .rounded(px(18.0))
+                .border_1()
+                .border_color(theme.line_strong.hsla())
+                .bg(theme.surface.hsla().opacity(0.98))
+                .shadow_lg()
+                .child(
+                    div()
+                        .px(px(18.0))
+                        .pt(px(16.0))
+                        .pb(px(14.0))
+                        .child(
+                            div()
+                                .text_size(px(14.0))
+                                .font_weight(FontWeight::SEMIBOLD)
+                                .line_height(relative(1.35))
+                                .text_color(theme.text.hsla())
+                                .whitespace_normal()
+                                .child(question.question.clone()),
+                        )
+                        .child(
+                            div()
+                                .mt(px(12.0))
+                                .flex()
+                                .flex_col()
+                                .gap(px(5.0))
+                                .children(option_rows)
+                                .when_some(custom_row, |options, custom| options.child(custom)),
+                        )
+                        .when_some(error, |body, error| {
+                            body.child(
+                                div()
+                                    .mt(px(9.0))
+                                    .text_size(px(11.0))
+                                    .text_color(theme.error.hsla())
+                                    .child(error),
+                            )
+                        }),
+                )
+                .child(
+                    div()
+                        .min_h(px(48.0))
+                        .flex()
+                        .items_center()
+                        .gap(px(12.0))
+                        .border_t_1()
+                        .border_color(theme.line.hsla())
+                        .pl(px(18.0))
+                        .pr(px(9.0))
+                        .py(px(7.0))
+                        .child(
+                            div()
+                                .flex_1()
+                                .text_size(px(10.5))
+                                .text_color(theme.text_3.hsla())
+                                .child(format!(
+                                    "Question {} of {}",
+                                    self.user_input_step + 1,
+                                    request.questions.len()
+                                )),
+                        )
+                        .when_some(back_action, |footer, action| {
+                            footer.child(input_nav_button(
+                                "brief-back",
+                                "Back",
+                                false,
+                                theme,
+                                Some(action),
+                            ))
+                        })
+                        .child(input_nav_button(
+                            "brief-next",
+                            if last_step { "Submit" } else { "Next" },
+                            true,
+                            theme,
+                            next_action,
+                        )),
+                )
+                .with_animation(
+                    ("brief-input", request_animation_id),
+                    Animation::new(Duration::from_millis(220)).with_easing(ease_out_quint()),
+                    move |card, delta| {
+                        card.bottom(px(bottom - (8.0 * (1.0 - delta))))
+                            .opacity(delta)
+                    },
+                )
+                .into_any_element(),
+        )
+    }
+
     fn composer(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = self.theme;
         let session = self.session.clone();
@@ -633,6 +1483,7 @@ impl ChatView {
             .as_ref()
             .is_some_and(|session| session.thread_id.is_none());
         let popover = self.composer_popover(is_new_session, cx);
+        let user_input = self.user_input_card(is_new_session, cx);
         let attach_view = cx.weak_entity();
         let attach_action: UiAction = Rc::new(move |cx| {
             let _ = attach_view.update(cx, |_this, cx| cx.emit(ChatEvent::PickAttachments));
@@ -652,6 +1503,9 @@ impl ChatView {
                     .w_full()
                     .max_w(px(CHAT_WIDTH))
                     .mx_auto()
+                    .when_some(user_input, |composer, user_input| {
+                        composer.child(user_input)
+                    })
                     .when_some(popover, |composer, popover| composer.child(popover))
                     .child(
                         div()
@@ -1280,6 +2134,13 @@ impl Render for ChatView {
             });
             self.clear_composer = false;
         }
+        if let Some(sync) = self.user_input_field_sync.take() {
+            self.user_input_custom.update(cx, |input, cx| {
+                input.set_masked(sync.masked, window, cx);
+                input.set_value(sync.value, window, cx);
+            });
+        }
+        let structured_surfaces = self.structured_surfaces(cx);
         div()
             .size_full()
             .min_w(px(0.0))
@@ -1288,6 +2149,7 @@ impl Render for ChatView {
             .bg(self.theme.background.hsla())
             .child(self.header())
             .child(div().flex_1().min_h(px(0.0)).child(self.timeline(cx)))
+            .when_some(structured_surfaces, |view, surfaces| view.child(surfaces))
             .when(!self.queue.items.is_empty(), |view| {
                 view.child(queue_summary(self.queue.items.len(), self.theme))
             })
@@ -1403,6 +2265,190 @@ fn error_item(text: SharedString, theme: Theme) -> AnyElement {
         .whitespace_normal()
         .child(text)
         .into_any_element()
+}
+
+fn approval_title(kind: ApprovalKind) -> &'static str {
+    match kind {
+        ApprovalKind::Command => "Run this command?",
+        ApprovalKind::FileChange => "Write to your files?",
+        ApprovalKind::Permissions => "Grant extra access?",
+    }
+}
+
+fn review_status(
+    status: ApprovalReviewStatus,
+    theme: Theme,
+) -> (&'static str, &'static str, gpui::Hsla) {
+    match status {
+        ApprovalReviewStatus::InProgress => (
+            "Reviewing access",
+            "icons/scan-eye.svg",
+            theme.attention.hsla(),
+        ),
+        ApprovalReviewStatus::Approved => (
+            "Access approved",
+            "icons/shield-check.svg",
+            theme.success.hsla(),
+        ),
+        ApprovalReviewStatus::Denied => (
+            "Access denied",
+            "icons/shield-question.svg",
+            theme.error.hsla(),
+        ),
+        ApprovalReviewStatus::TimedOut => (
+            "Review timed out",
+            "icons/shield-question.svg",
+            theme.text_3.hsla(),
+        ),
+        ApprovalReviewStatus::Aborted => (
+            "Review stopped",
+            "icons/shield-question.svg",
+            theme.text_3.hsla(),
+        ),
+    }
+}
+
+fn risk_label(risk: RiskLevel) -> &'static str {
+    match risk {
+        RiskLevel::Low => "Low",
+        RiskLevel::Medium => "Medium",
+        RiskLevel::High => "High",
+        RiskLevel::Critical => "Critical",
+    }
+}
+
+fn radio_mark(active: bool, theme: Theme) -> impl IntoElement {
+    div()
+        .size(px(14.0))
+        .flex_none()
+        .flex()
+        .items_center()
+        .justify_center()
+        .rounded(px(7.0))
+        .border_1()
+        .border_color(if active {
+            theme.text.hsla()
+        } else {
+            theme.text_3.hsla()
+        })
+        .when(active, |radio| {
+            radio.child(div().size(px(6.0)).rounded(px(3.0)).bg(theme.text.hsla()))
+        })
+}
+
+fn approval_action_button(
+    id: usize,
+    label: &'static str,
+    primary: bool,
+    quiet: bool,
+    push_right: bool,
+    theme: Theme,
+    action: Option<UiAction>,
+) -> impl IntoElement {
+    let enabled = action.is_some();
+    div()
+        .id(("approval-action", id))
+        .h(px(30.0))
+        .px(px(10.0))
+        .flex()
+        .items_center()
+        .justify_center()
+        .rounded(px(7.0))
+        .when(push_right, |button| button.ml_auto())
+        .when(!quiet, |button| {
+            button
+                .border_1()
+                .border_color(theme.line_strong.hsla())
+                .bg(if primary {
+                    theme.text.hsla()
+                } else {
+                    theme.surface_2.hsla()
+                })
+        })
+        .text_size(px(11.0))
+        .font_weight(FontWeight::MEDIUM)
+        .text_color(if primary {
+            theme.background.hsla()
+        } else {
+            theme.text_2.hsla()
+        })
+        .opacity(if enabled { 1.0 } else { 0.46 })
+        .when(enabled, |button| {
+            button
+                .cursor_pointer()
+                .hover(move |style| {
+                    style
+                        .bg(if primary {
+                            theme.text.hsla().opacity(0.88)
+                        } else {
+                            theme.surface_3.hsla()
+                        })
+                        .text_color(if primary {
+                            theme.background.hsla()
+                        } else {
+                            theme.text.hsla()
+                        })
+                })
+                .active(|style| style.opacity(0.72))
+        })
+        .when_some(action, |button, action| {
+            button.on_click(move |_event, _window, cx| action(cx))
+        })
+        .child(label)
+}
+
+fn input_nav_button(
+    id: &'static str,
+    label: &'static str,
+    primary: bool,
+    theme: Theme,
+    action: Option<UiAction>,
+) -> impl IntoElement {
+    let enabled = action.is_some();
+    div()
+        .id(id)
+        .min_w(px(58.0))
+        .h(px(32.0))
+        .px(px(11.0))
+        .flex()
+        .items_center()
+        .justify_center()
+        .rounded(px(8.0))
+        .border_1()
+        .border_color(if primary && enabled {
+            theme.text.hsla().opacity(0.54)
+        } else {
+            theme.line_strong.hsla().opacity(0.7)
+        })
+        .bg(if primary && enabled {
+            theme.text.hsla()
+        } else {
+            theme.surface_2.hsla()
+        })
+        .text_size(px(11.5))
+        .font_weight(FontWeight::MEDIUM)
+        .text_color(if primary && enabled {
+            theme.background.hsla()
+        } else {
+            theme.text_2.hsla()
+        })
+        .opacity(if enabled { 1.0 } else { 0.38 })
+        .when(enabled, |button| {
+            button
+                .cursor_pointer()
+                .hover(move |style| {
+                    style.border_color(theme.line_strong.hsla()).bg(if primary {
+                        theme.text.hsla().opacity(0.88)
+                    } else {
+                        theme.surface_3.hsla()
+                    })
+                })
+                .active(|style| style.opacity(0.72))
+        })
+        .when_some(action, |button, action| {
+            button.on_click(move |_event, _window, cx| action(cx))
+        })
+        .child(label)
 }
 
 fn icon_tool_button(

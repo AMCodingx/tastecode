@@ -1,12 +1,12 @@
 use async_channel::Receiver as EventReceiver;
 use harness_client::{ClientEvent, ClientHandle, ConnectionState, Endpoint};
 use harness_protocol::{
-    AcpAgentsResult, ApprovalMode, DomainEvent, Model, ModelConnectionsResult, ModelsListResult,
-    PROTOCOL_VERSION, ProjectAddedResult, ProjectSummary, ProjectsListResult, ProviderId,
-    ProviderStatus, ProvidersListResult, Response, SendTurnResult, ServerWelcome, SessionSummary,
-    SidebarMode, SidebarSettings, ThreadEventPush, ThreadHistoryResult, ThreadInboxStatus,
-    ThreadLifecycle, ThreadLifecyclePush, ThreadQueuePush, ThreadQueueResult, ThreadStartResult,
-    channel, method,
+    AcpAgentsResult, ApprovalDecision, ApprovalMode, DomainEvent, Model, ModelConnectionsResult,
+    ModelsListResult, PROTOCOL_VERSION, ProjectAddedResult, ProjectSummary, ProjectsListResult,
+    ProviderId, ProviderStatus, ProvidersListResult, Response, SendTurnResult, ServerWelcome,
+    SessionSummary, SidebarMode, SidebarSettings, ThreadEventPush, ThreadHistoryResult,
+    ThreadInboxStatus, ThreadLifecycle, ThreadLifecyclePush, ThreadQueuePush, ThreadQueueResult,
+    ThreadStartResult, channel, method,
 };
 use serde_json::{Value, json};
 use std::collections::HashMap;
@@ -111,6 +111,14 @@ enum PendingRequest {
     Interrupt {
         thread_id: String,
     },
+    RespondApproval {
+        thread_id: String,
+        approval_id: String,
+    },
+    RespondUserInput {
+        thread_id: String,
+        request_id: String,
+    },
 }
 
 #[derive(Default)]
@@ -158,6 +166,16 @@ pub(crate) enum ChatUpdate {
         message: String,
         restore_text: String,
         restore_attachments: Vec<String>,
+    },
+    ApprovalError {
+        thread_id: String,
+        approval_id: String,
+        message: String,
+    },
+    UserInputError {
+        thread_id: String,
+        request_id: String,
+        message: String,
     },
 }
 
@@ -314,6 +332,68 @@ impl ClientState {
         );
     }
 
+    pub(crate) fn respond_to_approval(
+        &mut self,
+        thread_id: &str,
+        approval_id: &str,
+        decision: ApprovalDecision,
+    ) -> ClientUpdate {
+        if self.send_request(
+            method::THREAD_RESPOND_TO_APPROVAL,
+            json!({
+                "threadId": thread_id,
+                "approvalId": approval_id,
+                "decision": decision,
+            }),
+            PendingRequest::RespondApproval {
+                thread_id: thread_id.into(),
+                approval_id: approval_id.into(),
+            },
+        ) {
+            ClientUpdate::default()
+        } else {
+            ClientUpdate::chat(ChatUpdate::ApprovalError {
+                thread_id: thread_id.into(),
+                approval_id: approval_id.into(),
+                message: self
+                    .notice
+                    .clone()
+                    .unwrap_or_else(|| "The approval response could not be sent.".into()),
+            })
+        }
+    }
+
+    pub(crate) fn respond_to_user_input(
+        &mut self,
+        thread_id: &str,
+        request_id: &str,
+        answers: HashMap<String, Vec<String>>,
+    ) -> ClientUpdate {
+        if self.send_request(
+            method::THREAD_RESPOND_TO_USER_INPUT,
+            json!({
+                "threadId": thread_id,
+                "requestId": request_id,
+                "answers": answers,
+            }),
+            PendingRequest::RespondUserInput {
+                thread_id: thread_id.into(),
+                request_id: request_id.into(),
+            },
+        ) {
+            ClientUpdate::default()
+        } else {
+            ClientUpdate::chat(ChatUpdate::UserInputError {
+                thread_id: thread_id.into(),
+                request_id: request_id.into(),
+                message: self
+                    .notice
+                    .clone()
+                    .unwrap_or_else(|| "The answers could not be sent.".into()),
+            })
+        }
+    }
+
     pub(crate) fn add_project(&mut self, path: String) {
         self.send_request(
             method::PROJECTS_ADD,
@@ -463,6 +543,22 @@ impl ClientState {
                         restore_text,
                         restore_attachments,
                     }),
+                    Some(PendingRequest::RespondApproval {
+                        thread_id,
+                        approval_id,
+                    }) => ClientUpdate::chat(ChatUpdate::ApprovalError {
+                        thread_id,
+                        approval_id,
+                        message,
+                    }),
+                    Some(PendingRequest::RespondUserInput {
+                        thread_id,
+                        request_id,
+                    }) => ClientUpdate::chat(ChatUpdate::UserInputError {
+                        thread_id,
+                        request_id,
+                        message,
+                    }),
                     Some(request) => match request.thread_id() {
                         Some(thread_id) => {
                             ClientUpdate::chat(ChatUpdate::Error { thread_id, message })
@@ -553,6 +649,8 @@ impl ClientState {
                 },
                 Some(PendingRequest::Interrupt { .. })
                 | Some(PendingRequest::Steer { .. })
+                | Some(PendingRequest::RespondApproval { .. })
+                | Some(PendingRequest::RespondUserInput { .. })
                 | Some(PendingRequest::RenameThread)
                 | Some(PendingRequest::Capabilities)
                 | None => ClientUpdate::default(),
@@ -584,6 +682,23 @@ impl ClientState {
                 message: "The server connection was lost before this request completed.".into(),
                 restore_text,
                 restore_attachments,
+            }),
+            PendingRequest::RespondApproval {
+                thread_id,
+                approval_id,
+            } => ClientUpdate::chat(ChatUpdate::ApprovalError {
+                thread_id,
+                approval_id,
+                message: "The server connection was lost before this approval completed.".into(),
+            }),
+            PendingRequest::RespondUserInput {
+                thread_id,
+                request_id,
+            } => ClientUpdate::chat(ChatUpdate::UserInputError {
+                thread_id,
+                request_id,
+                message: "The server connection was lost before these answers were submitted."
+                    .into(),
             }),
             request => match request.thread_id() {
                 Some(thread_id) => ClientUpdate::chat(ChatUpdate::Error {
@@ -1068,7 +1183,9 @@ impl PendingRequest {
             | Self::Queue { thread_id }
             | Self::SendTurn { thread_id, .. }
             | Self::Steer { thread_id }
-            | Self::Interrupt { thread_id } => Some(thread_id),
+            | Self::Interrupt { thread_id }
+            | Self::RespondApproval { thread_id, .. }
+            | Self::RespondUserInput { thread_id, .. } => Some(thread_id),
             Self::Capabilities
             | Self::Projects
             | Self::SidebarSettings
@@ -1300,5 +1417,37 @@ mod tests {
                 "serviceTier": "priority"
             })
         );
+    }
+
+    #[test]
+    fn failed_structured_response_identifies_the_card_to_restore() {
+        let mut state = ClientState::new(true);
+        state.pending.insert(
+            "native-approval".into(),
+            PendingRequest::RespondApproval {
+                thread_id: "thread-1".into(),
+                approval_id: "approval-1".into(),
+            },
+        );
+
+        let update = state.handle_response(Response::Failure {
+            id: "native-approval".into(),
+            error: harness_protocol::WireError {
+                code: harness_protocol::ErrorCode::BadRequest,
+                message: "That approval is no longer pending".into(),
+                detail: None,
+            },
+        });
+
+        assert!(matches!(
+            update.chat.as_slice(),
+            [ChatUpdate::ApprovalError {
+                thread_id,
+                approval_id,
+                message,
+            }] if thread_id == "thread-1"
+                && approval_id == "approval-1"
+                && message == "That approval is no longer pending"
+        ));
     }
 }

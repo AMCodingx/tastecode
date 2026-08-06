@@ -148,6 +148,15 @@ pub struct ApprovalRequest {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum ApprovalDecision {
+    Approve,
+    ApproveSession,
+    Deny,
+    Abort,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ApprovalKind {
     Command,
@@ -658,6 +667,10 @@ mod tests {
         assert_eq!(
             serde_json::to_value(ApprovalMode::AutoReview).unwrap(),
             "auto-review"
+        );
+        assert_eq!(
+            serde_json::to_value(ApprovalDecision::ApproveSession).unwrap(),
+            "approve-session"
         );
     }
 

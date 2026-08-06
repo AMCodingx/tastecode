@@ -84,6 +84,8 @@ pub mod method {
     pub const THREAD_RENAME: &str = "thread.rename";
     pub const THREAD_HISTORY: &str = "thread.history";
     pub const THREAD_SEND_TURN: &str = "thread.sendTurn";
+    pub const THREAD_RESPOND_TO_APPROVAL: &str = "thread.respondToApproval";
+    pub const THREAD_RESPOND_TO_USER_INPUT: &str = "thread.respondToUserInput";
     pub const THREAD_INTERRUPT: &str = "thread.interrupt";
     pub const THREAD_QUEUE: &str = "thread.queue";
     pub const THREAD_STEER_QUEUED_TURN: &str = "thread.steerQueuedTurn";
