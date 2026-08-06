@@ -488,6 +488,18 @@ export function startServer(
 
       case 'projects.remove': {
         const p = params as { path: string }
+        // An isolated session's checkout can only be discarded through its
+        // own thread id, and removing the project hides every one of them
+        // from the sidebar — so the worktree and its branch would survive
+        // with nothing left able to reach them. Refuse instead, naming what
+        // the user has to deal with first.
+        const isolated = store.threads(p.path).filter((thread) => thread.worktreePath)
+        if (isolated.length > 0) {
+          throw new Error(
+            `${isolated.length} isolated session${isolated.length === 1 ? '' : 's'} in this project still ` +
+              `own a private checkout. Discard or keep those first.`,
+          )
+        }
         // The sidebar entry can disappear while its history remains available
         // when the project is added again. Running processes still need an owner.
         for (const thread of store.threads(p.path)) orchestrator.close(thread.id)
