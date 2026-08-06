@@ -1079,6 +1079,13 @@ export const channels = {
   'thread.event': z.object({
     threadId: z.string(),
     event: DomainEventSchema,
+    /**
+     * Position in the thread's durable log. Lets a client reconcile live
+     * pushes against a history fetch that was in flight at the same time —
+     * without it, events landing during the round trip are either dropped
+     * or applied twice. Optional for one release of compatibility.
+     */
+    seq: z.number().optional(),
   }),
   'thread.queue': z.object({
     threadId: z.string(),
