@@ -74,6 +74,8 @@ pub mod method {
     pub const CLIENT_CAPABILITIES: &str = "client.capabilities";
     pub const SYSTEM_INFO: &str = "system.info";
     pub const PROVIDERS_LIST: &str = "providers.list";
+    pub const PROVIDERS_INSTALL: &str = "providers.install";
+    pub const PROVIDERS_LAUNCH: &str = "providers.launch";
     pub const CONNECTIONS_LIST: &str = "connections.list";
     pub const CONNECTIONS_UPSERT: &str = "connections.upsert";
     pub const CONNECTIONS_SET_CREDENTIAL: &str = "connections.setCredential";
@@ -216,5 +218,11 @@ mod tests {
         assert_eq!(method::AUTH_START_LOGIN, "auth.startLogin");
         assert_eq!(method::AUTH_SIGN_OUT, "auth.signOut");
         assert_eq!(channel::AUTH_EVENT, "auth.event");
+    }
+
+    #[test]
+    fn provider_terminal_actions_keep_the_existing_method_names() {
+        assert_eq!(method::PROVIDERS_INSTALL, "providers.install");
+        assert_eq!(method::PROVIDERS_LAUNCH, "providers.launch");
     }
 }
