@@ -1,7 +1,9 @@
+mod checkpoint;
 mod process;
 mod workspace;
 mod worktree;
 
+pub use checkpoint::{Snapshot, SnapshotError, changed_since, restore_snapshot, take_snapshot};
 pub use workspace::{
     WorkspaceError, list_workspace_branches, read_workspace, switch_workspace_branch,
 };

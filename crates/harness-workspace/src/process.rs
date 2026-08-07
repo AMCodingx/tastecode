@@ -35,18 +35,54 @@ pub(crate) fn run(
     timeout: Duration,
     max_output: usize,
 ) -> Result<String, ProcessError> {
+    run_inner(program, args, cwd, timeout, max_output, &[], true)
+}
+
+pub(crate) fn run_with_environment(
+    program: &OsStr,
+    args: &[&OsStr],
+    cwd: &Path,
+    timeout: Duration,
+    max_output: usize,
+    environment: &[(&OsStr, &OsStr)],
+) -> Result<String, ProcessError> {
+    run_inner(program, args, cwd, timeout, max_output, environment, true)
+}
+
+pub(crate) fn run_untrimmed(
+    program: &OsStr,
+    args: &[&OsStr],
+    cwd: &Path,
+    timeout: Duration,
+    max_output: usize,
+) -> Result<String, ProcessError> {
+    run_inner(program, args, cwd, timeout, max_output, &[], false)
+}
+
+fn run_inner(
+    program: &OsStr,
+    args: &[&OsStr],
+    cwd: &Path,
+    timeout: Duration,
+    max_output: usize,
+    environment: &[(&OsStr, &OsStr)],
+    trim_stdout: bool,
+) -> Result<String, ProcessError> {
     let display_program = program.to_string_lossy().into_owned();
-    let mut child = Command::new(program)
+    let mut command = Command::new(program);
+    command
         .args(args)
         .current_dir(cwd)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .map_err(|source| ProcessError::Start {
-            program: display_program.clone(),
-            source,
-        })?;
+        .stderr(Stdio::piped());
+    for (key, value) in environment {
+        command.env(key, value);
+    }
+    let mut child = command.spawn().map_err(|source| ProcessError::Start {
+        program: display_program.clone(),
+        source,
+    })?;
     let stdout = child.stdout.take().expect("piped stdout missing");
     let stderr = child.stderr.take().expect("piped stderr missing");
     let stdout_reader = thread::spawn(move || read_bounded(stdout, max_output));
@@ -94,7 +130,12 @@ pub(crate) fn run(
             },
         });
     }
-    Ok(String::from_utf8_lossy(&stdout.bytes).trim().to_owned())
+    let stdout = String::from_utf8_lossy(&stdout.bytes);
+    Ok(if trim_stdout {
+        stdout.trim().to_owned()
+    } else {
+        stdout.into_owned()
+    })
 }
 
 struct BoundedOutput {

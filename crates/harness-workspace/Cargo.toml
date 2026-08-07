@@ -8,6 +8,4 @@ publish.workspace = true
 [dependencies]
 harness-protocol = { path = "../harness-protocol" }
 thiserror.workspace = true
-
-[dev-dependencies]
 tempfile.workspace = true
