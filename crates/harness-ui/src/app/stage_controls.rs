@@ -1,10 +1,11 @@
 use super::HarnessApp;
 use crate::chat::{StageProject, StageSettings};
 use crate::client_state::{RollbackOperation, UsageScope, WorkspaceOperation};
+use crate::zoom::px;
 use chrono::{DateTime, Local};
 use gpui::{
     Animation, AnimationExt, AnyElement, Context, FontWeight, SharedString, div, ease_out_quint,
-    prelude::*, px, relative, svg,
+    prelude::*, relative, svg,
 };
 use harness_protocol::{
     CheckpointSummary, PanicStopSessionResult, UsageSummaryResult, WorkspaceInfo,

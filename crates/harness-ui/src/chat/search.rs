@@ -1,7 +1,8 @@
 use super::ChatView;
+use crate::zoom::px;
 use gpui::{
     Animation, AnimationExt, AnyElement, Context, Entity, Focusable, FontWeight, KeyDownEvent,
-    SharedString, Window, div, ease_out_quint, prelude::*, px, svg,
+    SharedString, Window, div, ease_out_quint, prelude::*, svg,
 };
 use gpui_component::input::{Input, InputEvent, InputState};
 use harness_protocol::Item;

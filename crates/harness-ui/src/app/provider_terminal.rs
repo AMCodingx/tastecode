@@ -5,10 +5,11 @@ use crate::chat::terminal::{
 };
 use crate::client_state::{AuthTarget, ProviderTerminalKind};
 use crate::theme::Theme;
+use crate::zoom::px;
 use gpui::{
     AnyElement, Bounds, ClipboardItem, Context, EventEmitter, FocusHandle, KeyDownEvent,
     MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, Pixels, Render, ScrollDelta,
-    ScrollWheelEvent, SharedString, Window, canvas, div, prelude::*, px,
+    ScrollWheelEvent, SharedString, Window, canvas, div, prelude::*,
 };
 use std::time::Duration;
 use url::Url;

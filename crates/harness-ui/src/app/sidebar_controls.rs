@@ -1,9 +1,10 @@
 use super::HarnessApp;
 use crate::sidebar::SidebarMenuRequest;
+use crate::zoom::px;
 use chrono::{Datelike, Duration as ChronoDuration, Local, Timelike};
 use gpui::{
     AnyElement, ClipboardItem, Context, Entity, Pixels, Point, SharedString, Window, div,
-    prelude::*, px,
+    prelude::*,
 };
 use gpui_component::input::{Input, InputState};
 use harness_protocol::{SessionSummary, ThreadInboxStatus, ThreadLifecycle};

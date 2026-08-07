@@ -1,9 +1,10 @@
 use super::HarnessApp;
 use crate::client_state::SessionSearchRequest;
+use crate::zoom::px;
 use chrono::{DateTime, Local};
 use gpui::{
     Animation, AnimationExt, AnyElement, Context, Entity, FontWeight, SharedString, Window, div,
-    ease_out_quint, prelude::*, px, relative,
+    ease_out_quint, prelude::*, relative,
 };
 use gpui_component::input::{Input, InputState};
 use harness_protocol::{ProviderId, SessionSearchResult};

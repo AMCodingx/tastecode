@@ -7,6 +7,7 @@ mod preview_capture;
 mod shortcuts;
 mod sidebar;
 mod theme;
+mod zoom;
 
 pub use app::run;
 pub use theme::{

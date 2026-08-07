@@ -3,9 +3,10 @@ use super::provider_terminal::{ProviderTerminalKey, ProviderTerminalPhase};
 use crate::client_state::{AuthTarget, ProviderTerminalKind};
 use crate::preferences::{FontPreference, NativePreferences, ThemePreference};
 use crate::theme::{Accent, Backdrop, Theme, ThemeMode};
+use crate::zoom::px;
 use gpui::{
     Animation, AnimationExt, AnyElement, App, Context, Entity, FontWeight, PathPromptOptions,
-    PromptButton, PromptLevel, SharedString, Window, div, ease_out_quint, prelude::*, px, svg,
+    PromptButton, PromptLevel, SharedString, Window, div, ease_out_quint, prelude::*, svg,
 };
 use gpui_component::input::{Input, InputState};
 use harness_protocol::{

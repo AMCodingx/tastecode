@@ -7,12 +7,12 @@ mod voice;
 
 use crate::client_state::{ChatUpdate, ModelChoice};
 use crate::theme::{CHAT_WIDTH, Theme};
+use crate::zoom::px;
 use diff::DiffUiState;
 use gpui::{
     Animation, AnimationExt, AnyElement, App, ClipboardEntry, Context, Entity, EventEmitter,
     Focusable, FontWeight, Image, ImageFormat, ListAlignment, ListOffset, ListState, ObjectFit,
-    Render, SharedString, StyledImage, Window, div, ease_out_quint, img, prelude::*, px, relative,
-    svg,
+    Render, SharedString, StyledImage, Window, div, ease_out_quint, img, prelude::*, relative, svg,
 };
 use gpui_component::RopeExt;
 use gpui_component::input::{Input, InputEvent, InputState};
@@ -585,6 +585,29 @@ impl ChatView {
             item_ix: self.list_state.item_count(),
             offset_in_item: px(0.0),
         });
+        cx.notify();
+    }
+
+    pub(crate) fn app_zoom_changed(&mut self, previous: f32, next: f32, cx: &mut Context<Self>) {
+        self.scale_terminal_for_app_zoom(next / previous);
+        let mode = self.transcript_scroll_mode.get();
+        let logical_scroll = self.list_state.logical_scroll_top();
+        self.list_state.reset(self.state.timeline_len());
+        match mode {
+            TranscriptScrollMode::FollowEnd => {}
+            TranscriptScrollMode::AnchorTurn { start_row } => {
+                self.list_state.scroll_to(ListOffset {
+                    item_ix: start_row,
+                    offset_in_item: px(0.0),
+                });
+            }
+            TranscriptScrollMode::Free => {
+                self.list_state.scroll_to(ListOffset {
+                    item_ix: logical_scroll.item_ix,
+                    offset_in_item: logical_scroll.offset_in_item * (next / previous),
+                });
+            }
+        }
         cx.notify();
     }
 

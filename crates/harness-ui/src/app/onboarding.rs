@@ -1,9 +1,10 @@
 use super::HarnessApp;
 use crate::client_state::AuthTarget;
 use crate::theme::Theme;
+use crate::zoom::px;
 use gpui::{
     Animation, AnimationExt, AnyElement, App, Context, FontWeight, Transformation, Window, div,
-    ease_out_quint, percentage, prelude::*, px, svg,
+    ease_out_quint, percentage, prelude::*, svg,
 };
 use gpui_component::input::Input;
 use gpui_component::scroll::ScrollableElement;

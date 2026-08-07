@@ -3,9 +3,10 @@ use crate::shortcuts::{
     COMMAND_PALETTE, FOCUS_COMPOSER, NEW_CHAT, NEW_PROJECT, SEARCH_SESSIONS, SETTINGS,
     SWITCH_PROJECT, TOGGLE_SIDEBAR, label, matches,
 };
+use crate::zoom::px;
 use gpui::{
     Animation, AnimationExt, AnyElement, Context, Entity, Focusable, FontWeight, KeyDownEvent,
-    ScrollHandle, SharedString, Window, div, ease_out_quint, prelude::*, px,
+    ScrollHandle, SharedString, Window, div, ease_out_quint, prelude::*,
 };
 use gpui_component::input::{Input, InputState};
 use std::time::Duration;
@@ -114,9 +115,12 @@ impl HarnessApp {
     pub(super) fn handle_global_shortcut(
         &mut self,
         event: &KeyDownEvent,
-        window: &Window,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if self.handle_zoom_shortcut(event, window, cx) {
+            return;
+        }
         if self.image_viewer.is_some() {
             if event.keystroke.key.eq_ignore_ascii_case("escape") {
                 cx.stop_propagation();

@@ -1,8 +1,9 @@
 use super::HarnessApp;
+use crate::zoom::px;
 use gpui::{
     Animation, AnimationExt, AnyElement, BoxShadow, Context, Image, MouseButton, ObjectFit,
-    ScrollHandle, StyledImage, Window, div, ease_out_quint, img, point, prelude::*, px, relative,
-    rgba, svg,
+    ScrollHandle, StyledImage, Window, div, ease_out_quint, img, point, prelude::*, relative, rgba,
+    svg,
 };
 use std::path::PathBuf;
 use std::sync::Arc;

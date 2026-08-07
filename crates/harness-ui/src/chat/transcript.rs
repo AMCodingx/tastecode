@@ -1,11 +1,12 @@
 use super::presentation::{RowPresentation, TurnPresentation, is_activity};
 use super::{ChatEvent, ChatView, TranscriptScrollMode};
 use crate::theme::{CHAT_WIDTH, Theme, ThemeMode};
+use crate::zoom::px;
 use chrono::{DateTime, Local};
 use gpui::{
     Animation, AnimationExt, AnyElement, App, BoxShadow, ClipboardItem, Entity, SharedString,
     StyleRefinement, Styled, Transformation, Window, div, ease_out_quint, list, percentage, point,
-    prelude::*, px, relative, rems, rgba, svg,
+    prelude::*, relative, rems, rgba, svg,
 };
 use gpui_component::scroll::ScrollableElement;
 use gpui_component::text::{TextView, TextViewStyle};

@@ -1,8 +1,7 @@
 use crate::shortcuts::{NEW_CHAT, NEW_PROJECT, SEARCH_SESSIONS, SETTINGS, label as shortcut_label};
 use crate::theme::{RAIL_WIDTH, Theme};
-use gpui::{
-    AnyElement, App, FontWeight, Hsla, Pixels, Point, SharedString, div, prelude::*, px, svg,
-};
+use crate::zoom::px;
+use gpui::{AnyElement, App, FontWeight, Hsla, Pixels, Point, SharedString, div, prelude::*, svg};
 use harness_client::ConnectionState;
 use harness_protocol::{
     ProjectSummary, ProviderId, SessionSummary, SidebarMode, ThreadInboxStatus, ThreadLifecycle,

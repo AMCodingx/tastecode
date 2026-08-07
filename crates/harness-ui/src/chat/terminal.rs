@@ -66,8 +66,8 @@ impl EventListener for TerminalEventProxy {
                 let size = WindowSize {
                     num_lines: state.rows,
                     num_cols: state.columns,
-                    cell_width: CELL_WIDTH.round() as u16,
-                    cell_height: CELL_HEIGHT.round() as u16,
+                    cell_width: (CELL_WIDTH * crate::zoom::factor()).round() as u16,
+                    cell_height: (CELL_HEIGHT * crate::zoom::factor()).round() as u16,
                 };
                 state.events.push(EngineEvent::Input(format(size)));
             }
@@ -498,6 +498,12 @@ impl TerminalUiState {
 }
 
 impl ChatView {
+    pub(super) fn scale_terminal_for_app_zoom(&mut self, ratio: f32) {
+        self.terminal_ui.height *= ratio;
+        self.terminal_ui.resize_drag = None;
+        self.terminal_ui.viewport_bounds = None;
+    }
+
     pub(super) fn terminal_header_button(&self, cx: &Context<Self>) -> AnyElement {
         let enabled = self
             .session

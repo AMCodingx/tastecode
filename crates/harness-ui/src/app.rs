@@ -6,6 +6,7 @@ mod session_search;
 mod settings;
 mod sidebar_controls;
 mod stage_controls;
+mod zoom_hud;
 
 use crate::assets::{HarnessAssets, register_fonts};
 use crate::chat::{ChatEvent, ChatView, ComposerSettings, SessionContext};
@@ -17,13 +18,14 @@ use crate::preferences::{NativePreferences, ThemePreference};
 use crate::preview_capture::PreviewCaptureRuntime;
 use crate::sidebar::{SidebarActions, SidebarMenuRequest, SidebarProps, sidebar};
 use crate::theme::{TITLEBAR_HEIGHT, Theme, ThemeMode};
+use crate::zoom::{self, px};
 use anyhow::Result;
 use command_palette::{CommandPaletteState, CommandScope};
 use gpui::{
     Animation, AnimationExt, App, Application, Bounds, Context, Entity, FocusHandle, FontWeight,
     KeyDownEvent, MouseButton, PathPromptOptions, Render, TitlebarOptions, Window,
     WindowAppearance, WindowBackgroundAppearance, WindowBounds, WindowOptions, div, ease_out_quint,
-    point, prelude::*, px, size, svg,
+    point, prelude::*, size, svg,
 };
 use gpui_component::Root;
 use gpui_component::input::{InputEvent, InputState};
@@ -43,6 +45,7 @@ pub fn run() -> Result<()> {
     Application::new()
         .with_assets(HarnessAssets)
         .run(|cx: &mut App| {
+            zoom::set_factor(1.0);
             gpui_component::init(cx);
             register_fonts(cx).expect("failed to register bundled Geist fonts");
 
@@ -128,6 +131,7 @@ struct HarnessApp {
     provider_terminal_ids: HashMap<String, ProviderTerminalKey>,
     preview_capture: Option<PreviewCaptureRuntime>,
     image_viewer: Option<image_viewer::ImageViewerState>,
+    app_zoom: zoom_hud::AppZoomState,
     fixture: bool,
 }
 
@@ -497,6 +501,7 @@ impl HarnessApp {
             provider_terminal_ids: HashMap::new(),
             preview_capture,
             image_viewer: None,
+            app_zoom: zoom_hud::AppZoomState::default(),
             fixture,
         }
     }
@@ -1492,6 +1497,7 @@ impl Render for HarnessApp {
         let rollback_overlay = self.rollback_overlay(cx);
         let global_notice = self.global_notice(cx);
         let image_viewer_overlay = self.image_viewer_overlay(cx);
+        let zoom_hud = self.zoom_hud(cx);
         div()
             .size_full()
             .relative()
@@ -1559,6 +1565,7 @@ impl Render for HarnessApp {
                 self.titlebar(cx).into_any_element()
             })
             .child(body)
+            .when_some(zoom_hud, |root, hud| root.child(hud))
             .when_some(command_palette_overlay, |root, overlay| root.child(overlay))
             .when_some(search_overlay, |root, overlay| root.child(overlay))
             .when_some(sidebar_controls_overlay, |root, overlay| {
