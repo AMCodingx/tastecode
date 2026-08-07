@@ -1,4 +1,5 @@
 use crate::chrome;
+use crate::motion_icon::{IconTransformation, motion_icon};
 use crate::shortcuts::{NEW_CHAT, NEW_PROJECT, SETTINGS, label as shortcut_label};
 use crate::theme::{ColorToken, RADIUS_MD, RADIUS_SM, Theme, ThemeMode};
 use crate::zoom::px;
@@ -498,11 +499,13 @@ fn account_limits(provider_name: &str, limits: &[UsageLimit], theme: Theme) -> A
                 .items_center()
                 .gap(px(8.0))
                 .text_size(px(13.5))
-                .child(
-                    div()
-                        .text_color(theme.text_3.hsla())
-                        .child(icon("icons/gauge.svg", 14.0)),
-                )
+                .child(div().text_color(theme.text_3.hsla()).child(motion_icon(
+                    "account-limits-icon",
+                    "icons/gauge.svg",
+                    14.0,
+                    "account-limits-icon-direct-hover",
+                    theme,
+                )))
                 .child("Limits"),
         )
         .when(limits.is_empty(), |usage| {
@@ -649,6 +652,7 @@ fn classic_sidebar_actions(theme: Theme, actions: &SidebarActions) -> impl IntoE
                 .child(
                     div()
                         .id("classic-search-chats")
+                        .group("classic-search-chats-hover")
                         .size(px(26.0))
                         .flex()
                         .items_center()
@@ -665,7 +669,13 @@ fn classic_sidebar_actions(theme: Theme, actions: &SidebarActions) -> impl IntoE
                             let open_search = actions.open_search.clone();
                             move |_event, _window, cx| open_search(cx)
                         })
-                        .child(icon("icons/search.svg", 14.0)),
+                        .child(motion_icon(
+                            "classic-search-chats-icon",
+                            "icons/search.svg",
+                            14.0,
+                            "classic-search-chats-hover",
+                            theme,
+                        )),
                 ),
         )
 }
@@ -721,7 +731,13 @@ fn sidebar_actions(
                                 })
                                 .text_color(theme.text.hsla())
                         })
-                        .child(icon("icons/search.svg", 14.0))
+                        .child(motion_icon(
+                            "search-chats-icon",
+                            "icons/search.svg",
+                            14.0,
+                            "search-chats-icon-direct-hover",
+                            theme,
+                        ))
                         .child(
                             Input::new(search.input)
                                 .xsmall()
@@ -741,6 +757,7 @@ fn sidebar_actions(
                             field.child(
                                 div()
                                     .id("clear-thread-list-search")
+                                    .group("clear-thread-list-search-hover")
                                     .size(px(20.0))
                                     .flex_none()
                                     .flex()
@@ -759,13 +776,20 @@ fn sidebar_actions(
                                             input.focus(window, cx);
                                         });
                                     })
-                                    .child(icon("icons/x.svg", 12.0)),
+                                    .child(motion_icon(
+                                        "clear-thread-list-search-icon",
+                                        "icons/x.svg",
+                                        12.0,
+                                        "clear-thread-list-search-hover",
+                                        theme,
+                                    )),
                             )
                         }),
                 )
                 .child(
                     div()
                         .id("new-chat")
+                        .group("new-chat-hover")
                         .h(px(34.0))
                         .w_full()
                         .flex()
@@ -782,12 +806,15 @@ fn sidebar_actions(
                             let new_chat = actions.new_chat.clone();
                             move |_event, _window, cx| new_chat(cx)
                         })
-                        .child(
-                            div()
-                                .flex_none()
-                                .text_color(theme.text_2.hsla())
-                                .child(icon("icons/square-pen.svg", 16.0)),
-                        )
+                        .child(div().flex_none().text_color(theme.text_2.hsla()).child(
+                            motion_icon(
+                                "new-chat-icon",
+                                "icons/square-pen.svg",
+                                16.0,
+                                "new-chat-hover",
+                                theme,
+                            ),
+                        ))
                         .child("New chat"),
                 ),
         )
@@ -810,6 +837,7 @@ fn sidebar_actions(
                 .child(
                     div()
                         .id("new-project")
+                        .group("new-project-hover")
                         .h(px(29.0))
                         .flex_none()
                         .flex()
@@ -833,7 +861,13 @@ fn sidebar_actions(
                             let new_project = actions.new_project.clone();
                             move |_event, _window, cx| new_project(cx)
                         })
-                        .child(icon("icons/folder-plus.svg", 13.0))
+                        .child(motion_icon(
+                            "new-project-icon",
+                            "icons/folder-plus.svg",
+                            13.0,
+                            "new-project-hover",
+                            theme,
+                        ))
                         .child("Add Project"),
                 ),
         )
@@ -1194,8 +1228,11 @@ fn nav_item(
     action: Option<SidebarAction>,
 ) -> impl IntoElement {
     let shortcut = shortcut.into();
+    let hover_group: SharedString = format!("{id}:hover").into();
+    let icon_id: SharedString = format!("{id}:icon").into();
     div()
         .id(id)
+        .group(hover_group.clone())
         .h(px(32.0))
         .w_full()
         .flex()
@@ -1220,7 +1257,7 @@ fn nav_item(
                 .items_center()
                 .justify_center()
                 .text_color(theme.text_3.hsla())
-                .child(icon(icon_path, 14.0)),
+                .child(motion_icon(icon_id, icon_path, 14.0, hover_group, theme)),
         )
         .child(div().ml(px(9.0)).flex_1().text_size(px(13.5)).child(label))
         .child(
@@ -1553,8 +1590,11 @@ fn classic_project_menu_button(
     theme: Theme,
     open_menu: OpenSidebarMenu,
 ) -> AnyElement {
+    let hover_group: SharedString = format!("{id}:hover").into();
+    let icon_id: SharedString = format!("{id}:icon").into();
     div()
         .id(id)
+        .group(hover_group.clone())
         .size(px(26.0))
         .flex_none()
         .flex()
@@ -1571,7 +1611,13 @@ fn classic_project_menu_button(
             cx.stop_propagation();
             open_menu(request.clone(), event.position(), cx);
         })
-        .child(icon("icons/ellipsis.svg", 16.0))
+        .child(motion_icon(
+            icon_id,
+            "icons/ellipsis.svg",
+            16.0,
+            hover_group,
+            theme,
+        ))
         .into_any_element()
 }
 
@@ -1944,8 +1990,11 @@ fn classic_session_action_button(
     action: ProjectAction,
     theme: Theme,
 ) -> AnyElement {
+    let hover_group: SharedString = format!("{id}:hover").into();
+    let icon_id: SharedString = format!("{id}:icon").into();
     div()
         .id(id)
+        .group(hover_group.clone())
         .relative()
         .size(px(22.0))
         .flex()
@@ -1964,7 +2013,13 @@ fn classic_session_action_button(
             cx.stop_propagation();
             action(thread_id.clone(), cx);
         })
-        .child(icon(icon_path, icon_size))
+        .child(motion_icon(
+            icon_id,
+            icon_path,
+            icon_size,
+            hover_group,
+            theme,
+        ))
         .into_any_element()
 }
 
@@ -2027,6 +2082,7 @@ fn scope_control(
         .child(
             div()
                 .id("sidebar-scope")
+                .group("sidebar-scope-hover")
                 .h(px(29.0))
                 .w_full()
                 .flex()
@@ -2061,7 +2117,13 @@ fn scope_control(
                     div()
                         .ml(px(5.0))
                         .text_color(theme.text_3.hsla())
-                        .child(icon("icons/chevron-down.svg", 11.0)),
+                        .child(motion_icon(
+                            "sidebar-scope-icon",
+                            "icons/chevron-down.svg",
+                            11.0,
+                            "sidebar-scope-hover",
+                            theme,
+                        )),
                 ),
         )
         .when(open, |control| {
@@ -2109,8 +2171,11 @@ fn scope_option(
     theme: Theme,
     action: SidebarAction,
 ) -> impl IntoElement {
+    let hover_group: SharedString = format!("{id}:hover").into();
+    let icon_id: SharedString = format!("{id}:icon").into();
     div()
         .id(id)
+        .group(hover_group.clone())
         .h(px(29.0))
         .w_full()
         .flex()
@@ -2132,7 +2197,15 @@ fn scope_option(
         })
         .on_click(move |_event, _window, cx| action(cx))
         .child(div().min_w(px(0.0)).flex_1().truncate().child(label))
-        .when(selected, |item| item.child(icon("icons/check.svg", 11.0)))
+        .when(selected, |item| {
+            item.child(motion_icon(
+                icon_id,
+                "icons/check.svg",
+                11.0,
+                hover_group,
+                theme,
+            ))
+        })
 }
 
 fn section_label(label: SharedString, theme: Theme) -> impl IntoElement {
@@ -2457,7 +2530,13 @@ fn active_inbox_row(
                                 .items_center()
                                 .gap(px(3.0))
                                 .truncate()
-                                .child(icon("icons/git-branch.svg", 10.0))
+                                .child(motion_icon(
+                                    SharedString::from(format!("inbox-branch-icon:{thread_id}")),
+                                    "icons/git-branch.svg",
+                                    10.0,
+                                    "inbox-card",
+                                    theme,
+                                ))
                                 .child(branch)
                                 .into_any_element()
                         } else {
@@ -2629,8 +2708,11 @@ fn inbox_quick_action_button(
     theme: Theme,
     action: SidebarAction,
 ) -> AnyElement {
+    let hover_group: SharedString = format!("{id}:hover").into();
+    let icon_id: SharedString = format!("{id}:icon").into();
     div()
         .id(id)
+        .group(hover_group.clone())
         .size(px(23.0))
         .flex()
         .items_center()
@@ -2647,7 +2729,7 @@ fn inbox_quick_action_button(
             cx.stop_propagation();
             action(cx);
         })
-        .child(icon(icon_path, 13.0))
+        .child(motion_icon(icon_id, icon_path, 13.0, hover_group, theme))
         .into_any_element()
 }
 
@@ -2658,8 +2740,11 @@ fn inbox_quick_menu_button(
     theme: Theme,
     open_menu: OpenSidebarMenu,
 ) -> AnyElement {
+    let hover_group: SharedString = format!("{id}:hover").into();
+    let icon_id: SharedString = format!("{id}:icon").into();
     div()
         .id(id)
+        .group(hover_group.clone())
         .size(px(23.0))
         .flex()
         .items_center()
@@ -2676,7 +2761,7 @@ fn inbox_quick_menu_button(
             cx.stop_propagation();
             open_menu(request.clone(), event.position(), cx);
         })
-        .child(icon(icon_path, 13.0))
+        .child(motion_icon(icon_id, icon_path, 13.0, hover_group, theme))
         .into_any_element()
 }
 
@@ -2772,6 +2857,8 @@ fn inbox_row(
     let context_thread_id = thread_id.clone();
     let context_menu = open_menu.clone();
     let can_hide = matches!(status, Status::Ready | Status::Failed | Status::Idle);
+    let settle_hover_group: SharedString = format!("settle-hover:{thread_id}").into();
+    let settle_icon_id: SharedString = format!("settle-icon:{thread_id}").into();
     div()
         .id(SharedString::from(format!("inbox:{thread_id}")))
         .min_h(px(64.0))
@@ -2830,6 +2917,7 @@ fn inbox_row(
                             line.child(
                                 div()
                                     .id(SharedString::from(format!("settle:{thread_id}")))
+                                    .group(settle_hover_group.clone())
                                     .ml(px(2.0))
                                     .size(px(25.0))
                                     .flex()
@@ -2847,7 +2935,13 @@ fn inbox_row(
                                         cx.stop_propagation();
                                         settle(id.clone(), cx);
                                     })
-                                    .child(icon("icons/check.svg", 11.0)),
+                                    .child(motion_icon(
+                                        settle_icon_id,
+                                        "icons/check.svg",
+                                        11.0,
+                                        settle_hover_group,
+                                        theme,
+                                    )),
                             )
                         })
                     },
@@ -2894,21 +2988,27 @@ fn collapsed_group(
 ) -> impl IntoElement {
     let id = SharedString::from(format!("sidebar-group:{label}"));
     let animation_id = SharedString::from(format!("sidebar-group-chevron:{label}:{expanded}"));
-    let chevron = svg()
-        .path("icons/chevron-right.svg")
-        .size(px(11.0))
-        .with_animation(
-            animation_id,
-            Animation::new(theme.motion.fast).with_easing(crate::theme::web_ease_out),
-            move |icon, delta| {
-                let rotation = if expanded {
-                    delta * 0.25
-                } else {
-                    (1.0 - delta) * 0.25
-                };
-                icon.with_transformation(gpui::Transformation::rotate(gpui::percentage(rotation)))
-            },
-        );
+    let hover_group: SharedString = format!("sidebar-group-hover:{label}").into();
+    let icon_id: SharedString = format!("sidebar-group-chevron-icon:{label}").into();
+    let chevron = motion_icon(
+        icon_id,
+        "icons/chevron-right.svg",
+        11.0,
+        hover_group.clone(),
+        theme,
+    )
+    .with_animation(
+        animation_id,
+        Animation::new(theme.motion.fast).with_easing(crate::theme::web_ease_out),
+        move |icon, delta| {
+            let rotation_degrees = if expanded {
+                delta * 90.0
+            } else {
+                (1.0 - delta) * 90.0
+            };
+            icon.with_transformation(IconTransformation::rotate(rotation_degrees))
+        },
+    );
     div()
         .mt(px(5.0))
         .w_full()
@@ -2918,6 +3018,7 @@ fn collapsed_group(
         .child(
             div()
                 .id(id)
+                .group(hover_group)
                 .w_full()
                 .flex()
                 .items_center()
@@ -3088,8 +3189,11 @@ fn settled_row(
     let event_thread_id = thread_id.clone();
     let context_thread_id = thread_id.clone();
     let context_menu = open_menu.clone();
+    let hover_group: SharedString = format!("settled-hover:{thread_id}").into();
+    let icon_id: SharedString = format!("settled-icon:{thread_id}").into();
     div()
         .id(SharedString::from(format!("settled:{thread_id}")))
+        .group(hover_group.clone())
         .min_h(px(44.0))
         .w_full()
         .flex()
@@ -3141,7 +3245,13 @@ fn settled_row(
             div()
                 .ml(px(6.0))
                 .text_color(theme.text_3.hsla())
-                .child(icon("icons/check.svg", 11.0)),
+                .child(motion_icon(
+                    icon_id,
+                    "icons/check.svg",
+                    11.0,
+                    hover_group,
+                    theme,
+                )),
         )
         .when_some(open_menu, |row, open_menu| {
             row.child(sidebar_menu_button(
