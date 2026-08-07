@@ -382,7 +382,7 @@ impl ChatView {
                     .child(diff_pill_button(
                         "diff-refresh",
                         "Refresh",
-                        Some("icons/rotate-ccw.svg"),
+                        Some("icons/refresh-cw.svg"),
                         false,
                         theme,
                         refresh_action,
@@ -655,14 +655,13 @@ fn diff_pill_button(
         } else {
             theme.line_strong.hsla()
         })
-        .bg(if selected && reject {
-            theme.error.hsla().opacity(0.12)
-        } else if selected {
-            theme.success.hsla().opacity(0.12)
-        } else {
-            theme.background.hsla()
+        .when(selected, |button| {
+            button.bg(if reject {
+                theme.error.hsla().opacity(0.12)
+            } else {
+                theme.success.hsla().opacity(0.12)
+            })
         })
-        .text_size(px(15.0))
         .text_color(if selected && reject {
             theme.error.hsla()
         } else if selected {
@@ -670,7 +669,6 @@ fn diff_pill_button(
         } else {
             theme.text.hsla()
         })
-        .opacity(if enabled || selected { 1.0 } else { 0.45 })
         .when(enabled, |button| {
             button
                 .cursor_pointer()

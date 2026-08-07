@@ -63,6 +63,7 @@ impl AssetSource for HarnessAssets {
             "icons/container.svg" => Some(include_bytes!("../assets/icons/container.svg")),
             "icons/file-code-2.svg" => Some(include_bytes!("../assets/icons/file-code-2.svg")),
             "icons/rotate-ccw.svg" => Some(include_bytes!("../assets/icons/rotate-ccw.svg")),
+            "icons/refresh-cw.svg" => Some(include_bytes!("../assets/icons/refresh-cw.svg")),
             "icons/copy.svg" => Some(include_bytes!("../assets/icons/copy.svg")),
             "icons/x.svg" => Some(include_bytes!("../assets/icons/x.svg")),
             "icons/arrow-left.svg" => Some(include_bytes!("../assets/icons/arrow-left.svg")),
