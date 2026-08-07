@@ -11,7 +11,7 @@ use gpui_component::input::{Input, InputState};
 use harness_protocol::{
     McpAuth, McpAuthMethod, McpConfigValue, McpServer, McpServerConfig, McpStartupStatus,
     McpTransport, ModelConnectionInput, ModelConnectionPreset, ModelTransport, ProviderAuth,
-    ProviderId, ProviderLogin, SidebarMode, SidebarSettings, Skill, SkillScope,
+    ProviderId, ProviderLogin, SidebarMode, SidebarSettings, Skill, SkillScope, UpdateCheckResult,
 };
 use std::rc::Rc;
 
@@ -245,7 +245,7 @@ impl HarnessApp {
             SettingsSection::Workflows => self.workflow_settings(cx),
             SettingsSection::Appearance => self.appearance_settings(cx),
             SettingsSection::Data => self.data_settings(cx),
-            SettingsSection::About => self.about_settings(),
+            SettingsSection::About => self.about_settings(cx),
         }
     }
 
@@ -2421,8 +2421,29 @@ impl HarnessApp {
         )
     }
 
-    fn about_settings(&self) -> gpui::Div {
+    fn about_settings(&self, cx: &mut Context<Self>) -> gpui::Div {
         let theme = self.theme;
+        let product_note = self
+            .state
+            .update_check
+            .as_ref()
+            .and_then(|result| result.local_commit.as_deref())
+            .map_or_else(
+                || "Desktop · pre-release".to_owned(),
+                |commit| format!("Desktop · pre-release · {}", short_commit(commit)),
+            );
+        let update_note = update_check_note(self.state.update_check.as_ref());
+        let checking = self.state.update_checking;
+        let check_view = cx.weak_entity();
+        let check: SettingsAction = Rc::new(move |cx| {
+            let _ = check_view.update(cx, |this, cx| {
+                let update = this.state.request_update_check();
+                this.apply_client_update(update, cx);
+            });
+        });
+        let source: SettingsAction = Rc::new(|cx| {
+            cx.open_url("https://github.com/Leonxlnx/personalharness");
+        });
         settings_panel(
             "About",
             vec![settings_group(
@@ -2430,16 +2451,35 @@ impl HarnessApp {
                 vec![
                     settings_row(
                         0,
-                        "Native preview",
-                        "Rust 2024 · GPUI 0.2 · protocol v2",
-                        status_pill("Development", true, theme),
+                        "Personal Harness",
+                        product_note,
+                        div().into_any_element(),
                         theme,
                     ),
                     settings_row(
                         1,
-                        "Desktop runtime",
-                        "The renderer, state reducer, protocol client, diff review, and terminal are native Rust.",
-                        status_pill("GPUI", true, theme),
+                        "Updates",
+                        update_note,
+                        settings_button_enabled(
+                            "check-for-updates",
+                            if checking {
+                                "Checking…"
+                            } else {
+                                "Check for updates"
+                            },
+                            "icons/rotate-ccw.svg",
+                            theme,
+                            check,
+                            false,
+                            !checking,
+                        ),
+                        theme,
+                    ),
+                    settings_row(
+                        2,
+                        "Source",
+                        "Open source, and built to be forked.",
+                        provider_action_button(0, "GitHub", false, theme, source),
                         theme,
                     ),
                 ],
@@ -2972,6 +3012,18 @@ fn settings_button(
     action: SettingsAction,
     destructive: bool,
 ) -> AnyElement {
+    settings_button_enabled(id, label, icon, theme, action, destructive, true)
+}
+
+fn settings_button_enabled(
+    id: &'static str,
+    label: &'static str,
+    icon: &'static str,
+    theme: Theme,
+    action: SettingsAction,
+    destructive: bool,
+    enabled: bool,
+) -> AnyElement {
     let text = if destructive {
         theme.error.hsla()
     } else {
@@ -2990,10 +3042,14 @@ fn settings_button(
         .bg(theme.surface.hsla())
         .text_size(px(11.0))
         .text_color(text)
-        .cursor_pointer()
-        .hover(move |style| style.bg(theme.surface_2.hsla()))
-        .active(|style| style.opacity(0.72))
-        .on_click(move |_event, _window, cx| action(cx))
+        .opacity(if enabled { 1.0 } else { 0.48 })
+        .when(enabled, |button| {
+            button
+                .cursor_pointer()
+                .hover(move |style| style.bg(theme.surface_2.hsla()))
+                .active(|style| style.opacity(0.72))
+                .on_click(move |_event, _window, cx| action(cx))
+        })
         .child(settings_icon(icon, 13.0))
         .child(label)
         .into_any_element()
@@ -3575,6 +3631,38 @@ fn provider_label(provider: ProviderId) -> &'static str {
     }
 }
 
+fn short_commit(commit: &str) -> String {
+    commit.chars().take(7).collect()
+}
+
+fn update_check_note(result: Option<&UpdateCheckResult>) -> String {
+    let Some(result) = result else {
+        return "Compare this build with the latest commit on GitHub.".into();
+    };
+    if let Some(error) = &result.error {
+        return error.clone();
+    }
+    if result.up_to_date == Some(true) {
+        let remote = result
+            .remote
+            .as_ref()
+            .map_or_else(String::new, |remote| short_commit(&remote.sha));
+        return format!("Up to date · {remote} is the newest commit.");
+    }
+    if let Some(remote) = &result.remote {
+        let message = if remote.message.is_empty() {
+            String::new()
+        } else {
+            format!(": \"{}\"", remote.message)
+        };
+        return format!(
+            "Newer commit on GitHub{message} ({}). Pull and restart to update.",
+            short_commit(&remote.sha)
+        );
+    }
+    "Could not determine a verdict.".into()
+}
+
 fn settings_icon(path: &'static str, size: f32) -> impl IntoElement {
     svg().path(path).size(px(size))
 }
@@ -3648,6 +3736,27 @@ mod tests {
                 headers: Some(headers),
             })
             .is_err()
+        );
+    }
+
+    #[test]
+    fn about_update_copy_matches_the_web_surface() {
+        assert_eq!(
+            update_check_note(None),
+            "Compare this build with the latest commit on GitHub."
+        );
+        assert_eq!(
+            update_check_note(Some(&UpdateCheckResult {
+                local_commit: Some("111111111".into()),
+                remote: Some(harness_protocol::UpdateRemote {
+                    sha: "222222222".into(),
+                    message: "Latest change".into(),
+                    date: "2026-08-06T12:00:00Z".into(),
+                }),
+                up_to_date: Some(false),
+                error: None,
+            })),
+            "Newer commit on GitHub: \"Latest change\" (2222222). Pull and restart to update."
         );
     }
 }
