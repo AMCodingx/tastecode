@@ -1,3 +1,4 @@
+mod onboarding;
 mod provider_terminal;
 mod session_search;
 mod settings;
@@ -101,6 +102,8 @@ struct HarnessApp {
     snoozed_expanded: bool,
     settled_expanded: bool,
     account_menu_open: bool,
+    onboarding: Option<onboarding::OnboardingState>,
+    onboarding_api_key: Entity<InputState>,
     system_theme_mode: ThemeMode,
     preferences: NativePreferences,
     connection_editor_open: bool,
@@ -160,6 +163,8 @@ impl HarnessApp {
                 .placeholder("API key")
                 .masked(true)
         });
+        let onboarding_api_key =
+            cx.new(|cx| InputState::new(window, cx).placeholder("sk-…").masked(true));
         let mcp_editor_id = cx.new(|cx| InputState::new(window, cx).placeholder("docs-server"));
         let mcp_editor_name =
             cx.new(|cx| InputState::new(window, cx).placeholder("Optional display name"));
@@ -179,6 +184,7 @@ impl HarnessApp {
             &connection_base_url,
             &connection_default_model,
             &connection_api_key,
+            &onboarding_api_key,
             &mcp_editor_id,
             &mcp_editor_name,
             &mcp_editor_transport,
@@ -443,6 +449,9 @@ impl HarnessApp {
             snoozed_expanded: false,
             settled_expanded: false,
             account_menu_open: false,
+            onboarding: (!fixture && preferences.setup_provider.is_none())
+                .then(onboarding::OnboardingState::default),
+            onboarding_api_key,
             system_theme_mode,
             preferences,
             connection_editor_open: false,
@@ -529,6 +538,7 @@ impl HarnessApp {
             self.mcp_editor_submission_id = None;
         }
         if shell_changed {
+            self.sync_onboarding(cx);
             self.sync_composer_settings(cx);
             self.sync_stage_settings(cx);
             cx.notify();
@@ -1430,7 +1440,10 @@ impl Render for HarnessApp {
             .child(rail_slot)
             .child(content)
             .into_any_element();
-        let body = if self.settings_open {
+        let onboarding_open = self.onboarding.is_some();
+        let body = if onboarding_open {
+            self.onboarding_panel(cx)
+        } else if self.settings_open {
             self.settings_panel(cx)
         } else {
             normal_body
@@ -1455,7 +1468,8 @@ impl Render for HarnessApp {
             .bg(self.theme.background.hsla())
             .on_key_down(cx.listener(|this, event: &KeyDownEvent, _window, cx| {
                 let keystroke = &event.keystroke;
-                if keystroke.modifiers.secondary()
+                if this.onboarding.is_none()
+                    && keystroke.modifiers.secondary()
                     && keystroke.modifiers.shift
                     && keystroke.key.eq_ignore_ascii_case("f")
                 {
@@ -1502,7 +1516,7 @@ impl Render for HarnessApp {
                     }
                 }))
             })
-            .child(if settings_open {
+            .child(if settings_open || onboarding_open {
                 self.settings_titlebar().into_any_element()
             } else {
                 self.titlebar(cx).into_any_element()

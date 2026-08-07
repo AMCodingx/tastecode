@@ -22,6 +22,7 @@ impl AssetSource for HarnessAssets {
             "icons/shield-check.svg" => Some(include_bytes!("../assets/icons/shield-check.svg")),
             "icons/scan-eye.svg" => Some(include_bytes!("../assets/icons/scan-eye.svg")),
             "icons/lock-open.svg" => Some(include_bytes!("../assets/icons/lock-open.svg")),
+            "icons/lock-keyhole.svg" => Some(include_bytes!("../assets/icons/lock-keyhole.svg")),
             "icons/zap.svg" => Some(include_bytes!("../assets/icons/zap.svg")),
             "icons/palette.svg" => Some(include_bytes!("../assets/icons/palette.svg")),
             "icons/mic.svg" => Some(include_bytes!("../assets/icons/mic.svg")),
@@ -31,6 +32,7 @@ impl AssetSource for HarnessAssets {
             "icons/copy.svg" => Some(include_bytes!("../assets/icons/copy.svg")),
             "icons/x.svg" => Some(include_bytes!("../assets/icons/x.svg")),
             "icons/arrow-left.svg" => Some(include_bytes!("../assets/icons/arrow-left.svg")),
+            "icons/arrow-right.svg" => Some(include_bytes!("../assets/icons/arrow-right.svg")),
             "icons/arrow-up.svg" => Some(include_bytes!("../assets/icons/arrow-up.svg")),
             "icons/arrow-down.svg" => Some(include_bytes!("../assets/icons/arrow-down.svg")),
             "icons/corner-down-right.svg" => {
@@ -52,6 +54,10 @@ impl AssetSource for HarnessAssets {
             "icons/folder.svg" => Some(include_bytes!("../assets/icons/folder.svg")),
             "icons/gauge.svg" => Some(include_bytes!("../assets/icons/gauge.svg")),
             "icons/octagon-x.svg" => Some(include_bytes!("../assets/icons/octagon-x.svg")),
+            "icons/panels-top-left.svg" => {
+                Some(include_bytes!("../assets/icons/panels-top-left.svg"))
+            }
+            "icons/loader-circle.svg" => Some(include_bytes!("../assets/icons/loader-circle.svg")),
             _ => None,
         };
         Ok(bytes.map(Cow::Borrowed))

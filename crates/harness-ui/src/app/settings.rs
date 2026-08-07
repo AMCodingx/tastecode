@@ -2673,7 +2673,7 @@ impl HarnessApp {
         self.sync_composer_settings(cx);
     }
 
-    fn persist_native_preferences(&mut self) {
+    pub(super) fn persist_native_preferences(&mut self) {
         if let Err(error) = self.preferences.save() {
             self.state.notice = Some(format!("Could not save native preferences: {error}"));
         }

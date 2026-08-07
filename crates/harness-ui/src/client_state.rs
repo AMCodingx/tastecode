@@ -39,8 +39,11 @@ pub(crate) struct ClientState {
     pub(crate) connection_busy: Option<String>,
     pub(crate) connection_error: Option<String>,
     pub(crate) accounts: HashMap<AuthTarget, Account>,
+    pub(crate) auth_logins: HashMap<AuthTarget, AuthLoginSession>,
     pub(crate) auth_busy: Option<AuthTarget>,
     pub(crate) auth_error: Option<String>,
+    early_auth_events: HashMap<String, AuthEventPush>,
+    cancelled_auth_logins: HashSet<String>,
     pub(crate) provider_terminal_busy: Option<AuthTarget>,
     pub(crate) acp_agents: Vec<AcpAgent>,
     pub(crate) model_catalog: Vec<ModelChoice>,
@@ -107,6 +110,11 @@ pub(crate) struct McpOAuthSession {
 pub(crate) struct AuthTarget {
     pub(crate) provider: ProviderId,
     pub(crate) agent: Option<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct AuthLoginSession {
+    pub(crate) login_id: String,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -306,6 +314,13 @@ enum PendingRequest {
         target: AuthTarget,
     },
     AuthStart {
+        target: AuthTarget,
+    },
+    AuthCancel {
+        target: AuthTarget,
+        login_id: String,
+    },
+    AuthApiKey {
         target: AuthTarget,
     },
     AuthSignOut {
@@ -726,8 +741,11 @@ impl ClientState {
             connection_busy: None,
             connection_error: None,
             accounts: HashMap::new(),
+            auth_logins: HashMap::new(),
             auth_busy: None,
             auth_error: None,
+            early_auth_events: HashMap::new(),
+            cancelled_auth_logins: HashSet::new(),
             provider_terminal_busy: None,
             acp_agents: Vec::new(),
             model_catalog: Vec::new(),
@@ -983,6 +1001,74 @@ impl ClientState {
         ) {
             self.auth_busy = None;
             self.auth_error = self.notice.clone();
+        }
+        ClientUpdate::shell_changed()
+    }
+
+    pub(crate) fn cancel_auth(&mut self, target: AuthTarget) -> ClientUpdate {
+        let Some(session) = self.auth_logins.get(&target).cloned() else {
+            return ClientUpdate::default();
+        };
+        self.auth_error = None;
+        self.auth_logins.remove(&target);
+        if self.auth_busy.as_ref() == Some(&target) {
+            self.auth_busy = None;
+        }
+        self.cancelled_auth_logins.insert(session.login_id.clone());
+        if self.cancelled_auth_logins.len() > 32
+            && let Some(oldest) = self
+                .cancelled_auth_logins
+                .iter()
+                .find(|login_id| login_id.as_str() != session.login_id.as_str())
+                .cloned()
+        {
+            self.cancelled_auth_logins.remove(&oldest);
+        }
+        let mut params = auth_params(&target);
+        if let Value::Object(params) = &mut params {
+            params.insert("loginId".into(), Value::String(session.login_id.clone()));
+        }
+        if !self.send_request(
+            method::AUTH_CANCEL_LOGIN,
+            params,
+            PendingRequest::AuthCancel {
+                target: target.clone(),
+                login_id: session.login_id.clone(),
+            },
+        ) {
+            self.cancelled_auth_logins.remove(&session.login_id);
+            self.auth_logins.insert(target.clone(), session);
+            self.auth_busy = Some(target);
+            self.auth_error = self
+                .notice
+                .clone()
+                .or_else(|| Some("Provider sign-in could not be cancelled.".into()));
+        }
+        ClientUpdate::shell_changed()
+    }
+
+    pub(crate) fn use_api_key(&mut self, target: AuthTarget, api_key: String) -> ClientUpdate {
+        let api_key = api_key.trim().to_owned();
+        if api_key.is_empty() {
+            self.auth_error = Some("Enter an API key first.".into());
+            return ClientUpdate::shell_changed();
+        }
+        self.auth_busy = Some(target.clone());
+        self.auth_error = None;
+        let mut params = auth_params(&target);
+        if let Value::Object(params) = &mut params {
+            params.insert("apiKey".into(), Value::String(api_key));
+        }
+        if !self.send_request(
+            method::AUTH_USE_API_KEY,
+            params,
+            PendingRequest::AuthApiKey { target },
+        ) {
+            self.auth_busy = None;
+            self.auth_error = self
+                .notice
+                .clone()
+                .or_else(|| Some("The API key could not be saved.".into()));
         }
         ClientUpdate::shell_changed()
     }
@@ -2259,7 +2345,16 @@ impl ClientState {
                         );
                         ClientUpdate::shell_changed()
                     }
+                    Some(PendingRequest::AuthCancel { target, login_id }) => {
+                        self.cancelled_auth_logins.remove(&login_id);
+                        self.auth_logins
+                            .insert(target.clone(), AuthLoginSession { login_id });
+                        self.auth_error = Some(message);
+                        self.auth_busy = Some(target);
+                        ClientUpdate::shell_changed()
+                    }
                     Some(PendingRequest::AuthStart { target })
+                    | Some(PendingRequest::AuthApiKey { target })
                     | Some(PendingRequest::AuthSignOut { target }) => {
                         if self.auth_busy.as_ref() == Some(&target) {
                             self.auth_busy = None;
@@ -2568,6 +2663,12 @@ impl ClientState {
                 }
                 Some(PendingRequest::AuthStart { target }) => {
                     self.handle_auth_start_response(result, target)
+                }
+                Some(PendingRequest::AuthCancel { target, login_id }) => {
+                    self.handle_auth_cancel_response(target, login_id)
+                }
+                Some(PendingRequest::AuthApiKey { target }) => {
+                    self.handle_auth_api_key_response(result, target)
                 }
                 Some(PendingRequest::AuthSignOut { target }) => {
                     self.handle_auth_sign_out_response(target)
@@ -3050,10 +3151,22 @@ impl ClientState {
                     Some("The server connection was lost while checking provider sign-in.".into());
                 ClientUpdate::shell_changed()
             }
-            PendingRequest::AuthStart { .. } | PendingRequest::AuthSignOut { .. } => {
+            PendingRequest::AuthStart { .. }
+            | PendingRequest::AuthApiKey { .. }
+            | PendingRequest::AuthSignOut { .. } => {
                 self.auth_busy = None;
                 self.auth_error =
                     Some("The server connection was lost while updating provider sign-in.".into());
+                ClientUpdate::shell_changed()
+            }
+            PendingRequest::AuthCancel { target, login_id } => {
+                self.cancelled_auth_logins.remove(&login_id);
+                self.auth_logins
+                    .insert(target.clone(), AuthLoginSession { login_id });
+                self.auth_busy = Some(target);
+                self.auth_error = Some(
+                    "The server connection was lost while cancelling provider sign-in.".into(),
+                );
                 ClientUpdate::shell_changed()
             }
             PendingRequest::ConnectionUpsert { .. }
@@ -3660,6 +3773,10 @@ impl ClientState {
         match serde_json::from_value::<Account>(result) {
             Ok(account) => {
                 let refresh_catalog = self.auth_busy.as_ref() == Some(&target);
+                if account.signed_in {
+                    self.auth_logins.remove(&target);
+                    self.clear_early_auth_events(&target);
+                }
                 self.accounts.insert(target.clone(), account);
                 if refresh_catalog {
                     self.auth_busy = None;
@@ -3679,7 +3796,19 @@ impl ClientState {
 
     fn handle_auth_start_response(&mut self, result: Value, target: AuthTarget) -> ClientUpdate {
         match serde_json::from_value::<AuthStartLoginResult>(result) {
-            Ok(result) => {
+            Ok(result)
+                if !result.login_id.trim().is_empty()
+                    && result.auth_url.as_deref().is_none_or(is_http_url) =>
+            {
+                if let Some(push) = self.early_auth_events.remove(&result.login_id) {
+                    return self.finish_auth_event(push);
+                }
+                self.auth_logins.insert(
+                    target.clone(),
+                    AuthLoginSession {
+                        login_id: result.login_id,
+                    },
+                );
                 self.auth_busy = Some(target);
                 self.auth_error = None;
                 ClientUpdate {
@@ -3692,6 +3821,12 @@ impl ClientState {
                         .collect(),
                 }
             }
+            Ok(_) => {
+                self.auth_busy = None;
+                self.auth_error =
+                    Some("auth.startLogin returned an invalid login ID or browser URL.".into());
+                ClientUpdate::shell_changed()
+            }
             Err(error) => {
                 self.auth_busy = None;
                 self.auth_error = Some(format!("auth.startLogin was invalid: {error}"));
@@ -3700,8 +3835,111 @@ impl ClientState {
         }
     }
 
+    fn handle_auth_cancel_response(
+        &mut self,
+        target: AuthTarget,
+        login_id: String,
+    ) -> ClientUpdate {
+        if self
+            .auth_logins
+            .get(&target)
+            .is_some_and(|session| session.login_id == login_id)
+        {
+            self.auth_logins.remove(&target);
+        }
+        if self.auth_busy.as_ref() == Some(&target) {
+            self.auth_busy = None;
+        }
+        self.auth_error = None;
+        ClientUpdate::shell_changed()
+    }
+
+    fn handle_auth_api_key_response(&mut self, result: Value, target: AuthTarget) -> ClientUpdate {
+        self.voice_statuses.remove(&target.provider);
+        match serde_json::from_value::<Account>(result) {
+            Ok(account) => {
+                self.accounts.insert(target.clone(), account);
+                self.auth_logins.remove(&target);
+                self.clear_early_auth_events(&target);
+                if self.auth_busy.as_ref() == Some(&target) {
+                    self.auth_busy = None;
+                }
+                self.auth_error = None;
+                self.refresh_model_catalog();
+            }
+            Err(error) => {
+                if self.auth_busy.as_ref() == Some(&target) {
+                    self.auth_busy = None;
+                }
+                self.auth_error = Some(format!("auth.useApiKey was invalid: {error}"));
+            }
+        }
+        ClientUpdate::shell_changed()
+    }
+
+    fn handle_auth_event(&mut self, push: AuthEventPush) -> ClientUpdate {
+        let target = AuthTarget {
+            provider: push.provider,
+            agent: push.agent.clone(),
+        };
+        if let Some(login_id) = push.login_id.as_ref() {
+            if self.cancelled_auth_logins.remove(login_id) {
+                return ClientUpdate::shell_changed();
+            }
+            if let Some(session) = self.auth_logins.get(&target) {
+                if session.login_id != *login_id {
+                    return ClientUpdate::default();
+                }
+                self.auth_logins.remove(&target);
+            } else if self.pending.values().any(|pending| {
+                matches!(pending, PendingRequest::AuthStart { target: pending_target }
+                    if pending_target == &target)
+            }) {
+                if self.early_auth_events.len() >= 16
+                    && let Some(oldest) = self.early_auth_events.keys().next().cloned()
+                {
+                    self.early_auth_events.remove(&oldest);
+                }
+                self.early_auth_events.insert(login_id.clone(), push);
+                return ClientUpdate::default();
+            }
+        } else {
+            self.auth_logins.remove(&target);
+        }
+        self.finish_auth_event(push)
+    }
+
+    fn finish_auth_event(&mut self, push: AuthEventPush) -> ClientUpdate {
+        let target = AuthTarget {
+            provider: push.provider,
+            agent: push.agent,
+        };
+        if push.success {
+            self.auth_busy = Some(target.clone());
+            self.auth_error = None;
+            self.request_auth_status(target);
+        } else {
+            if self.auth_busy.as_ref() == Some(&target) {
+                self.auth_busy = None;
+            }
+            self.auth_error = Some(
+                push.error
+                    .unwrap_or_else(|| "Provider sign-in was cancelled.".into()),
+            );
+        }
+        ClientUpdate::shell_changed()
+    }
+
+    fn clear_early_auth_events(&mut self, target: &AuthTarget) {
+        self.early_auth_events.retain(|_, push| {
+            push.provider != target.provider || push.agent.as_ref() != target.agent.as_ref()
+        });
+    }
+
     fn handle_auth_sign_out_response(&mut self, target: AuthTarget) -> ClientUpdate {
         self.voice_statuses.remove(&target.provider);
+        self.auth_logins.remove(&target);
+        self.clear_early_auth_events(&target);
         self.accounts.insert(
             target.clone(),
             Account {
@@ -4112,26 +4350,7 @@ impl ClientState {
                 }
             }
             channel::AUTH_EVENT => match serde_json::from_value::<AuthEventPush>(data) {
-                Ok(push) => {
-                    let target = AuthTarget {
-                        provider: push.provider,
-                        agent: push.agent,
-                    };
-                    if push.success {
-                        self.auth_busy = Some(target.clone());
-                        self.auth_error = None;
-                        self.request_auth_status(target);
-                    } else {
-                        if self.auth_busy.as_ref() == Some(&target) {
-                            self.auth_busy = None;
-                        }
-                        self.auth_error = Some(
-                            push.error
-                                .unwrap_or_else(|| "Provider sign-in was cancelled.".into()),
-                        );
-                    }
-                    ClientUpdate::shell_changed()
-                }
+                Ok(push) => self.handle_auth_event(push),
                 Err(error) => {
                     self.auth_busy = None;
                     self.auth_error = Some(format!("auth.event push was invalid: {error}"));
@@ -4414,6 +4633,8 @@ impl PendingRequest {
             | Self::ConnectionRemove { .. }
             | Self::AuthStatus { .. }
             | Self::AuthStart { .. }
+            | Self::AuthCancel { .. }
+            | Self::AuthApiKey { .. }
             | Self::AuthSignOut { .. }
             | Self::ProviderTerminal { .. }
             | Self::AcpAgents
@@ -5580,6 +5801,160 @@ mod tests {
         assert!(response.shell_events.is_empty());
         assert!(state.mcp_oauth.is_none());
         assert_eq!(state.mcp_notice.as_deref(), Some("MCP sign-in completed."));
+    }
+
+    #[test]
+    fn browser_auth_retains_the_login_id_and_rejects_unsafe_urls() {
+        let mut state = ClientState::new(true);
+        let target = AuthTarget::provider(ProviderId::Codex);
+        state.auth_busy = Some(target.clone());
+        state.pending.insert(
+            "auth-start".into(),
+            PendingRequest::AuthStart {
+                target: target.clone(),
+            },
+        );
+
+        let started = state.handle_response(Response::Success {
+            id: "auth-start".into(),
+            result: json!({
+                "loginId": "login-1",
+                "authUrl": "https://example.com/oauth"
+            }),
+        });
+        assert!(matches!(
+            started.shell_events.as_slice(),
+            [ShellEvent::OpenUrl { url }] if url == "https://example.com/oauth"
+        ));
+        assert_eq!(
+            state
+                .auth_logins
+                .get(&target)
+                .map(|session| session.login_id.as_str()),
+            Some("login-1")
+        );
+
+        state.pending.insert(
+            "unsafe-auth".into(),
+            PendingRequest::AuthStart {
+                target: target.clone(),
+            },
+        );
+        let unsafe_result = state.handle_response(Response::Success {
+            id: "unsafe-auth".into(),
+            result: json!({ "loginId": "login-2", "authUrl": "file:///tmp/oauth" }),
+        });
+        assert!(unsafe_result.shell_events.is_empty());
+        assert_eq!(
+            state.auth_error.as_deref(),
+            Some("auth.startLogin returned an invalid login ID or browser URL.")
+        );
+    }
+
+    #[test]
+    fn browser_auth_completion_can_win_the_start_response_race() {
+        let mut state = ClientState::new(true);
+        let target = AuthTarget::provider(ProviderId::Codex);
+        state.pending.insert(
+            "auth-start".into(),
+            PendingRequest::AuthStart {
+                target: target.clone(),
+            },
+        );
+
+        let early = state.handle_push(
+            channel::AUTH_EVENT,
+            json!({
+                "provider": "codex",
+                "loginId": "login-1",
+                "success": true,
+                "error": null
+            }),
+        );
+        assert!(!early.shell_changed);
+
+        let started = state.handle_response(Response::Success {
+            id: "auth-start".into(),
+            result: json!({
+                "loginId": "login-1",
+                "authUrl": "https://example.com/oauth"
+            }),
+        });
+        assert!(started.shell_changed);
+        assert!(started.shell_events.is_empty());
+        assert!(!state.auth_logins.contains_key(&target));
+        assert_eq!(state.auth_busy.as_ref(), Some(&target));
+        assert!(state.early_auth_events.is_empty());
+    }
+
+    #[test]
+    fn api_key_and_cancel_responses_finish_the_scoped_auth_flow() {
+        let mut state = ClientState::new(true);
+        let target = AuthTarget::provider(ProviderId::Codex);
+        state.auth_busy = Some(target.clone());
+        state.auth_logins.insert(
+            target.clone(),
+            AuthLoginSession {
+                login_id: "login-1".into(),
+            },
+        );
+        state.cancelled_auth_logins.insert("login-1".into());
+        state.pending.insert(
+            "auth-cancel".into(),
+            PendingRequest::AuthCancel {
+                target: target.clone(),
+                login_id: "login-1".into(),
+            },
+        );
+
+        let cancelled = state.handle_response(Response::Success {
+            id: "auth-cancel".into(),
+            result: json!({}),
+        });
+        assert!(cancelled.shell_changed);
+        assert!(!state.auth_logins.contains_key(&target));
+        assert!(state.auth_busy.is_none());
+
+        state.auth_busy = Some(target.clone());
+        state.pending.insert(
+            "auth-key".into(),
+            PendingRequest::AuthApiKey {
+                target: target.clone(),
+            },
+        );
+        let keyed = state.handle_response(Response::Success {
+            id: "auth-key".into(),
+            result: json!({
+                "signedIn": true,
+                "email": "person@example.com",
+                "plan": "API"
+            }),
+        });
+        assert!(keyed.shell_changed);
+        assert!(state.accounts.get(&target).is_some_and(|account| {
+            account.signed_in && account.email.as_deref() == Some("person@example.com")
+        }));
+        assert!(state.auth_busy.is_none());
+    }
+
+    #[test]
+    fn late_auth_events_from_a_cancelled_login_are_ignored() {
+        let mut state = ClientState::new(true);
+        state.cancelled_auth_logins.insert("login-1".into());
+
+        let update = state.handle_push(
+            channel::AUTH_EVENT,
+            json!({
+                "provider": "codex",
+                "loginId": "login-1",
+                "success": false,
+                "error": "cancelled"
+            }),
+        );
+
+        assert!(update.shell_changed);
+        assert!(state.auth_error.is_none());
+        assert!(!state.cancelled_auth_logins.contains("login-1"));
     }
 
     #[test]
