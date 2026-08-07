@@ -8,6 +8,7 @@ mod access;
 mod agents;
 mod inbox;
 mod mcp_config;
+mod model_connections;
 mod push;
 mod router;
 mod skill_install;
@@ -15,6 +16,7 @@ mod skill_install;
 pub use access::{allowed_origin, assert_safe_bind, has_access};
 pub use router::SERVER_VERSION;
 
+use harness_credentials::{CredentialStore, SystemCredentialStore};
 use harness_protocol::{Push, Request, Response, TerminalExitPush, TerminalOutputPush, channel};
 use harness_store::Store;
 use harness_terminal::TerminalManager;
@@ -45,6 +47,7 @@ pub struct ServerConfig {
     pub access_token: Option<String>,
     pub store_path: PathBuf,
     pub mcp_config_path: PathBuf,
+    pub providers_config_path: PathBuf,
 }
 
 impl ServerConfig {
@@ -54,6 +57,7 @@ impl ServerConfig {
             address: SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), DEFAULT_PORT),
             access_token: None,
             mcp_config_path: store_path.with_file_name("mcp.json"),
+            providers_config_path: store_path.with_file_name("providers.json"),
             store_path,
         }
     }
@@ -81,6 +85,7 @@ impl ServerConfig {
             access_token: std::env::var("HARNESS_ACCESS_TOKEN").ok(),
             store_path: store_location()?,
             mcp_config_path: config_root.join("mcp.json"),
+            providers_config_path: config_root.join("providers.json"),
         })
     }
 }
@@ -145,6 +150,14 @@ fn start_with_runtimes(
     config: ServerConfig,
     runtimes: Arc<dyn agents::RuntimeRegistry>,
 ) -> Result<ServerHandle, ServerError> {
+    start_with_services(config, runtimes, Arc::new(SystemCredentialStore::new()))
+}
+
+fn start_with_services(
+    config: ServerConfig,
+    runtimes: Arc<dyn agents::RuntimeRegistry>,
+    credentials: Arc<dyn CredentialStore>,
+) -> Result<ServerHandle, ServerError> {
     assert_safe_bind(config.address.ip(), config.access_token.as_deref())
         .map_err(ServerError::UnsafeBind)?;
     let listener = TcpListener::bind(config.address)?;
@@ -176,6 +189,11 @@ fn start_with_runtimes(
         store: Mutex::new(store),
         inbox: Mutex::new(inbox::InboxProjections::default()),
         mcp_config: Mutex::new(mcp_config::McpConfigStore::new(config.mcp_config_path)),
+        model_connections: Mutex::new(model_connections::ModelConnectionStore::new(
+            config.providers_config_path,
+            Arc::clone(&credentials),
+        )),
+        credentials,
         push,
         terminals,
         agents: agents::AgentManager::new(runtimes),
@@ -224,6 +242,8 @@ pub(crate) struct ServerState {
     store: Mutex<Store>,
     inbox: Mutex<inbox::InboxProjections>,
     mcp_config: Mutex<mcp_config::McpConfigStore>,
+    model_connections: Mutex<model_connections::ModelConnectionStore>,
+    credentials: Arc<dyn CredentialStore>,
     push: Arc<PushBus>,
     terminals: TerminalManager,
     agents: agents::AgentManager,

@@ -6,10 +6,10 @@ use harness_agent::{
 };
 use harness_protocol::{
     Account, ApprovalDecision, AuthEventPush, AuthStartLoginResult, DomainEvent, McpAuth,
-    McpListResult, McpOAuthPush, McpOAuthStartResult, McpServer, McpServerConfig, McpServerScope,
-    McpStartupStatus, Model, ProviderId, QueuedTurn, SendTurnResult, Skill, SkillSource,
-    SkillsListResult, Thread, ThreadEventPush, ThreadInboxStatus, ThreadLifecyclePush,
-    ThreadQueuePush, ThreadQueueResult, channel,
+    McpConfigValue, McpListResult, McpOAuthPush, McpOAuthStartResult, McpServer, McpServerConfig,
+    McpServerScope, McpStartupStatus, McpTransport, Model, ProviderId, QueuedTurn, SendTurnResult,
+    Skill, SkillSource, SkillsListResult, Thread, ThreadEventPush, ThreadInboxStatus,
+    ThreadLifecyclePush, ThreadQueuePush, ThreadQueueResult, channel,
 };
 use harness_store::{NewCheckpoint, NewThread};
 use harness_workspace::Worktree;
@@ -838,7 +838,27 @@ impl AgentManager {
         let servers = lock(&state.mcp_config)
             .list(provider, project_path)
             .map_err(|error| error.to_string())?;
-        Ok((servers, CredentialValues::default()))
+        let mut credentials = CredentialValues::default();
+        for server in servers.iter().filter(|server| server.enabled) {
+            let values = match server.transport.as_ref() {
+                Some(McpTransport::Stdio { environment, .. }) => environment.as_ref(),
+                Some(McpTransport::Http { headers, .. }) => headers.as_ref(),
+                None => None,
+            };
+            for value in values.into_iter().flat_map(|values| values.values()) {
+                let McpConfigValue::Credential { credential_ref } = value else {
+                    continue;
+                };
+                if credentials.get(credential_ref).is_none() {
+                    let secret = state
+                        .credentials
+                        .read(credential_ref)
+                        .map_err(|error| error.to_string())?;
+                    credentials.insert(credential_ref.clone(), secret);
+                }
+            }
+        }
+        Ok((servers, credentials))
     }
 
     fn control(

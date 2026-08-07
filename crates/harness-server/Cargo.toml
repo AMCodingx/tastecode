@@ -10,6 +10,7 @@ chrono.workspace = true
 dirs.workspace = true
 harness-adapter-codex = { path = "../harness-adapter-codex" }
 harness-agent = { path = "../harness-agent" }
+harness-credentials = { path = "../harness-credentials" }
 harness-protocol = { path = "../harness-protocol" }
 harness-providers = { path = "../harness-providers" }
 harness-store = { path = "../harness-store" }

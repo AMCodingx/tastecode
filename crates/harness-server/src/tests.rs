@@ -3,6 +3,7 @@ use harness_agent::{
     AgentError, AgentHandlers, AgentResult, AgentRuntime, AgentSession, ControlHandlers,
     CredentialValues, LoginEvent, McpOAuthEvent, ProviderControl, StartOptions, TurnOptions,
 };
+use harness_credentials::{CredentialError, CredentialStore};
 use harness_protocol::{
     Account, ApprovalDecision, AuthStartLoginResult, Capabilities, DomainEvent, Item, ItemStatus,
     ItemType, McpOAuthStartResult, McpServerConfig, MessageRole, Model, ProviderId, ServiceTier,
@@ -36,6 +37,7 @@ fn start_test_server(
         address: SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 0),
         access_token: access_token.map(str::to_owned),
         mcp_config_path: directory.path().join("mcp.json"),
+        providers_config_path: directory.path().join("providers.json"),
         store_path,
     })
     .unwrap();
@@ -62,12 +64,65 @@ fn start_test_server_with_runtimes_and_seed(
             address: SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 0),
             access_token: None,
             mcp_config_path: directory.path().join("mcp.json"),
+            providers_config_path: directory.path().join("providers.json"),
             store_path,
         },
         runtimes,
     )
     .unwrap();
     (directory, server)
+}
+
+fn start_test_server_with_services(
+    runtimes: Arc<dyn crate::agents::RuntimeRegistry>,
+    credentials: Arc<dyn CredentialStore>,
+) -> (TempDir, ServerHandle) {
+    let directory = tempfile::tempdir().unwrap();
+    let store_path = directory.path().join("harness.db");
+    Store::open(&store_path).unwrap().close().unwrap();
+    let server = start_with_services(
+        ServerConfig {
+            address: SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 0),
+            access_token: None,
+            mcp_config_path: directory.path().join("mcp.json"),
+            providers_config_path: directory.path().join("providers.json"),
+            store_path,
+        },
+        runtimes,
+        credentials,
+    )
+    .unwrap();
+    (directory, server)
+}
+
+#[derive(Default)]
+struct MemoryCredentials(Mutex<HashMap<String, String>>);
+
+impl CredentialStore for MemoryCredentials {
+    fn read(&self, reference: &str) -> harness_credentials::Result<String> {
+        self.0
+            .lock()
+            .unwrap()
+            .get(reference)
+            .cloned()
+            .ok_or_else(|| CredentialError::NotFound(reference.into()))
+    }
+
+    fn contains(&self, reference: &str) -> bool {
+        self.0.lock().unwrap().contains_key(reference)
+    }
+
+    fn write(&self, reference: &str, value: &str) -> harness_credentials::Result<()> {
+        self.0
+            .lock()
+            .unwrap()
+            .insert(reference.into(), value.into());
+        Ok(())
+    }
+
+    fn remove(&self, reference: &str) {
+        self.0.lock().unwrap().remove(reference);
+    }
 }
 
 fn connect_native(server: &ServerHandle, suffix: &str) -> ClientSocket {
@@ -624,6 +679,101 @@ fn concurrent_auth_requests_open_one_provider_control() {
 }
 
 #[test]
+fn live_connection_routes_keep_api_keys_only_in_the_credential_store() {
+    let runtime = Arc::new(FakeRuntime::default());
+    let registry = Arc::new(FakeRuntimes { runtime });
+    let credentials = Arc::new(MemoryCredentials::default());
+    let (directory, server) = start_test_server_with_services(registry, credentials.clone());
+    let mut socket = connect_native(&server, "");
+    assert_welcome(&mut socket);
+
+    send_request(&mut socket, "empty", "connections.list", json!({}));
+    assert_eq!(read_value(&mut socket)["result"]["connections"], json!([]));
+    send_request(
+        &mut socket,
+        "upsert",
+        "connections.upsert",
+        json!({
+            "id": "work-openrouter",
+            "displayName": "  Work OpenRouter  ",
+            "preset": "openrouter",
+            "transport": "openai-compatible",
+            "baseUrl": "https://openrouter.ai/api/v1",
+            "defaultModel": "openai/gpt-5.6",
+            "enabled": true
+        }),
+    );
+    let upserted = read_value(&mut socket);
+    assert_eq!(
+        upserted["result"]["connection"]["displayName"],
+        "Work OpenRouter"
+    );
+    assert_eq!(
+        upserted["result"]["connection"]["credentialConfigured"],
+        false
+    );
+    assert_eq!(
+        upserted["result"]["connection"]["capabilities"]["streaming"],
+        true
+    );
+
+    send_request(
+        &mut socket,
+        "credential",
+        "connections.setCredential",
+        json!({
+            "connectionId": "work-openrouter",
+            "apiKey": "secret-test-key"
+        }),
+    );
+    assert_eq!(
+        read_value(&mut socket)["result"]["credentialConfigured"],
+        true
+    );
+    let raw = std::fs::read_to_string(directory.path().join("providers.json")).unwrap();
+    assert!(!raw.contains("secret-test-key"));
+    assert!(raw.contains("model-connections/work-openrouter"));
+    assert_eq!(
+        credentials
+            .read("model-connections/work-openrouter")
+            .unwrap(),
+        "secret-test-key"
+    );
+
+    send_request(&mut socket, "list", "connections.list", json!({}));
+    assert_eq!(
+        read_value(&mut socket)["result"]["connections"][0]["credentialConfigured"],
+        true
+    );
+    send_request(
+        &mut socket,
+        "unsafe",
+        "connections.upsert",
+        json!({
+            "id": "unsafe",
+            "displayName": "Unsafe",
+            "preset": "custom",
+            "transport": "openai-compatible",
+            "baseUrl": "http://example.com/v1",
+            "enabled": true
+        }),
+    );
+    assert_eq!(read_value(&mut socket)["error"]["code"], "bad_request");
+
+    send_request(
+        &mut socket,
+        "remove",
+        "connections.remove",
+        json!({ "connectionId": "work-openrouter" }),
+    );
+    assert_eq!(read_value(&mut socket)["result"], json!({}));
+    assert!(!credentials.contains("model-connections/work-openrouter"));
+
+    socket.close(None).unwrap();
+    server.close().unwrap();
+}
+
+#[test]
 fn live_mcp_and_skills_routes_share_control_and_push_invalidations() {
     let runtime = Arc::new(FakeRuntime::default());
     let registry = Arc::new(FakeRuntimes {
@@ -891,7 +1041,9 @@ fn live_mcp_session_routes_apply_config_reload_and_preserve_oauth_push_order() {
     let registry = Arc::new(FakeRuntimes {
         runtime: Arc::clone(&runtime),
     });
-    let (directory, server) = start_test_server_with_runtimes(registry);
+    let credentials = Arc::new(MemoryCredentials::default());
+    credentials.write("mcp/custom/token", "mcp-secret").unwrap();
+    let (directory, server) = start_test_server_with_services(registry, credentials);
     let workspace = directory.path().join("workspace");
     std::fs::create_dir(&workspace).unwrap();
     let workspace = workspace.to_string_lossy().into_owned();
@@ -908,7 +1060,16 @@ fn live_mcp_session_routes_apply_config_reload_and_preserve_oauth_push_order() {
             "server": {
                 "id": "custom",
                 "enabled": true,
-                "transport": { "type": "http", "url": "https://example.com/mcp" }
+                "transport": {
+                    "type": "http",
+                    "url": "https://example.com/mcp",
+                    "headers": {
+                        "Authorization": {
+                            "source": "credential",
+                            "credentialRef": "mcp/custom/token"
+                        }
+                    }
+                }
             }
         }),
     );
@@ -924,7 +1085,15 @@ fn live_mcp_session_routes_apply_config_reload_and_preserve_oauth_push_order() {
     let options = runtime.start_options.lock().unwrap().clone().unwrap();
     assert_eq!(options.mcp_servers.len(), 1);
     assert_eq!(options.mcp_servers[0].id, "custom");
-    assert!(options.mcp_credentials.is_empty());
+    assert_eq!(
+        options.mcp_credentials.get("mcp/custom/token"),
+        Some("mcp-secret")
+    );
+    assert!(
+        !std::fs::read_to_string(directory.path().join("mcp.json"))
+            .unwrap()
+            .contains("mcp-secret")
+    );
 
     send_request(
         &mut socket,
@@ -942,6 +1111,14 @@ fn live_mcp_session_routes_apply_config_reload_and_preserve_oauth_push_order() {
     assert_eq!(reloads[0].0, "thread-1");
     assert_eq!(reloads[0].1[0].id, "custom");
     drop(reloads);
+    assert_eq!(
+        session
+            .mcp_reload_has_credentials
+            .lock()
+            .unwrap()
+            .as_slice(),
+        [true]
+    );
 
     send_request(
         &mut socket,
@@ -1970,6 +2147,7 @@ impl AgentRuntime for FakeRuntime {
             sent_texts: Mutex::new(Vec::new()),
             steered_texts: Mutex::new(Vec::new()),
             mcp_reloads: Mutex::new(Vec::new()),
+            mcp_reload_has_credentials: Mutex::new(Vec::new()),
             next_mcp_login: AtomicU64::new(1),
             complete_mcp_o_auth_during_start: Arc::clone(&self.complete_mcp_o_auth_during_start),
         });
@@ -2009,6 +2187,7 @@ impl AgentRuntime for FakeRuntime {
             sent_texts: Mutex::new(Vec::new()),
             steered_texts: Mutex::new(Vec::new()),
             mcp_reloads: Mutex::new(Vec::new()),
+            mcp_reload_has_credentials: Mutex::new(Vec::new()),
             next_mcp_login: AtomicU64::new(1),
             complete_mcp_o_auth_during_start: Arc::clone(&self.complete_mcp_o_auth_during_start),
         });
@@ -2227,6 +2406,7 @@ struct FakeSession {
     sent_texts: Mutex<Vec<String>>,
     steered_texts: Mutex<Vec<String>>,
     mcp_reloads: Mutex<Vec<(String, Vec<McpServerConfig>)>>,
+    mcp_reload_has_credentials: Mutex<Vec<bool>>,
     next_mcp_login: AtomicU64,
     complete_mcp_o_auth_during_start: Arc<AtomicBool>,
 }
@@ -2359,7 +2539,10 @@ impl AgentSession for FakeSession {
         servers: &[McpServerConfig],
         credentials: &CredentialValues,
     ) -> AgentResult<()> {
-        assert!(credentials.is_empty());
+        self.mcp_reload_has_credentials
+            .lock()
+            .unwrap()
+            .push(!credentials.is_empty());
         self.mcp_reloads
             .lock()
             .unwrap()

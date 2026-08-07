@@ -2,7 +2,8 @@ use crate::ServerState;
 use chrono::{Datelike as _, Local, TimeZone as _};
 use harness_protocol::method;
 use harness_protocol::{
-    AcpAgentsResult, ApprovalDecision, ApprovalMode, CheckpointSummary, ErrorCode,
+    AcpAgentsResult, ApprovalDecision, ApprovalMode, CheckpointSummary, CredentialConfiguredResult,
+    ErrorCode, ModelConnectionInput, ModelConnectionResult, ModelConnectionsResult,
     ModelsListResult, ProjectAddedResult, ProjectSummary, ProjectsListResult, ProviderId,
     ProvidersListResult, ServerWelcome, SessionSummary, SettleReason, SidebarMode, SystemInfo,
     SystemPlatform, TerminalOpenedResult, ThreadCheckpointsResult, ThreadHistoryResult,
@@ -122,6 +123,52 @@ pub(crate) fn route(
             encoded(AcpAgentsResult {
                 agents: harness_providers::detect_agents(),
             })
+        }
+        method::CONNECTIONS_LIST => {
+            let _: EmptyParams = decode(method_name, params)?;
+            encoded(ModelConnectionsResult {
+                connections: state
+                    .model_connections
+                    .lock()
+                    .map_err(|_| RouteError::internal("model connection mutex poisoned"))?
+                    .list()
+                    .map_err(|error| model_connection_error(method_name, error))?,
+            })
+        }
+        method::CONNECTIONS_UPSERT => {
+            let params: ModelConnectionInput = decode(method_name, params)?;
+            let connection = state
+                .model_connections
+                .lock()
+                .map_err(|_| RouteError::internal("model connection mutex poisoned"))?
+                .upsert(params)
+                .map_err(|error| model_connection_error(method_name, error))?;
+            encoded(ModelConnectionResult { connection })
+        }
+        method::CONNECTIONS_SET_CREDENTIAL => {
+            let params: ConnectionCredentialParams = decode(method_name, params)?;
+            require_non_empty(method_name, "connectionId", &params.connection_id)?;
+            require_non_empty(method_name, "apiKey", &params.api_key)?;
+            state
+                .model_connections
+                .lock()
+                .map_err(|_| RouteError::internal("model connection mutex poisoned"))?
+                .set_credential(&params.connection_id, &params.api_key)
+                .map_err(|error| model_connection_error(method_name, error))?;
+            encoded(CredentialConfiguredResult {
+                credential_configured: true,
+            })
+        }
+        method::CONNECTIONS_REMOVE => {
+            let params: ConnectionIdParams = decode(method_name, params)?;
+            require_non_empty(method_name, "connectionId", &params.connection_id)?;
+            state
+                .model_connections
+                .lock()
+                .map_err(|_| RouteError::internal("model connection mutex poisoned"))?
+                .remove(&params.connection_id)
+                .map_err(|error| model_connection_error(method_name, error))?;
+            empty_result()
         }
         method::AUTH_STATUS => {
             let params: AuthParams = decode(method_name, params)?;
@@ -1021,6 +1068,18 @@ fn mcp_config_error(method: &str, error: crate::mcp_config::McpConfigError) -> R
     }
 }
 
+fn model_connection_error(
+    method: &str,
+    error: crate::model_connections::ModelConnectionError,
+) -> RouteError {
+    match error {
+        crate::model_connections::ModelConnectionError::InvalidConnection(message) => {
+            RouteError::bad_params(method, message)
+        }
+        error => RouteError::internal(error),
+    }
+}
+
 fn broadcast_provider_project(
     state: &ServerState,
     channel_name: &str,
@@ -1255,6 +1314,19 @@ struct AuthUseApiKeyParams {
     #[serde(flatten)]
     target: AuthParams,
     api_key: String,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ConnectionCredentialParams {
+    connection_id: String,
+    api_key: String,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ConnectionIdParams {
+    connection_id: String,
 }
 
 #[derive(Deserialize)]
