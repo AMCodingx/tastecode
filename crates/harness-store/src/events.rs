@@ -79,18 +79,20 @@ impl Store {
         let payload = serde_json::to_string(event)?;
         let provider_state = provider_state.map(serde_json::to_string).transpose()?;
         let transaction = self.connection.transaction()?;
-        transaction.execute(
-            "INSERT INTO events (thread_id, at, payload) VALUES (?1, ?2, ?3)",
-            params![thread_id, at, payload],
-        )?;
+        {
+            let mut insert_event = transaction.prepare_cached(
+                "INSERT INTO events (thread_id, at, payload) VALUES (?1, ?2, ?3)",
+            )?;
+            insert_event.execute(params![thread_id, at, payload])?;
+        }
         let seq = transaction.last_insert_rowid();
         index_event(&transaction, seq, thread_id, at, event)?;
         if let Some(provider_state) = provider_state {
-            transaction.execute(
+            let mut update_provider_state = transaction.prepare_cached(
                 "INSERT INTO provider_session_states (thread_id, state_json) VALUES (?1, ?2)
                  ON CONFLICT (thread_id) DO UPDATE SET state_json = excluded.state_json",
-                params![thread_id, provider_state],
             )?;
+            update_provider_state.execute(params![thread_id, provider_state])?;
         }
         transaction.commit()?;
         Ok(seq.max(0) as u64)
