@@ -200,5 +200,7 @@ mod tests {
     }
 }
 mod child;
+mod ndjson;
 
 pub use child::{CliOutput, SpawnOptions, SpawnedChild, run_cli, spawn_cli};
+pub use ndjson::{DEFAULT_MAX_NDJSON_LINE, NdjsonDecoder, NdjsonFrame, read_ndjson};
