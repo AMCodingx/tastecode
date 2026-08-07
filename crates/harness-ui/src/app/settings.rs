@@ -6,7 +6,8 @@ use crate::theme::{Accent, Backdrop, Theme, ThemeMode};
 use crate::zoom::px;
 use gpui::{
     Animation, AnimationExt, AnyElement, App, Context, Entity, FontWeight, PathPromptOptions,
-    PromptButton, PromptLevel, SharedString, Window, div, prelude::*, svg,
+    PromptButton, PromptLevel, SharedString, Window, div, linear_color_stop, linear_gradient,
+    prelude::*, svg,
 };
 use gpui_component::input::{Input, InputState};
 use harness_protocol::{
@@ -167,7 +168,7 @@ impl HarnessApp {
             .bg(theme
                 .rail
                 .hsla()
-                .opacity(1.0 - f32::from(self.preferences.sidebar_glass) / 200.0))
+                .opacity((1.0 - f32::from(self.preferences.sidebar_glass) * 0.013).max(0.0)))
             .border_r_1()
             .border_color(theme.line.hsla())
             .child(
@@ -2279,62 +2280,35 @@ impl HarnessApp {
             theme,
         ));
 
-        let glass = self.preferences.sidebar_glass;
-        let glass_minus_view = cx.weak_entity();
-        let glass_minus: SettingsAction = Rc::new(move |cx| {
-            let _ = glass_minus_view.update(cx, |this, cx| {
-                this.set_sidebar_glass(glass.saturating_sub(5), cx)
+        let glass_options: [(u8, &str); 4] =
+            [(0, "Off"), (20, "Subtle"), (35, "Medium"), (50, "Strong")];
+        let selected_glass = glass_options
+            .iter()
+            .min_by_key(|(value, _)| (*value).abs_diff(self.preferences.sidebar_glass))
+            .map_or(35, |(value, _)| *value);
+        let mut glass_choices = Vec::with_capacity(glass_options.len());
+        for (index, (glass, label)) in glass_options.into_iter().enumerate() {
+            let view = cx.weak_entity();
+            let action: SettingsAction = Rc::new(move |cx| {
+                let _ = view.update(cx, |this, cx| this.set_sidebar_glass(glass, cx));
             });
-        });
-        let glass_plus_view = cx.weak_entity();
-        let glass_plus: SettingsAction = Rc::new(move |cx| {
-            let _ = glass_plus_view.update(cx, |this, cx| {
-                this.set_sidebar_glass(glass.saturating_add(5).min(60), cx)
-            });
-        });
-        let glass_toggle_view = cx.weak_entity();
-        let glass_toggle: SettingsAction = Rc::new(move |cx| {
-            let _ = glass_toggle_view.update(cx, |this, cx| {
-                this.set_sidebar_glass(if glass > 0 { 0 } else { 35 }, cx)
-            });
-        });
-        let glass_control = div()
-            .flex()
-            .items_center()
-            .gap(px(8.0))
-            .child(stepper_button(
-                "glass-minus",
-                "−",
+            glass_choices.push(glass_choice(
+                300 + index,
+                label,
+                glass,
+                selected_glass == glass,
                 theme,
-                glass_minus,
-                glass == 0,
-            ))
-            .child(
-                div()
-                    .min_w(px(38.0))
-                    .text_center()
-                    .text_size(px(11.0))
-                    .text_color(theme.text_2.hsla())
-                    .child(format!("{glass}%")),
-            )
-            .child(stepper_button(
-                "glass-plus",
-                "+",
-                theme,
-                glass_plus,
-                glass >= 60,
-            ))
-            .child(settings_switch(910_000, glass > 0, theme, glass_toggle))
-            .into_any_element();
-        blocks.push(settings_group(
-            "Sidebar",
-            vec![settings_row(
-                0,
-                "Translucent sidebar",
-                "Let the selected background palette soften the rail.",
-                glass_control,
-                theme,
-            )],
+                action,
+            ));
+        }
+        blocks.push(settings_plain_group(
+            "Sidebar translucency",
+            div()
+                .flex()
+                .flex_wrap()
+                .gap(px(10.0))
+                .children(glass_choices)
+                .into_any_element(),
             theme,
         ));
 
@@ -3529,6 +3503,54 @@ fn appearance_choice(
             .child("Ag")
             .into_any_element(),
     };
+    appearance_choice_shell(id, label, preview, selected, theme, action)
+}
+
+fn glass_choice(
+    id: usize,
+    label: &'static str,
+    glass: u8,
+    selected: bool,
+    theme: Theme,
+    action: SettingsAction,
+) -> AnyElement {
+    let pane_opacity = match glass {
+        0 => 1.0,
+        20 => 0.80,
+        35 => 0.62,
+        50 => 0.45,
+        _ => (1.0 - f32::from(glass) / 100.0).clamp(0.0, 1.0),
+    };
+    let preview = div()
+        .relative()
+        .size(px(34.0))
+        .overflow_hidden()
+        .rounded(px(crate::RADIUS_LG))
+        .border_1()
+        .border_color(theme.line_strong.hsla())
+        .bg(linear_gradient(
+            135.0,
+            linear_color_stop(theme.attention.hsla().opacity(0.78), 0.0),
+            linear_color_stop(theme.file_reference.hsla().opacity(0.72), 1.0),
+        ))
+        .child(
+            div()
+                .absolute()
+                .inset_0()
+                .bg(theme.rail.hsla().opacity(pane_opacity)),
+        )
+        .into_any_element();
+    appearance_choice_shell(id, label, preview, selected, theme, action)
+}
+
+fn appearance_choice_shell(
+    id: usize,
+    label: &'static str,
+    preview: AnyElement,
+    selected: bool,
+    theme: Theme,
+    action: SettingsAction,
+) -> AnyElement {
     div()
         .id(("appearance-choice", id))
         .w(px(104.0))

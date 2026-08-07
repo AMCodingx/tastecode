@@ -6,7 +6,7 @@ use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::PathBuf;
 
-const PREFERENCES_VERSION: u8 = 3;
+const PREFERENCES_VERSION: u8 = 4;
 const PREFERENCES_FILE: &str = "gpui-settings.json";
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -55,7 +55,7 @@ impl Default for NativePreferences {
             font: FontPreference::Geist,
             accent: Accent::Neutral,
             backdrop: Backdrop::Default,
-            sidebar_glass: 0,
+            sidebar_glass: 35,
             hidden_models: HashSet::new(),
             selected_model_key: None,
             model_by_source: HashMap::new(),
@@ -92,6 +92,9 @@ impl NativePreferences {
         };
         let mut preferences = serde_json::from_slice::<Self>(&bytes)
             .with_context(|| format!("parse {}", path.display()))?;
+        if preferences.version < 4 {
+            preferences.sidebar_glass = 35;
+        }
         preferences.version = PREFERENCES_VERSION;
         preferences.sidebar_glass = preferences.sidebar_glass.min(60);
         Ok(preferences)
@@ -132,6 +135,7 @@ mod tests {
         assert_eq!(preferences.theme, ThemePreference::System);
         assert_eq!(preferences.font, FontPreference::Geist);
         assert_eq!(preferences.accent, Accent::Neutral);
+        assert_eq!(preferences.sidebar_glass, 35);
         assert!(preferences.hidden_models.is_empty());
         assert_eq!(preferences.selected_model_key, None);
         assert!(preferences.model_by_source.is_empty());

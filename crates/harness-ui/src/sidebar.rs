@@ -93,12 +93,13 @@ pub fn sidebar(props: SidebarProps<'_>, actions: SidebarActions) -> impl IntoEle
         .flex_none()
         .flex()
         .flex_col()
-        .bg(theme
-            .rail
-            .hsla()
-            .opacity(1.0 - f32::from(glass.min(60)) / 200.0))
+        .bg(theme.rail.hsla().opacity(rail_opacity(glass)))
         .border_r_1()
-        .border_color(theme.line.hsla())
+        .border_color(if glass == 0 {
+            theme.line.hsla()
+        } else {
+            gpui::white().opacity(0.04 + f32::from(glass.min(60)) / 1_000.0)
+        })
         .child(if mode == SidebarMode::Inbox {
             sidebar_actions(
                 theme,
@@ -149,6 +150,10 @@ pub fn sidebar(props: SidebarProps<'_>, actions: SidebarActions) -> impl IntoEle
             panic_stopping,
             &actions,
         ))
+}
+
+fn rail_opacity(glass: u8) -> f32 {
+    (1.0 - f32::from(glass.min(60)) * 0.013).max(0.0)
 }
 
 fn sidebar_footer(

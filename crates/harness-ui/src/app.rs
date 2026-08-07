@@ -1410,8 +1410,6 @@ impl HarnessApp {
             .items_center()
             .px(px(12.0))
             .bg(theme.titlebar.hsla())
-            .border_b_1()
-            .border_color(theme.line.hsla())
             .on_mouse_down(MouseButton::Left, |event, window, _cx| {
                 if event.click_count == 2 {
                     window.titlebar_double_click();
@@ -1457,8 +1455,6 @@ impl HarnessApp {
             .w_full()
             .flex_none()
             .bg(self.theme.titlebar.hsla())
-            .border_b_1()
-            .border_color(self.theme.line.hsla())
             .on_mouse_down(MouseButton::Left, |event, window, _cx| {
                 if event.click_count == 2 {
                     window.titlebar_double_click();
@@ -1779,8 +1775,8 @@ fn sync_component_theme(theme: Theme, cx: &mut App) {
     component.font_size = px(13.5);
     component.mono_font_family = "Geist Mono".into();
     component.mono_font_size = px(12.5);
-    component.radius = px(8.0);
-    component.radius_lg = px(12.0);
+    component.radius = px(crate::RADIUS_MD);
+    component.radius_lg = px(crate::RADIUS_LG);
     component.background = theme.background.hsla();
     component.foreground = theme.response_text.hsla();
     component.border = theme.line.hsla();

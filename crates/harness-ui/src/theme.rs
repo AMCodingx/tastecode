@@ -5,6 +5,11 @@ use std::time::Duration;
 pub const RAIL_WIDTH: f32 = 248.0;
 pub const CHAT_WIDTH: f32 = 808.0;
 pub const TITLEBAR_HEIGHT: f32 = 34.0;
+pub const RADIUS_SM: f32 = 3.0;
+pub const RADIUS_MD: f32 = 5.0;
+pub const RADIUS_LG: f32 = 8.0;
+pub const RADIUS_XL: f32 = 10.0;
+pub const RADIUS_2XL: f32 = 20.0;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Motion {
@@ -309,6 +314,11 @@ mod tests {
         assert_eq!(RAIL_WIDTH, 248.0);
         assert_eq!(CHAT_WIDTH, 808.0);
         assert_eq!(TITLEBAR_HEIGHT, 34.0);
+        assert_eq!(RADIUS_SM, 3.0);
+        assert_eq!(RADIUS_MD, 5.0);
+        assert_eq!(RADIUS_LG, 8.0);
+        assert_eq!(RADIUS_XL, 10.0);
+        assert_eq!(RADIUS_2XL, 20.0);
         assert_eq!(Motion::WEB_PARITY.press, Duration::from_millis(140));
         assert_eq!(Motion::WEB_PARITY.fast, Duration::from_millis(180));
         assert_eq!(Motion::WEB_PARITY.slow, Duration::from_millis(260));
