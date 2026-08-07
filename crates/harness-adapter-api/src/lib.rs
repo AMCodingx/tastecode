@@ -5,8 +5,13 @@ use std::time::Duration;
 use thiserror::Error;
 use url::Url;
 
+mod session;
 mod transport;
 
+pub use session::{
+    API_CAPABILITIES, ApiAgentSession, ApiSessionOptions, ApiSessionState, ApiToolError,
+    ApiToolExecutor, ApiToolResult, ApiToolReview,
+};
 pub use transport::{
     ApiMessage, ApiRequest, ApiStreamEvent, ApiTool, ApiToolCall, ApiTransport, FinishReason,
     create_transport,
