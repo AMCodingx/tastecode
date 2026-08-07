@@ -1,7 +1,9 @@
+use crate::CursorControl;
 use crate::parse_cursor_models;
 use crate::session::{CursorCommand, CursorSession, CursorSessionState};
 use harness_agent::{
-    AgentError, AgentHandlers, AgentResult, AgentRuntime, AgentSession, StartOptions,
+    AgentError, AgentHandlers, AgentResult, AgentRuntime, AgentSession, ControlHandlers,
+    ProviderControl, StartOptions,
 };
 use harness_proc::{SpawnOptions, run_cli};
 use harness_protocol::{Model, Thread};
@@ -82,24 +84,32 @@ impl AgentRuntime for CursorRuntime {
     }
 
     fn list_models(&self) -> AgentResult<Vec<Model>> {
-        let args = command_args(&self.command, &["models"]);
-        let arg_refs = args.iter().map(OsString::as_os_str).collect::<Vec<_>>();
-        let output = run_cli(
-            self.command.program.as_os_str(),
-            &arg_refs,
-            &SpawnOptions {
-                environment: self.command.environment.clone(),
-                ..SpawnOptions::default()
-            },
-            MODELS_TIMEOUT,
-            MODELS_MAX_OUTPUT,
-        )
-        .map_err(|_| AgentError::Failed("Cursor model discovery failed".into()))?;
-        if output.code != Some(0) {
-            return Err(AgentError::Failed("Cursor model discovery failed".into()));
-        }
-        Ok(parse_cursor_models(&output.stdout))
+        list_cursor_models(&self.command)
     }
+
+    fn open_control(&self, handlers: ControlHandlers) -> AgentResult<Arc<dyn ProviderControl>> {
+        Ok(Arc::new(CursorControl::new(self.command.clone(), handlers)))
+    }
+}
+
+pub(crate) fn list_cursor_models(command: &CursorCommand) -> AgentResult<Vec<Model>> {
+    let args = command_args(command, &["models"]);
+    let arg_refs = args.iter().map(OsString::as_os_str).collect::<Vec<_>>();
+    let output = run_cli(
+        command.program.as_os_str(),
+        &arg_refs,
+        &SpawnOptions {
+            environment: command.environment.clone(),
+            ..SpawnOptions::default()
+        },
+        MODELS_TIMEOUT,
+        MODELS_MAX_OUTPUT,
+    )
+    .map_err(|_| AgentError::Failed("Cursor model discovery failed".into()))?;
+    if output.code != Some(0) {
+        return Err(AgentError::Failed("Cursor model discovery failed".into()));
+    }
+    Ok(parse_cursor_models(&output.stdout))
 }
 
 pub(crate) fn command_args(command: &CursorCommand, provider_args: &[&str]) -> Vec<OsString> {
