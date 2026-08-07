@@ -1,4 +1,5 @@
 use super::HarnessApp;
+use crate::chrome;
 use crate::client_state::SessionSearchRequest;
 use crate::zoom::px;
 use chrono::{DateTime, Local};
@@ -217,6 +218,7 @@ impl HarnessApp {
         let provider_open = self.session_search.filter_menu == Some(SearchFilterMenu::Provider);
 
         let search_row = div()
+            .relative()
             .h(px(47.0))
             .flex()
             .items_center()
@@ -225,6 +227,7 @@ impl HarnessApp {
             .border_b_1()
             .border_color(theme.line.hsla())
             .text_color(theme.text_3.hsla())
+            .child(chrome::inset_top_shade(theme))
             .child(super::icon("icons/search.svg", 15.0))
             .child(
                 Input::new(&self.session_search.input)
@@ -240,17 +243,18 @@ impl HarnessApp {
             .child(
                 div()
                     .id("session-search-close")
-                    .size(px(28.0))
+                    .size(px(22.0))
                     .flex()
                     .items_center()
                     .justify_center()
-                    .rounded(px(8.0))
+                    .rounded(px(3.0))
                     .cursor_pointer()
                     .hover(move |style| {
                         style
                             .bg(theme.surface_2.hsla())
                             .text_color(theme.text.hsla())
                     })
+                    .active(|style| style.size(px(20.68)).m(px(0.66)))
                     .on_click(cx.listener(|this, _event, _window, cx| {
                         this.close_session_search(cx);
                     }))
@@ -308,19 +312,18 @@ impl HarnessApp {
                     .justify_between()
                     .gap(px(8.0))
                     .px(px(10.0))
-                    .text_size(px(12.0))
+                    .text_size(px(12.5))
                     .text_color(theme.error.hsla())
                     .child(div().min_w(px(0.0)).flex_1().child(error))
                     .child(
                         div()
                             .id("session-search-retry")
                             .h(px(28.0))
-                            .px(px(9.0))
+                            .px(px(8.0))
                             .flex()
                             .items_center()
-                            .rounded(px(7.0))
-                            .border_1()
-                            .border_color(theme.line_strong.hsla())
+                            .rounded(px(3.0))
+                            .text_size(px(12.5))
                             .text_color(theme.text_2.hsla())
                             .cursor_pointer()
                             .hover(move |style| {
@@ -384,8 +387,8 @@ impl HarnessApp {
                             .px(px(10.0))
                             .flex()
                             .items_center()
-                            .rounded(px(7.0))
-                            .text_size(px(12.0))
+                            .rounded(px(3.0))
+                            .text_size(px(12.5))
                             .text_color(theme.text_2.hsla())
                             .opacity(if self.session_search.loading {
                                 0.5
@@ -432,11 +435,11 @@ impl HarnessApp {
                 .w(px(220.0))
                 .max_h(px(250.0))
                 .overflow_y_scroll()
-                .rounded(px(9.0))
+                .rounded(px(8.0))
                 .border_1()
-                .border_color(theme.line_strong.hsla())
-                .bg(theme.surface_2.hsla())
-                .shadow_lg()
+                .border_color(chrome::border(theme))
+                .bg(theme.rail.hsla())
+                .shadow(chrome::panel_shadows(theme))
                 .p(px(4.0))
                 .child(all)
                 .children(
@@ -476,11 +479,11 @@ impl HarnessApp {
                 .top(px(88.0))
                 .left(px(315.0))
                 .w(px(220.0))
-                .rounded(px(9.0))
+                .rounded(px(8.0))
                 .border_1()
-                .border_color(theme.line_strong.hsla())
-                .bg(theme.surface_2.hsla())
-                .shadow_lg()
+                .border_color(chrome::border(theme))
+                .bg(theme.rail.hsla())
+                .shadow(chrome::panel_shadows(theme))
                 .p(px(4.0))
                 .child(all)
                 .children(search_providers().into_iter().enumerate().map(
@@ -503,11 +506,12 @@ impl HarnessApp {
             .relative()
             .w_full()
             .max_w(px(700.0))
-            .rounded(px(12.0))
+            .rounded(px(8.0))
             .border_1()
-            .border_color(theme.line_strong.hsla())
+            .border_color(chrome::border(theme))
             .bg(theme.rail.hsla())
-            .shadow_lg()
+            .shadow(chrome::panel_shadows(theme))
+            .child(chrome::top_highlight(theme))
             .child(search_row)
             .child(filters)
             .child(
@@ -524,7 +528,14 @@ impl HarnessApp {
                 ("session-search-panel", self.session_search.open_transition),
                 Animation::new(theme.motion_duration(Duration::from_millis(220)))
                     .with_easing(crate::theme::web_ease_out),
-                |panel, delta| panel.top(px(6.0 * (1.0 - delta))).opacity(delta),
+                |panel, delta| {
+                    let scale = 0.99 + 0.01 * delta;
+                    panel
+                        .w(relative(scale))
+                        .max_w(px(700.0 * scale))
+                        .top(px(10.0 * (1.0 - delta)))
+                        .opacity(delta)
+                },
             );
 
         Some(
@@ -571,7 +582,7 @@ fn search_filter(
         .flex()
         .items_center()
         .gap(px(6.0))
-        .text_size(px(10.5))
+        .text_size(px(11.5))
         .text_color(theme.text_3.hsla())
         .child(label)
         .child(
@@ -583,25 +594,26 @@ fn search_filter(
                 .items_center()
                 .gap(px(7.0))
                 .px(px(7.0))
-                .rounded(px(6.0))
+                .rounded(px(3.0))
                 .border_1()
                 .border_color(if open {
                     theme.line_strong.hsla()
                 } else {
-                    theme.line.hsla()
+                    chrome::border(theme)
                 })
-                .bg(theme.surface.hsla())
+                .bg(chrome::raised(theme))
+                .shadow(chrome::shadows(theme))
                 .text_size(px(11.5))
                 .text_color(theme.text_2.hsla())
                 .cursor_pointer()
                 .hover(move |style| {
                     style
-                        .border_color(theme.line_strong.hsla())
+                        .border_color(chrome::hover_border(theme))
                         .text_color(theme.text.hsla())
                 })
                 .on_click(listener)
                 .child(div().min_w(px(0.0)).flex_1().truncate().child(value))
-                .child(super::icon("icons/chevron-down.svg", 11.0)),
+                .child(super::icon("icons/chevron-down.svg", 14.0)),
         )
         .into_any_element()
 }
@@ -648,7 +660,7 @@ fn search_empty(label: &'static str, theme: crate::Theme) -> AnyElement {
         .py(px(24.0))
         .px(px(10.0))
         .text_center()
-        .text_size(px(12.0))
+        .text_size(px(12.5))
         .text_color(theme.text_3.hsla())
         .child(label)
         .into_any_element()
@@ -681,23 +693,32 @@ fn search_result_row(
         .gap(px(3.0))
         .px(px(10.0))
         .py(px(9.0))
-        .rounded(px(8.0))
+        .rounded(px(5.0))
         .text_color(theme.text.hsla())
         .cursor_pointer()
-        .hover(move |style| style.bg(theme.surface_2.hsla()))
-        .active(|style| style.top(px(1.0)))
+        .hover(move |style| {
+            style
+                .bg(chrome::raised(theme))
+                .shadow(chrome::shadows(theme))
+        })
+        .active(move |style| {
+            style
+                .top(px(1.0))
+                .bg(chrome::recessed(theme))
+                .shadow(Vec::new())
+        })
         .on_click(listener)
         .child(
             div()
                 .truncate()
                 .text_size(px(13.5))
-                .font_weight(FontWeight::MEDIUM)
+                .font_weight(FontWeight(540.0))
                 .child(result.thread_title),
         )
         .child(
             div()
                 .truncate()
-                .text_size(px(10.5))
+                .text_size(px(11.5))
                 .text_color(theme.text_3.hsla())
                 .child(format!(
                     "{} · {} · {}",
@@ -713,7 +734,7 @@ fn search_result_row(
                 .flex()
                 .overflow_hidden()
                 .whitespace_nowrap()
-                .text_size(px(12.0))
+                .text_size(px(12.5))
                 .line_height(relative(1.45))
                 .text_color(theme.text_2.hsla())
                 .children(snippet),

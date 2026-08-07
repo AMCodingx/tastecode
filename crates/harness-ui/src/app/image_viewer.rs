@@ -305,7 +305,7 @@ fn image_viewer_action(
             button
                 .cursor_pointer()
                 .hover(|style| style.bg(gpui::white()))
-                .active(|style| style.opacity(0.86))
+                .active(|style| style.size(px(41.36)).m(px(1.32)))
                 .on_click(on_click)
         })
         .child(svg().path(icon).size(px(icon_size)))

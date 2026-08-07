@@ -2,6 +2,7 @@ mod accessibility;
 mod app;
 mod assets;
 mod chat;
+mod chrome;
 mod client_state;
 mod model_selection;
 mod preferences;

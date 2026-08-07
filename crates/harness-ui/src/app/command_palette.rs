@@ -1,4 +1,5 @@
 use super::HarnessApp;
+use crate::chrome;
 use crate::shortcuts::{
     COMMAND_PALETTE, FOCUS_COMPOSER, NEW_CHAT, NEW_PROJECT, SEARCH_SESSIONS, SETTINGS,
     SWITCH_PROJECT, TOGGLE_SIDEBAR, label, matches,
@@ -6,7 +7,7 @@ use crate::shortcuts::{
 use crate::zoom::px;
 use gpui::{
     Animation, AnimationExt, AnyElement, Context, Entity, Focusable, FontWeight, KeyDownEvent,
-    ScrollHandle, SharedString, Window, div, prelude::*,
+    ScrollHandle, SharedString, Window, div, prelude::*, relative,
 };
 use gpui_component::input::{Input, InputState};
 use std::time::Duration;
@@ -506,6 +507,7 @@ impl HarnessApp {
             .max(px(120.0))
             .min(px(360.0));
         let search = div()
+            .relative()
             .h(px(47.0))
             .flex()
             .items_center()
@@ -514,6 +516,7 @@ impl HarnessApp {
             .border_b_1()
             .border_color(theme.line.hsla())
             .text_color(theme.text_3.hsla())
+            .child(chrome::inset_top_shade(theme))
             .child(super::icon("icons/search.svg", 15.0))
             .child(
                 Input::new(&self.command_palette.input)
@@ -573,10 +576,17 @@ impl HarnessApp {
                                 .gap(px(10.0))
                                 .px(px(8.0))
                                 .py(px(7.0))
-                                .rounded(px(8.0))
-                                .when(index == selected, |row| row.bg(theme.surface_2.hsla()))
+                                .rounded(px(5.0))
+                                .when(index == selected, |row| {
+                                    row.bg(palette_item_background(theme))
+                                        .shadow(palette_item_shadows(theme))
+                                })
                                 .cursor_pointer()
-                                .hover(move |style| style.bg(theme.surface_2.hsla()))
+                                .hover(move |style| {
+                                    style
+                                        .bg(palette_item_background(theme))
+                                        .shadow(palette_item_shadows(theme))
+                                })
                                 .on_mouse_move(cx.listener(move |this, _event, _window, cx| {
                                     if this.command_palette.selected != hover_index {
                                         this.command_palette.selected = hover_index;
@@ -626,11 +636,12 @@ impl HarnessApp {
             .w_full()
             .max_w(px(560.0))
             .overflow_hidden()
-            .rounded(px(12.0))
+            .rounded(px(8.0))
             .border_1()
-            .border_color(theme.line_strong.hsla())
+            .border_color(chrome::border(theme))
             .bg(theme.rail.hsla())
-            .shadow_lg()
+            .shadow(chrome::panel_shadows(theme))
+            .child(chrome::top_highlight(theme))
             .child(search)
             .child(results)
             .with_animation(
@@ -640,7 +651,14 @@ impl HarnessApp {
                 ),
                 Animation::new(theme.motion_duration(Duration::from_millis(220)))
                     .with_easing(crate::theme::web_ease_out),
-                |panel, delta| panel.top(px(6.0 * (1.0 - delta))).opacity(delta),
+                |panel, delta| {
+                    let scale = 0.99 + 0.01 * delta;
+                    panel
+                        .w(relative(scale))
+                        .max_w(px(560.0 * scale))
+                        .top(px(10.0 * (1.0 - delta)))
+                        .opacity(delta)
+                },
             );
 
         Some(
@@ -672,6 +690,22 @@ impl HarnessApp {
                 .child(panel)
                 .into_any_element(),
         )
+    }
+}
+
+fn palette_item_background(theme: crate::Theme) -> gpui::Background {
+    if theme.mode == crate::ThemeMode::Light {
+        chrome::raised_hover(theme)
+    } else {
+        theme.surface_2.hsla().into()
+    }
+}
+
+fn palette_item_shadows(theme: crate::Theme) -> Vec<gpui::BoxShadow> {
+    if theme.mode == crate::ThemeMode::Light {
+        chrome::shadows(theme)
+    } else {
+        Vec::new()
     }
 }
 
