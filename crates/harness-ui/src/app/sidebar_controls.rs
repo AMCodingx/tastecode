@@ -1136,12 +1136,12 @@ impl HarnessApp {
                     .border_1()
                     .border_color(theme.line_strong.hsla())
                     .bg(theme.rail.hsla())
-                    .shadow(chrome::panel_shadows(theme))
+                    .shadow(chrome::modal_shadows(theme))
                     .child(
                         div()
                             .w_full()
                             .flex()
-                            .items_start()
+                            .items_center()
                             .justify_between()
                             .gap(px(16.0))
                             .px(px(16.0))
@@ -1154,7 +1154,7 @@ impl HarnessApp {
                                     .child(
                                         div()
                                             .text_size(px(15.0))
-                                            .line_height(relative(1.25))
+                                            .line_height(relative(1.55))
                                             .font_weight(FontWeight(560.0))
                                             .text_color(theme.text.hsla())
                                             .child("This checkout has uncommitted work"),
@@ -1167,6 +1167,7 @@ impl HarnessApp {
                                             .gap(px(5.0))
                                             .font_family("Geist Mono")
                                             .text_size(px(11.5))
+                                            .line_height(relative(1.55))
                                             .text_color(theme.text_3.hsla())
                                             .child(super::icon("icons/git-branch.svg", 12.0))
                                             .child(
@@ -1180,14 +1181,20 @@ impl HarnessApp {
                             .child(
                                 div()
                                     .id("checkout-discard-close")
-                                    .size(px(28.0))
+                                    .size(px(22.0))
                                     .flex_none()
                                     .flex()
                                     .items_center()
                                     .justify_center()
-                                    .rounded(px(8.0))
+                                    .rounded(px(3.0))
+                                    .text_color(theme.text_3.hsla())
                                     .cursor_pointer()
-                                    .hover(move |style| style.bg(theme.surface_2.hsla()))
+                                    .hover(move |style| {
+                                        style
+                                            .bg(theme.surface_2.hsla())
+                                            .text_color(theme.text.hsla())
+                                    })
+                                    .active(|style| style.top(px(1.0)))
                                     .on_click(cx.listener(|this, _event, _window, cx| {
                                         this.close_sidebar_controls(cx);
                                     }))
@@ -1381,35 +1388,40 @@ fn checkout_dialog_button(
 ) -> AnyElement {
     div()
         .id(id)
-        .h(px(30.0))
         .flex()
         .items_center()
         .justify_center()
-        .px(px(11.0))
-        .rounded(px(8.0))
-        .border_1()
-        .border_color(if destructive {
-            theme.error.hsla()
-        } else {
-            theme.line_strong.hsla()
-        })
+        .px(px(if destructive { 15.0 } else { 8.0 }))
+        .py(px(if destructive { 7.0 } else { 4.0 }))
+        .rounded(px(if destructive { 5.0 } else { 3.0 }))
         .bg(if destructive {
             theme.error.hsla()
         } else {
-            theme.surface.hsla()
+            gpui::transparent_black()
         })
-        .text_size(px(11.5))
-        .font_weight(FontWeight::MEDIUM)
+        .text_size(px(if destructive { 13.5 } else { 12.5 }))
+        .line_height(relative(1.55))
+        .font_weight(if destructive {
+            FontWeight(540.0)
+        } else {
+            FontWeight::NORMAL
+        })
         .text_color(if destructive {
-            gpui::white()
+            gpui::rgb(0xfefefe).into()
         } else {
             theme.text_2.hsla()
         })
-        .opacity(if disabled { 0.5 } else { 1.0 })
+        .opacity(if disabled && destructive { 0.28 } else { 1.0 })
         .when(!disabled, |button| {
             button
                 .cursor_pointer()
-                .hover(|style| style.opacity(0.9))
+                .when(!destructive, |button| {
+                    button.hover(move |style| {
+                        style
+                            .bg(theme.surface_3.hsla())
+                            .text_color(theme.text.hsla())
+                    })
+                })
                 .active(|style| style.top(px(1.0)))
                 .on_click(listener)
         })

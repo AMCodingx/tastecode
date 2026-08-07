@@ -1,6 +1,8 @@
 use super::HarnessApp;
 use crate::chat::{StageProject, StageSettings};
+use crate::chrome;
 use crate::client_state::{RollbackOperation, UsageScope, WorkspaceOperation};
+use crate::theme::ThemeMode;
 use crate::zoom::px;
 use chrono::{DateTime, Local};
 use gpui::{
@@ -10,6 +12,7 @@ use gpui::{
 use harness_protocol::{
     CheckpointSummary, PanicStopSessionResult, UsageLimit, UsageSummaryResult, WorkspaceInfo,
 };
+use std::time::Duration;
 
 #[derive(Default)]
 pub(super) struct StageControlsState {
@@ -673,7 +676,6 @@ impl HarnessApp {
                 let value = checkpoint.clone();
                 div()
                     .id(("rollback-checkpoint", index))
-                    .min_h(px(51.0))
                     .w_full()
                     .flex()
                     .items_center()
@@ -687,7 +689,6 @@ impl HarnessApp {
                     } else {
                         theme.text_2.hsla()
                     })
-                    .opacity(if disabled && !loading { 0.5 } else { 1.0 })
                     .when(!disabled, |row| {
                         row.cursor_pointer()
                             .hover(move |style| style.bg(theme.surface_2.hsla()))
@@ -705,7 +706,8 @@ impl HarnessApp {
                             .child(
                                 div()
                                     .truncate()
-                                    .text_size(px(12.0))
+                                    .text_size(px(12.5))
+                                    .line_height(relative(1.55))
                                     .font_weight(FontWeight::MEDIUM)
                                     .child(format!("Before “{}”", checkpoint.label)),
                             )
@@ -713,17 +715,27 @@ impl HarnessApp {
                                 div()
                                     .mt(px(2.0))
                                     .truncate()
-                                    .text_size(px(10.0))
+                                    .text_size(px(11.5))
+                                    .line_height(relative(1.55))
                                     .text_color(theme.text_3.hsla())
                                     .child(format_checkpoint_time(checkpoint.created_at)),
                             ),
                     )
                     .when(loading, |row| {
                         row.child(
-                            div()
-                                .text_size(px(13.0))
+                            svg()
+                                .path("icons/loader-circle.svg")
+                                .size(px(11.0))
                                 .text_color(theme.text_3.hsla())
-                                .child("…"),
+                                .with_animation(
+                                    ("rollback-spinner", checkpoint.id),
+                                    theme.repeating_animation(Duration::from_millis(700)),
+                                    |spinner, delta| {
+                                        spinner.with_transformation(gpui::Transformation::rotate(
+                                            gpui::percentage(delta),
+                                        ))
+                                    },
+                                ),
                         )
                     })
             });
@@ -765,16 +777,16 @@ impl HarnessApp {
                         .max_w(px(520.0))
                         .max_h(relative(1.0))
                         .overflow_y_scroll()
-                        .rounded(px(16.0))
+                        .rounded(px(10.0))
                         .border_1()
                         .border_color(theme.line_strong.hsla())
                         .bg(theme.rail.hsla())
-                        .shadow_lg()
+                        .shadow(chrome::modal_shadows(theme))
                         .child(
                             div()
                                 .min_h(px(71.0))
                                 .flex()
-                                .items_start()
+                                .items_center()
                                 .justify_between()
                                 .px(px(16.0))
                                 .pt(px(14.0))
@@ -786,14 +798,16 @@ impl HarnessApp {
                                         .child(
                                             div()
                                                 .text_size(px(15.0))
-                                                .font_weight(FontWeight::SEMIBOLD)
+                                                .line_height(relative(1.55))
+                                                .font_weight(FontWeight(560.0))
                                                 .text_color(theme.text.hsla())
                                                 .child("Return to a checkpoint"),
                                         )
                                         .child(
                                             div()
-                                                .mt(px(4.0))
-                                                .text_size(px(12.0))
+                                                .mt(px(3.0))
+                                                .text_size(px(12.5))
+                                                .line_height(relative(1.55))
                                                 .text_color(theme.text_3.hsla())
                                                 .child(
                                                     "Files and conversation move back together.",
@@ -803,13 +817,20 @@ impl HarnessApp {
                                 .child(
                                     div()
                                         .id("rollback-close")
-                                        .size(px(28.0))
+                                        .size(px(22.0))
+                                        .flex_none()
                                         .flex()
                                         .items_center()
                                         .justify_center()
-                                        .rounded(px(8.0))
+                                        .rounded(px(3.0))
+                                        .text_color(theme.text_3.hsla())
                                         .cursor_pointer()
-                                        .hover(move |style| style.bg(theme.surface_2.hsla()))
+                                        .hover(move |style| {
+                                            style
+                                                .bg(theme.surface_2.hsla())
+                                                .text_color(theme.text.hsla())
+                                        })
+                                        .active(|style| style.top(px(1.0)))
                                         .on_click(cx.listener(|this, _event, _window, cx| {
                                             this.close_rollback(cx);
                                         }))
@@ -821,6 +842,9 @@ impl HarnessApp {
                                 .id("rollback-checkpoint-list")
                                 .max_h(px(260.0))
                                 .overflow_y_scroll()
+                                .flex()
+                                .flex_col()
+                                .gap(px(3.0))
                                 .px(px(10.0))
                                 .pt(px(4.0))
                                 .pb(px(10.0))
@@ -829,7 +853,7 @@ impl HarnessApp {
                         .when_some(inspection, |panel, inspection| panel.child(inspection))
                         .with_animation(
                             ("rollback-panel", rollback.transition),
-                            Animation::new(theme.motion.slow)
+                            Animation::new(theme.motion_duration(Duration::from_millis(220)))
                                 .with_easing(crate::theme::web_ease_out),
                             |panel, delta| panel.top(px(8.0 * (1.0 - delta))).opacity(delta),
                         ),
@@ -853,7 +877,8 @@ impl HarnessApp {
             .px(px(16.0))
             .pt(px(12.0))
             .pb(px(16.0))
-            .text_size(px(12.0))
+            .text_size(px(12.5))
+            .line_height(relative(1.55))
             .text_color(theme.text_2.hsla())
             .child(if count == 0 {
                 SharedString::from(
@@ -872,14 +897,14 @@ impl HarnessApp {
                         .mt(px(8.0))
                         .max_h(px(120.0))
                         .overflow_y_scroll()
-                        .pl(px(8.0))
+                        .pl(px(24.0))
                         .font_family("Geist Mono")
-                        .text_size(px(10.0))
+                        .text_size(px(11.5))
+                        .line_height(relative(1.55))
                         .text_color(theme.text.hsla())
                         .children(files.into_iter().enumerate().map(|(index, file)| {
                             div()
                                 .id(("rollback-file", index))
-                                .h(px(20.0))
                                 .truncate()
                                 .child(format!("• {file}"))
                         })),
@@ -1018,37 +1043,46 @@ fn modal_button(
     theme: crate::theme::Theme,
     action: Option<impl Fn(&gpui::ClickEvent, &mut gpui::Window, &mut gpui::App) + 'static>,
 ) -> AnyElement {
+    let on_primary = match theme.mode {
+        ThemeMode::Dark => gpui::rgb(0x101010).into(),
+        ThemeMode::Light => gpui::rgb(0xfefefe).into(),
+    };
     div()
         .id(id)
-        .h(px(30.0))
         .flex()
         .items_center()
         .justify_center()
-        .px(px(11.0))
-        .rounded(px(8.0))
-        .border_1()
-        .border_color(if primary {
-            theme.text.hsla()
-        } else {
-            theme.line_strong.hsla()
-        })
+        .px(px(if primary { 15.0 } else { 8.0 }))
+        .py(px(if primary { 7.0 } else { 4.0 }))
+        .rounded(px(if primary { 5.0 } else { 3.0 }))
         .bg(if primary {
             theme.text.hsla()
         } else {
-            theme.surface.hsla()
+            gpui::transparent_black()
         })
-        .text_size(px(11.5))
-        .font_weight(FontWeight::MEDIUM)
+        .text_size(px(if primary { 13.5 } else { 12.5 }))
+        .line_height(relative(1.55))
+        .font_weight(if primary {
+            FontWeight(540.0)
+        } else {
+            FontWeight::NORMAL
+        })
         .text_color(if primary {
-            theme.background.hsla()
+            on_primary
         } else {
             theme.text_2.hsla()
         })
-        .opacity(if disabled { 0.5 } else { 1.0 })
+        .opacity(if disabled && primary { 0.28 } else { 1.0 })
         .when(!disabled, |button| {
             button
                 .cursor_pointer()
-                .hover(|style| style.opacity(0.9))
+                .when(!primary, |button| {
+                    button.hover(move |style| {
+                        style
+                            .bg(theme.surface_3.hsla())
+                            .text_color(theme.text.hsla())
+                    })
+                })
                 .active(|style| style.top(px(1.0)))
                 .when_some(action, |button, action| button.on_click(action))
         })
