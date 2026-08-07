@@ -4,6 +4,7 @@ use crate::model_connections::ModelConnectionStore;
 use harness_adapter_api::{ApiRuntime, ApiToolFactory};
 use harness_adapter_claude_code::ClaudeCodeRuntime;
 use harness_adapter_codex::CodexRuntime;
+use harness_adapter_cursor::CursorRuntime;
 use harness_agent::{
     AgentError, AgentHandlers, AgentRuntime, AgentSession, AgentSessionState, ControlHandlers,
     CredentialValues, ProviderControl, StartOptions, TurnOptions,
@@ -38,6 +39,7 @@ pub(crate) trait RuntimeRegistry: Send + Sync {
 pub(crate) struct NativeRuntimes {
     codex: Arc<CodexRuntime>,
     claude: Arc<ClaudeCodeRuntime>,
+    cursor: Arc<CursorRuntime>,
     model_connections: Arc<Mutex<ModelConnectionStore>>,
     credentials: Arc<dyn CredentialStore>,
     api_tools: Arc<ApiWorkspaceToolFactory>,
@@ -51,6 +53,7 @@ impl NativeRuntimes {
         Self {
             codex: Arc::new(CodexRuntime::default()),
             claude: Arc::new(ClaudeCodeRuntime::default()),
+            cursor: Arc::new(CursorRuntime::default()),
             model_connections,
             credentials,
             api_tools: Arc::new(ApiWorkspaceToolFactory),
@@ -77,6 +80,12 @@ impl RuntimeRegistry for NativeRuntimes {
             }
             ProviderId::ClaudeCode => Err(AgentError::Failed(
                 "Claude Code does not accept an ACP agent or model connection".into(),
+            )),
+            ProviderId::Cursor if agent.is_none() && connection_id.is_none() => {
+                Ok(self.cursor.clone())
+            }
+            ProviderId::Cursor => Err(AgentError::Failed(
+                "Cursor does not accept an ACP agent or model connection".into(),
             )),
             ProviderId::Api if agent.is_none() => {
                 let connection_id = connection_id.ok_or_else(|| {

@@ -11,6 +11,7 @@ dirs.workspace = true
 harness-adapter-codex = { path = "../harness-adapter-codex" }
 harness-adapter-api = { path = "../harness-adapter-api" }
 harness-adapter-claude-code = { path = "../harness-adapter-claude-code" }
+harness-adapter-cursor = { path = "../harness-adapter-cursor" }
 harness-agent = { path = "../harness-agent" }
 harness-credentials = { path = "../harness-credentials" }
 harness-protocol = { path = "../harness-protocol" }

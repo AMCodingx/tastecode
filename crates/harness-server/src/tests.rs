@@ -403,6 +403,43 @@ fn native_claude_runtime_exposes_the_captured_model_catalog() {
 }
 
 #[test]
+fn native_cursor_runtime_starts_and_persists_a_provider_thread() {
+    let (directory, server, _credentials) = start_test_server_with_native_runtimes();
+    let workspace = directory.path().join("workspace");
+    fs::create_dir(&workspace).unwrap();
+    let mut socket = connect_native(&server, "");
+    assert_welcome(&mut socket);
+
+    send_request(
+        &mut socket,
+        "start",
+        "thread.start",
+        json!({
+            "provider": "cursor",
+            "workspacePath": workspace.to_string_lossy(),
+            "model": "composer-2.5",
+            "approval": "ask"
+        }),
+    );
+    let (_, started) = read_until_response(&mut socket, "start");
+    let thread_id = started["result"]["threadId"].as_str().unwrap();
+    assert!(thread_id.starts_with("cursor-"));
+
+    send_request(&mut socket, "projects", "projects.list", json!({}));
+    let projects = read_value(&mut socket);
+    let session = projects["result"]["projects"][0]["sessions"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|session| session["id"] == thread_id)
+        .unwrap();
+    assert_eq!(session["provider"], "cursor");
+
+    socket.close(None).unwrap();
+    server.close().unwrap();
+}
+
+#[test]
 fn live_agent_routes_persist_stream_queue_and_resume_draining() {
     let runtime = Arc::new(FakeRuntime::default());
     let registry = Arc::new(FakeRuntimes {
