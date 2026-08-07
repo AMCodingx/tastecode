@@ -124,12 +124,30 @@ impl AssetSource for HarnessAssets {
 
 pub fn register_fonts(cx: &mut App) -> Result<()> {
     cx.text_system().add_fonts(vec![
-        Cow::Borrowed(include_bytes!("../assets/fonts/Geist-Regular.ttf")),
-        Cow::Borrowed(include_bytes!("../assets/fonts/Geist-Medium.ttf")),
-        Cow::Borrowed(include_bytes!("../assets/fonts/Geist-SemiBold.ttf")),
-        Cow::Borrowed(include_bytes!("../assets/fonts/Geist-Bold.ttf")),
-        Cow::Borrowed(include_bytes!("../assets/fonts/GeistMono-Regular.ttf")),
-        Cow::Borrowed(include_bytes!("../assets/fonts/GeistMono-Medium.ttf")),
+        Cow::Borrowed(include_bytes!("../assets/fonts/Geist-400.ttf")),
+        Cow::Borrowed(include_bytes!("../assets/fonts/Geist-500.ttf")),
+        Cow::Borrowed(include_bytes!("../assets/fonts/Geist-520.ttf")),
+        Cow::Borrowed(include_bytes!("../assets/fonts/Geist-530.ttf")),
+        Cow::Borrowed(include_bytes!("../assets/fonts/Geist-540.ttf")),
+        Cow::Borrowed(include_bytes!("../assets/fonts/Geist-550.ttf")),
+        Cow::Borrowed(include_bytes!("../assets/fonts/Geist-560.ttf")),
+        Cow::Borrowed(include_bytes!("../assets/fonts/Geist-570.ttf")),
+        Cow::Borrowed(include_bytes!("../assets/fonts/Geist-580.ttf")),
+        Cow::Borrowed(include_bytes!("../assets/fonts/Geist-600.ttf")),
+        Cow::Borrowed(include_bytes!("../assets/fonts/Geist-680.ttf")),
+        Cow::Borrowed(include_bytes!("../assets/fonts/Geist-700.ttf")),
+        Cow::Borrowed(include_bytes!("../assets/fonts/GeistMono-400.ttf")),
+        Cow::Borrowed(include_bytes!("../assets/fonts/GeistMono-500.ttf")),
+        Cow::Borrowed(include_bytes!("../assets/fonts/GeistMono-520.ttf")),
+        Cow::Borrowed(include_bytes!("../assets/fonts/GeistMono-530.ttf")),
+        Cow::Borrowed(include_bytes!("../assets/fonts/GeistMono-540.ttf")),
+        Cow::Borrowed(include_bytes!("../assets/fonts/GeistMono-550.ttf")),
+        Cow::Borrowed(include_bytes!("../assets/fonts/GeistMono-560.ttf")),
+        Cow::Borrowed(include_bytes!("../assets/fonts/GeistMono-570.ttf")),
+        Cow::Borrowed(include_bytes!("../assets/fonts/GeistMono-580.ttf")),
+        Cow::Borrowed(include_bytes!("../assets/fonts/GeistMono-600.ttf")),
+        Cow::Borrowed(include_bytes!("../assets/fonts/GeistMono-680.ttf")),
+        Cow::Borrowed(include_bytes!("../assets/fonts/GeistMono-700.ttf")),
     ])?;
     Ok(())
 }
