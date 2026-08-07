@@ -504,11 +504,11 @@ impl HarnessApp {
             .min(commands.len().saturating_sub(1));
         let panel_top = (window.viewport_size().height * 0.13).min(px(104.0));
         let results_height = (window.viewport_size().height - px(200.0))
-            .max(px(120.0))
+            .max(px(0.0))
             .min(px(360.0));
         let search = div()
             .relative()
-            .h(px(47.0))
+            .h(px(44.0))
             .flex()
             .items_center()
             .gap(px(9.0))
@@ -524,19 +524,27 @@ impl HarnessApp {
                     .appearance(false)
                     .bordered(false)
                     .cleanable(false)
+                    .px(px(0.0))
+                    .py(px(0.0))
+                    .line_height(relative(1.55))
                     .text_size(px(13.5)),
             );
 
         let results = if commands.is_empty() {
             div()
-                .min_h(px(66.0))
-                .flex()
-                .items_center()
-                .justify_center()
-                .px(px(10.0))
-                .text_size(px(12.5))
-                .text_color(theme.text_3.hsla())
-                .child("No matching commands.")
+                .id("command-palette-results")
+                .max_h(results_height)
+                .overflow_y_scroll()
+                .p(px(4.0))
+                .child(
+                    div()
+                        .px(px(10.0))
+                        .py(px(24.0))
+                        .text_center()
+                        .text_size(px(12.5))
+                        .text_color(theme.text_3.hsla())
+                        .child("No matching commands."),
+                )
                 .into_any_element()
         } else {
             let groups: Vec<_> = commands.iter().map(|command| command.group).collect();
@@ -620,7 +628,7 @@ impl HarnessApp {
                                             .ml_auto()
                                             .font_family("Geist Mono")
                                             .text_size(px(10.5))
-                                            .font_weight(FontWeight::NORMAL)
+                                            .font_weight(FontWeight(450.0))
                                             .text_color(theme.text_3.hsla())
                                             .child(shortcut),
                                     )
