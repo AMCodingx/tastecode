@@ -9,7 +9,7 @@ use thiserror::Error;
 const POLL_INTERVAL: Duration = Duration::from_millis(10);
 
 #[derive(Debug, Error)]
-pub(crate) enum ProcessError {
+pub enum ProcessError {
     #[error("could not start {program}: {source}")]
     Start {
         program: String,
@@ -28,7 +28,7 @@ pub(crate) enum ProcessError {
     },
 }
 
-pub(crate) fn run(
+pub fn run(
     program: &OsStr,
     args: &[&OsStr],
     cwd: &Path,
@@ -38,7 +38,7 @@ pub(crate) fn run(
     run_inner(program, args, cwd, timeout, max_output, &[], true)
 }
 
-pub(crate) fn run_with_environment(
+pub fn run_with_environment(
     program: &OsStr,
     args: &[&OsStr],
     cwd: &Path,
@@ -49,7 +49,7 @@ pub(crate) fn run_with_environment(
     run_inner(program, args, cwd, timeout, max_output, environment, true)
 }
 
-pub(crate) fn run_untrimmed(
+pub fn run_untrimmed(
     program: &OsStr,
     args: &[&OsStr],
     cwd: &Path,

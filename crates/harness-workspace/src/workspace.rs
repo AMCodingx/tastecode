@@ -1,4 +1,4 @@
-use crate::process::{ProcessError, run};
+use harness_proc::{ProcessError, run};
 use harness_protocol::WorkspaceInfo;
 use std::ffi::OsStr;
 use std::path::Path;

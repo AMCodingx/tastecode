@@ -1,4 +1,4 @@
-use crate::process::{ProcessError, run, run_untrimmed, run_with_environment};
+use harness_proc::{ProcessError, run, run_untrimmed, run_with_environment};
 use std::collections::VecDeque;
 use std::ffi::OsStr;
 use std::path::{Component, Path, PathBuf};
