@@ -6,16 +6,19 @@ use ::markdown::{ParseOptions, mdast::Node};
 use base64::{Engine as _, engine::general_purpose::STANDARD};
 use futures::AsyncReadExt as _;
 use gpui::{
-    Animation, AnimationExt, AnyElement, App, ClipboardItem, Entity, FontWeight, Image,
-    ImageFormat, ImageSource, ObjectFit, SharedString, StyleRefinement, Styled, StyledImage,
-    StyledText, Window, div, img, prelude::*, relative, rems, svg,
+    Animation, AnimationExt, AnyElement, App, BorderStyle, Bounds, ClipboardItem, CursorStyle,
+    Edges, Element, ElementId, Entity, FocusHandle, FontWeight, GlobalElementId, Hitbox,
+    HitboxBehavior, Image, ImageFormat, ImageSource, InspectorElementId, LayoutId, MouseButton,
+    ObjectFit, Pixels, Point, SharedString, StyleRefinement, Styled, StyledImage, StyledText,
+    TextLayout, Window, div, img, point, prelude::*, quad, relative, rems, svg,
 };
 use gpui_component::highlighter::SyntaxHighlighter;
 use gpui_component::scroll::ScrollableElement;
 use gpui_component::text::{TextView, TextViewStyle};
 use gpui_component::{ActiveTheme, Rope};
 use std::cell::RefCell;
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
+use std::ops::Range;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::sync::Arc;
@@ -115,6 +118,17 @@ impl ChatView {
         let overlay = self.markdown_table_overlay.as_ref()?;
         let definitions = HashMap::new();
         let view = cx.entity();
+        let selection = window.use_keyed_state(
+            SharedString::from(format!(
+                "markdown-table-fullscreen-selection:{}",
+                overlay.id
+            )),
+            cx,
+            |_, cx| MarkdownSelectionState::new(overlay.source.clone(), cx),
+        );
+        selection.update(cx, |selection, _| {
+            selection.set_source(overlay.source.clone());
+        });
         let context = RenderContext {
             id: "markdown-table-fullscreen",
             raw: "",
@@ -123,6 +137,7 @@ impl ChatView {
             definitions: &definitions,
             theme: self.theme,
             view: view.clone(),
+            selection: selection.clone(),
             reveal_ordinals: RefCell::new(HashMap::new()),
         };
         let rows = render_table_rows(&overlay.table, &context);
@@ -159,6 +174,19 @@ impl ChatView {
                 view.update(cx, |this, cx| this.close_markdown_table_overlay(cx));
             },
         );
+        let table = selectable_markdown_region(
+            div()
+                .id("markdown-table-fullscreen-scroll")
+                .flex_1()
+                .min_h(px(0.0))
+                .overflow_scroll()
+                .px(px(16.0))
+                .pb(px(16.0))
+                .text_size(px(12.5))
+                .child(div().w_full().children(rows)),
+            selection,
+            cx,
+        );
 
         Some(
             div()
@@ -182,17 +210,7 @@ impl ChatView {
                         .child(controls)
                         .child(close),
                 )
-                .child(
-                    div()
-                        .id("markdown-table-fullscreen-scroll")
-                        .flex_1()
-                        .min_h(px(0.0))
-                        .overflow_scroll()
-                        .px(px(16.0))
-                        .pb(px(16.0))
-                        .text_size(px(12.5))
-                        .child(div().w_full().children(rows)),
-                )
+                .child(table)
                 .into_any_element(),
         )
     }
@@ -215,6 +233,12 @@ pub(super) fn markdown_view(
     cx: &mut App,
 ) -> AnyElement {
     let theme = view.read(cx).theme;
+    let selection = window.use_keyed_state(
+        SharedString::from(format!("{id}/selection")),
+        cx,
+        |_, cx| MarkdownSelectionState::new(text.clone(), cx),
+    );
+    selection.update(cx, |selection, _| selection.set_source(text.clone()));
     let parsed = ::markdown::to_mdast(&text, &ParseOptions::gfm());
     let Ok(Node::Root(root)) = parsed else {
         return fallback_markdown(id, text, theme, window, cx);
@@ -228,6 +252,7 @@ pub(super) fn markdown_view(
         definitions: &definitions,
         theme,
         view,
+        selection: selection.clone(),
         reveal_ordinals: RefCell::new(HashMap::new()),
     };
     let mut blocks = Vec::with_capacity(root.children.len());
@@ -253,16 +278,197 @@ pub(super) fn markdown_view(
         visible_index += 1;
     }
 
-    div()
-        .id(SharedString::from(id))
-        .w_full()
-        .max_w(px(690.0))
-        .font_family("Geist")
-        .text_size(px(15.0))
-        .line_height(relative(1.52))
-        .text_color(theme.response_text.hsla())
-        .children(blocks)
-        .into_any_element()
+    selectable_markdown_region(
+        div()
+            .id(SharedString::from(id))
+            .w_full()
+            .max_w(px(690.0))
+            .font_family("Geist")
+            .text_size(px(15.0))
+            .line_height(relative(1.52))
+            .text_color(theme.response_text.hsla())
+            .children(blocks),
+        selection,
+        cx,
+    )
+    .into_any_element()
+}
+
+#[derive(Clone)]
+struct MarkdownSelectionSegment {
+    source_start: usize,
+    source_end: usize,
+    text: SharedString,
+    selected: Option<Range<usize>>,
+    space_after: bool,
+}
+
+struct MarkdownSelectionState {
+    focus: FocusHandle,
+    source: String,
+    start: Option<Point<Pixels>>,
+    end: Option<Point<Pixels>>,
+    is_selecting: bool,
+    segments: BTreeMap<String, MarkdownSelectionSegment>,
+}
+
+impl MarkdownSelectionState {
+    fn new(source: String, cx: &mut gpui::Context<Self>) -> Self {
+        Self {
+            focus: cx.focus_handle(),
+            source,
+            start: None,
+            end: None,
+            is_selecting: false,
+            segments: BTreeMap::new(),
+        }
+    }
+
+    fn set_source(&mut self, source: String) {
+        if self.source != source {
+            self.source = source;
+            self.clear();
+            self.segments.clear();
+        }
+    }
+
+    fn start(&mut self, position: Point<Pixels>) {
+        self.start = Some(position);
+        self.end = Some(position);
+        self.is_selecting = true;
+        for segment in self.segments.values_mut() {
+            segment.selected = None;
+        }
+    }
+
+    fn update(&mut self, position: Point<Pixels>) {
+        if self.is_selecting {
+            self.end = Some(position);
+        }
+    }
+
+    fn finish(&mut self) {
+        self.is_selecting = false;
+    }
+
+    fn clear(&mut self) {
+        self.start = None;
+        self.end = None;
+        self.is_selecting = false;
+        for segment in self.segments.values_mut() {
+            segment.selected = None;
+        }
+    }
+
+    fn has_selection(&self) -> bool {
+        self.start
+            .zip(self.end)
+            .is_some_and(|(start, end)| start != end)
+    }
+
+    fn selection_bounds(&self) -> Option<Bounds<Pixels>> {
+        let (start, end) = self.start.zip(self.end)?;
+        (start != end).then(|| {
+            Bounds::from_corners(
+                point(start.x.min(end.x), start.y.min(end.y)),
+                point(start.x.max(end.x), start.y.max(end.y)),
+            )
+        })
+    }
+
+    fn update_segment(
+        &mut self,
+        key: String,
+        source_start: usize,
+        source_end: usize,
+        text: SharedString,
+        selected: Option<Range<usize>>,
+        space_after: bool,
+    ) {
+        self.segments.insert(
+            key,
+            MarkdownSelectionSegment {
+                source_start,
+                source_end,
+                text,
+                selected,
+                space_after,
+            },
+        );
+    }
+
+    fn selected_text(&self) -> Option<String> {
+        if !self.has_selection() {
+            return None;
+        }
+        selected_markdown_text(&self.source, self.segments.values())
+    }
+}
+
+fn selectable_markdown_region(
+    region: gpui::Stateful<gpui::Div>,
+    selection: Entity<MarkdownSelectionState>,
+    cx: &mut App,
+) -> gpui::Stateful<gpui::Div> {
+    let focus = selection.read(cx).focus.clone();
+    let focus_for_down = focus.clone();
+    let selection_for_down = selection.clone();
+    let selection_for_move = selection.clone();
+    let selection_for_up = selection.clone();
+    let selection_for_up_out = selection.clone();
+    let selection_for_down_out = selection.clone();
+    let selection_for_key = selection;
+    region
+        .track_focus(&focus)
+        .on_mouse_down(MouseButton::Left, move |event, window, cx| {
+            focus_for_down.focus(window);
+            selection_for_down.update(cx, |selection, _| {
+                selection.start(event.position);
+            });
+            cx.notify(window.current_view());
+        })
+        .on_mouse_move(move |event, window, cx| {
+            let selecting = selection_for_move.read(cx).is_selecting;
+            if selecting {
+                selection_for_move.update(cx, |selection, _| {
+                    selection.update(event.position);
+                });
+                cx.notify(window.current_view());
+            }
+        })
+        .on_mouse_up(MouseButton::Left, move |_event, window, cx| {
+            let selecting = selection_for_up.read(cx).is_selecting;
+            if selecting {
+                selection_for_up.update(cx, |selection, _| selection.finish());
+                cx.notify(window.current_view());
+            }
+        })
+        .on_mouse_up_out(MouseButton::Left, move |event, window, cx| {
+            let selecting = selection_for_up_out.read(cx).is_selecting;
+            if selecting {
+                selection_for_up_out.update(cx, |selection, _| {
+                    selection.update(event.position);
+                    selection.finish();
+                });
+                cx.notify(window.current_view());
+            }
+        })
+        .on_mouse_down_out(move |_event, window, cx| {
+            let had_selection = selection_for_down_out.read(cx).has_selection();
+            if had_selection {
+                selection_for_down_out.update(cx, |selection, _| selection.clear());
+                cx.notify(window.current_view());
+            }
+        })
+        .on_key_down(move |event, _window, cx| {
+            if event.keystroke.modifiers.secondary()
+                && event.keystroke.key.eq_ignore_ascii_case("c")
+                && let Some(text) = selection_for_key.read(cx).selected_text()
+            {
+                cx.write_to_clipboard(ClipboardItem::new_string(text));
+                cx.stop_propagation();
+            }
+        })
 }
 
 struct RenderContext<'a> {
@@ -273,6 +479,7 @@ struct RenderContext<'a> {
     definitions: &'a HashMap<String, String>,
     theme: Theme,
     view: Entity<ChatView>,
+    selection: Entity<MarkdownSelectionState>,
     reveal_ordinals: RefCell<HashMap<u64, usize>>,
 }
 
@@ -403,6 +610,7 @@ pub(super) struct MarkdownTableOverlay {
     id: String,
     table: ::markdown::mdast::Table,
     data: TableData,
+    source: String,
 }
 
 type TableAction = Rc<dyn Fn(&mut App)>;
@@ -869,6 +1077,10 @@ fn render_code_block(
         .position
         .as_ref()
         .map_or(0, |position| position.start.offset);
+    let end = code
+        .position
+        .as_ref()
+        .map_or(start + code.value.len(), |position| position.end.offset);
     let block_id = format!("{}:code:{start}", context.id);
     let group: SharedString = format!("markdown-code-group:{block_id}").into();
     let highlights = code.lang.as_deref().map_or_else(Vec::new, |language| {
@@ -882,6 +1094,18 @@ fn render_code_block(
     } else {
         StyledText::new(code.value.clone()).with_highlights(highlights)
     };
+    let selectable_content = SelectableText::styled(
+        code.value.clone(),
+        content,
+        SelectableTextSpec {
+            key: format!("{block_id}:selection"),
+            source_start: start,
+            source_end: end,
+            space_after: false,
+        },
+        context.selection.clone(),
+        context.theme,
+    );
     let copy = copy_control(
         format!("{block_id}:copy"),
         code.value.clone(),
@@ -945,7 +1169,7 @@ fn render_code_block(
                 .line_height(relative(1.52))
                 .text_color(context.theme.response_text.hsla())
                 .whitespace_nowrap()
-                .child(content),
+                .child(selectable_content),
         )
         .into_any_element()
 }
@@ -973,6 +1197,7 @@ fn render_table(
         id: table_id.clone(),
         table: table.clone(),
         data: data.clone(),
+        source: context.raw.to_owned(),
     };
     let view = context.view.clone();
     let fullscreen_action: TableAction = Rc::new(move |cx| {
@@ -1700,6 +1925,303 @@ fn fallback_markdown(
         .into_any_element()
 }
 
+fn selected_markdown_text<'a>(
+    source: &str,
+    segments: impl Iterator<Item = &'a MarkdownSelectionSegment>,
+) -> Option<String> {
+    let mut segments = segments
+        .filter_map(|segment| {
+            let selected = segment.selected.clone()?;
+            (!selected.is_empty()
+                && selected.end <= segment.text.len()
+                && segment.text.is_char_boundary(selected.start)
+                && segment.text.is_char_boundary(selected.end))
+            .then_some((segment, selected))
+        })
+        .collect::<Vec<_>>();
+    segments.sort_by_key(|(segment, _)| (segment.source_start, segment.source_end));
+
+    let mut output = String::new();
+    let mut previous: Option<(&MarkdownSelectionSegment, Range<usize>)> = None;
+    for (segment, selected) in segments {
+        if let Some((prior, prior_selection)) = previous.as_ref()
+            && prior_selection.end == prior.text.len()
+            && selected.start == 0
+        {
+            if prior.space_after {
+                output.push(' ');
+            } else if let Some(gap) = source
+                .get(prior.source_end.min(source.len())..segment.source_start.min(source.len()))
+            {
+                let newline_count = gap.bytes().filter(|byte| *byte == b'\n').count();
+                if newline_count > 0 {
+                    output.push('\n');
+                    if newline_count > 1 {
+                        output.push('\n');
+                    }
+                } else if gap.contains('|') {
+                    output.push('\t');
+                }
+            }
+        }
+        output.push_str(&segment.text[selected.clone()]);
+        previous = Some((segment, selected));
+    }
+
+    (!output.is_empty()).then_some(output)
+}
+
+struct SelectableText {
+    id: ElementId,
+    key: String,
+    text: SharedString,
+    styled_text: StyledText,
+    source_start: usize,
+    source_end: usize,
+    space_after: bool,
+    selection: Entity<MarkdownSelectionState>,
+    theme: Theme,
+}
+
+struct SelectableTextSpec {
+    key: String,
+    source_start: usize,
+    source_end: usize,
+    space_after: bool,
+}
+
+impl SelectableText {
+    fn plain(
+        text: impl Into<SharedString>,
+        spec: SelectableTextSpec,
+        selection: Entity<MarkdownSelectionState>,
+        theme: Theme,
+    ) -> Self {
+        let text = text.into();
+        Self {
+            id: ElementId::Name(SharedString::from(spec.key.clone())),
+            key: spec.key,
+            styled_text: StyledText::new(text.clone()),
+            text,
+            source_start: spec.source_start,
+            source_end: spec.source_end,
+            space_after: spec.space_after,
+            selection,
+            theme,
+        }
+    }
+
+    fn styled(
+        text: impl Into<SharedString>,
+        styled_text: StyledText,
+        spec: SelectableTextSpec,
+        selection: Entity<MarkdownSelectionState>,
+        theme: Theme,
+    ) -> Self {
+        Self {
+            id: ElementId::Name(SharedString::from(spec.key.clone())),
+            key: spec.key,
+            text: text.into(),
+            styled_text,
+            source_start: spec.source_start,
+            source_end: spec.source_end,
+            space_after: spec.space_after,
+            selection,
+            theme,
+        }
+    }
+}
+
+impl Element for SelectableText {
+    type RequestLayoutState = ();
+    type PrepaintState = Hitbox;
+
+    fn id(&self) -> Option<ElementId> {
+        Some(self.id.clone())
+    }
+
+    fn source_location(&self) -> Option<&'static core::panic::Location<'static>> {
+        None
+    }
+
+    fn request_layout(
+        &mut self,
+        global_id: Option<&GlobalElementId>,
+        inspector_id: Option<&InspectorElementId>,
+        window: &mut Window,
+        cx: &mut App,
+    ) -> (LayoutId, Self::RequestLayoutState) {
+        self.styled_text
+            .request_layout(global_id, inspector_id, window, cx)
+    }
+
+    fn prepaint(
+        &mut self,
+        global_id: Option<&GlobalElementId>,
+        inspector_id: Option<&InspectorElementId>,
+        bounds: Bounds<Pixels>,
+        state: &mut Self::RequestLayoutState,
+        window: &mut Window,
+        cx: &mut App,
+    ) -> Self::PrepaintState {
+        self.styled_text
+            .prepaint(global_id, inspector_id, bounds, state, window, cx);
+        window.insert_hitbox(bounds, HitboxBehavior::Normal)
+    }
+
+    fn paint(
+        &mut self,
+        global_id: Option<&GlobalElementId>,
+        inspector_id: Option<&InspectorElementId>,
+        bounds: Bounds<Pixels>,
+        request_layout: &mut Self::RequestLayoutState,
+        hitbox: &mut Self::PrepaintState,
+        window: &mut Window,
+        cx: &mut App,
+    ) {
+        let layout = self.styled_text.layout().clone();
+        let selection_bounds = self.selection.read(cx).selection_bounds();
+        let selected = selection_bounds.and_then(|selection_bounds| {
+            selection_for_text_layout(&self.text, &layout, &selection_bounds)
+        });
+        self.selection.update(cx, |selection, _| {
+            selection.update_segment(
+                self.key.clone(),
+                self.source_start,
+                self.source_end,
+                self.text.clone(),
+                selected.clone(),
+                self.space_after,
+            );
+        });
+
+        if let Some(selected) = selected.as_ref() {
+            paint_text_selection(
+                selected,
+                &layout,
+                &bounds,
+                self.theme.attention.hsla().opacity(0.3),
+                window,
+            );
+        }
+        window.set_cursor_style(CursorStyle::IBeam, hitbox);
+        self.styled_text.paint(
+            global_id,
+            inspector_id,
+            bounds,
+            request_layout,
+            &mut (),
+            window,
+            cx,
+        );
+    }
+}
+
+impl IntoElement for SelectableText {
+    type Element = Self;
+
+    fn into_element(self) -> Self::Element {
+        self
+    }
+}
+
+fn selection_for_text_layout(
+    text: &str,
+    layout: &TextLayout,
+    selection_bounds: &Bounds<Pixels>,
+) -> Option<Range<usize>> {
+    let line_height = layout.line_height();
+    let mut selected = None::<Range<usize>>;
+    for (offset, character) in text.char_indices() {
+        let next_offset = offset + character.len_utf8();
+        let Some(position) = layout.position_for_index(offset) else {
+            continue;
+        };
+        let width = layout
+            .position_for_index(next_offset)
+            .filter(|next| next.y == position.y)
+            .map_or(line_height / 2.0, |next| next.x - position.x);
+        if point_in_text_selection(position, width, selection_bounds, line_height) {
+            selected.get_or_insert_with(|| offset..offset).end = next_offset;
+        }
+    }
+    selected
+}
+
+fn point_in_text_selection(
+    position: Point<Pixels>,
+    character_width: Pixels,
+    selection: &Bounds<Pixels>,
+    line_height: Pixels,
+) -> bool {
+    if position.y + line_height < selection.top() || position.y >= selection.bottom() {
+        return false;
+    }
+    let midpoint = position.x + character_width / 2.0;
+    if selection.size.height <= line_height {
+        midpoint >= selection.left() && midpoint <= selection.right()
+    } else if position.y <= selection.top() {
+        midpoint >= selection.left()
+    } else if position.y + line_height >= selection.bottom() {
+        midpoint <= selection.right()
+    } else {
+        true
+    }
+}
+
+fn paint_text_selection(
+    selection: &Range<usize>,
+    layout: &TextLayout,
+    bounds: &Bounds<Pixels>,
+    color: gpui::Hsla,
+    window: &mut Window,
+) {
+    let (Some(start), Some(end)) = (
+        layout.position_for_index(selection.start),
+        layout.position_for_index(selection.end),
+    ) else {
+        return;
+    };
+    let line_height = layout.line_height();
+    let paint = |bounds, window: &mut Window| {
+        window.paint_quad(quad(
+            bounds,
+            px(0.0),
+            color,
+            Edges::default(),
+            gpui::transparent_black(),
+            BorderStyle::default(),
+        ));
+    };
+    if start.y == end.y {
+        paint(
+            Bounds::from_corners(start, point(end.x, end.y + line_height)),
+            window,
+        );
+        return;
+    }
+    paint(
+        Bounds::from_corners(start, point(bounds.right(), start.y + line_height)),
+        window,
+    );
+    if end.y > start.y + line_height {
+        paint(
+            Bounds::from_corners(
+                point(bounds.left(), start.y + line_height),
+                point(bounds.right(), end.y),
+            ),
+            window,
+        );
+    }
+    paint(
+        Bounds::from_corners(
+            point(bounds.left(), end.y),
+            point(end.x, end.y + line_height),
+        ),
+        window,
+    );
+}
+
 #[derive(Clone, Default)]
 struct InlineStyle {
     bold: bool,
@@ -1894,7 +2416,14 @@ fn collect_inline(
 }
 
 fn render_inline_unit(unit: InlineUnit, context: &RenderContext<'_>) -> AnyElement {
-    if matches!(unit.kind, InlineUnitKind::Break) {
+    let InlineUnit {
+        kind,
+        style,
+        start,
+        end,
+        space_after,
+    } = unit;
+    if matches!(kind, InlineUnitKind::Break) {
         return div().w_full().h(px(0.0)).flex_none().into_any_element();
     }
     let reveal = context.streaming.then(|| {
@@ -1902,7 +2431,7 @@ fn render_inline_unit(unit: InlineUnit, context: &RenderContext<'_>) -> AnyEleme
             .reveals
             .iter()
             .rev()
-            .find(|batch| unit.end > batch.from && unit.start < batch.to)
+            .find(|batch| end > batch.from && start < batch.to)
     });
     let reveal = reveal.flatten().map(|batch| {
         let mut reveal_ordinals = context.reveal_ordinals.borrow_mut();
@@ -1911,8 +2440,23 @@ fn render_inline_unit(unit: InlineUnit, context: &RenderContext<'_>) -> AnyEleme
         *ordinal += 1;
         result
     });
-    let element = match unit.kind {
-        InlineUnitKind::Text(text) => div().flex_none().child(text),
+    let token_id = format!("markdown-token:{}:{start}:{end}", context.id);
+    let selectable = |text: String, suffix: &str| {
+        let key = format!("{token_id}:{suffix}:{}", stable_hash(&text));
+        SelectableText::plain(
+            text,
+            SelectableTextSpec {
+                key,
+                source_start: start,
+                source_end: end,
+                space_after,
+            },
+            context.selection.clone(),
+            context.theme,
+        )
+    };
+    let element = match kind {
+        InlineUnitKind::Text(text) => div().flex_none().child(selectable(text, "text")),
         InlineUnitKind::Code(code) => div()
             .flex_none()
             .rounded(px(5.0))
@@ -1921,40 +2465,44 @@ fn render_inline_unit(unit: InlineUnit, context: &RenderContext<'_>) -> AnyEleme
             .py(px(1.0))
             .font_family("Geist Mono")
             .text_size(px(13.5))
-            .child(code),
-        InlineUnitKind::FileReference { path, label } => {
-            render_file_reference(&path, label, context.theme)
-        }
+            .child(selectable(code, "code")),
+        InlineUnitKind::FileReference { path, label } => render_file_reference(
+            &path,
+            selectable(label, "file-reference").into_any_element(),
+            context.theme,
+        ),
         InlineUnitKind::Break => unreachable!(),
     };
-    let mut element = element.id(SharedString::from(format!(
-        "markdown-token:{}:{}",
-        context.id, unit.start
-    )));
-    if unit.space_after {
+    let mut element = element.id(SharedString::from(token_id));
+    if space_after {
         element = element.mr(px(SPACE_WIDTH));
     }
-    if unit.style.bold {
+    if style.bold {
         element = element.font_weight(FontWeight::BOLD);
     }
-    if unit.style.italic {
+    if style.italic {
         element = element.italic();
     }
-    if unit.style.strikethrough {
+    if style.strikethrough {
         element = element.line_through();
     }
-    if let Some(url) = unit.style.link {
+    if let Some(url) = style.link {
+        let selection = context.selection.clone();
         element = element
             .underline()
             .cursor_pointer()
-            .on_click(move |_event, _window, cx| cx.open_url(&url));
+            .on_click(move |_event, _window, cx| {
+                if !selection.read(cx).has_selection() {
+                    cx.open_url(&url);
+                }
+            });
     }
     if let Some((generation, ordinal)) = reveal {
         let delay = STREAM_WORD_STAGGER_MS * ordinal as u64;
         let total = STREAM_WORD_DURATION_MS + delay;
         let animation_id = SharedString::from(format!(
             "markdown-word:{}:{generation}:{}",
-            context.id, unit.start
+            context.id, start
         ));
         element
             .with_animation(
@@ -1973,7 +2521,7 @@ fn render_inline_unit(unit: InlineUnit, context: &RenderContext<'_>) -> AnyEleme
     }
 }
 
-fn render_file_reference(path: &str, label: String, theme: Theme) -> gpui::Div {
+fn render_file_reference(path: &str, label: AnyElement, theme: Theme) -> gpui::Div {
     let spec = file_icon_spec(path);
     let icon = if let Some(path) = spec.icon {
         svg()
@@ -2325,6 +2873,78 @@ mod tests {
         assert_eq!(stream_batch_duration(1), Duration::from_millis(160));
         assert_eq!(stream_batch_duration(4), Duration::from_millis(202));
         assert_eq!(STREAM_WORD_STAGGER_MS, 14);
+    }
+
+    #[test]
+    fn selected_markdown_text_preserves_visual_separators_without_markup() {
+        let source = "Hello **bold** world\n\n| A | B |";
+        let segments = [
+            MarkdownSelectionSegment {
+                source_start: 8,
+                source_end: 12,
+                text: "bold".into(),
+                selected: Some(0..4),
+                space_after: true,
+            },
+            MarkdownSelectionSegment {
+                source_start: 0,
+                source_end: 5,
+                text: "Hello".into(),
+                selected: Some(0..5),
+                space_after: true,
+            },
+            MarkdownSelectionSegment {
+                source_start: 15,
+                source_end: 20,
+                text: "world".into(),
+                selected: Some(0..5),
+                space_after: false,
+            },
+            MarkdownSelectionSegment {
+                source_start: 24,
+                source_end: 25,
+                text: "A".into(),
+                selected: Some(0..1),
+                space_after: false,
+            },
+            MarkdownSelectionSegment {
+                source_start: 28,
+                source_end: 29,
+                text: "B".into(),
+                selected: Some(0..1),
+                space_after: false,
+            },
+        ];
+
+        assert_eq!(
+            selected_markdown_text(source, segments.iter()),
+            Some("Hello bold world\n\nA\tB".into())
+        );
+    }
+
+    #[test]
+    fn selected_markdown_text_does_not_invent_space_after_partial_word() {
+        let segments = [
+            MarkdownSelectionSegment {
+                source_start: 0,
+                source_end: 5,
+                text: "Hello".into(),
+                selected: Some(1..4),
+                space_after: true,
+            },
+            MarkdownSelectionSegment {
+                source_start: 6,
+                source_end: 11,
+                text: "world".into(),
+                selected: Some(0..3),
+                space_after: false,
+            },
+        ];
+
+        assert_eq!(
+            selected_markdown_text("Hello world", segments.iter()),
+            Some("ellwor".into())
+        );
     }
 
     #[test]
