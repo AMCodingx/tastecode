@@ -203,6 +203,8 @@ mod child;
 mod jsonrpc;
 mod ndjson;
 
-pub use child::{CliOutput, SpawnOptions, SpawnedChild, run_cli, spawn_cli};
+pub use child::{
+    CliOutput, SpawnOptions, SpawnedChild, command_version, is_installed, run_cli, spawn_cli,
+};
 pub use jsonrpc::{JsonRpcCall, JsonRpcError, RpcResponder, StdioJsonRpc};
 pub use ndjson::{DEFAULT_MAX_NDJSON_LINE, NdjsonDecoder, NdjsonFrame, read_ndjson};

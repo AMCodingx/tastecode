@@ -189,6 +189,46 @@ pub fn run_cli(
     })
 }
 
+pub fn is_installed(program: &OsStr, timeout: Duration) -> bool {
+    #[cfg(windows)]
+    let lookup = OsStr::new("where.exe");
+    #[cfg(not(windows))]
+    let lookup = OsStr::new("/usr/bin/which");
+    run_cli(
+        lookup,
+        &[program],
+        &SpawnOptions::default(),
+        timeout,
+        1024 * 1024,
+    )
+    .is_ok_and(|output| output.code == Some(0))
+}
+
+pub fn command_version(program: &OsStr, timeout: Duration) -> Option<String> {
+    let output = run_cli(
+        program,
+        &[OsStr::new("--version")],
+        &SpawnOptions::default(),
+        timeout,
+        1024 * 1024,
+    )
+    .ok()?;
+    output
+        .stdout
+        .lines()
+        .find(|line| contains_version_number(line))
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .map(str::to_owned)
+}
+
+fn contains_version_number(line: &str) -> bool {
+    let bytes = line.as_bytes();
+    bytes
+        .windows(3)
+        .any(|window| window[0].is_ascii_digit() && window[1] == b'.' && window[2].is_ascii_digit())
+}
+
 #[cfg(windows)]
 fn platform_command(program: &OsStr, args: &[&OsStr]) -> Command {
     let mut command = Command::new("cmd.exe");
@@ -264,6 +304,22 @@ mod tests {
         .unwrap();
         assert_eq!(output.code, Some(0));
         assert!(output.stdout.starts_with("rustc "));
+    }
+
+    #[test]
+    fn probes_presence_without_running_the_target_and_extracts_its_version_line() {
+        let rustc = std::env::var_os("RUSTC").unwrap_or_else(|| "rustc".into());
+        assert!(is_installed(&rustc, Duration::from_secs(5)));
+        assert!(!is_installed(
+            OsStr::new("harness-command-that-does-not-exist"),
+            Duration::from_secs(5),
+        ));
+        assert!(
+            command_version(&rustc, Duration::from_secs(5))
+                .is_some_and(|version| version.starts_with("rustc "))
+        );
+        assert!(contains_version_number("warning 2026.07.3"));
+        assert!(!contains_version_number("startup warning"));
     }
 
     #[test]
