@@ -51,14 +51,42 @@ export const GROK_CAPABILITIES: Capabilities = {
   images: false,
 }
 
-/** Documented `--effort` levels of grok 0.1.219 (`grok --help`). */
-export const GROK_EFFORTS = ['low', 'medium', 'high', 'xhigh', 'max']
+/** Model-specific reasoning levels published for Grok 4.5. The CLI's global
+ *  `--reasoning-effort` help lists every level understood by any model, so it
+ *  cannot be the capability set for each row returned by `grok models`. */
+export const GROK_EFFORTS = ['low', 'medium', 'high']
+
+type GrokModelDetails = {
+  reasoningEfforts: readonly string[]
+  defaultReasoningEffort: string
+}
+
+const GROK_MODEL_DETAILS: Readonly<Record<string, GrokModelDetails>> = {
+  'grok-4.5': {
+    reasoningEfforts: GROK_EFFORTS,
+    defaultReasoningEffort: 'high',
+  },
+}
 
 export type GrokStartOptions = {
   instructions?: string | undefined
   model?: string | undefined
   effort?: string | undefined
   approval?: ApprovalMode | undefined
+}
+
+export type GrokTurnOptions = Pick<GrokStartOptions, 'model' | 'effort'>
+
+function applyGrokTurnOptions(current: GrokStartOptions, next: GrokTurnOptions): GrokStartOptions {
+  if (Object.keys(next).length === 0) return current
+  const merged = { ...current }
+  for (const field of ['model', 'effort'] as const) {
+    if (!(field in next)) continue
+    const value = next[field]
+    if (value === undefined) delete merged[field]
+    else merged[field] = value
+  }
+  return merged
 }
 
 /** The per-turn argv. The prompt may be multi-line because the binary is
@@ -74,7 +102,7 @@ export function grokTurnArgs(
     '--output-format',
     'streaming-json',
     ...(options.model ? ['--model', options.model] : []),
-    ...(options.effort ? ['--effort', options.effort] : []),
+    ...(options.effort ? ['--reasoning-effort', options.effort] : []),
     // ask -> the CLI's default permission behavior; auto -> accept edits but
     // not commands; full -> the CLI's own skip-everything mode.
     ...(options.approval === 'auto' ? ['--permission-mode', 'acceptEdits'] : []),
@@ -165,8 +193,14 @@ export class GrokAdapter extends EventEmitter<GrokAdapterEvents> {
     }
   }
 
-  async sendTurn(threadId: string, text: string, attachments: string[] = []): Promise<string> {
+  async sendTurn(
+    threadId: string,
+    text: string,
+    attachments: string[] = [],
+    options: GrokTurnOptions = {},
+  ): Promise<string> {
     if (attachments.length) throw new Error('Grok attachments are not supported yet')
+    this.#options = applyGrokTurnOptions(this.#options, options)
     const turnId = `${threadId}-turn-${++this.#turnCounter}`
     const prompt =
       this.#instructionsPending && this.#options.instructions
@@ -333,12 +367,9 @@ export class GrokAdapter extends EventEmitter<GrokAdapterEvents> {
     if (this.#child) this.#stop(this.#child)
   }
 
-  /** `grok models` prints a default line plus an "Available models:" list.
-   *  Efforts are a CLI flag, not part of the ids, so every model carries the
-   *  documented ladder. Verified against grok 0.1.219. */
+  /** `grok models` prints a default line plus an "Available models:" list. */
   async listModels(): Promise<Model[]> {
-    const output = await this.#capture(['models'])
-    return parseGrokModels(output)
+    return parseGrokModels(await this.#capture(['models']))
   }
 
   dispose(): void {
@@ -478,15 +509,31 @@ export function parseGrokModels(output: string): Model[] {
     if (!reading || !line) continue
     const match = line.match(/^\*\s*(\S+)(\s+\(default\))?/)
     if (!match) continue
+    const id = match[1]!
+    const details = GROK_MODEL_DETAILS[id]
     models.push({
-      id: match[1]!,
-      displayName: match[1]!,
+      id,
+      displayName: grokDisplayName(id),
       isDefault: Boolean(match[2]),
-      reasoningEfforts: [...GROK_EFFORTS],
+      reasoningEfforts: details ? [...details.reasoningEfforts] : [],
+      ...(details ? { defaultReasoningEffort: details.defaultReasoningEffort } : {}),
       serviceTiers: [],
     })
   }
   return models
+}
+
+/** `grok-4.5` -> "Grok 4.5" while keeping future catalog ids readable. */
+export function grokDisplayName(id: string): string {
+  return id
+    .split('-')
+    .filter(Boolean)
+    .map((token) => {
+      if (token.toLowerCase() === 'grok') return 'Grok'
+      if (/^\d+(?:\.\d+)*$/.test(token)) return token
+      return token.charAt(0).toUpperCase() + token.slice(1)
+    })
+    .join(' ')
 }
 
 /** The CLI announces its own auth state on `grok models`. */

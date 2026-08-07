@@ -1,5 +1,25 @@
+import { EventEmitter } from 'node:events'
+import { PassThrough } from 'node:stream'
+import type { ChildProcessWithoutNullStreams } from 'node:child_process'
 import { describe, expect, it } from 'vitest'
-import { ClaudeCodeAdapter, CLAUDE_MODELS, claudeTurnArgs, claudeUserMessage } from './adapter.js'
+import {
+  ClaudeCodeAdapter,
+  CLAUDE_MODELS,
+  claudeTurnArgs,
+  claudeUserMessage,
+  parseClaudeEfforts,
+} from './adapter.js'
+
+class FakeChild extends EventEmitter {
+  readonly stdin = new PassThrough()
+  readonly stdout = new PassThrough()
+  readonly stderr = new PassThrough()
+
+  kill(): boolean {
+    setImmediate(() => this.emit('exit', null))
+    return true
+  }
+}
 
 describe('Claude Code turn invocation', () => {
   it('keeps every argv element newline-free (#372: cmd.exe truncates there)', () => {
@@ -35,11 +55,45 @@ describe('Claude Code turn invocation', () => {
     expect(withoutEffort).not.toContain('--effort')
   })
 
+  it('applies a changed model and effort to the next CLI invocation', async () => {
+    let args: string[] = []
+    const adapter = new ClaudeCodeAdapter({
+      spawn: (_command, value) => {
+        args = value
+        return new FakeChild() as unknown as ChildProcessWithoutNullStreams
+      },
+    })
+    const thread = await adapter.startThread('C:\\repo', { model: 'opus', effort: 'low' })
+
+    await adapter.sendTurn(thread.id, 'Think again', [], { model: 'sonnet', effort: 'xhigh' })
+
+    expect(args.slice(args.indexOf('--model'), args.indexOf('--model') + 2)).toEqual([
+      '--model',
+      'sonnet',
+    ])
+    expect(args.slice(args.indexOf('--effort'), args.indexOf('--effort') + 2)).toEqual([
+      '--effort',
+      'xhigh',
+    ])
+
+    await adapter.sendTurn(thread.id, 'Use the fast model', [], {
+      model: 'haiku',
+      effort: undefined,
+    })
+    expect(args.slice(args.indexOf('--model'), args.indexOf('--model') + 2)).toEqual([
+      '--model',
+      'haiku',
+    ])
+    expect(args).not.toContain('--effort')
+    adapter.dispose()
+  })
+
   it('mirrors the documented per-model effort table', () => {
     const byId = new Map(CLAUDE_MODELS.map((model) => [model.id, model]))
     expect(byId.get('fable')?.reasoningEfforts).toEqual(['low', 'medium', 'high', 'xhigh', 'max'])
     expect(byId.get('fable')?.defaultReasoningEffort).toBe('high')
     expect(byId.get('claude-opus-4-7')?.defaultReasoningEffort).toBe('xhigh')
+    expect(byId.get('claude-opus-4-6')?.reasoningEfforts).toEqual(['low', 'medium', 'high', 'max'])
     expect(byId.get('claude-sonnet-4-6')?.reasoningEfforts).toEqual([
       'low',
       'medium',
@@ -47,6 +101,25 @@ describe('Claude Code turn invocation', () => {
       'max',
     ])
     expect(byId.get('haiku')?.reasoningEfforts).toEqual([])
+  })
+
+  it('intersects the model table with effort values published by the installed CLI', async () => {
+    const help =
+      '  --effort <level>  Effort level for the current session\n' +
+      '                    (low, medium, high, max)\n'
+    expect(parseClaudeEfforts(help)).toEqual(['low', 'medium', 'high', 'max'])
+    const models = await new ClaudeCodeAdapter({
+      run: async () => ({ code: 0, stdout: help }),
+    }).listModels()
+    expect(models.find((model) => model.id === 'fable')?.reasoningEfforts).toEqual([
+      'low',
+      'medium',
+      'high',
+      'max',
+    ])
+    expect(models.find((model) => model.id === 'claude-opus-4-7')?.defaultReasoningEffort).toBe(
+      'high',
+    )
   })
 
   it('encodes the prompt as one stream-json user message line', () => {
@@ -61,7 +134,9 @@ describe('Claude Code turn invocation', () => {
 
 describe('Claude Code model list', () => {
   it('offers the documented --model aliases under full versioned names', async () => {
-    const adapter = new ClaudeCodeAdapter()
+    const adapter = new ClaudeCodeAdapter({
+      run: async () => ({ code: 0, stdout: '--effort <level> (low, medium, high, xhigh, max)' }),
+    })
     expect(await adapter.listModels()).toMatchObject([
       { id: 'fable', displayName: 'Fable 5', isDefault: true },
       { id: 'opus', displayName: 'Opus 5' },
@@ -69,11 +144,15 @@ describe('Claude Code model list', () => {
       { id: 'haiku', displayName: 'Haiku 4.5' },
       { id: 'claude-opus-4-8', displayName: 'Opus 4.8' },
       { id: 'claude-opus-4-7', displayName: 'Opus 4.7' },
+      { id: 'claude-opus-4-6', displayName: 'Opus 4.6' },
       { id: 'claude-sonnet-4-6', displayName: 'Sonnet 4.6' },
     ])
   })
 
-  it('marks exactly one model as the default', () => {
-    expect(CLAUDE_MODELS.filter((model) => model.isDefault)).toHaveLength(1)
+  it('uses a concrete named model as the default', () => {
+    expect(CLAUDE_MODELS.filter((model) => model.isDefault).map((model) => model.id)).toEqual([
+      'fable',
+    ])
+    expect(CLAUDE_MODELS.some((model) => model.id === 'default')).toBe(false)
   })
 })

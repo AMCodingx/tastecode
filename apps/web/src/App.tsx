@@ -57,11 +57,13 @@ import {
   agentMark,
   choicesFor,
   connectionMark,
+  modelChoiceKey,
   providerMark,
   resolveReasoningEffort,
   sourceKey,
   type ModelChoice,
 } from './model-catalog.js'
+import { parseModelCatalogCache, serializeModelCatalogCache } from './model-catalog-cache.js'
 import {
   ACCENT_KEY,
   applyAccentPreference,
@@ -95,6 +97,7 @@ const AGENT_NAME_KEY = 'harness.acpAgentName'
 const PROJECTS_KEY = 'harness.projects'
 const SESSION_ORDER_KEY = 'harness.sessionOrder'
 const MODEL_KEY = 'harness.model'
+const MODEL_CATALOG_KEY = 'harness.modelCatalog.v1'
 /** Last model/effort/tier used per source, so returning to a provider
  *  restores the exact working setup instead of a best-guess translation. */
 const MODEL_BY_SOURCE_KEY = 'harness.modelBySource'
@@ -184,8 +187,17 @@ export function App() {
   >(undefined)
   const [queuedTurns, setQueuedTurns] = useState<QueuedTurn[]>([])
   const [canSteerQueue, setCanSteerQueue] = useState(false)
-  const [models, setModels] = useState<ModelChoice[]>([])
-  const [modelsLoaded, setModelsLoaded] = useState(false)
+  const [{ models, loaded: modelsLoaded }, setModelCatalog] = useState<{
+    models: ModelChoice[]
+    loaded: boolean
+  }>(() => {
+    const cached = parseModelCatalogCache(readSetting(MODEL_CATALOG_KEY))
+    const restored = cached === undefined ? readStoredModelChoice() : undefined
+    return {
+      models: cached ?? (restored ? [restored] : []),
+      loaded: cached !== undefined || restored !== undefined,
+    }
+  })
   const [providerStatuses, setProviderStatuses] = useState<ProviderStatus[]>([])
   const [acpAgents, setAcpAgents] = useState<ResultOf<'acp.agents'>['agents']>([])
   const [modelConnections, setModelConnections] = useState<ModelConnection[]>([])
@@ -315,6 +327,21 @@ export function App() {
     window.addEventListener('hashchange', reconnectWithCurrentToken)
     return () => window.removeEventListener('hashchange', reconnectWithCurrentToken)
   }, [])
+
+  useEffect(() => {
+    const checkConnection = () => void transport.ensureHealthy()
+    const checkVisibleConnection = () => {
+      if (document.visibilityState === 'visible') checkConnection()
+    }
+    window.addEventListener('focus', checkConnection)
+    window.addEventListener('online', checkConnection)
+    document.addEventListener('visibilitychange', checkVisibleConnection)
+    return () => {
+      window.removeEventListener('focus', checkConnection)
+      window.removeEventListener('online', checkConnection)
+      document.removeEventListener('visibilitychange', checkVisibleConnection)
+    }
+  }, [transport])
 
   useLayoutEffect(() => {
     applyTheme(theme)
@@ -609,8 +636,8 @@ export function App() {
       setProviderStatuses(providers)
       setAcpAgents(agentsResult?.agents ?? [])
       setModelConnections(connections)
-      setModels(catalog)
-      setModelsLoaded(true)
+      setModelCatalog({ models: catalog, loaded: true })
+      writeSetting(MODEL_CATALOG_KEY, serializeModelCatalogCache(catalog))
       const stored = readSetting(MODEL_KEY)
       // Fallbacks respect hidden models: adding an API key must not silently
       // switch the user onto a model they explicitly hid. An explicit stored
@@ -652,7 +679,7 @@ export function App() {
           : (selected.model.defaultServiceTier ?? undefined),
       )
     })().catch(() => {
-      if (!cancelled) setModelsLoaded(true)
+      if (!cancelled) setModelCatalog((current) => ({ ...current, loaded: true }))
     })
     return () => {
       cancelled = true
@@ -2735,6 +2762,77 @@ function readSourceSelections(): Record<string, SourceSelection> {
     )
   } catch {
     return {}
+  }
+}
+
+/**
+ * The versioned catalog cache does not exist on the first launch after this
+ * feature ships. Rebuild the one selected entry from existing preferences so
+ * that upgrade launch is instant too; the full validated catalog replaces it
+ * as soon as discovery finishes.
+ */
+function readStoredModelChoice(): ModelChoice | undefined {
+  const storedProvider = readSetting(SETUP_KEY)
+  const providers: string[] = [
+    'codex',
+    'claude-code',
+    'grok',
+    'cursor',
+    'opencode',
+    'antigravity',
+    'acp',
+    'api',
+  ]
+  if (!storedProvider || !providers.includes(storedProvider)) return undefined
+  const provider = storedProvider as ProviderId
+  const storedKey = readSetting(MODEL_KEY)
+  if (!storedKey) return undefined
+  const agentId = provider === 'acp' ? (readSetting(AGENT_KEY) ?? undefined) : undefined
+  if (provider === 'acp' && !agentId) return undefined
+  const agentName = agentId ? (readSetting(AGENT_NAME_KEY) ?? agentId) : undefined
+  const separator = storedKey.lastIndexOf(':')
+  const storedSource = separator > 0 ? storedKey.slice(0, separator) : undefined
+  const connectionId =
+    provider === 'api' && storedSource?.startsWith('api:')
+      ? storedSource.slice('api:'.length)
+      : undefined
+  if (provider === 'api' && !connectionId) return undefined
+  const expectedSource = sourceKey({ provider, connectionId, agentId })
+  const canonical = storedKey.startsWith(`${expectedSource}:`)
+  if (provider === 'api' && !canonical) return undefined
+
+  let modelId: string
+  if (canonical) {
+    const encodedModelId = storedKey.slice(expectedSource.length + 1)
+    if (!encodedModelId) return undefined
+    try {
+      modelId = encodedModelId === 'automatic' ? '' : decodeURIComponent(encodedModelId)
+    } catch {
+      return undefined
+    }
+  } else {
+    // Older builds stored only the raw model id. Keeping this migration path
+    // avoids making the very first cache-enabled launch the one slow launch.
+    modelId = storedKey
+  }
+  const key = canonical ? storedKey : modelChoiceKey(expectedSource, modelId)
+
+  const effort = readSetting(EFFORT_KEY) ?? undefined
+  return {
+    key,
+    provider,
+    sourceName: provider === 'api' ? 'API connection' : providerName(provider, agentName),
+    mark: provider === 'acp' && agentId ? agentMark(agentId) : providerMark(provider),
+    ...(connectionId ? { connectionId } : {}),
+    ...(agentId && agentName ? { agent: { id: agentId, name: agentName } } : {}),
+    model: {
+      id: modelId,
+      displayName: modelId || 'Provider default',
+      isDefault: true,
+      reasoningEfforts: effort ? [effort] : [],
+      ...(effort ? { defaultReasoningEffort: effort } : {}),
+      serviceTiers: [],
+    },
   }
 }
 

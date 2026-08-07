@@ -1,17 +1,31 @@
 import type { DomainEvent, Item, Usage } from '@harness/contracts'
 import type { Event, Part, ToolPart } from '@opencode-ai/sdk'
 
+/** OpenCode 2.0's `/api/event` stream. Its generated SDK is still changing,
+ *  so this adapter follows the captured wire shape instead of importing a
+ *  prerelease type that can drift independently of the installed binary. */
+export type OpenCodeV2Event = {
+  id?: string
+  created?: number
+  type: string
+  data: Record<string, unknown>
+}
+
+export type OpenCodeWireEvent = Event | OpenCodeV2Event
+
 export class OpenCodeEventMapper {
   readonly #turnId: string
   readonly #open = new Map<string, Item>()
   readonly #text = new Map<string, string>()
   readonly #completed = new Set<string>()
+  readonly #v2Tools = new Map<string, { name: string; input?: Record<string, unknown> }>()
 
   constructor(turnId: string) {
     this.#turnId = turnId
   }
 
-  translate(event: Event): DomainEvent[] {
+  translate(event: OpenCodeWireEvent): DomainEvent[] {
+    if ('data' in event) return this.#v2(event)
     if (event.type === 'message.part.updated')
       return this.#part(event.properties.part, event.properties.delta)
     if (event.type === 'message.updated') {
@@ -34,6 +48,124 @@ export class OpenCodeEventMapper {
       }))
     }
     return []
+  }
+
+  #v2(event: OpenCodeV2Event): DomainEvent[] {
+    const data = event.data
+    if (event.type === 'session.text.started') return this.#v2Stream(data, 'message', 'started')
+    if (event.type === 'session.text.delta') return this.#v2Stream(data, 'message', 'delta')
+    if (event.type === 'session.text.ended') return this.#v2Stream(data, 'message', 'ended')
+    if (event.type === 'session.reasoning.started')
+      return this.#v2Stream(data, 'reasoning', 'started')
+    if (event.type === 'session.reasoning.delta') return this.#v2Stream(data, 'reasoning', 'delta')
+    if (event.type === 'session.reasoning.ended') return this.#v2Stream(data, 'reasoning', 'ended')
+    if (event.type === 'session.tool.input.started') {
+      const id = string(data.id)
+      if (id) this.#v2Tools.set(id, { name: string(data.name) || 'tool' })
+      return []
+    }
+    if (event.type === 'session.tool.called') return this.#v2Tool(data, 'started')
+    if (event.type === 'session.tool.success') return this.#v2Tool(data, 'completed')
+    if (event.type === 'session.tool.failed') return this.#v2Tool(data, 'failed')
+    // v2 emits both `session.step.ended` and a cumulative
+    // `session.usage.updated` for the same step. The latter is the stable
+    // turn-level value; mapping both would publish every usage update twice.
+    if (event.type === 'session.usage.updated') return [v2Usage(data)]
+    return []
+  }
+
+  #v2Stream(
+    data: Record<string, unknown>,
+    type: 'message' | 'reasoning',
+    phase: 'started' | 'delta' | 'ended',
+  ): DomainEvent[] {
+    const messageId = string(data.assistantMessageID) || 'assistant'
+    const ordinal = typeof data.ordinal === 'number' ? data.ordinal : 0
+    const id = `${this.#turnId}-${messageId}-${type}-${ordinal}`
+    const events: DomainEvent[] = []
+    if (!this.#open.has(id)) {
+      const item: Item = {
+        id,
+        turnId: this.#turnId,
+        type,
+        ...(type === 'message' ? { role: 'assistant' as const } : {}),
+        status: 'started',
+        text: '',
+        createdAt: Date.now(),
+      }
+      this.#open.set(id, item)
+      this.#text.set(id, '')
+      events.push({ type: 'item.started', item })
+    }
+    const previous = this.#text.get(id) ?? ''
+    const value =
+      phase === 'delta' ? string(data.delta) : phase === 'ended' ? string(data.text) : ''
+    const delta =
+      phase === 'delta'
+        ? value
+        : value && value.startsWith(previous)
+          ? value.slice(previous.length)
+          : ''
+    if (delta) {
+      this.#text.set(id, phase === 'delta' ? previous + delta : value)
+      events.push({ type: 'item.delta', turnId: this.#turnId, itemId: id, textDelta: delta })
+    }
+    if (phase === 'ended' && !this.#completed.has(id)) {
+      if (value && !this.#text.get(id)) this.#text.set(id, value)
+      this.#completed.add(id)
+      events.push({
+        type: 'item.completed',
+        item: { ...this.#open.get(id)!, status: 'completed', text: this.#text.get(id) ?? value },
+      })
+    }
+    return events
+  }
+
+  #v2Tool(
+    data: Record<string, unknown>,
+    status: 'started' | 'completed' | 'failed',
+  ): DomainEvent[] {
+    const callId = string(data.id)
+    if (!callId) return []
+    const known = this.#v2Tools.get(callId) ?? { name: 'tool' }
+    if (status === 'started') {
+      const input = record(data.input)
+      this.#v2Tools.set(callId, { ...known, input })
+    }
+    const current = this.#v2Tools.get(callId) ?? known
+    const kind = toolKind(current.name)
+    const input = current.input ?? {}
+    const command = string(input.command) || string(input.cmd) || current.name
+    const path = string(input.filePath) || string(input.path)
+    const id = `${this.#turnId}-${callId}`
+    const item: Item = {
+      id,
+      turnId: this.#turnId,
+      type: kind,
+      status: 'started',
+      ...(kind === 'command' ? { command } : {}),
+      ...(kind === 'file_change' && path ? { path } : {}),
+      ...(kind === 'tool_call' ? { text: current.name } : {}),
+      createdAt: Date.now(),
+    }
+    const events: DomainEvent[] = []
+    if (!this.#open.has(id)) {
+      this.#open.set(id, item)
+      events.push({ type: 'item.started', item })
+    }
+    if (status !== 'started' && !this.#completed.has(id)) {
+      this.#completed.add(id)
+      const output = contentText(data.content) || string(record(data.error).message)
+      events.push({
+        type: 'item.completed',
+        item: {
+          ...item,
+          status,
+          ...(kind === 'tool_call' && output ? { text: output } : {}),
+        },
+      })
+    }
+    return events
   }
 
   finish(status: 'completed' | 'failed' = 'completed'): DomainEvent[] {
@@ -148,6 +280,25 @@ function usage(
   return { type: 'usage.updated', usage: value }
 }
 
+function v2Usage(data: Record<string, unknown>): DomainEvent {
+  const tokens = record(data.tokens)
+  const cache = record(tokens.cache)
+  const input = number(tokens.input)
+  const output = number(tokens.output)
+  const reasoning = number(tokens.reasoning)
+  return {
+    type: 'usage.updated',
+    usage: {
+      inputTokens: input,
+      cachedInputTokens: number(cache.read),
+      outputTokens: output,
+      reasoningTokens: reasoning,
+      totalTokens: input + output + reasoning,
+      costUsd: number(data.cost),
+    },
+  }
+}
+
 function toolKind(name: string): Item['type'] {
   if (/^(bash|shell|command)$/i.test(name)) return 'command'
   if (/^(edit|write|patch|multiedit)$/i.test(name)) return 'file_change'
@@ -160,4 +311,25 @@ function stateTitle(state: ToolPart['state']): string {
 
 function string(value: unknown): string {
   return typeof value === 'string' ? value : ''
+}
+
+function number(value: unknown): number {
+  return typeof value === 'number' && Number.isFinite(value) ? value : 0
+}
+
+function record(value: unknown): Record<string, unknown> {
+  return value && typeof value === 'object' && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : {}
+}
+
+function contentText(value: unknown): string {
+  if (!Array.isArray(value)) return ''
+  return value
+    .map((entry) => {
+      const item = record(entry)
+      return string(item.text) || string(item.output)
+    })
+    .filter(Boolean)
+    .join('\n')
 }

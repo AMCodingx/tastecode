@@ -176,7 +176,24 @@ export async function discoverAgentModels(agentId: string): Promise<Model[]> {
     ]
   }
   if (agentId !== 'kimi') return []
-  return parseKimiModels(await captureCli('kimi', ['provider', 'list', '--json']))
+  let models: Model[]
+  try {
+    // Kept for Kimi 0.x, whose CLI exposes this catalog. Kimi 1.5 removed the
+    // command and its ACP session currently exposes no config options, so that
+    // version falls back to the provider default instead of showing controls
+    // the wire cannot apply.
+    models = parseKimiModels(await captureCli('kimi', ['provider', 'list', '--json']))
+  } catch {
+    return []
+  }
+  // The legacy catalog can name graded efforts, but the ACP version paired
+  // with it only drives model selection. Keep the parser accurate while the
+  // selectable rows report only controls this adapter can actually apply.
+  return models.map((model) => {
+    const selectable = { ...model, reasoningEfforts: [] }
+    delete selectable.defaultReasoningEffort
+    return selectable
+  })
 }
 
 function model(id: string, displayName: string, description: string, isDefault = false): Model {

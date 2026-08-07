@@ -25,6 +25,30 @@ const find = (list: Awaited<ReturnType<typeof detectProviders>>, id: string) =>
   list.find((entry) => entry.id === id)!
 
 describe('detectProviders', () => {
+  it('shares one machine scan across concurrent callers', async () => {
+    let installedChecks = 0
+    let release!: () => void
+    const gate = new Promise<void>((resolve) => {
+      release = resolve
+    })
+    const sharedSystem = system({
+      isInstalled: async () => {
+        installedChecks += 1
+        await gate
+        return false
+      },
+    })
+
+    const first = detectProviders(sharedSystem)
+    const second = detectProviders(sharedSystem)
+    expect(first).toBe(second)
+    await Promise.resolve()
+    expect(installedChecks).toBe(6)
+
+    release()
+    await Promise.all([first, second])
+  })
+
   it('reports an installed provider with the version it gave us', async () => {
     const providers = await detectProviders(
       system({
