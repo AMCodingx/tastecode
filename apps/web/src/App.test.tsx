@@ -5,6 +5,7 @@ import type { DomainEvent } from '@harness/contracts'
 import type { ComponentProps } from 'react'
 import { App } from './App.js'
 import { DESIGN_BRIEF_ATTACHMENT } from './design-agent/briefing.js'
+import { serializeModelCatalogCache } from './model-catalog-cache.js'
 
 const transport = vi.hoisted(() => ({
   request: vi.fn(),
@@ -13,6 +14,7 @@ const transport = vi.hoisted(() => ({
   urls: [] as string[],
   connect: vi.fn(),
   close: vi.fn(),
+  ensureHealthy: vi.fn(),
 }))
 
 const shellRenders = vi.hoisted(() => ({
@@ -37,6 +39,9 @@ vi.mock('./transport.js', () => ({
     }
     close() {
       transport.close()
+    }
+    ensureHealthy() {
+      return transport.ensureHealthy()
     }
     on(channel: string, listener: (data: unknown) => void) {
       transport.listeners.set(channel, listener)
@@ -366,6 +371,60 @@ function openSettings() {
 }
 
 describe('web client', () => {
+  it('restores the selected model immediately on the first cache-enabled launch', () => {
+    const request = transport.request.getMockImplementation()
+    if (!request) throw new Error('missing request mock')
+    transport.request.mockImplementation((method: string, params: unknown) => {
+      if (method === 'providers.list') return new Promise(() => {})
+      return request(method, params)
+    })
+    // Older builds persisted a bare model id rather than the source-qualified key.
+    localStorage.setItem('harness.model', 'gpt-5.6-sol')
+    localStorage.setItem('harness.effort', 'high')
+
+    render(<App />)
+
+    expect(screen.queryByText('Loading models…')).toBeNull()
+    fireEvent.click(screen.getByRole('button', { name: 'Model and reasoning' }))
+    expect(screen.getByRole('button', { name: 'Use gpt-5.6-sol through Codex' })).toBeTruthy()
+    expect(document.querySelector('.model-selector__effort-title')?.textContent).toBe(
+      'Effort: High',
+    )
+  })
+
+  it('shows a validated model snapshot while discovery refreshes in the background', () => {
+    const request = transport.request.getMockImplementation()
+    if (!request) throw new Error('missing request mock')
+    transport.request.mockImplementation((method: string, params: unknown) => {
+      if (method === 'providers.list') return new Promise(() => {})
+      return request(method, params)
+    })
+    localStorage.setItem(
+      'harness.modelCatalog.v1',
+      serializeModelCatalogCache([
+        {
+          key: 'codex:gpt-5.6-sol',
+          provider: 'codex',
+          sourceName: 'Codex',
+          mark: 'openai',
+          model: {
+            id: 'gpt-5.6-sol',
+            displayName: 'GPT-5.6 Sol',
+            isDefault: true,
+            reasoningEfforts: ['low', 'high'],
+            serviceTiers: [],
+          },
+        },
+      ]),
+    )
+
+    render(<App />)
+
+    expect(screen.queryByText('Loading models…')).toBeNull()
+    fireEvent.click(screen.getByRole('button', { name: 'Model and reasoning' }))
+    expect(screen.getByRole('button', { name: 'Use GPT-5.6 Sol through Codex' })).toBeTruthy()
+  })
+
   it('discovers models separately for each installed ACP agent', async () => {
     const request = transport.request.getMockImplementation()
     if (!request) throw new Error('missing request mock')
@@ -508,6 +567,14 @@ describe('web client', () => {
     })
     expect(transport.close).toHaveBeenCalled()
     expect(transport.connect).toHaveBeenCalledTimes(2)
+  })
+
+  it('checks socket liveness when the app regains focus', () => {
+    render(<App />)
+
+    act(() => window.dispatchEvent(new Event('focus')))
+
+    expect(transport.ensureHealthy).toHaveBeenCalledTimes(1)
   })
 
   it('does not expose or initialize desktop dictation', async () => {
@@ -1340,6 +1407,7 @@ describe('new chats', () => {
     })
 
     // Claude: the top carries over to 'high'; drop it to the bottom.
+    fireEvent.click(screen.getByRole('button', { name: 'Show Claude Code models' }))
     fireEvent.click(screen.getByRole('button', { name: 'Use Opus 5 through Claude Code' }))
     await waitFor(() => {
       expect(document.querySelector('.model-selector__effort-title')?.textContent).toBe(
@@ -1355,6 +1423,7 @@ describe('new chats', () => {
 
     // Returning to Codex restores the remembered Extra High — the old
     // carry-over translation of 'low' would land on Low here.
+    fireEvent.click(screen.getByRole('button', { name: 'Show Codex models' }))
     fireEvent.click(screen.getByRole('button', { name: 'Use GPT-5.6 Sol through Codex' }))
     await waitFor(() => {
       expect(document.querySelector('.model-selector__effort-title')?.textContent).toBe(
@@ -1363,6 +1432,7 @@ describe('new chats', () => {
     })
 
     // And Claude still remembers Low rather than inheriting the top again.
+    fireEvent.click(screen.getByRole('button', { name: 'Show Claude Code models' }))
     fireEvent.click(screen.getByRole('button', { name: 'Use Opus 5 through Claude Code' }))
     await waitFor(() => {
       expect(document.querySelector('.model-selector__effort-title')?.textContent).toBe(

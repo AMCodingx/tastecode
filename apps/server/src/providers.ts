@@ -174,11 +174,22 @@ export function launchCommandFor(provider: ProviderStatus['id'], agent?: string)
   return entry.loginCommand
 }
 
-export async function detectProviders(
-  system: SystemProbe = REAL_SYSTEM,
-): Promise<ProviderStatus[]> {
-  const direct = await Promise.all(PROBES.map((entry) => probe(entry, system)))
-  return [...direct, await acpStatus(system)]
+const providerDetections = new WeakMap<SystemProbe, Promise<ProviderStatus[]>>()
+
+export function detectProviders(system: SystemProbe = REAL_SYSTEM): Promise<ProviderStatus[]> {
+  const current = providerDetections.get(system)
+  if (current) return current
+
+  const detection = Promise.all([
+    Promise.all(PROBES.map((entry) => probe(entry, system))),
+    acpStatus(system),
+  ]).then(([direct, acp]) => [...direct, acp])
+  providerDetections.set(system, detection)
+  const clear = () => {
+    if (providerDetections.get(system) === detection) providerDetections.delete(system)
+  }
+  void detection.then(clear, clear)
+  return detection
 }
 
 async function probe(entry: Probe, system: SystemProbe): Promise<ProviderStatus> {

@@ -81,10 +81,81 @@ describe('Transport', () => {
 
     // A drop and reconnect must not resend the already-transmitted frame.
     first.close()
-    vi.advanceTimersByTime(600)
+    vi.advanceTimersByTime(0)
     const second = FakeSocket.instances[1]!
     second.open()
     expect(userFrames(second)).toHaveLength(0)
+  })
+
+  it('replaces a half-dead open socket when a wake-up health check times out', async () => {
+    const transport = new Transport('ws://test')
+    transport.connect()
+    const first = FakeSocket.instances[0]!
+    first.open()
+
+    const checking = transport.ensureHealthy(500)
+    expect(JSON.parse(userFrames(first)[0]!)).toMatchObject({ method: 'system.info' })
+
+    await vi.advanceTimersByTimeAsync(500)
+    await checking
+    expect(transport.state).toBe('reconnecting')
+    await vi.runOnlyPendingTimersAsync()
+    const second = FakeSocket.instances[1]!
+    expect(second).toBeTruthy()
+    expect(transport.state).toBe('reconnecting')
+  })
+
+  it('keeps a healthy socket when the wake-up probe answers', async () => {
+    const transport = new Transport('ws://test')
+    transport.connect()
+    const socket = FakeSocket.instances[0]!
+    socket.open()
+
+    const checking = transport.ensureHealthy(500)
+    const frame = JSON.parse(userFrames(socket)[0]!) as { id: string }
+    socket.onmessage?.({
+      data: JSON.stringify({
+        id: frame.id,
+        result: { serverVersion: 'test', protocolVersion: 1, platform: 'test' },
+      }),
+    })
+    await checking
+    vi.runAllTimers()
+
+    expect(FakeSocket.instances).toHaveLength(1)
+    expect(transport.state).toBe('open')
+  })
+
+  it('backs off when a server accepts and immediately rejects the socket', () => {
+    const transport = new Transport('ws://test')
+    transport.connect()
+    const first = FakeSocket.instances[0]!
+    first.open()
+    first.close()
+    vi.advanceTimersByTime(0)
+
+    const second = FakeSocket.instances[1]!
+    second.open()
+    second.close()
+    vi.advanceTimersByTime(99)
+    expect(FakeSocket.instances).toHaveLength(2)
+
+    vi.advanceTimersByTime(1)
+    expect(FakeSocket.instances).toHaveLength(3)
+  })
+
+  it('does not resurrect a reconnect after the transport is closed', () => {
+    const transport = new Transport('ws://test')
+    transport.connect()
+    const socket = FakeSocket.instances[0]!
+    socket.open()
+    socket.close()
+
+    transport.close()
+    vi.runAllTimers()
+
+    expect(FakeSocket.instances).toHaveLength(1)
+    expect(transport.state).toBe('closed')
   })
 
   it('never surfaces the literal string "undefined" for a message-less error frame', async () => {

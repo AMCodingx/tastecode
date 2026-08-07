@@ -30,6 +30,9 @@ export class Transport {
   #lastSequence = 0
   #state: ConnectionState = 'closed'
   #closedByUs = false
+  #reconnectTimer: ReturnType<typeof setTimeout> | undefined
+  #reconnectDelayMs = 0
+  #healthCheck: Promise<void> | undefined
 
   #stateListeners = new Set<(s: ConnectionState) => void>()
   #channelListeners = new Map<string, Set<(data: unknown) => void>>()
@@ -44,11 +47,13 @@ export class Transport {
 
   connect(): void {
     this.#closedByUs = false
+    this.#clearReconnectTimer()
     this.#open('connecting')
   }
 
   close(): void {
     this.#closedByUs = true
+    this.#clearReconnectTimer()
     this.#socket?.close()
     // This instance is being discarded; nothing will ever flush the queue or
     // answer in-flight calls. A request left pending here kept its caller's
@@ -60,6 +65,42 @@ export class Transport {
     this.#inFlight.clear()
     this.#queue = []
     this.#setState('closed')
+  }
+
+  /**
+   * Browser sockets can remain OPEN after a laptop wakes even though the TCP
+   * connection underneath is gone. A cheap loopback request confirms liveness;
+   * if it cannot answer promptly, replace the socket instead of leaving every
+   * later request stranded on a half-dead connection.
+   */
+  ensureHealthy(timeoutMs = 500): Promise<void> {
+    if (this.#closedByUs || this.#state === 'closed' || this.#state === 'connecting') {
+      return Promise.resolve()
+    }
+    if (this.#state === 'reconnecting') {
+      if (this.#socket?.readyState !== WebSocket.CONNECTING) this.#scheduleReconnect(true)
+      return Promise.resolve()
+    }
+    if (this.#healthCheck) return this.#healthCheck
+
+    const socket = this.#socket
+    let timer: ReturnType<typeof setTimeout> | undefined
+    let checking!: Promise<void>
+    checking = Promise.race([
+      this.request('system.info', {}).then(() => undefined),
+      new Promise<never>((_, reject) => {
+        timer = setTimeout(() => reject(new Error('Connection health check timed out.')), timeoutMs)
+      }),
+    ])
+      .catch(() => {
+        if (!this.#closedByUs && this.#socket === socket) this.#restartSocket()
+      })
+      .finally(() => {
+        clearTimeout(timer)
+        if (this.#healthCheck === checking) this.#healthCheck = undefined
+      })
+    this.#healthCheck = checking
+    return checking
   }
 
   onState(listener: (state: ConnectionState) => void): () => void {
@@ -96,6 +137,8 @@ export class Transport {
   }
 
   #open(state: ConnectionState): void {
+    if (this.#closedByUs) return
+    this.#clearReconnectTimer()
     this.#setState(state)
     // Sequence numbers are per connection, so a new socket restarts at 1.
     // Carrying the old counter across a reconnect made the gap detector fire
@@ -124,6 +167,10 @@ export class Transport {
       // The server broadcasts to every open connection, so without this guard
       // each push is applied twice and the thread shows duplicate messages.
       if (this.#socket !== socket) return
+      // Reset only after the server actually speaks. A rejected WebSocket can
+      // briefly open before an auth close; resetting in onopen made that case
+      // reconnect in a zero-delay loop forever.
+      this.#reconnectDelayMs = 0
       this.#receive(String(event.data))
     }
 
@@ -133,19 +180,48 @@ export class Transport {
       // server's reply died with the connection. Leaving them pending is how
       // a session got stuck at "starting" forever. Requests still queued
       // survive and flush on reconnect.
-      for (const id of this.#inFlight) {
-        const call = this.#pending.get(id)
-        if (call) {
-          this.#pending.delete(id)
-          call.reject(new Error('Connection to the server was lost.'))
-        }
-      }
-      this.#inFlight.clear()
+      this.#socket = undefined
+      this.#rejectInFlight()
       if (this.#closedByUs) return
-      this.#setState('reconnecting')
-      // Fixed backoff is fine for a loopback connection to a server we own.
-      setTimeout(() => this.#open('reconnecting'), 500)
+      this.#scheduleReconnect()
     }
+  }
+
+  #restartSocket(): void {
+    const socket = this.#socket
+    this.#socket = undefined
+    if (socket && socket.readyState !== WebSocket.CLOSED) socket.close()
+    this.#rejectInFlight()
+    if (!this.#closedByUs) this.#scheduleReconnect(true)
+  }
+
+  #rejectInFlight(): void {
+    for (const id of this.#inFlight) {
+      const call = this.#pending.get(id)
+      if (call) {
+        this.#pending.delete(id)
+        call.reject(new Error('Connection to the server was lost.'))
+      }
+    }
+    this.#inFlight.clear()
+  }
+
+  #scheduleReconnect(immediate = false): void {
+    if (this.#closedByUs) return
+    this.#clearReconnectTimer()
+    this.#setState('reconnecting')
+    const delay = immediate ? 0 : this.#reconnectDelayMs
+    if (this.#reconnectDelayMs === 0) this.#reconnectDelayMs = 100
+    else if (!immediate) this.#reconnectDelayMs = Math.min(this.#reconnectDelayMs * 2, 1_000)
+    this.#reconnectTimer = setTimeout(() => {
+      this.#reconnectTimer = undefined
+      this.#open('reconnecting')
+    }, delay)
+  }
+
+  #clearReconnectTimer(): void {
+    clearTimeout(this.#reconnectTimer)
+    this.#reconnectTimer = undefined
   }
 
   #receive(raw: string): void {
