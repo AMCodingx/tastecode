@@ -2778,6 +2778,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "harness-adapter-claude-code"
+version = "0.1.0"
+dependencies = [
+ "harness-protocol",
+ "serde_json",
+]
+
+[[package]]
 name = "harness-adapter-codex"
 version = "0.1.0"
 dependencies = [
