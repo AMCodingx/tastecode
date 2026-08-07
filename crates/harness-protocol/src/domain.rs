@@ -524,6 +524,31 @@ pub struct ModelConnectionsResult {
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct ModelConnectionInput {
+    pub id: String,
+    pub display_name: String,
+    pub preset: ModelConnectionPreset,
+    pub transport: ModelTransport,
+    pub base_url: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub default_model: Option<String>,
+    pub enabled: bool,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ModelConnectionResult {
+    pub connection: ModelConnection,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CredentialConfiguredResult {
+    pub credential_configured: bool,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct AcpAgent {
     pub id: String,
     pub name: String,
@@ -550,6 +575,25 @@ pub struct Account {
     pub email: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub plan: Option<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AuthStartLoginResult {
+    pub login_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub auth_url: Option<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AuthEventPush {
+    pub provider: ProviderId,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent: Option<String>,
+    pub login_id: Option<String>,
+    pub success: bool,
+    pub error: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -1058,6 +1102,27 @@ mod tests {
         assert_eq!(
             connections.connections[0].default_model.as_deref(),
             Some("local-model")
+        );
+
+        let input = ModelConnectionInput {
+            id: "openai-1".into(),
+            display_name: "OpenAI API".into(),
+            preset: ModelConnectionPreset::Openai,
+            transport: ModelTransport::OpenaiResponses,
+            base_url: "https://api.openai.com/v1".into(),
+            default_model: None,
+            enabled: true,
+        };
+        assert_eq!(
+            serde_json::to_value(input).unwrap(),
+            json!({
+                "id": "openai-1",
+                "displayName": "OpenAI API",
+                "preset": "openai",
+                "transport": "openai-responses",
+                "baseUrl": "https://api.openai.com/v1",
+                "enabled": true
+            })
         );
     }
 

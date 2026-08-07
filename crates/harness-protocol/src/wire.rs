@@ -75,6 +75,9 @@ pub mod method {
     pub const SYSTEM_INFO: &str = "system.info";
     pub const PROVIDERS_LIST: &str = "providers.list";
     pub const CONNECTIONS_LIST: &str = "connections.list";
+    pub const CONNECTIONS_UPSERT: &str = "connections.upsert";
+    pub const CONNECTIONS_SET_CREDENTIAL: &str = "connections.setCredential";
+    pub const CONNECTIONS_REMOVE: &str = "connections.remove";
     pub const CONNECTIONS_MODELS: &str = "connections.models";
     pub const MCP_LIST: &str = "mcp.list";
     pub const MCP_ADD: &str = "mcp.add";
@@ -84,6 +87,9 @@ pub mod method {
     pub const SKILLS_SET_ENABLED: &str = "skills.setEnabled";
     pub const SKILLS_INSTALL_FROM_FOLDER: &str = "skills.installFromFolder";
     pub const ACP_AGENTS: &str = "acp.agents";
+    pub const AUTH_STATUS: &str = "auth.status";
+    pub const AUTH_START_LOGIN: &str = "auth.startLogin";
+    pub const AUTH_SIGN_OUT: &str = "auth.signOut";
     pub const PROJECTS_LIST: &str = "projects.list";
     pub const PROJECTS_ADD: &str = "projects.add";
     pub const TERMINAL_OPEN: &str = "terminal.open";
@@ -109,6 +115,7 @@ pub mod method {
 
 pub mod channel {
     pub const SERVER_WELCOME: &str = "server.welcome";
+    pub const AUTH_EVENT: &str = "auth.event";
     pub const THREAD_EVENT: &str = "thread.event";
     pub const THREAD_QUEUE: &str = "thread.queue";
     pub const THREAD_LIFECYCLE: &str = "thread.lifecycle";
@@ -191,5 +198,23 @@ mod tests {
         );
         assert_eq!(channel::MCP_CHANGED, "mcp.changed");
         assert_eq!(channel::SKILLS_CHANGED, "skills.changed");
+    }
+
+    #[test]
+    fn connection_mutations_keep_the_existing_method_names() {
+        assert_eq!(method::CONNECTIONS_UPSERT, "connections.upsert");
+        assert_eq!(
+            method::CONNECTIONS_SET_CREDENTIAL,
+            "connections.setCredential"
+        );
+        assert_eq!(method::CONNECTIONS_REMOVE, "connections.remove");
+    }
+
+    #[test]
+    fn authentication_keeps_the_existing_method_and_push_names() {
+        assert_eq!(method::AUTH_STATUS, "auth.status");
+        assert_eq!(method::AUTH_START_LOGIN, "auth.startLogin");
+        assert_eq!(method::AUTH_SIGN_OUT, "auth.signOut");
+        assert_eq!(channel::AUTH_EVENT, "auth.event");
     }
 }
