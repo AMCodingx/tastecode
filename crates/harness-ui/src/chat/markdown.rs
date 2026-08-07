@@ -3902,6 +3902,8 @@ fn stable_hash(value: &str) -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::assets::HarnessAssets;
+    use gpui::AssetSource;
 
     #[test]
     fn file_reference_detection_matches_the_web_component() {
@@ -3915,6 +3917,41 @@ mod tests {
         assert!(!is_file_reference("no-extension"));
         assert_eq!(file_icon_spec("view.tsx").kind, "react");
         assert_eq!(file_icon_spec("script.ts").label, Some("TS"));
+    }
+
+    #[test]
+    fn file_reference_icons_are_embedded_native_assets() {
+        let assets = HarnessAssets;
+        for filename in [
+            "view.tsx",
+            "app.css",
+            "index.html",
+            "data.json",
+            "README.md",
+            "notes.txt",
+            "schema.sql",
+            "build.sh",
+            "main.rs",
+            "script.rb",
+            "Main.java",
+            "App.swift",
+            "image.png",
+            ".gitignore",
+            "Dockerfile",
+            "unknown.extension",
+        ] {
+            let spec = file_icon_spec(filename);
+            let Some(icon) = spec.icon else {
+                continue;
+            };
+            assert!(
+                assets
+                    .load(icon)
+                    .expect("asset lookup should succeed")
+                    .is_some(),
+                "{icon} for {filename} must be registered in HarnessAssets"
+            );
+        }
     }
 
     #[test]
