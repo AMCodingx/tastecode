@@ -4,6 +4,7 @@ members = [
   "apps/native",
   "crates/harness-agent",
   "crates/harness-adapter-acp",
+  "crates/harness-adapter-antigravity",
   "crates/harness-adapter-api",
   "crates/harness-adapter-claude-code",
   "crates/harness-adapter-cursor",

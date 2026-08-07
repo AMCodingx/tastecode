@@ -2778,6 +2778,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "harness-adapter-antigravity"
+version = "0.1.0"
+dependencies = [
+ "harness-agent",
+ "harness-proc",
+ "harness-protocol",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "uuid",
+]
+
+[[package]]
 name = "harness-adapter-api"
 version = "0.1.0"
 dependencies = [
