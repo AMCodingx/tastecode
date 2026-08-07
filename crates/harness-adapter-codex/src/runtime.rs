@@ -1,4 +1,8 @@
-use crate::{map_domain_notification, mcp::map_server_status, skills::map_skill_list};
+use crate::{
+    map_domain_notification,
+    mcp::{CODEX_MCP_CAPABILITIES, map_server_status},
+    skills::map_skill_list,
+};
 use harness_agent::{
     AgentError, AgentHandlers, AgentResult, AgentRuntime, AgentSession, ControlHandlers,
     LoginEvent, ProviderControl, StartOptions, TurnOptions,
@@ -8,8 +12,8 @@ use harness_proc::{
 };
 use harness_protocol::{
     Account, ApprovalDecision, ApprovalKind, ApprovalMode, ApprovalRequest, AuthStartLoginResult,
-    Capabilities, DomainEvent, McpServer, Model, ProviderId, ServiceTier, SkillsListResult, Thread,
-    UserInputOption, UserInputQuestion, UserInputRequest,
+    Capabilities, DomainEvent, McpListResult, McpServer, Model, ProviderId, ServiceTier,
+    SkillsListResult, Thread, UserInputOption, UserInputQuestion, UserInputRequest,
 };
 use serde_json::{Map, Value, json};
 use std::collections::HashMap;
@@ -556,6 +560,21 @@ impl ProviderControl for CodexAdapter {
 
     fn list_models(&self) -> AgentResult<Vec<Model>> {
         CodexAdapter::list_models(self).map_err(agent_error)
+    }
+
+    fn list_mcp_servers(&self) -> AgentResult<McpListResult> {
+        Ok(McpListResult {
+            capabilities: CODEX_MCP_CAPABILITIES,
+            servers: CodexAdapter::list_mcp_servers(self, None).map_err(agent_error)?,
+        })
+    }
+
+    fn list_skills(&self, project_path: &str) -> AgentResult<SkillsListResult> {
+        CodexAdapter::list_skills(self, project_path).map_err(agent_error)
+    }
+
+    fn set_skill_enabled(&self, skill_id: &str, enabled: bool) -> AgentResult<bool> {
+        CodexAdapter::set_skill_enabled(self, skill_id, enabled).map_err(agent_error)
     }
 
     fn dispose(&self) {

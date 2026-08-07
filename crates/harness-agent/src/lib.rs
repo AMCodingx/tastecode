@@ -1,6 +1,6 @@
 use harness_protocol::{
     Account, ApprovalDecision, ApprovalMode, AuthStartLoginResult, Capabilities, DomainEvent,
-    Model, Thread,
+    McpListResult, Model, SkillsListResult, Thread,
 };
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -156,6 +156,15 @@ pub trait ProviderControl: Send + Sync {
     fn use_api_key(&self, api_key: &str) -> AgentResult<Account>;
     fn sign_out(&self) -> AgentResult<()>;
     fn list_models(&self) -> AgentResult<Vec<Model>>;
+    fn list_mcp_servers(&self) -> AgentResult<McpListResult> {
+        Err(AgentError::Unsupported("MCP inventory"))
+    }
+    fn list_skills(&self, _project_path: &str) -> AgentResult<SkillsListResult> {
+        Err(AgentError::Unsupported("skills inventory"))
+    }
+    fn set_skill_enabled(&self, _skill_id: &str, _enabled: bool) -> AgentResult<bool> {
+        Err(AgentError::Unsupported("skill configuration"))
+    }
     fn dispose(&self);
 }
 
