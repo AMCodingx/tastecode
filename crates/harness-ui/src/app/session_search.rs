@@ -1,6 +1,7 @@
 use super::HarnessApp;
 use crate::chrome;
 use crate::client_state::SessionSearchRequest;
+use crate::motion_icon::motion_icon;
 use crate::zoom::px;
 use chrono::{DateTime, Local};
 use gpui::{
@@ -228,7 +229,13 @@ impl HarnessApp {
             .border_color(theme.line.hsla())
             .text_color(theme.text_3.hsla())
             .child(chrome::inset_top_shade(theme))
-            .child(super::icon("icons/search.svg", 15.0))
+            .child(motion_icon(
+                "session-search-icon",
+                "icons/search.svg",
+                15.0,
+                "session-search-icon-direct-hover",
+                theme,
+            ))
             .child(
                 Input::new(&self.session_search.input)
                     .appearance(false)
@@ -245,6 +252,7 @@ impl HarnessApp {
             .child(
                 div()
                     .id("session-search-close")
+                    .group("session-search-close-hover")
                     .size(px(22.0))
                     .flex()
                     .items_center()
@@ -260,7 +268,13 @@ impl HarnessApp {
                     .on_click(cx.listener(|this, _event, _window, cx| {
                         this.close_session_search(cx);
                     }))
-                    .child(super::icon("icons/x.svg", 13.0)),
+                    .child(motion_icon(
+                        "session-search-close-icon",
+                        "icons/x.svg",
+                        13.0,
+                        "session-search-close-hover",
+                        theme,
+                    )),
             );
 
         let filters = div()
@@ -580,6 +594,8 @@ fn search_filter(
     theme: crate::Theme,
     listener: impl Fn(&gpui::ClickEvent, &mut Window, &mut gpui::App) + 'static,
 ) -> AnyElement {
+    let hover_group: SharedString = format!("{id}:hover").into();
+    let icon_id: SharedString = format!("{id}:icon").into();
     div()
         .flex()
         .items_center()
@@ -590,6 +606,7 @@ fn search_filter(
         .child(
             div()
                 .id(id)
+                .group(hover_group.clone())
                 .h(px(27.0))
                 .max_w(px(180.0))
                 .flex()
@@ -615,7 +632,13 @@ fn search_filter(
                 })
                 .on_click(listener)
                 .child(div().min_w(px(0.0)).flex_1().truncate().child(value))
-                .child(super::icon("icons/chevron-down.svg", 14.0)),
+                .child(motion_icon(
+                    icon_id,
+                    "icons/chevron-down.svg",
+                    14.0,
+                    hover_group,
+                    theme,
+                )),
         )
         .into_any_element()
 }
@@ -627,8 +650,11 @@ fn search_filter_option(
     theme: crate::Theme,
     listener: impl Fn(&gpui::ClickEvent, &mut Window, &mut gpui::App) + 'static,
 ) -> AnyElement {
+    let hover_group: SharedString = format!("{id}:hover").into();
+    let icon_id: SharedString = format!("{id}:icon").into();
     div()
         .id(id)
+        .group(hover_group.clone())
         .h(px(30.0))
         .w_full()
         .flex()
@@ -651,7 +677,13 @@ fn search_filter_option(
         .on_click(listener)
         .child(div().min_w(px(0.0)).flex_1().truncate().child(label))
         .when(selected, |row| {
-            row.child(super::icon("icons/check.svg", 11.0))
+            row.child(motion_icon(
+                icon_id,
+                "icons/check.svg",
+                11.0,
+                hover_group,
+                theme,
+            ))
         })
         .into_any_element()
 }

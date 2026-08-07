@@ -1,5 +1,6 @@
 use super::HarnessApp;
 use crate::chrome;
+use crate::motion_icon::motion_icon;
 use crate::shortcuts::{
     COMMAND_PALETTE, FOCUS_COMPOSER, NEW_CHAT, NEW_PROJECT, SEARCH_SESSIONS, SETTINGS,
     SWITCH_PROJECT, TOGGLE_SIDEBAR, label, matches,
@@ -517,7 +518,13 @@ impl HarnessApp {
             .border_color(theme.line.hsla())
             .text_color(theme.text_3.hsla())
             .child(chrome::inset_top_shade(theme))
-            .child(super::icon("icons/search.svg", 15.0))
+            .child(motion_icon(
+                "command-palette-search-icon",
+                "icons/search.svg",
+                15.0,
+                "command-palette-search-icon-direct-hover",
+                theme,
+            ))
             .child(
                 Input::new(&self.command_palette.input)
                     .w_full()

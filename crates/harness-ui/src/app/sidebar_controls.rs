@@ -1,5 +1,6 @@
 use super::HarnessApp;
 use crate::chrome;
+use crate::motion_icon::motion_icon;
 use crate::sidebar::{SelectionModifiers, SidebarMenuRequest, ordered_inbox_ids};
 use crate::zoom::px;
 use chrono::{Datelike, Duration as ChronoDuration, Local, Timelike};
@@ -1130,6 +1131,7 @@ impl HarnessApp {
                             .child(
                                 div()
                                     .id("sidebar-dialog-close")
+                                    .group("sidebar-dialog-close-hover")
                                     .size(px(22.0))
                                     .flex_none()
                                     .flex()
@@ -1146,7 +1148,13 @@ impl HarnessApp {
                                     .on_click(cx.listener(|this, _event, _window, cx| {
                                         this.close_sidebar_controls(cx);
                                     }))
-                                    .child(super::icon("icons/x.svg", 13.0)),
+                                    .child(motion_icon(
+                                        "sidebar-dialog-close-icon",
+                                        "icons/x.svg",
+                                        13.0,
+                                        "sidebar-dialog-close-hover",
+                                        theme,
+                                    )),
                             ),
                     )
                     .child(
@@ -1295,7 +1303,13 @@ impl HarnessApp {
                                             .text_size(px(11.5))
                                             .line_height(relative(1.55))
                                             .text_color(theme.text_3.hsla())
-                                            .child(super::icon("icons/git-branch.svg", 12.0))
+                                            .child(motion_icon(
+                                                "checkout-discard-branch-icon",
+                                                "icons/git-branch.svg",
+                                                12.0,
+                                                "checkout-discard-branch-icon-direct-hover",
+                                                theme,
+                                            ))
                                             .child(
                                                 div()
                                                     .min_w(px(0.0))
@@ -1307,6 +1321,7 @@ impl HarnessApp {
                             .child(
                                 div()
                                     .id("checkout-discard-close")
+                                    .group("checkout-discard-close-hover")
                                     .size(px(22.0))
                                     .flex_none()
                                     .flex()
@@ -1324,7 +1339,13 @@ impl HarnessApp {
                                     .on_click(cx.listener(|this, _event, _window, cx| {
                                         this.close_sidebar_controls(cx);
                                     }))
-                                    .child(super::icon("icons/x.svg", 13.0)),
+                                    .child(motion_icon(
+                                        "checkout-discard-close-icon",
+                                        "icons/x.svg",
+                                        13.0,
+                                        "checkout-discard-close-hover",
+                                        theme,
+                                    )),
                             ),
                     )
                     .child(
@@ -1397,8 +1418,12 @@ fn sidebar_menu_item(
     theme: crate::Theme,
     listener: impl Fn(&gpui::ClickEvent, &mut Window, &mut gpui::App) + 'static,
 ) -> AnyElement {
+    let id = id.into();
+    let hover_group: SharedString = format!("{id}:hover").into();
+    let icon_id: SharedString = format!("{id}:icon").into();
     div()
-        .id(id.into())
+        .id(id)
+        .group(hover_group.clone())
         .w_full()
         .flex()
         .items_center()
@@ -1428,7 +1453,7 @@ fn sidebar_menu_item(
         })
         .on_click(listener)
         .when_some(icon_path, |item, icon_path| {
-            item.child(super::icon(icon_path, 13.0))
+            item.child(motion_icon(icon_id, icon_path, 13.0, hover_group, theme))
         })
         .child(label.into())
         .into_any_element()

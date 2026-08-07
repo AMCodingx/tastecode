@@ -31,7 +31,7 @@ use gpui::{
     Animation, AnimationExt, App, Application, Bounds, Context, CursorStyle, Entity, FocusHandle,
     Focusable, KeyDownEvent, MouseButton, MouseDownEvent, MouseMoveEvent, PathPromptOptions,
     Pixels, Render, SharedString, TitlebarOptions, Window, WindowAppearance,
-    WindowBackgroundAppearance, WindowBounds, WindowOptions, div, point, prelude::*, size, svg,
+    WindowBackgroundAppearance, WindowBounds, WindowOptions, div, point, prelude::*, size,
 };
 use gpui_component::Root;
 use gpui_component::input::{InputEvent, InputState};
@@ -2425,10 +2425,6 @@ fn apply_project_session_order(sessions: &mut [SessionSummary], order: &[String]
         .map(|session| session.id.clone())
         .collect::<Vec<_>>();
     after != before
-}
-
-fn icon(path: &'static str, size: f32) -> impl IntoElement {
-    svg().path(path).size(px(size))
 }
 
 fn titlebar_tool_button(
