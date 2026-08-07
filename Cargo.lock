@@ -3009,6 +3009,7 @@ dependencies = [
  "harness-protocol",
  "harness-state",
  "headless_chrome",
+ "markdown",
  "serde",
  "serde_json",
  "url",

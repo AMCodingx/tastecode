@@ -19,6 +19,7 @@ headless_chrome.workspace = true
 harness-client = { path = "../harness-client" }
 harness-protocol = { path = "../harness-protocol" }
 harness-state = { path = "../harness-state" }
+markdown.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 uuid.workspace = true

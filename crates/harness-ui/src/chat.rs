@@ -1,4 +1,5 @@
 mod diff;
+mod markdown;
 mod presentation;
 mod search;
 pub(crate) mod terminal;
@@ -23,6 +24,7 @@ use harness_protocol::{
     ThreadEventPush, ThreadQueueResult, UserInputQuestion, VoiceMimeType, VoiceTranscribeParams,
 };
 use harness_state::{ApplyOutcome, HistoryError, ThreadState};
+use markdown::StreamRevealBatch;
 use presentation::TranscriptPresentation;
 use search::ThreadSearchState;
 use std::cell::Cell;
@@ -281,6 +283,9 @@ pub(crate) struct ChatView {
     settle_generation: u64,
     working_rail_entering_turn_id: Option<String>,
     working_rail_entry_generation: u64,
+    stream_reveal_batches: HashMap<String, Vec<StreamRevealBatch>>,
+    stream_reveal_generation: u64,
+    stream_reveal_cleanup_scheduled: bool,
     expanded_transcript_items: HashSet<String>,
     expanded_activities: HashSet<String>,
     copied_transcript_item: Option<String>,
@@ -400,6 +405,9 @@ impl ChatView {
             settle_generation: 0,
             working_rail_entering_turn_id: None,
             working_rail_entry_generation: 0,
+            stream_reveal_batches: HashMap::new(),
+            stream_reveal_generation: 0,
+            stream_reveal_cleanup_scheduled: false,
             expanded_transcript_items: HashSet::new(),
             expanded_activities: HashSet::new(),
             copied_transcript_item: None,
@@ -894,6 +902,8 @@ impl ChatView {
         let mut applied = false;
         let mut reconcile_after = None;
         let mut finished_turn_id = None;
+        let mut streamed_bytes: HashMap<(String, String), usize> = HashMap::new();
+        let mut started_stream_items = HashSet::new();
 
         let mut events = events.into_iter();
         while let Some(push) = events.next() {
@@ -912,6 +922,27 @@ impl ChatView {
                 }
             } else {
                 None
+            };
+            let stream_delta = match &push.event {
+                DomainEvent::ItemDelta {
+                    turn_id,
+                    item_id,
+                    text_delta,
+                } if !text_delta.is_empty() => {
+                    Some(((turn_id.clone(), item_id.clone()), text_delta.len()))
+                }
+                _ => None,
+            };
+            let started_stream_item = match &push.event {
+                DomainEvent::ItemStarted { item }
+                    if item.item_type == harness_protocol::ItemType::Message
+                        && item.role == Some(harness_protocol::MessageRole::Assistant)
+                        && item.status == harness_protocol::ItemStatus::Started
+                        && item.text.as_ref().is_some_and(|text| !text.is_empty()) =>
+                {
+                    Some((item.turn_id.clone(), item.id.clone()))
+                }
+                _ => None,
             };
             presentation_changed |= matches!(
                 &push.event,
@@ -955,6 +986,14 @@ impl ChatView {
                     {
                         changed_items.insert(changed_item);
                     }
+                    if changes.transcript {
+                        if let Some((item, bytes)) = stream_delta {
+                            *streamed_bytes.entry(item).or_default() += bytes;
+                        }
+                        if let Some(item) = started_stream_item {
+                            started_stream_items.insert(item);
+                        }
+                    }
                 }
                 ApplyOutcome::Duplicate => {}
                 ApplyOutcome::NeedsHistory { after_seq } => {
@@ -969,6 +1008,40 @@ impl ChatView {
 
         if applied {
             let new_len = self.state.timeline_len();
+            let reveal_keys = streamed_bytes
+                .keys()
+                .chain(started_stream_items.iter())
+                .cloned()
+                .collect::<HashSet<_>>();
+            let reveal_specs = reveal_keys
+                .into_iter()
+                .filter_map(|(turn_id, item_id)| {
+                    let row = self.state.row_for_item(&turn_id, &item_id)?;
+                    let item = self.state.item_at_row(row)?;
+                    if item.item_type != harness_protocol::ItemType::Message
+                        || item.role != Some(harness_protocol::MessageRole::Assistant)
+                    {
+                        return None;
+                    }
+                    let text = item.text.as_deref()?;
+                    let to = text.len();
+                    let from = if started_stream_items.contains(&(turn_id.clone(), item_id.clone()))
+                    {
+                        0
+                    } else {
+                        to.saturating_sub(
+                            streamed_bytes
+                                .get(&(turn_id, item_id.clone()))
+                                .copied()
+                                .unwrap_or_default(),
+                        )
+                    };
+                    Some((item.id.clone(), from, to, text.get(from..to)?.to_owned()))
+                })
+                .collect::<Vec<_>>();
+            for (item_id, from, to, text) in reveal_specs {
+                self.start_stream_reveal(item_id, from, to, &text, cx);
+            }
             let item_ids = (old_len..new_len)
                 .filter_map(|row| self.state.item_at_row(row).map(|item| item.id.clone()))
                 .collect();

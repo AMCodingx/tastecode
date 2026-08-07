@@ -1,3 +1,4 @@
+use super::markdown::{StreamRevealBatch, markdown_view};
 use super::presentation::{RowPresentation, TurnPresentation, is_activity};
 use super::thinking_orb::{ThinkingOrbState, thinking_orb};
 use super::{ChatEvent, ChatView, TranscriptScrollMode};
@@ -6,11 +7,9 @@ use crate::zoom::px;
 use chrono::{DateTime, Local};
 use gpui::{
     Animation, AnimationExt, AnyElement, App, BoxShadow, ClipboardItem, Entity, SharedString,
-    StyleRefinement, Styled, Transformation, Window, div, list, percentage, point, prelude::*,
-    relative, rems, rgba, svg,
+    Styled, Transformation, Window, div, list, percentage, point, prelude::*, relative, rgba, svg,
 };
 use gpui_component::scroll::ScrollableElement;
-use gpui_component::text::{TextView, TextViewStyle};
 use harness_protocol::{CheckpointSummary, Item, ItemStatus, ItemType, MessageRole};
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
@@ -38,6 +37,7 @@ struct TranscriptRowSnapshot {
     settling: bool,
     motion_epoch: u64,
     settle_generation: u64,
+    stream_reveals: Vec<StreamRevealBatch>,
     show_working_rail: bool,
     working: Option<WorkingSnapshot>,
     expanded: bool,
@@ -79,6 +79,7 @@ impl ChatView {
     pub(super) fn reset_transcript_item_entries(&mut self) {
         self.transcript_motion_epoch = self.transcript_motion_epoch.wrapping_add(1);
         self.entering_transcript_items.clear();
+        self.reset_stream_reveals();
     }
 
     pub(super) fn start_transcript_item_entries(
@@ -310,6 +311,11 @@ impl ChatView {
         let checkpoint_id = checkpoint_for(&item, &self.stage_settings.checkpoints).map(|it| it.id);
         let entering = self.entering_transcript_items.contains(&item.id);
         let settling = self.settled_turn_id.as_deref() == Some(item.turn_id.as_str());
+        let stream_reveals = self
+            .stream_reveal_batches
+            .get(&item.id)
+            .cloned()
+            .unwrap_or_default();
 
         Some(TranscriptRowSnapshot {
             row,
@@ -326,6 +332,7 @@ impl ChatView {
             settling,
             motion_epoch: self.transcript_motion_epoch,
             settle_generation: self.settle_generation,
+            stream_reveals,
             show_working_rail,
             checkpoint_id,
             theme: self.theme,
@@ -669,6 +676,8 @@ fn assistant_message(
         .child(markdown_view(
             format!("assistant-markdown:{}", snapshot.item.id),
             text,
+            snapshot.live,
+            &snapshot.stream_reveals,
             theme,
             window,
             cx,
@@ -756,6 +765,8 @@ fn completion_rail(
                                 .child(markdown_view(
                                     format!("activity-markdown:{}", item.id),
                                     item.text.clone().unwrap_or_default(),
+                                    false,
+                                    &[],
                                     theme,
                                     window,
                                     cx,
@@ -1018,66 +1029,6 @@ fn auxiliary_item(snapshot: &TranscriptRowSnapshot, view: Entity<ChatView>) -> A
                     .whitespace_normal()
                     .child(output),
             )
-        })
-        .into_any_element()
-}
-
-fn markdown_view(
-    id: String,
-    text: String,
-    theme: Theme,
-    window: &mut Window,
-    cx: &mut App,
-) -> AnyElement {
-    let code_style = StyleRefinement::default()
-        .bg(theme.surface.hsla())
-        .border_1()
-        .border_color(theme.line.hsla())
-        .rounded(px(8.0))
-        .px(px(13.0))
-        .py(px(11.0))
-        .font_family("Geist Mono")
-        .text_size(px(12.5));
-    let mut text_style = TextViewStyle::default()
-        .paragraph_gap(rems(0.5))
-        .heading_font_size(|level, _base| match level {
-            1 => px(20.0),
-            2 => px(15.0),
-            _ => px(13.5),
-        })
-        .code_block(code_style);
-    text_style.heading_base_font_size = px(15.0);
-    text_style.is_dark = theme.mode == ThemeMode::Dark;
-
-    TextView::markdown(SharedString::from(id), text, window, cx)
-        .style(text_style)
-        .selectable(true)
-        .w_full()
-        .max_w(px(690.0))
-        .font_family("Geist")
-        .text_size(px(15.0))
-        .line_height(relative(1.52))
-        .text_color(theme.response_text.hsla())
-        .code_block_actions(move |block, _window, _cx| {
-            let code = block.code().to_string();
-            let id = format!("copy-code:{}", stable_hash(&code));
-            div()
-                .id(SharedString::from(id))
-                .size(px(24.0))
-                .flex()
-                .items_center()
-                .justify_center()
-                .rounded(px(5.0))
-                .border_1()
-                .border_color(theme.line.hsla())
-                .bg(theme.surface_2.hsla())
-                .text_color(theme.text_3.hsla())
-                .cursor_pointer()
-                .hover(move |style| style.text_color(theme.text.hsla()))
-                .on_click(move |_event, _window, cx| {
-                    cx.write_to_clipboard(ClipboardItem::new_string(code.clone()));
-                })
-                .child(transcript_svg("icons/copy.svg", 13.0))
         })
         .into_any_element()
 }
