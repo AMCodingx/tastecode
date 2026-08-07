@@ -2391,21 +2391,13 @@ impl HarnessApp {
         let mut theme_cards = Vec::new();
         for (index, (preference, label)) in theme_options.into_iter().enumerate() {
             let selected = self.preferences.theme == preference;
-            let preview_mode = match preference {
-                ThemePreference::System => self.system_theme_mode,
-                ThemePreference::Light => ThemeMode::Light,
-                ThemePreference::Dark => ThemeMode::Dark,
-            };
-            let preview = Theme::new(
-                preview_mode,
-                self.preferences.backdrop,
-                self.preferences.accent,
-            );
             let view = cx.weak_entity();
             let action: SettingsAction = Rc::new(move |cx| {
                 let _ = view.update(cx, |this, cx| this.set_theme_preference(preference, cx));
             });
-            theme_cards.push(theme_card(index, label, preview, selected, theme, action));
+            theme_cards.push(theme_card(
+                index, label, preference, selected, theme, action,
+            ));
         }
         blocks.push(settings_plain_group(
             "",
@@ -2446,21 +2438,21 @@ impl HarnessApp {
         blocks.push(settings_plain_group(
             "Interface font",
             div()
-                .flex()
-                .flex_wrap()
-                .gap(px(10.0))
+                .grid()
+                .grid_cols(3)
+                .gap(px(8.0))
                 .children(font_choices)
                 .into_any_element(),
             theme,
         ));
 
         let backdrop_options = [
-            (Backdrop::Default, "Graphite", 0x303035),
-            (Backdrop::Slate, "Slate", 0x354252),
-            (Backdrop::Mocha, "Mocha", 0x58453e),
-            (Backdrop::Forest, "Forest", 0x36503e),
-            (Backdrop::Midnight, "Midnight", 0x29375c),
-            (Backdrop::Plum, "Plum", 0x513b53),
+            (Backdrop::Default, "Graphite", (0x1a1a1a, 0x444444)),
+            (Backdrop::Slate, "Slate", (0x12151a, 0x3a4353)),
+            (Backdrop::Mocha, "Mocha", (0x161312, 0x55453d)),
+            (Backdrop::Forest, "Forest", (0x121713, 0x3c5242)),
+            (Backdrop::Midnight, "Midnight", (0x0e1119, 0x2c3a5e)),
+            (Backdrop::Plum, "Plum", (0x161217, 0x4d3a52)),
         ];
         let mut backdrop_choices = Vec::new();
         for (index, (backdrop, label, swatch)) in backdrop_options.into_iter().enumerate() {
@@ -2481,9 +2473,9 @@ impl HarnessApp {
         blocks.push(settings_plain_group(
             "Background",
             div()
-                .flex()
-                .flex_wrap()
-                .gap(px(10.0))
+                .grid()
+                .grid_cols(4)
+                .gap(px(8.0))
                 .children(backdrop_choices)
                 .into_any_element(),
             theme,
@@ -2513,22 +2505,22 @@ impl HarnessApp {
         blocks.push(settings_plain_group(
             "Sidebar translucency",
             div()
-                .flex()
-                .flex_wrap()
-                .gap(px(10.0))
+                .grid()
+                .grid_cols(3)
+                .gap(px(8.0))
                 .children(glass_choices)
                 .into_any_element(),
             theme,
         ));
 
         let accent_options = [
-            (Accent::Neutral, "Neutral", 0x71717a),
-            (Accent::Ocean, "Ocean", 0x2d7fbd),
-            (Accent::Forest, "Forest", 0x397a56),
-            (Accent::Sunset, "Sunset", 0x8b63bd),
-            (Accent::Amber, "Amber", 0x9a6823),
-            (Accent::Rose, "Rose", 0x9a4b6a),
-            (Accent::Lavender, "Lavender", 0x6658a6),
+            (Accent::Neutral, "Neutral", (0x71717a, 0xd4d4d8)),
+            (Accent::Ocean, "Ocean", (0x2d7fbd, 0x79c8dd)),
+            (Accent::Forest, "Forest", (0x397a56, 0x94c879)),
+            (Accent::Sunset, "Sunset", (0x8b63bd, 0xe58c76)),
+            (Accent::Amber, "Amber", (0x9a6823, 0xe2b568)),
+            (Accent::Rose, "Rose", (0x9a4b6a, 0xe59aad)),
+            (Accent::Lavender, "Lavender", (0x6658a6, 0xc49ad8)),
         ];
         let mut accent_choices = Vec::new();
         for (index, (accent, label, swatch)) in accent_options.into_iter().enumerate() {
@@ -2549,9 +2541,9 @@ impl HarnessApp {
         blocks.push(settings_plain_group(
             "Accent palette",
             div()
-                .flex()
-                .flex_wrap()
-                .gap(px(10.0))
+                .grid()
+                .grid_cols(4)
+                .gap(px(8.0))
                 .children(accent_choices)
                 .into_any_element(),
             theme,
@@ -3860,102 +3852,165 @@ fn row_issue(message: String, tip: Option<String>, theme: Theme) -> AnyElement {
 fn theme_card(
     index: usize,
     label: &'static str,
-    preview: Theme,
+    preference: ThemePreference,
     selected: bool,
     theme: Theme,
     action: SettingsAction,
 ) -> AnyElement {
+    let group: SharedString = format!("theme-card:{index}").into();
+    let preview = div()
+        .relative()
+        .h(px(164.0))
+        .w_full()
+        .overflow_hidden()
+        .rounded(px(8.0))
+        .when(selected, |preview| preview.border_2())
+        .when(!selected, |preview| preview.border_1())
+        .border_color(if selected {
+            theme.text.hsla()
+        } else {
+            theme.text.hsla().opacity(0.16)
+        })
+        .when(!selected, |preview| {
+            preview.group_hover(group.clone(), move |style| {
+                style.border_color(theme.text.hsla().opacity(0.32))
+            })
+        })
+        .bg(theme_preview_background(
+            preference,
+            ThemePreviewPart::Background,
+        ))
+        .child(
+            div()
+                .w(relative(0.44))
+                .h(px(6.0))
+                .mx_auto()
+                .mt(relative(0.16))
+                .mb(relative(0.06))
+                .rounded_full()
+                .bg(theme_preview_background(preference, ThemePreviewPart::Line)),
+        )
+        .child(
+            div()
+                .w(relative(0.68))
+                .h(px(4.0))
+                .mx_auto()
+                .rounded_full()
+                .bg(theme_preview_background(preference, ThemePreviewPart::Copy)),
+        )
+        .child(
+            div()
+                .absolute()
+                .left(relative(0.09))
+                .right(relative(0.09))
+                .bottom(relative(-0.08))
+                .h(relative(0.64))
+                .overflow_hidden()
+                .rounded_t(px(12.0))
+                .bg(theme_preview_background(
+                    preference,
+                    ThemePreviewPart::Panel,
+                ))
+                .children((0..2).map(|row| {
+                    div()
+                        .relative()
+                        .h(relative(0.5))
+                        .px(relative(0.08))
+                        .py(relative(0.10))
+                        .when(row > 0, |row| {
+                            row.border_t_1().border_color(theme_preview_color(
+                                preference,
+                                ThemePreviewPart::Divider,
+                            ))
+                        })
+                        .child(
+                            div()
+                                .w(relative(0.42))
+                                .h(px(6.0))
+                                .rounded_full()
+                                .bg(theme_preview_background(preference, ThemePreviewPart::Line)),
+                        )
+                        .child(
+                            div()
+                                .w(relative(0.66))
+                                .h(px(3.0))
+                                .mt(relative(0.08))
+                                .rounded_full()
+                                .bg(theme_preview_background(preference, ThemePreviewPart::Copy)),
+                        )
+                })),
+        );
     div()
         .id(("theme-card", index))
+        .group(group)
         .min_w(px(0.0))
         .flex_1()
         .cursor_pointer()
         .on_click(move |_event, _window, cx| action(cx))
-        .child(
-            div()
-                .relative()
-                .h(px(104.0))
-                .w_full()
-                .overflow_hidden()
-                .rounded(px(10.0))
-                .border_2()
-                .border_color(if selected {
-                    theme.attention.hsla()
-                } else {
-                    theme.line_strong.hsla()
-                })
-                .bg(preview.background.hsla())
-                .child(
-                    div()
-                        .h(px(20.0))
-                        .w_full()
-                        .bg(preview.titlebar.hsla())
-                        .border_b_1()
-                        .border_color(preview.line.hsla()),
-                )
-                .child(
-                    div()
-                        .m(px(12.0))
-                        .h(px(52.0))
-                        .rounded(px(7.0))
-                        .border_1()
-                        .border_color(preview.line.hsla())
-                        .bg(preview.rail.hsla())
-                        .child(
-                            div()
-                                .m(px(9.0))
-                                .h(px(5.0))
-                                .w(px(48.0))
-                                .rounded(px(3.0))
-                                .bg(preview.text_2.hsla().opacity(0.5)),
-                        )
-                        .child(
-                            div()
-                                .mx(px(9.0))
-                                .h(px(4.0))
-                                .w(px(72.0))
-                                .rounded(px(2.0))
-                                .bg(preview.text_3.hsla().opacity(0.45)),
-                        ),
-                ),
-        )
+        .child(preview)
         .child(
             div()
                 .mt(px(8.0))
-                .flex()
-                .items_center()
-                .gap(px(7.0))
-                .text_size(px(11.0))
+                .truncate()
+                .text_center()
+                .text_size(px(13.5))
                 .text_color(if selected {
                     theme.text.hsla()
                 } else {
                     theme.text_3.hsla()
                 })
-                .child(
-                    div()
-                        .size(px(12.0))
-                        .flex()
-                        .items_center()
-                        .justify_center()
-                        .rounded(px(6.0))
-                        .border_1()
-                        .border_color(if selected {
-                            theme.attention.hsla()
-                        } else {
-                            theme.line_strong.hsla()
-                        })
-                        .bg(if selected {
-                            theme.attention.hsla()
-                        } else {
-                            theme.background.hsla()
-                        })
-                        .when(selected, |mark| {
-                            mark.child(settings_icon("icons/check.svg", 8.0))
-                        }),
-                )
                 .child(label),
         )
         .into_any_element()
+}
+
+#[derive(Clone, Copy)]
+enum ThemePreviewPart {
+    Background,
+    Panel,
+    Line,
+    Copy,
+    Divider,
+}
+
+fn theme_preview_background(
+    preference: ThemePreference,
+    part: ThemePreviewPart,
+) -> gpui::Background {
+    if preference == ThemePreference::System {
+        let (light, dark) = theme_preview_pair(part);
+        return linear_gradient(
+            90.0,
+            linear_color_stop(gpui::rgb(light), 0.0),
+            linear_color_stop(gpui::rgb(dark), 1.0),
+        );
+    }
+    if preference == ThemePreference::Light && matches!(part, ThemePreviewPart::Panel) {
+        return linear_gradient(
+            180.0,
+            linear_color_stop(gpui::white(), 0.0),
+            linear_color_stop(gpui::rgb(0xfafafa), 1.0),
+        );
+    }
+    theme_preview_color(preference, part).into()
+}
+
+fn theme_preview_color(preference: ThemePreference, part: ThemePreviewPart) -> gpui::Hsla {
+    let (light, dark) = theme_preview_pair(part);
+    match preference {
+        ThemePreference::Light | ThemePreference::System => gpui::rgb(light).into(),
+        ThemePreference::Dark => gpui::rgb(dark).into(),
+    }
+}
+
+fn theme_preview_pair(part: ThemePreviewPart) -> (u32, u32) {
+    match part {
+        ThemePreviewPart::Background => (0xfdfdfd, 0x3a3a3c),
+        ThemePreviewPart::Panel => (0xffffff, 0x171717),
+        ThemePreviewPart::Line => (0xdcdce0, 0x777779),
+        ThemePreviewPart::Copy => (0xeeeeef, 0x4e4e50),
+        ThemePreviewPart::Divider => (0xebebed, 0x29292b),
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -3963,26 +4018,47 @@ fn appearance_choice(
     id: usize,
     label: &'static str,
     preview_font: &'static str,
-    swatch: Option<u32>,
+    swatch: Option<(u32, u32)>,
     selected: bool,
     theme: Theme,
     action: SettingsAction,
 ) -> AnyElement {
     let preview = match swatch {
-        Some(color) => div()
+        Some((from, to)) => div()
+            .relative()
             .size(px(34.0))
-            .rounded(px(8.0))
+            .flex_none()
+            .overflow_hidden()
+            .rounded(px(5.0))
             .border_1()
             .border_color(theme.line_strong.hsla())
-            .bg(gpui::rgb(color))
+            .bg(linear_gradient(
+                135.0,
+                linear_color_stop(gpui::rgb(from), 0.0),
+                linear_color_stop(gpui::rgb(to), 1.0),
+            ))
+            .child(
+                div()
+                    .absolute()
+                    .top_0()
+                    .left_0()
+                    .right_0()
+                    .h(px(1.0))
+                    .bg(gpui::white().opacity(0.16)),
+            )
             .into_any_element(),
         None => div()
             .size(px(34.0))
+            .flex_none()
             .flex()
             .items_center()
             .justify_center()
+            .rounded(px(5.0))
+            .border_1()
+            .border_color(theme.line.hsla())
+            .bg(theme.rail.hsla())
             .font_family(preview_font)
-            .text_size(px(16.0))
+            .text_size(px(15.0))
             .text_color(theme.text.hsla())
             .child("Ag")
             .into_any_element(),
@@ -3998,6 +4074,10 @@ fn glass_choice(
     theme: Theme,
     action: SettingsAction,
 ) -> AnyElement {
+    let effort: gpui::Hsla = match theme.mode {
+        ThemeMode::Dark => gpui::rgb(0xef706e).into(),
+        ThemeMode::Light => gpui::rgb(0xc2413d).into(),
+    };
     let pane_opacity = match glass {
         0 => 1.0,
         20 => 0.80,
@@ -4008,20 +4088,30 @@ fn glass_choice(
     let preview = div()
         .relative()
         .size(px(34.0))
+        .flex_none()
         .overflow_hidden()
-        .rounded(px(crate::RADIUS_LG))
+        .rounded(px(crate::RADIUS_MD))
         .border_1()
         .border_color(theme.line_strong.hsla())
         .bg(linear_gradient(
             135.0,
-            linear_color_stop(theme.attention.hsla().opacity(0.78), 0.0),
-            linear_color_stop(theme.file_reference.hsla().opacity(0.72), 1.0),
+            linear_color_stop(theme.attention.hsla().opacity(0.55), 0.0),
+            linear_color_stop(effort.opacity(0.40), 1.0),
         ))
         .child(
             div()
                 .absolute()
                 .inset_0()
                 .bg(theme.rail.hsla().opacity(pane_opacity)),
+        )
+        .child(
+            div()
+                .absolute()
+                .top_0()
+                .left_0()
+                .right_0()
+                .h(px(1.0))
+                .bg(gpui::white().opacity(0.16)),
         )
         .into_any_element();
     appearance_choice_shell(id, label, preview, selected, theme, action)
@@ -4035,35 +4125,66 @@ fn appearance_choice_shell(
     theme: Theme,
     action: SettingsAction,
 ) -> AnyElement {
+    let background = if selected {
+        chrome::recessed(theme).into()
+    } else if theme.mode == ThemeMode::Light {
+        chrome::raised(theme)
+    } else {
+        theme.surface.hsla().into()
+    };
+    let shadows = if !selected && theme.mode == ThemeMode::Light {
+        chrome::shadows(theme)
+    } else {
+        Vec::new()
+    };
     div()
         .id(("appearance-choice", id))
-        .w(px(104.0))
-        .min_h(px(68.0))
+        .relative()
+        .w_full()
+        .min_w(px(0.0))
+        .min_h(px(54.0))
         .flex()
         .items_center()
-        .gap(px(9.0))
+        .gap(px(10.0))
         .px(px(10.0))
-        .rounded(px(9.0))
+        .py(px(8.0))
+        .rounded(px(8.0))
         .border_1()
         .border_color(if selected {
-            theme.attention.hsla()
+            theme.text_2.hsla()
+        } else if theme.mode == ThemeMode::Light {
+            chrome::border(theme)
         } else {
             theme.line.hsla()
         })
-        .bg(if selected {
-            theme.surface_2.hsla()
-        } else {
-            theme.rail.hsla()
+        .bg(background)
+        .shadow(shadows)
+        .when(selected, |choice| {
+            choice.child(chrome::inset_top_shade(theme))
         })
-        .text_size(px(10.5))
+        .text_size(px(12.5))
         .text_color(if selected {
             theme.text.hsla()
         } else {
-            theme.text_3.hsla()
+            theme.text_2.hsla()
         })
         .cursor_pointer()
-        .hover(move |style| style.bg(theme.surface_2.hsla()))
-        .active(|style| style.opacity(0.72))
+        .hover(move |style| {
+            if selected {
+                style
+                    .bg(chrome::recessed(theme))
+                    .border_color(theme.text_2.hsla())
+            } else if theme.mode == ThemeMode::Light {
+                style
+                    .bg(chrome::raised_hover(theme))
+                    .border_color(theme.line_strong.hsla())
+            } else {
+                style
+                    .bg(theme.surface_2.hsla())
+                    .border_color(theme.line_strong.hsla())
+            }
+        })
+        .active(|style| style.m(px(0.4)))
         .on_click(move |_event, _window, cx| action(cx))
         .child(preview)
         .child(label)
