@@ -2406,7 +2406,12 @@ impl ChatView {
             .into_any_element()
     }
 
-    fn user_input_card(&self, is_new_session: bool, cx: &Context<Self>) -> Option<AnyElement> {
+    fn user_input_card(
+        &self,
+        is_new_session: bool,
+        window: &Window,
+        cx: &Context<Self>,
+    ) -> Option<AnyElement> {
         let request = self.active_user_input()?;
         let question = request.questions.get(self.user_input_step)?;
         let theme = self.theme;
@@ -2466,6 +2471,12 @@ impl ChatView {
         let options = question.options.as_deref().unwrap_or_default();
         let custom_available = question.allow_other || options.is_empty();
         let custom_selected = self.user_input_custom_question.as_deref() == Some(&question.id);
+        let custom_focused = custom_selected
+            && self
+                .user_input_custom
+                .read(cx)
+                .focus_handle(cx)
+                .is_focused(window);
         let weak = cx.weak_entity();
         let option_rows = options.iter().enumerate().map(|(index, option)| {
             let active = selected.is_some_and(|answer| answer == &option.label);
@@ -2498,7 +2509,11 @@ impl ChatView {
                 .cursor_pointer()
                 .hover(move |style| {
                     style
-                        .border_color(theme.line_strong.hsla())
+                        .border_color(if active {
+                            theme.text_2.hsla().opacity(0.74)
+                        } else {
+                            theme.line_strong.hsla()
+                        })
                         .bg(brief_option_background(theme, active, true))
                         .text_color(theme.text.hsla())
                 })
@@ -2538,10 +2553,12 @@ impl ChatView {
                 .items_center()
                 .gap(px(9.0))
                 .px(px(10.0))
-                .py(px(5.0))
+                .py(px(7.0))
                 .rounded(px(5.0))
                 .border_1()
-                .border_color(if custom_selected {
+                .border_color(if custom_focused {
+                    theme.text_2.hsla()
+                } else if custom_selected {
                     theme.text_2.hsla().opacity(0.74)
                 } else {
                     theme.line_strong.hsla().opacity(0.68)
@@ -2553,10 +2570,16 @@ impl ChatView {
                     blur_radius: px(1.0),
                     spread_radius: px(0.0),
                 }])
-                .cursor_pointer()
+                .cursor_text()
                 .hover(move |style| {
                     style
-                        .border_color(theme.line_strong.hsla())
+                        .border_color(if custom_focused {
+                            theme.text_2.hsla()
+                        } else if custom_selected {
+                            theme.text_2.hsla().opacity(0.74)
+                        } else {
+                            theme.line_strong.hsla()
+                        })
                         .bg(brief_option_background(theme, custom_selected, true))
                         .text_color(theme.text.hsla())
                 })
@@ -2570,14 +2593,27 @@ impl ChatView {
                 .child(radio_mark(custom_selected, theme))
                 .when(custom_selected, |row| {
                     row.child(
-                        Input::new(&self.user_input_custom)
-                            .appearance(false)
-                            .bordered(false)
-                            .focus_bordered(false)
+                        div()
                             .h(px(28.0))
-                            .w_full()
-                            .text_size(px(12.5))
-                            .text_color(theme.text.hsla()),
+                            .min_w(px(0.0))
+                            .flex_1()
+                            .flex()
+                            .items_center()
+                            .px(px(8.0))
+                            .child(
+                                Input::new(&self.user_input_custom)
+                                    .xsmall()
+                                    .appearance(false)
+                                    .bordered(false)
+                                    .focus_bordered(false)
+                                    .min_w(px(0.0))
+                                    .flex_1()
+                                    .px(px(0.0))
+                                    .py(px(0.0))
+                                    .line_height(px(16.0))
+                                    .text_size(px(12.5))
+                                    .text_color(theme.text.hsla()),
+                            ),
                     )
                 })
                 .when(!custom_selected, |row| {
@@ -2591,7 +2627,9 @@ impl ChatView {
                             .bg(theme.surface.hsla().opacity(0.72))
                             .px(px(8.0))
                             .py(px(5.0))
+                            .line_height(px(16.0))
                             .text_size(px(12.5))
+                            .font_weight(FontWeight(450.0))
                             .text_color(theme.text_3.hsla())
                             .child("Write your own answer…"),
                     )
@@ -3076,7 +3114,7 @@ impl ChatView {
             }
         };
         let popover = self.composer_popover(is_new_session, window, cx);
-        let user_input = self.user_input_card(is_new_session, cx);
+        let user_input = self.user_input_card(is_new_session, window, cx);
         let queue_panel = self.queue_panel(window, cx);
         let attach_view = cx.weak_entity();
         let attach_action: UiAction = Rc::new(move |cx| {
@@ -5075,9 +5113,13 @@ impl Render for ChatView {
             self.submit(false, cx);
         }
         if let Some(sync) = self.user_input_field_sync.take() {
+            let focus = self.user_input_custom_question.is_some();
             self.user_input_custom.update(cx, |input, cx| {
                 input.set_masked(sync.masked, window, cx);
                 input.set_value(sync.value, window, cx);
+                if focus {
+                    input.focus(window, cx);
+                }
             });
         }
         let terminal_pane = self.terminal_pane(window, cx);
