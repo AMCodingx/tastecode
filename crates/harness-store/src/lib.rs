@@ -10,6 +10,7 @@ use harness_protocol::{
 };
 use rusqlite::{Connection, OptionalExtension as _, Row, params};
 use serde_json::Value;
+use std::collections::HashMap;
 use std::path::Path;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use thiserror::Error;
@@ -625,6 +626,28 @@ impl Store {
                 _ => Err(StoreError::InvalidLifecycle(decision)),
             })
             .transpose()
+    }
+
+    pub fn diff_decisions(&self, thread_id: &str) -> Result<HashMap<String, DiffDecision>> {
+        let mut statement = self
+            .connection
+            .prepare("SELECT target_id, decision FROM diff_decisions WHERE thread_id = ?1")?;
+        statement
+            .query_map([thread_id], |row| {
+                let target: String = row.get(0)?;
+                let decision: String = row.get(1)?;
+                Ok((target, decision))
+            })?
+            .map(|row| {
+                let (target, decision) = row?;
+                let decision = match decision.as_str() {
+                    "accept" => DiffDecision::Accept,
+                    "reject" => DiffDecision::Reject,
+                    _ => return Err(StoreError::InvalidLifecycle(decision)),
+                };
+                Ok((target, decision))
+            })
+            .collect()
     }
 
     fn update_thread<P: rusqlite::Params>(&self, sql: &str, parameters: P) -> Result<()> {

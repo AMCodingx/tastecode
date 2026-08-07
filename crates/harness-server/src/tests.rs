@@ -2774,6 +2774,126 @@ fn live_checkpoint_restore_keeps_files_and_conversation_reversible_together() {
     server.close().unwrap();
 }
 
+#[test]
+fn live_diff_review_rejects_one_hunk_and_detects_stale_snapshots() {
+    let repository = tempfile::tempdir().unwrap();
+    git(repository.path(), &["init", "--initial-branch=main"]);
+    git(
+        repository.path(),
+        &["config", "user.email", "test@example.com"],
+    );
+    git(repository.path(), &["config", "user.name", "Test"]);
+    let lines = |second: &str, eighteenth: &str| {
+        (1..=20)
+            .map(|line| match line {
+                2 => second.into(),
+                18 => eighteenth.into(),
+                _ => format!("line {line}"),
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+            + "\n"
+    };
+    fs::write(
+        repository.path().join("file.txt"),
+        lines("line 2", "line 18"),
+    )
+    .unwrap();
+    git(repository.path(), &["add", "."]);
+    git(repository.path(), &["commit", "-m", "initial"]);
+    fs::write(
+        repository.path().join("file.txt"),
+        lines("reject me", "keep me"),
+    )
+    .unwrap();
+    let repository_text = repository.path().to_string_lossy().into_owned();
+
+    let (_directory, server) = start_test_server(None, |store| {
+        store.add_project(&repository_text, None).unwrap();
+        store
+            .add_thread(StoreNewThread {
+                id: "thread-1".into(),
+                project_path: repository_text.clone(),
+                provider: ProviderId::Codex,
+                agent: None,
+                title: "Review".into(),
+                created_at: Some(10),
+                worktree_path: Some(repository_text.clone()),
+                worktree_branch: Some("main".into()),
+            })
+            .unwrap();
+    });
+    let mut socket = connect_native(&server, "");
+    assert_welcome(&mut socket);
+
+    send_request(
+        &mut socket,
+        "diff",
+        "thread.diff",
+        json!({ "threadId": "thread-1" }),
+    );
+    let initial = read_value(&mut socket)["result"].clone();
+    assert_eq!(initial["files"][0]["path"], "file.txt");
+    assert_eq!(initial["files"][0]["hunks"].as_array().unwrap().len(), 2);
+    let version = initial["version"].as_str().unwrap();
+    let first_hunk = initial["files"][0]["hunks"][0]["id"].as_str().unwrap();
+    send_request(
+        &mut socket,
+        "reject",
+        "thread.reviewHunk",
+        json!({
+            "threadId": "thread-1",
+            "version": version,
+            "path": "file.txt",
+            "hunkId": first_hunk,
+            "decision": "reject"
+        }),
+    );
+    let reviewed = read_value(&mut socket);
+    assert_eq!(
+        reviewed["result"]["diff"]["files"][0]["hunks"]
+            .as_array()
+            .unwrap()
+            .len(),
+        1
+    );
+    let content = fs::read_to_string(repository.path().join("file.txt")).unwrap();
+    assert!(content.contains("line 2"));
+    assert!(content.contains("keep me"));
+
+    let current = &reviewed["result"]["diff"];
+    let stale_version = current["version"].as_str().unwrap();
+    let remaining_hunk = current["files"][0]["hunks"][0]["id"].as_str().unwrap();
+    fs::write(
+        repository.path().join("file.txt"),
+        lines("line 2", "changed again"),
+    )
+    .unwrap();
+    send_request(
+        &mut socket,
+        "stale",
+        "thread.reviewHunk",
+        json!({
+            "threadId": "thread-1",
+            "version": stale_version,
+            "path": "file.txt",
+            "hunkId": remaining_hunk,
+            "decision": "reject"
+        }),
+    );
+    let stale = read_value(&mut socket);
+    assert_eq!(stale["error"]["code"], "stale_snapshot");
+    assert_eq!(stale["error"]["message"], "Refresh the diff and try again.");
+    assert!(
+        fs::read_to_string(repository.path().join("file.txt"))
+            .unwrap()
+            .contains("changed again")
+    );
+
+    socket.close(None).unwrap();
+    server.close().unwrap();
+}
+
 struct FakeRuntimes {
     runtime: Arc<FakeRuntime>,
 }

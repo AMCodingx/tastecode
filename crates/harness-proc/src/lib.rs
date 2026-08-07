@@ -1,5 +1,5 @@
 use std::ffi::OsStr;
-use std::io::Read as _;
+use std::io::{Read as _, Write as _};
 use std::path::Path;
 use std::process::{Command, Stdio};
 use std::thread;
@@ -7,6 +7,11 @@ use std::time::{Duration, Instant};
 use thiserror::Error;
 
 const POLL_INTERVAL: Duration = Duration::from_millis(10);
+
+struct RunIo<'a> {
+    input: Option<&'a [u8]>,
+    trim_stdout: bool,
+}
 
 #[derive(Debug, Error)]
 pub enum ProcessError {
@@ -50,7 +55,40 @@ pub fn run(
     timeout: Duration,
     max_output: usize,
 ) -> Result<String, ProcessError> {
-    run_inner(program, args, cwd, timeout, max_output, &[], true)
+    run_inner(
+        program,
+        args,
+        cwd,
+        timeout,
+        max_output,
+        &[],
+        RunIo {
+            input: None,
+            trim_stdout: true,
+        },
+    )
+}
+
+pub fn run_with_input(
+    program: &OsStr,
+    args: &[&OsStr],
+    cwd: &Path,
+    input: &[u8],
+    timeout: Duration,
+    max_output: usize,
+) -> Result<String, ProcessError> {
+    run_inner(
+        program,
+        args,
+        cwd,
+        timeout,
+        max_output,
+        &[],
+        RunIo {
+            input: Some(input),
+            trim_stdout: true,
+        },
+    )
 }
 
 pub fn run_with_environment(
@@ -61,7 +99,18 @@ pub fn run_with_environment(
     max_output: usize,
     environment: &[(&OsStr, &OsStr)],
 ) -> Result<String, ProcessError> {
-    run_inner(program, args, cwd, timeout, max_output, environment, true)
+    run_inner(
+        program,
+        args,
+        cwd,
+        timeout,
+        max_output,
+        environment,
+        RunIo {
+            input: None,
+            trim_stdout: true,
+        },
+    )
 }
 
 pub fn run_untrimmed(
@@ -71,7 +120,18 @@ pub fn run_untrimmed(
     timeout: Duration,
     max_output: usize,
 ) -> Result<String, ProcessError> {
-    run_inner(program, args, cwd, timeout, max_output, &[], false)
+    run_inner(
+        program,
+        args,
+        cwd,
+        timeout,
+        max_output,
+        &[],
+        RunIo {
+            input: None,
+            trim_stdout: false,
+        },
+    )
 }
 
 fn run_inner(
@@ -81,14 +141,18 @@ fn run_inner(
     timeout: Duration,
     max_output: usize,
     environment: &[(&OsStr, &OsStr)],
-    trim_stdout: bool,
+    io: RunIo<'_>,
 ) -> Result<String, ProcessError> {
     let display_program = program.to_string_lossy().into_owned();
     let mut command = Command::new(program);
     command
         .args(args)
         .current_dir(cwd)
-        .stdin(Stdio::null())
+        .stdin(if io.input.is_some() {
+            Stdio::piped()
+        } else {
+            Stdio::null()
+        })
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
     for (key, value) in environment {
@@ -102,6 +166,23 @@ fn run_inner(
     let stderr = child.stderr.take().expect("piped stderr missing");
     let stdout_reader = thread::spawn(move || read_bounded(stdout, max_output));
     let stderr_reader = thread::spawn(move || read_bounded(stderr, max_output));
+    if let Some(input) = io.input {
+        let result = child
+            .stdin
+            .take()
+            .expect("piped stdin missing")
+            .write_all(input);
+        if let Err(source) = result {
+            let _ = child.kill();
+            let _ = child.wait();
+            let _ = stdout_reader.join();
+            let _ = stderr_reader.join();
+            return Err(ProcessError::Input {
+                program: display_program,
+                source,
+            });
+        }
+    }
     let deadline = Instant::now() + timeout;
     let status = loop {
         match child.try_wait() {
@@ -146,7 +227,7 @@ fn run_inner(
         });
     }
     let stdout = String::from_utf8_lossy(&stdout.bytes);
-    Ok(if trim_stdout {
+    Ok(if io.trim_stdout {
         stdout.trim().to_owned()
     } else {
         stdout.into_owned()

@@ -7,6 +7,7 @@
 mod access;
 mod agents;
 mod api_workspace_tools;
+mod diff_review;
 mod inbox;
 mod mcp_config;
 mod model_connections;
@@ -23,7 +24,7 @@ use harness_store::Store;
 use harness_terminal::TerminalManager;
 use push::{PendingPush, PushBus};
 use serde_json::Value;
-use std::collections::BTreeSet;
+use std::collections::{BTreeSet, HashSet};
 use std::io::ErrorKind;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr, TcpListener, TcpStream};
 use std::path::PathBuf;
@@ -219,6 +220,7 @@ fn start_with_prepared_services(
         push,
         terminals,
         agents: agents::AgentManager::new(runtimes),
+        reviewing_diffs: Mutex::new(HashSet::new()),
         shutdown: AtomicBool::new(false),
         access_token: config.access_token,
     });
@@ -269,6 +271,7 @@ pub(crate) struct ServerState {
     push: Arc<PushBus>,
     terminals: TerminalManager,
     agents: agents::AgentManager,
+    reviewing_diffs: Mutex<HashSet<String>>,
     shutdown: AtomicBool,
     access_token: Option<String>,
 }

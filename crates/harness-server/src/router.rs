@@ -1,14 +1,15 @@
-use crate::ServerState;
+use crate::{ServerState, diff_review::DiffReviewError};
 use chrono::{Datelike as _, Local, TimeZone as _};
 use harness_protocol::method;
 use harness_protocol::{
     AcpAgentsResult, ApprovalDecision, ApprovalMode, CheckpointSummary, CredentialConfiguredResult,
-    ErrorCode, ModelConnectionInput, ModelConnectionResult, ModelConnectionsResult,
+    DiffDecision, ErrorCode, ModelConnectionInput, ModelConnectionResult, ModelConnectionsResult,
     ModelsListResult, ProjectAddedResult, ProjectSummary, ProjectsListResult, ProviderId,
-    ProvidersListResult, ServerWelcome, SessionSummary, SettleReason, SidebarMode, SystemInfo,
-    SystemPlatform, TerminalOpenedResult, ThreadCheckpointsResult, ThreadHistoryResult,
-    ThreadInboxStatus, ThreadLifecycle, ThreadLifecyclePush, ThreadLifecycleResult,
-    ThreadStartResult, ThreadUnsavedWorkResult, Usage, UsageSummaryResult, WireError, channel,
+    ProvidersListResult, ReviewDiffResult, ServerWelcome, SessionSummary, SettleReason,
+    SidebarMode, SystemInfo, SystemPlatform, TerminalOpenedResult, ThreadCheckpointsResult,
+    ThreadHistoryResult, ThreadInboxStatus, ThreadLifecycle, ThreadLifecyclePush,
+    ThreadLifecycleResult, ThreadStartResult, ThreadUnsavedWorkResult, Usage, UsageSummaryResult,
+    WireError, channel,
 };
 use harness_store::{SearchOptions, SidebarSettingsUpdate, Store, StoreError};
 use serde::Deserialize;
@@ -50,6 +51,19 @@ impl RouteError {
 
 impl From<StoreError> for RouteError {
     fn from(error: StoreError) -> Self {
+        Self::internal(error)
+    }
+}
+
+impl From<DiffReviewError> for RouteError {
+    fn from(error: DiffReviewError) -> Self {
+        if matches!(error, DiffReviewError::StaleSnapshot) {
+            return Self(WireError {
+                code: ErrorCode::StaleSnapshot,
+                message: error.to_string(),
+                detail: None,
+            });
+        }
         Self::internal(error)
     }
 }
@@ -681,6 +695,49 @@ pub(crate) fn route(
             store.mark_thread_read(&params.thread_id)?;
             encoded(result)
         }
+        method::THREAD_DIFF => {
+            let params: ThreadIdParams = decode(method_name, params)?;
+            require_non_empty(method_name, "threadId", &params.thread_id)?;
+            encoded(crate::diff_review::read(state, &params.thread_id)?)
+        }
+        method::THREAD_REVIEW_HUNK => {
+            let params: ReviewHunkParams = decode(method_name, params)?;
+            validate_review_params(
+                method_name,
+                &params.thread_id,
+                &params.version,
+                &params.path,
+            )?;
+            require_non_empty(method_name, "hunkId", &params.hunk_id)?;
+            encoded(ReviewDiffResult {
+                diff: crate::diff_review::review_hunk(
+                    state,
+                    &params.thread_id,
+                    &params.version,
+                    &params.path,
+                    &params.hunk_id,
+                    params.decision,
+                )?,
+            })
+        }
+        method::THREAD_REVIEW_FILE => {
+            let params: ReviewFileParams = decode(method_name, params)?;
+            validate_review_params(
+                method_name,
+                &params.thread_id,
+                &params.version,
+                &params.path,
+            )?;
+            encoded(ReviewDiffResult {
+                diff: crate::diff_review::review_file(
+                    state,
+                    &params.thread_id,
+                    &params.version,
+                    &params.path,
+                    params.decision,
+                )?,
+            })
+        }
         method::THREAD_CLOSE => {
             let params: ThreadIdParams = decode(method_name, params)?;
             state.agents.close(&params.thread_id);
@@ -1013,6 +1070,17 @@ fn require_non_empty(method: &str, field: &str, value: &str) -> Result<(), Route
         ));
     }
     Ok(())
+}
+
+fn validate_review_params(
+    method: &str,
+    thread_id: &str,
+    version: &str,
+    path: &str,
+) -> Result<(), RouteError> {
+    require_non_empty(method, "threadId", thread_id)?;
+    require_non_empty(method, "version", version)?;
+    require_non_empty(method, "path", path)
 }
 
 fn validate_terminal_size(method: &str, columns: u16, rows: u16) -> Result<(), RouteError> {
@@ -1546,6 +1614,25 @@ struct ThreadHistoryParams {
     thread_id: String,
     #[serde(default, deserialize_with = "deserialize_present")]
     after_seq: Option<f64>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ReviewHunkParams {
+    thread_id: String,
+    version: String,
+    path: String,
+    hunk_id: String,
+    decision: DiffDecision,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ReviewFileParams {
+    thread_id: String,
+    version: String,
+    path: String,
+    decision: DiffDecision,
 }
 
 #[derive(Deserialize)]
