@@ -3,8 +3,9 @@ use crate::chrome;
 use crate::zoom::px;
 use gpui::{
     Animation, AnimationExt, AnyElement, Context, Entity, Focusable, FontWeight, KeyDownEvent,
-    SharedString, Window, div, prelude::*, svg,
+    SharedString, Window, div, prelude::*, relative, svg,
 };
+use gpui_component::Sizable as _;
 use gpui_component::input::{Input, InputEvent, InputState};
 use harness_protocol::Item;
 
@@ -351,7 +352,7 @@ impl ChatView {
                 .absolute()
                 .top(px(10.0))
                 .right(px(22.0))
-                .h(px(38.0))
+                .h(px(32.0))
                 .flex()
                 .items_center()
                 .gap(px(4.0))
@@ -365,10 +366,14 @@ impl ChatView {
                 .shadow(chrome::flyout_shadows(theme))
                 .child(
                     Input::new(&self.thread_search.input)
+                        .xsmall()
                         .w(px(170.0))
                         .appearance(false)
                         .bordered(false)
                         .cleanable(false)
+                        .px(px(2.0))
+                        .py(px(1.0))
+                        .line_height(relative(1.55))
                         .text_size(px(12.5)),
                 )
                 .child(
