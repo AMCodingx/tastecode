@@ -1,4 +1,7 @@
+mod events;
 mod schema;
+
+pub use events::{SearchOptions, UsageSummary};
 
 use harness_protocol::{
     DiffDecision, ProviderId, SettleReason, SidebarMode, SidebarSettings, ThreadLifecycle,
@@ -31,6 +34,8 @@ pub enum StoreError {
     MissingParent,
     #[error("system clock is before the Unix epoch")]
     InvalidClock,
+    #[error("search query cannot be empty")]
+    EmptySearchQuery,
 }
 
 pub type Result<T> = std::result::Result<T, StoreError>;
@@ -87,7 +92,7 @@ pub struct SidebarSettingsUpdate {
 }
 
 pub struct Store {
-    connection: Connection,
+    pub(crate) connection: Connection,
 }
 
 impl Store {
@@ -105,8 +110,9 @@ impl Store {
              PRAGMA foreign_keys = ON;",
         )?;
         connection.execute_batch(SCHEMA)?;
-        let store = Self { connection };
+        let mut store = Self { connection };
         store.migrate()?;
+        store.rebuild_search_index_if_needed()?;
         Ok(store)
     }
 

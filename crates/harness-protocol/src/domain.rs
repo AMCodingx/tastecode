@@ -931,6 +931,32 @@ pub struct ProjectAddedResult {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SearchSnippetPart {
+    pub text: String,
+    pub highlighted: bool,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SessionSearchResult {
+    pub project_path: String,
+    pub project_name: String,
+    pub thread_id: String,
+    pub thread_title: String,
+    pub turn_id: String,
+    pub provider: ProviderId,
+    pub created_at: f64,
+    pub snippet: Vec<SearchSnippetPart>,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SessionSearchPage {
+    pub results: Vec<SessionSearchResult>,
+    pub next_cursor: Option<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ThreadStartResult {
     pub thread_id: String,
@@ -1225,6 +1251,52 @@ mod tests {
         assert_eq!(update.local_commit.as_deref(), Some("1111111"));
         assert_eq!(update.remote.unwrap().message, "Latest change");
         assert_eq!(update.up_to_date, Some(false));
+    }
+
+    #[test]
+    fn session_search_results_keep_structured_plain_text_highlights() {
+        let page = SessionSearchPage {
+            results: vec![SessionSearchResult {
+                project_path: "/repo".into(),
+                project_name: "Harness".into(),
+                thread_id: "thread-1".into(),
+                thread_title: "Find regression".into(),
+                turn_id: "turn-1".into(),
+                provider: ProviderId::Codex,
+                created_at: 42.0,
+                snippet: vec![
+                    SearchSnippetPart {
+                        text: "Find ".into(),
+                        highlighted: false,
+                    },
+                    SearchSnippetPart {
+                        text: "regression".into(),
+                        highlighted: true,
+                    },
+                ],
+            }],
+            next_cursor: None,
+        };
+
+        assert_eq!(
+            serde_json::to_value(page).unwrap(),
+            json!({
+                "results": [{
+                    "projectPath": "/repo",
+                    "projectName": "Harness",
+                    "threadId": "thread-1",
+                    "threadTitle": "Find regression",
+                    "turnId": "turn-1",
+                    "provider": "codex",
+                    "createdAt": 42.0,
+                    "snippet": [
+                        { "text": "Find ", "highlighted": false },
+                        { "text": "regression", "highlighted": true }
+                    ]
+                }],
+                "nextCursor": null
+            })
+        );
     }
 
     #[test]

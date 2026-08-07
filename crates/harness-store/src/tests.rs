@@ -1,6 +1,41 @@
 use super::*;
-use rusqlite::Connection;
+use harness_protocol::{DomainEvent, ItemType, Usage};
+use rusqlite::{Connection, params};
 use serde_json::json;
+
+fn message(id: &str, text: &str, created_at: f64) -> DomainEvent {
+    DomainEvent::ItemCompleted {
+        item: harness_protocol::Item {
+            id: id.into(),
+            turn_id: id.into(),
+            item_type: ItemType::Message,
+            status: harness_protocol::ItemStatus::Completed,
+            role: Some(harness_protocol::MessageRole::Assistant),
+            text: Some(text.into()),
+            command: None,
+            exit_code: None,
+            duration_ms: None,
+            path: None,
+            lines_added: None,
+            lines_removed: None,
+            created_at,
+        },
+    }
+}
+
+fn usage(total_tokens: f64, cost_usd: Option<f64>) -> DomainEvent {
+    DomainEvent::UsageUpdated {
+        usage: Usage {
+            input_tokens: total_tokens,
+            cached_input_tokens: 0.0,
+            output_tokens: 0.0,
+            reasoning_tokens: 0.0,
+            total_tokens,
+            cost_usd,
+            context_window: None,
+        },
+    }
+}
 
 fn thread(id: &str, project_path: &str, provider: ProviderId) -> NewThread {
     NewThread {
@@ -228,4 +263,354 @@ fn missing_thread_lifecycle_mutations_fail_loudly() {
         store.mark_thread_read("missing"),
         Err(StoreError::ThreadNotFound)
     ));
+}
+
+#[test]
+fn event_history_is_ordered_thread_scoped_and_resumable() {
+    let mut store = Store::memory().unwrap();
+    store.add_project("/repo", None).unwrap();
+    store
+        .add_thread(thread("t1", "/repo", ProviderId::Codex))
+        .unwrap();
+    store
+        .add_thread(thread("t2", "/repo", ProviderId::Codex))
+        .unwrap();
+    let first = store.append("t1", &message("one", "one", 1.0)).unwrap();
+    let second = store.append("t1", &message("two", "two", 2.0)).unwrap();
+    store
+        .append(
+            "t1",
+            &message(
+                "three",
+                "quote \" backslash \\ newline \n null-ish \\u0000 emoji 🙂",
+                3.0,
+            ),
+        )
+        .unwrap();
+    store
+        .append("t2", &message("other", "theirs", 4.0))
+        .unwrap();
+
+    assert_eq!(first, 1);
+    assert_eq!(store.last_seq("t1").unwrap(), 3);
+    assert_eq!(store.history("t1", 0).unwrap().len(), 3);
+    let tail = store.history("t1", second).unwrap();
+    assert_eq!(tail.len(), 1);
+    let DomainEvent::ItemCompleted { item } = &tail[0].event else {
+        panic!("expected a completed item");
+    };
+    assert!(item.text.as_deref().unwrap().contains("emoji 🙂"));
+    assert_eq!(store.history("t2", 0).unwrap().len(), 1);
+    assert_eq!(store.last_seq("missing").unwrap(), 0);
+}
+
+#[test]
+fn search_indexes_useful_output_filters_and_plain_text_highlights() {
+    let mut store = Store::memory().unwrap();
+    store.add_project("/repo", Some("Harness")).unwrap();
+    store
+        .add_thread(thread("t1", "/repo", ProviderId::Codex))
+        .unwrap();
+    store
+        .append(
+            "t1",
+            &message("message", "<img src=x onerror=alert(1)> regression", 1.0),
+        )
+        .unwrap();
+    let mut command = match message("command", "regression suite passed", 2.0) {
+        DomainEvent::ItemCompleted { item } => item,
+        _ => unreachable!(),
+    };
+    command.item_type = ItemType::Command;
+    command.command = Some("pnpm test".into());
+    store
+        .append("t1", &DomainEvent::ItemCompleted { item: command })
+        .unwrap();
+    let mut reasoning = match message("reasoning", "private-thought-marker", 3.0) {
+        DomainEvent::ItemCompleted { item } => item,
+        _ => unreachable!(),
+    };
+    reasoning.item_type = ItemType::Reasoning;
+    store
+        .append("t1", &DomainEvent::ItemCompleted { item: reasoning })
+        .unwrap();
+
+    let regression = store
+        .search_sessions(&SearchOptions {
+            query: "regression".into(),
+            ..SearchOptions::default()
+        })
+        .unwrap();
+    assert_eq!(regression.results.len(), 2);
+    assert!(regression.results.iter().any(|result| {
+        result
+            .snippet
+            .iter()
+            .any(|part| part.text == "regression" && part.highlighted)
+    }));
+    let plain = regression.results[0]
+        .snippet
+        .iter()
+        .map(|part| part.text.as_str())
+        .collect::<String>();
+    assert!(!plain.contains("<mark>"));
+    assert_eq!(
+        store
+            .search_sessions(&SearchOptions {
+                query: "pnpm".into(),
+                ..SearchOptions::default()
+            })
+            .unwrap()
+            .results[0]
+            .turn_id,
+        "command"
+    );
+    assert!(
+        store
+            .search_sessions(&SearchOptions {
+                query: "private-thought-marker".into(),
+                ..SearchOptions::default()
+            })
+            .unwrap()
+            .results
+            .is_empty()
+    );
+}
+
+#[test]
+fn search_filters_and_cursor_pagination_do_not_repeat_results() {
+    let mut store = Store::memory().unwrap();
+    store.add_project("/repo", Some("Harness")).unwrap();
+    store.add_project("/other", Some("Other")).unwrap();
+    store
+        .add_thread(thread("t1", "/repo", ProviderId::Codex))
+        .unwrap();
+    store
+        .add_thread(thread("t2", "/other", ProviderId::ClaudeCode))
+        .unwrap();
+    store
+        .append("t1", &message("one", "shared stable marker", 1.0))
+        .unwrap();
+    store
+        .append("t2", &message("two", "shared stable marker", 2.0))
+        .unwrap();
+
+    assert_eq!(
+        store
+            .search_sessions(&SearchOptions {
+                query: "shared".into(),
+                provider: Some(ProviderId::Codex),
+                ..SearchOptions::default()
+            })
+            .unwrap()
+            .results[0]
+            .thread_id,
+        "t1"
+    );
+    assert_eq!(
+        store
+            .search_sessions(&SearchOptions {
+                query: "shared".into(),
+                project_path: Some("/other".into()),
+                ..SearchOptions::default()
+            })
+            .unwrap()
+            .results[0]
+            .thread_id,
+        "t2"
+    );
+
+    let first = store
+        .search_sessions(&SearchOptions {
+            query: "shared".into(),
+            limit: Some(1),
+            ..SearchOptions::default()
+        })
+        .unwrap();
+    store
+        .append("t1", &message("new", "shared stable marker", 3.0))
+        .unwrap();
+    let second = store
+        .search_sessions(&SearchOptions {
+            query: "shared".into(),
+            limit: Some(1),
+            cursor: first.next_cursor.clone(),
+            ..SearchOptions::default()
+        })
+        .unwrap();
+    assert_ne!(first.results[0].turn_id, second.results[0].turn_id);
+}
+
+#[test]
+fn search_clamps_limits_and_treats_bad_cursors_as_fresh() {
+    let mut store = Store::memory().unwrap();
+    store.add_project("/repo", None).unwrap();
+    store
+        .add_thread(thread("t1", "/repo", ProviderId::Codex))
+        .unwrap();
+    for index in 0..101 {
+        store
+            .append(
+                "t1",
+                &message(
+                    &format!("turn-{index}"),
+                    &format!("bounded result {index}"),
+                    index as f64,
+                ),
+            )
+            .unwrap();
+    }
+    assert_eq!(
+        store
+            .search_sessions(&SearchOptions {
+                query: "bounded".into(),
+                limit: Some(1_000),
+                ..SearchOptions::default()
+            })
+            .unwrap()
+            .results
+            .len(),
+        100
+    );
+    let fresh = store
+        .search_sessions(&SearchOptions {
+            query: "bounded".into(),
+            limit: Some(1),
+            ..SearchOptions::default()
+        })
+        .unwrap();
+    let malformed = store
+        .search_sessions(&SearchOptions {
+            query: "bounded".into(),
+            limit: Some(1),
+            cursor: Some("not-json".into()),
+            ..SearchOptions::default()
+        })
+        .unwrap();
+    assert_eq!(malformed, fresh);
+    assert!(matches!(
+        store.search_sessions(&SearchOptions::default()),
+        Err(StoreError::EmptySearchQuery)
+    ));
+}
+
+#[test]
+fn append_rolls_back_when_atomic_search_indexing_fails() {
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("atomic.db");
+    let seeded = Store::open(&path).unwrap();
+    seeded.add_project("/repo", None).unwrap();
+    seeded
+        .add_thread(thread("t1", "/repo", ProviderId::Codex))
+        .unwrap();
+    seeded.close().unwrap();
+    let raw = Connection::open(&path).unwrap();
+    raw.execute(
+        "INSERT INTO session_search
+         (rowid, thread_id, event_seq, turn_id, created_at, text)
+         VALUES (1, 't1', 1, 't1', 1, 'collision')",
+        [],
+    )
+    .unwrap();
+    raw.close().unwrap();
+
+    let mut reopened = Store::open(&path).unwrap();
+    assert!(
+        reopened
+            .append("t1", &message("t1", "atomic result", 1.0))
+            .is_err()
+    );
+    assert!(reopened.history("t1", 0).unwrap().is_empty());
+}
+
+#[test]
+fn incomplete_search_migrations_are_rebuilt_from_the_event_log() {
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("partial.db");
+    let partial = Connection::open(&path).unwrap();
+    partial
+        .execute_batch(
+            "CREATE TABLE projects (
+               path TEXT PRIMARY KEY, name TEXT NOT NULL, pinned INTEGER NOT NULL, created_at INTEGER NOT NULL);
+             CREATE TABLE threads (
+               id TEXT PRIMARY KEY, project_path TEXT NOT NULL, provider TEXT NOT NULL,
+               agent TEXT, title TEXT NOT NULL, created_at INTEGER NOT NULL, closed_at INTEGER,
+               worktree_path TEXT, worktree_branch TEXT);
+             CREATE TABLE events (
+               seq INTEGER PRIMARY KEY AUTOINCREMENT, thread_id TEXT NOT NULL,
+               at INTEGER NOT NULL, payload TEXT NOT NULL);
+             CREATE VIRTUAL TABLE session_search USING fts5 (
+               thread_id UNINDEXED, event_seq UNINDEXED, turn_id UNINDEXED,
+               created_at UNINDEXED, text);
+             INSERT INTO projects VALUES ('/repo', 'Repo', 0, 1);
+             INSERT INTO threads VALUES ('t1', '/repo', 'codex', NULL, 'Thread', 1, NULL, NULL, NULL);",
+        )
+        .unwrap();
+    partial
+        .execute(
+            "INSERT INTO events (thread_id, at, payload) VALUES (?1, 1, ?2)",
+            params![
+                "t1",
+                serde_json::to_string(&message("t1", "migration result", 1.0)).unwrap()
+            ],
+        )
+        .unwrap();
+    partial
+        .execute(
+            "INSERT INTO session_search
+             (rowid, thread_id, event_seq, turn_id, created_at, text)
+             VALUES (99, 't1', 99, 'bad', 1, 'partial row')",
+            [],
+        )
+        .unwrap();
+    partial.close().unwrap();
+
+    let migrated = Store::open(&path).unwrap();
+    let result = migrated
+        .search_sessions(&SearchOptions {
+            query: "migration".into(),
+            ..SearchOptions::default()
+        })
+        .unwrap();
+    assert_eq!(result.results.len(), 1);
+    assert_eq!(result.results[0].turn_id, "t1");
+    assert!(
+        migrated
+            .search_sessions(&SearchOptions {
+                query: "partial".into(),
+                ..SearchOptions::default()
+            })
+            .unwrap()
+            .results
+            .is_empty()
+    );
+}
+
+#[test]
+fn usage_totals_handle_cumulative_per_turn_and_cross_provider_events() {
+    let mut store = Store::memory().unwrap();
+    store.add_project("/repo", None).unwrap();
+    store
+        .add_thread(thread("codex", "/repo", ProviderId::Codex))
+        .unwrap();
+    store
+        .add_thread(thread("claude", "/repo", ProviderId::ClaudeCode))
+        .unwrap();
+    store.append_at("codex", &usage(100.0, None), 100).unwrap();
+    store.append_at("codex", &usage(140.0, None), 200).unwrap();
+    store
+        .append_at("claude", &usage(20.0, Some(0.03)), 200)
+        .unwrap();
+    store
+        .append_at("claude", &usage(30.0, Some(0.04)), 300)
+        .unwrap();
+
+    let codex = store.usage_summary("codex", 150).unwrap();
+    assert_eq!(codex.session.total_tokens, 140.0);
+    assert_eq!(codex.today.total_tokens, 90.0);
+    assert_eq!(codex.today.cost_usd, Some(0.07));
+    let claude = store.usage_summary("claude", 0).unwrap();
+    assert_eq!(claude.session.total_tokens, 50.0);
+    assert_eq!(claude.session.cost_usd, Some(0.07));
+    assert_eq!(claude.today.total_tokens, 190.0);
 }
