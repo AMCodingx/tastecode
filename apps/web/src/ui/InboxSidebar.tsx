@@ -19,8 +19,8 @@ import {
   GitBranch,
   Pin,
   PinOff,
-  Plus,
   Search,
+  SquarePen,
   Trash2,
   X,
 } from 'lucide-react'
@@ -209,8 +209,8 @@ export function InboxSidebar(props: {
               else props.onNewSession(preferredProject || undefined, props.projects.length > 1)
             }}
           >
-            <Plus size={14} aria-hidden />
-            <span>New Thread</span>
+            <SquarePen size={16} aria-hidden />
+            <span>New chat</span>
           </button>
         </div>
 

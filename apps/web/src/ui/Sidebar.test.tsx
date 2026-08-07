@@ -77,9 +77,9 @@ describe('Sidebar chat actions', () => {
 
     expect(screen.queryByRole('button', { name: /Switch to V[12]/ })).toBeNull()
     expect(screen.getByRole('textbox', { name: 'Search threads' })).toBeTruthy()
-    expect(screen.getByRole('button', { name: 'New Thread' })).toBeTruthy()
+    expect(screen.getByRole('button', { name: 'New chat' })).toBeTruthy()
     expect(screen.getByRole('button', { name: 'Add Project' })).toBeTruthy()
-    fireEvent.click(screen.getByRole('button', { name: 'New Thread' }))
+    fireEvent.click(screen.getByRole('button', { name: 'New chat' }))
     expect(onAddProject).toHaveBeenCalledOnce()
     expect(screen.queryByRole('button', { name: 'Account' })).toBeNull()
     fireEvent.click(screen.getByRole('button', { name: 'Settings' }))
