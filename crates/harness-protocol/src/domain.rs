@@ -996,6 +996,45 @@ pub struct UpdateCheckResult {
     pub error: Option<String>,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum VoiceStatusReason {
+    ProviderUnsupported,
+    SignInRequired,
+    UnsupportedAuth,
+    CodexTooOld,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct VoiceStatusResult {
+    pub available: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reason: Option<VoiceStatusReason>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum VoiceMimeType {
+    #[serde(rename = "audio/wav")]
+    Wav,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct VoiceTranscribeParams {
+    pub request_id: String,
+    pub provider: ProviderId,
+    pub audio_base64: String,
+    pub mime_type: VoiceMimeType,
+    pub sample_rate_hz: u32,
+    pub duration_ms: u64,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct VoiceTranscriptionResult {
+    pub text: String,
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ThreadEventPush {
@@ -1148,6 +1187,36 @@ mod tests {
         assert_eq!(update.local_commit.as_deref(), Some("1111111"));
         assert_eq!(update.remote.unwrap().message, "Latest change");
         assert_eq!(update.up_to_date, Some(false));
+    }
+
+    #[test]
+    fn voice_types_match_the_normalized_wav_contract() {
+        let status: VoiceStatusResult = serde_json::from_value(json!({
+            "available": false,
+            "reason": "sign_in_required"
+        }))
+        .unwrap();
+        let params = VoiceTranscribeParams {
+            request_id: "3a7c0fb4-222e-471a-97de-f062ad676df4".into(),
+            provider: ProviderId::Codex,
+            audio_base64: "UklGRg==".into(),
+            mime_type: VoiceMimeType::Wav,
+            sample_rate_hz: 24_000,
+            duration_ms: 1_000,
+        };
+
+        assert_eq!(status.reason, Some(VoiceStatusReason::SignInRequired));
+        assert_eq!(
+            serde_json::to_value(params).unwrap(),
+            json!({
+                "requestId": "3a7c0fb4-222e-471a-97de-f062ad676df4",
+                "provider": "codex",
+                "audioBase64": "UklGRg==",
+                "mimeType": "audio/wav",
+                "sampleRateHz": 24_000,
+                "durationMs": 1_000
+            })
+        );
     }
 
     #[test]

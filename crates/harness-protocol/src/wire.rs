@@ -74,6 +74,9 @@ pub mod method {
     pub const CLIENT_CAPABILITIES: &str = "client.capabilities";
     pub const SYSTEM_INFO: &str = "system.info";
     pub const SYSTEM_UPDATE_CHECK: &str = "system.updateCheck";
+    pub const VOICE_STATUS: &str = "voice.status";
+    pub const VOICE_TRANSCRIBE: &str = "voice.transcribe";
+    pub const VOICE_CANCEL: &str = "voice.cancel";
     pub const PROVIDERS_LIST: &str = "providers.list";
     pub const PROVIDERS_INSTALL: &str = "providers.install";
     pub const PROVIDERS_LAUNCH: &str = "providers.launch";
@@ -195,6 +198,13 @@ mod tests {
     fn system_contract_keeps_the_existing_update_method() {
         assert_eq!(method::SYSTEM_INFO, "system.info");
         assert_eq!(method::SYSTEM_UPDATE_CHECK, "system.updateCheck");
+    }
+
+    #[test]
+    fn voice_contract_keeps_the_existing_method_names() {
+        assert_eq!(method::VOICE_STATUS, "voice.status");
+        assert_eq!(method::VOICE_TRANSCRIBE, "voice.transcribe");
+        assert_eq!(method::VOICE_CANCEL, "voice.cancel");
     }
 
     #[test]
