@@ -101,6 +101,20 @@ pub(crate) fn top_highlight(theme: Theme) -> AnyElement {
         .into_any_element()
 }
 
+pub(crate) fn right_highlight(theme: Theme) -> AnyElement {
+    div()
+        .absolute()
+        .top_0()
+        .right_0()
+        .bottom_0()
+        .w(px(1.0))
+        .bg(match theme.mode {
+            ThemeMode::Dark => gpui::white().opacity(0.05),
+            ThemeMode::Light => gpui::white().opacity(0.96),
+        })
+        .into_any_element()
+}
+
 pub(crate) fn inset_top_shade(theme: Theme) -> AnyElement {
     let (from, to): (Hsla, Hsla) = match theme.mode {
         ThemeMode::Dark => (gpui::black().opacity(0.34), gpui::transparent_black()),

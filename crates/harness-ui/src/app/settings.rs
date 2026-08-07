@@ -2,6 +2,7 @@ use super::HarnessApp;
 use super::provider_terminal::{
     ProviderTerminalKey, ProviderTerminalPhase, ProviderTerminalSnapshot,
 };
+use crate::chrome;
 use crate::client_state::{AuthTarget, ProviderTerminalKind};
 use crate::preferences::{FontPreference, NativePreferences, ThemePreference};
 use crate::provider_icon::{ProviderMark, agent_mark, connection_mark, mark_icon, provider_mark};
@@ -10,7 +11,7 @@ use crate::zoom::px;
 use gpui::{
     Animation, AnimationExt, AnyElement, App, ClipboardItem, Context, Entity, FontWeight,
     PathPromptOptions, PromptButton, PromptLevel, SharedString, Window, div, linear_color_stop,
-    linear_gradient, prelude::*, svg,
+    linear_gradient, prelude::*, relative, svg,
 };
 use gpui_component::input::{Input, InputState};
 use gpui_component::tooltip::Tooltip;
@@ -161,6 +162,7 @@ impl HarnessApp {
         }
 
         let sidebar = div()
+            .relative()
             .w(px(crate::RAIL_WIDTH))
             .h_full()
             .flex_none()
@@ -175,6 +177,7 @@ impl HarnessApp {
                 .opacity((1.0 - f32::from(self.preferences.sidebar_glass) * 0.013).max(0.0)))
             .border_r_1()
             .border_color(theme.line.hsla())
+            .child(chrome::right_highlight(theme))
             .child(
                 div()
                     .id("settings-back")
@@ -184,16 +187,22 @@ impl HarnessApp {
                     .items_center()
                     .gap(px(8.0))
                     .px(px(8.0))
-                    .rounded(px(8.0))
-                    .text_size(px(11.5))
+                    .rounded(px(5.0))
+                    .text_size(px(12.5))
                     .text_color(theme.text_2.hsla())
                     .cursor_pointer()
                     .hover(move |style| {
                         style
-                            .bg(theme.surface_2.hsla())
+                            .bg(chrome::raised(theme))
+                            .shadow(chrome::shadows(theme))
                             .text_color(theme.text.hsla())
                     })
-                    .active(|style| style.opacity(0.72))
+                    .active(move |style| {
+                        style
+                            .top(px(1.0))
+                            .bg(chrome::recessed(theme))
+                            .shadow(Vec::new())
+                    })
                     .on_click(move |_event, _window, cx| back(cx))
                     .child(settings_icon("icons/arrow-left.svg", 14.0))
                     .child("Back to app"),
@@ -203,7 +212,7 @@ impl HarnessApp {
                     .mt(px(18.0))
                     .mb(px(4.0))
                     .px(px(8.0))
-                    .text_size(px(10.5))
+                    .text_size(px(11.5))
                     .text_color(theme.text_3.hsla())
                     .child("Settings"),
             )
@@ -2284,8 +2293,10 @@ impl HarnessApp {
         let version_picker = div()
             .flex()
             .p(px(2.0))
-            .rounded(px(8.0))
-            .bg(theme.surface_2.hsla())
+            .rounded(px(5.0))
+            .border_1()
+            .border_color(chrome::border(theme))
+            .bg(chrome::recessed(theme))
             .child(segmented_button(
                 "workflow-v1",
                 "V1 Classic",
@@ -2399,6 +2410,7 @@ impl HarnessApp {
         blocks.push(settings_plain_group(
             "",
             div()
+                .relative()
                 .w_full()
                 .flex()
                 .gap(px(16.0))
@@ -2884,9 +2896,9 @@ fn settings_panel(title: &str, blocks: Vec<AnyElement>, theme: Theme) -> gpui::D
         .child(
             div()
                 .mb(px(22.0))
-                .text_size(px(24.0))
-                .line_height(px(29.0))
-                .font_weight(FontWeight::MEDIUM)
+                .text_size(px(26.0))
+                .line_height(relative(1.2))
+                .font_weight(FontWeight(550.0))
                 .text_color(theme.text.hsla())
                 .child(title.to_owned()),
         )
@@ -2907,8 +2919,8 @@ fn settings_group(title: &str, rows: Vec<AnyElement>, theme: Theme) -> AnyElemen
             group.child(
                 div()
                     .mb(px(12.0))
-                    .text_size(px(12.5))
-                    .font_weight(FontWeight::MEDIUM)
+                    .text_size(px(13.5))
+                    .font_weight(FontWeight(520.0))
                     .text_color(theme.text_2.hsla())
                     .child(title.to_owned()),
             )
@@ -2919,9 +2931,10 @@ fn settings_group(title: &str, rows: Vec<AnyElement>, theme: Theme) -> AnyElemen
                 .overflow_hidden()
                 .rounded(px(crate::RADIUS_LG))
                 .border_1()
-                .border_color(theme.line_strong.hsla())
+                .border_color(chrome::border(theme))
                 .bg(theme.rail.hsla())
-                .shadow_sm()
+                .shadow(chrome::shadows(theme))
+                .child(chrome::top_highlight(theme))
                 .children(rows),
         )
         .into_any_element()
@@ -2934,8 +2947,8 @@ fn settings_plain_group(title: &str, child: AnyElement, theme: Theme) -> AnyElem
             group.child(
                 div()
                     .mb(px(12.0))
-                    .text_size(px(12.5))
-                    .font_weight(FontWeight::MEDIUM)
+                    .text_size(px(13.5))
+                    .font_weight(FontWeight(520.0))
                     .text_color(theme.text_2.hsla())
                     .child(title.to_owned()),
             )
@@ -2946,6 +2959,7 @@ fn settings_plain_group(title: &str, child: AnyElement, theme: Theme) -> AnyElem
 
 fn model_settings_empty(message: &'static str, theme: Theme) -> AnyElement {
     div()
+        .relative()
         .min_h(px(72.0))
         .w_full()
         .flex()
@@ -2954,10 +2968,11 @@ fn model_settings_empty(message: &'static str, theme: Theme) -> AnyElement {
         .px(px(18.0))
         .rounded(px(crate::RADIUS_LG))
         .border_1()
-        .border_color(theme.line_strong.hsla())
+        .border_color(chrome::border(theme))
         .bg(theme.rail.hsla())
-        .shadow_sm()
-        .text_size(px(11.0))
+        .shadow(chrome::shadows(theme))
+        .child(chrome::top_highlight(theme))
+        .text_size(px(12.5))
         .text_color(theme.text_3.hsla())
         .child(settings_icon("icons/boxes.svg", 18.0))
         .child(message)
@@ -2969,8 +2984,8 @@ fn settings_inside_title(title: &'static str, theme: Theme) -> AnyElement {
         .pt(px(14.0))
         .pb(px(6.0))
         .px(px(16.0))
-        .text_size(px(12.5))
-        .font_weight(FontWeight::MEDIUM)
+        .text_size(px(13.5))
+        .font_weight(FontWeight(520.0))
         .text_color(theme.text_2.hsla())
         .child(title)
         .into_any_element()
@@ -3060,7 +3075,7 @@ fn settings_row(
                 .flex_1()
                 .child(
                     div()
-                        .text_size(px(12.5))
+                        .text_size(px(13.5))
                         .font_weight(FontWeight::MEDIUM)
                         .text_color(theme.text.hsla())
                         .child(title),
@@ -3069,8 +3084,8 @@ fn settings_row(
                     copy.child(
                         div()
                             .mt(px(2.0))
-                            .text_size(px(11.0))
-                            .line_height(px(16.0))
+                            .text_size(px(12.5))
+                            .line_height(relative(1.45))
                             .text_color(theme.text_3.hsla())
                             .child(note),
                     )
@@ -3088,8 +3103,8 @@ fn settings_empty_row(note: impl Into<SharedString>, theme: Theme) -> AnyElement
         .items_center()
         .px(px(16.0))
         .py(px(7.0))
-        .text_size(px(11.5))
-        .line_height(px(17.0))
+        .text_size(px(12.5))
+        .line_height(relative(1.45))
         .text_color(theme.text_3.hsla())
         .child(note.into())
         .into_any_element()
@@ -3105,6 +3120,7 @@ fn settings_nav_item(
 ) -> AnyElement {
     div()
         .id(("settings-nav", index))
+        .relative()
         .min_h(px(32.0))
         .w_full()
         .flex()
@@ -3112,13 +3128,13 @@ fn settings_nav_item(
         .gap(px(9.0))
         .px(px(8.0))
         .py(px(6.0))
-        .rounded(px(8.0))
-        .bg(if selected {
-            theme.surface_2.hsla()
-        } else {
-            theme.rail.hsla().opacity(0.0)
+        .rounded(px(5.0))
+        .when(selected, |item| {
+            item.bg(chrome::raised(theme))
+                .shadow(chrome::shadows(theme))
+                .child(chrome::top_highlight(theme))
         })
-        .text_size(px(12.0))
+        .text_size(px(13.5))
         .text_color(if selected {
             theme.text.hsla()
         } else {
@@ -3127,10 +3143,16 @@ fn settings_nav_item(
         .cursor_pointer()
         .hover(move |style| {
             style
-                .bg(theme.surface_2.hsla())
+                .bg(chrome::raised(theme))
+                .shadow(chrome::shadows(theme))
                 .text_color(theme.text.hsla())
         })
-        .active(|style| style.opacity(0.72))
+        .active(move |style| {
+            style
+                .top(px(1.0))
+                .bg(chrome::recessed(theme))
+                .shadow(Vec::new())
+        })
         .on_click(move |_event, _window, cx| action(cx))
         .child(
             div()
@@ -3147,20 +3169,36 @@ fn settings_nav_item(
 }
 
 fn settings_switch(id: usize, on: bool, theme: Theme, action: SettingsAction) -> AnyElement {
+    let off_background = if theme.mode == ThemeMode::Light {
+        chrome::recessed(theme)
+    } else {
+        theme.surface_3.hsla()
+    };
+    let on_light = match theme.mode {
+        ThemeMode::Dark => gpui::rgb(0x101010).into(),
+        ThemeMode::Light => gpui::white(),
+    };
     div()
         .id(("settings-switch", id))
         .relative()
-        .w(px(32.0))
-        .h(px(18.0))
+        .w(px(34.0))
+        .h(px(20.0))
         .flex_none()
-        .rounded(px(9.0))
-        .bg(if on {
-            theme.attention.hsla()
+        .rounded_full()
+        .border_1()
+        .border_color(if on {
+            theme.text.hsla()
+        } else if theme.mode == ThemeMode::Light {
+            chrome::border(theme)
         } else {
-            theme.surface_3.hsla()
+            theme.line_strong.hsla()
+        })
+        .bg(if on {
+            theme.text.hsla()
+        } else {
+            off_background
         })
         .cursor_pointer()
-        .active(|style| style.opacity(0.72))
         .on_click(move |_event, _window, cx| action(cx))
         .child(
             div()
@@ -3168,8 +3206,8 @@ fn settings_switch(id: usize, on: bool, theme: Theme, action: SettingsAction) ->
                 .top(px(2.0))
                 .left(px(if on { 16.0 } else { 2.0 }))
                 .size(px(14.0))
-                .rounded(px(7.0))
-                .bg(gpui::white()),
+                .rounded_full()
+                .bg(if on { on_light } else { theme.text_2.hsla() }),
         )
         .into_any_element()
 }
@@ -3183,22 +3221,20 @@ fn segmented_button(
 ) -> AnyElement {
     div()
         .id(id)
+        .relative()
         .h(px(28.0))
         .flex()
         .items_center()
-        .px(px(10.0))
-        .rounded(px(6.0))
-        .bg(if selected {
-            theme.rail.hsla()
-        } else {
-            theme.surface_2.hsla().opacity(0.0)
+        .px(px(9.0))
+        .rounded(px(3.0))
+        .when(selected, |button| {
+            button
+                .bg(chrome::raised(theme))
+                .shadow(chrome::shadows(theme))
+                .child(chrome::top_highlight(theme))
         })
-        .text_size(px(10.5))
-        .font_weight(if selected {
-            FontWeight::MEDIUM
-        } else {
-            FontWeight::NORMAL
-        })
+        .text_size(px(12.5))
+        .font_weight(FontWeight::NORMAL)
         .text_color(if selected {
             theme.text.hsla()
         } else {
@@ -3220,14 +3256,17 @@ fn stepper_button(
 ) -> AnyElement {
     div()
         .id(id)
+        .relative()
         .size(px(26.0))
         .flex()
         .items_center()
         .justify_center()
-        .rounded(px(7.0))
+        .rounded(px(5.0))
         .border_1()
-        .border_color(theme.line_strong.hsla())
-        .bg(theme.surface.hsla())
+        .border_color(chrome::border(theme))
+        .bg(chrome::raised(theme))
+        .shadow(chrome::shadows(theme))
+        .child(chrome::top_highlight(theme))
         .text_size(px(13.0))
         .text_color(if disabled {
             theme.text_3.hsla().opacity(0.5)
@@ -3237,7 +3276,13 @@ fn stepper_button(
         .when(!disabled, |button| {
             button
                 .cursor_pointer()
-                .hover(move |style| style.bg(theme.surface_2.hsla()))
+                .hover(move |style| style.bg(theme.surface_3.hsla()))
+                .active(move |style| {
+                    style
+                        .top(px(1.0))
+                        .bg(chrome::recessed(theme))
+                        .shadow(Vec::new())
+                })
                 .on_click(move |_event, _window, cx| action(cx))
         })
         .child(label)
@@ -3266,11 +3311,15 @@ fn connection_add_button(theme: Theme, action: SettingsAction) -> AnyElement {
         .gap(px(9.0))
         .border_t_1()
         .border_color(theme.line.hsla())
-        .text_size(px(11.5))
+        .text_size(px(13.5))
         .text_color(theme.text_2.hsla())
         .cursor_pointer()
-        .hover(move |style| style.bg(theme.surface.hsla()).text_color(theme.text.hsla()))
-        .active(|style| style.opacity(0.72))
+        .hover(move |style| {
+            style
+                .bg(chrome::raised(theme))
+                .text_color(theme.text.hsla())
+        })
+        .active(|style| style.top(px(1.0)))
         .on_click(move |_event, _window, cx| action(cx))
         .child(settings_icon("icons/plus.svg", 15.0))
         .child("Connect another plan or API")
@@ -3293,23 +3342,35 @@ fn settings_button_enabled(
     };
     div()
         .id(id)
+        .relative()
         .h(px(30.0))
         .flex()
         .items_center()
         .gap(px(7.0))
         .px(px(10.0))
-        .rounded(px(8.0))
+        .rounded(px(5.0))
         .border_1()
-        .border_color(theme.line_strong.hsla())
-        .bg(theme.surface.hsla())
-        .text_size(px(11.0))
+        .border_color(chrome::border(theme))
+        .bg(chrome::raised(theme))
+        .shadow(chrome::shadows(theme))
+        .child(chrome::top_highlight(theme))
+        .text_size(px(12.5))
         .text_color(text)
         .opacity(if enabled { 1.0 } else { 0.48 })
         .when(enabled, |button| {
             button
                 .cursor_pointer()
-                .hover(move |style| style.bg(theme.surface_2.hsla()))
-                .active(|style| style.opacity(0.72))
+                .hover(move |style| {
+                    style
+                        .bg(theme.surface_3.hsla())
+                        .text_color(theme.text.hsla())
+                })
+                .active(move |style| {
+                    style
+                        .top(px(1.0))
+                        .bg(chrome::recessed(theme))
+                        .shadow(Vec::new())
+                })
                 .on_click(move |_event, _window, cx| action(cx))
         })
         .child(settings_icon(icon, 13.0))
@@ -3320,18 +3381,27 @@ fn settings_button_enabled(
 fn connection_remove_button(index: usize, theme: Theme, action: SettingsAction) -> AnyElement {
     div()
         .id(("remove-connection", index))
+        .relative()
         .h(px(26.0))
         .flex()
         .items_center()
         .px(px(9.0))
-        .rounded(px(7.0))
+        .rounded(px(5.0))
         .border_1()
-        .border_color(theme.error.hsla().opacity(0.32))
-        .text_size(px(10.5))
+        .border_color(chrome::border(theme))
+        .bg(chrome::raised(theme))
+        .shadow(chrome::shadows(theme))
+        .child(chrome::top_highlight(theme))
+        .text_size(px(12.5))
         .text_color(theme.error.hsla())
         .cursor_pointer()
-        .hover(move |style| style.bg(theme.error.hsla().opacity(0.09)))
-        .active(|style| style.opacity(0.72))
+        .hover(move |style| style.bg(theme.surface_3.hsla()))
+        .active(move |style| {
+            style
+                .top(px(1.0))
+                .bg(chrome::recessed(theme))
+                .shadow(Vec::new())
+        })
         .on_click(move |_event, _window, cx| action(cx))
         .child("Remove")
         .into_any_element()
@@ -3346,33 +3416,31 @@ fn provider_action_button(
 ) -> AnyElement {
     div()
         .id(("provider-action", index))
+        .relative()
         .h(px(28.0))
         .flex()
         .items_center()
         .px(px(10.0))
-        .rounded(px(7.0))
+        .rounded(px(5.0))
         .border_1()
-        .border_color(if destructive {
-            theme.error.hsla().opacity(0.32)
-        } else {
-            theme.line_strong.hsla()
-        })
-        .bg(theme.surface.hsla())
-        .text_size(px(10.5))
+        .border_color(chrome::border(theme))
+        .bg(chrome::raised(theme))
+        .shadow(chrome::shadows(theme))
+        .child(chrome::top_highlight(theme))
+        .text_size(px(12.5))
         .text_color(if destructive {
             theme.error.hsla()
         } else {
             theme.text_2.hsla()
         })
         .cursor_pointer()
-        .hover(move |style| {
-            style.bg(if destructive {
-                theme.error.hsla().opacity(0.09)
-            } else {
-                theme.surface_2.hsla()
-            })
+        .hover(move |style| style.bg(theme.surface_3.hsla()))
+        .active(move |style| {
+            style
+                .top(px(1.0))
+                .bg(chrome::recessed(theme))
+                .shadow(Vec::new())
         })
-        .active(|style| style.opacity(0.72))
         .on_click(move |_event, _window, cx| action(cx))
         .child(label)
         .into_any_element()
@@ -3380,14 +3448,18 @@ fn provider_action_button(
 
 fn provider_action_disabled(label: &'static str, theme: Theme) -> AnyElement {
     div()
+        .relative()
         .h(px(28.0))
         .flex()
         .items_center()
         .px(px(10.0))
         .rounded(px(crate::RADIUS_MD))
         .border_1()
-        .border_color(theme.line.hsla())
-        .text_size(px(10.5))
+        .border_color(chrome::border(theme))
+        .bg(chrome::raised(theme))
+        .shadow(chrome::shadows(theme))
+        .child(chrome::top_highlight(theme))
+        .text_size(px(12.5))
         .text_color(theme.text_3.hsla())
         .opacity(0.55)
         .child(label)
@@ -3404,19 +3476,18 @@ fn mcp_action_button(
 ) -> AnyElement {
     div()
         .id(id)
+        .relative()
         .h(px(28.0))
         .flex()
         .items_center()
         .px(px(10.0))
-        .rounded(px(7.0))
+        .rounded(px(5.0))
         .border_1()
-        .border_color(if destructive {
-            theme.error.hsla().opacity(0.32)
-        } else {
-            theme.line_strong.hsla()
-        })
-        .bg(theme.surface.hsla())
-        .text_size(px(10.5))
+        .border_color(chrome::border(theme))
+        .bg(chrome::raised(theme))
+        .shadow(chrome::shadows(theme))
+        .child(chrome::top_highlight(theme))
+        .text_size(px(12.5))
         .text_color(if destructive {
             theme.error.hsla()
         } else {
@@ -3426,14 +3497,13 @@ fn mcp_action_button(
         .when(enabled, |button| {
             button
                 .cursor_pointer()
-                .hover(move |style| {
-                    style.bg(if destructive {
-                        theme.error.hsla().opacity(0.09)
-                    } else {
-                        theme.surface_2.hsla()
-                    })
+                .hover(move |style| style.bg(theme.surface_3.hsla()))
+                .active(move |style| {
+                    style
+                        .top(px(1.0))
+                        .bg(chrome::recessed(theme))
+                        .shadow(Vec::new())
                 })
-                .active(|style| style.opacity(0.72))
                 .on_click(action)
         })
         .child(label)
@@ -3477,7 +3547,7 @@ fn mcp_editor_field(
         .child(
             div()
                 .mb(px(6.0))
-                .text_size(px(10.5))
+                .text_size(px(12.5))
                 .text_color(theme.text_2.hsla())
                 .child(label),
         )
@@ -3490,11 +3560,11 @@ fn mcp_editor_field(
                 .h(px(if multiline { 142.0 } else { 34.0 }))
                 .w_full()
                 .px(px(10.0))
-                .rounded(px(8.0))
+                .rounded(px(5.0))
                 .border_1()
                 .border_color(theme.line_strong.hsla())
-                .bg(theme.surface.hsla())
-                .text_size(px(11.5))
+                .bg(theme.surface_2.hsla())
+                .text_size(px(13.5))
                 .text_color(theme.text.hsla()),
         )
         .into_any_element()
@@ -3513,7 +3583,7 @@ fn connection_field(
         .child(
             div()
                 .mb(px(6.0))
-                .text_size(px(10.5))
+                .text_size(px(12.5))
                 .text_color(theme.text_3.hsla())
                 .child(label),
         )
@@ -3525,11 +3595,11 @@ fn connection_field(
                 .h(px(34.0))
                 .w_full()
                 .px(px(10.0))
-                .rounded(px(8.0))
+                .rounded(px(5.0))
                 .border_1()
-                .border_color(theme.line_strong.hsla())
-                .bg(theme.surface.hsla())
-                .text_size(px(11.5))
+                .border_color(chrome::border(theme))
+                .bg(theme.background.hsla())
+                .text_size(px(13.5))
                 .text_color(theme.text.hsla()),
         )
         .into_any_element()
@@ -3689,7 +3759,7 @@ fn settings_status(label: impl Into<SharedString>, warning: bool, theme: Theme) 
     div()
         .max_w(px(250.0))
         .truncate()
-        .text_size(px(11.0))
+        .text_size(px(12.5))
         .text_color(if warning {
             theme.error.hsla()
         } else {
@@ -3717,7 +3787,7 @@ fn account_status(
         .flex()
         .items_center()
         .min_w(px(0.0))
-        .text_size(px(11.0))
+        .text_size(px(12.5))
         .text_color(theme.text_3.hsla())
         .when_some(account.email.clone(), |status, email| {
             status.child(account_email(email, theme))
@@ -3773,14 +3843,15 @@ fn row_issue(message: String, tip: Option<String>, theme: Theme) -> AnyElement {
     let tooltip = tip.map_or_else(|| message.clone(), |tip| format!("{message}\n{tip}"));
     div()
         .id(SharedString::from(format!("row-issue:{message}")))
-        .size(px(24.0))
+        .size(px(22.0))
         .flex()
         .items_center()
         .justify_center()
-        .rounded(px(12.0))
+        .rounded_full()
+        .bg(theme.error.hsla().opacity(0.14))
         .text_color(theme.error.hsla())
         .cursor_pointer()
-        .hover(move |style| style.bg(theme.error.hsla().opacity(0.10)))
+        .hover(move |style| style.bg(theme.error.hsla().opacity(0.18)))
         .tooltip(move |window, cx| Tooltip::new(tooltip.clone()).build(window, cx))
         .child(settings_icon("icons/circle-alert.svg", 14.0))
         .into_any_element()

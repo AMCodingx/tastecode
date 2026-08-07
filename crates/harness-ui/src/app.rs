@@ -1719,10 +1719,14 @@ impl HarnessApp {
 
     fn settings_titlebar(&self) -> impl IntoElement {
         div()
+            .relative()
             .h(px(TITLEBAR_HEIGHT))
             .w_full()
             .flex_none()
             .bg(self.theme.titlebar.hsla())
+            .border_b_1()
+            .border_color(self.theme.line.hsla())
+            .child(crate::chrome::top_highlight(self.theme))
             .on_mouse_down(MouseButton::Left, |event, window, _cx| {
                 if event.click_count == 2 {
                     window.titlebar_double_click();
