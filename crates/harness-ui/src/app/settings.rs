@@ -3971,26 +3971,8 @@ fn validate_mcp_values(
     Ok(())
 }
 
-fn status_pill(label: &'static str, ready: bool, theme: Theme) -> AnyElement {
-    div()
-        .h(px(24.0))
-        .flex()
-        .items_center()
-        .px(px(9.0))
-        .rounded(px(12.0))
-        .bg(if ready {
-            theme.success.hsla().opacity(0.12)
-        } else {
-            theme.surface_2.hsla()
-        })
-        .text_size(px(10.5))
-        .text_color(if ready {
-            theme.success.hsla()
-        } else {
-            theme.text_3.hsla()
-        })
-        .child(label)
-        .into_any_element()
+fn status_pill(label: &'static str, _ready: bool, theme: Theme) -> AnyElement {
+    settings_status(label, false, theme)
 }
 
 fn provider_actions(
