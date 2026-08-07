@@ -1,4 +1,4 @@
-use crate::map_domain_notification;
+use crate::{map_domain_notification, mcp::map_server_status, skills::map_skill_list};
 use harness_agent::{
     AgentError, AgentHandlers, AgentResult, AgentRuntime, AgentSession, ControlHandlers,
     LoginEvent, ProviderControl, StartOptions, TurnOptions,
@@ -8,8 +8,8 @@ use harness_proc::{
 };
 use harness_protocol::{
     Account, ApprovalDecision, ApprovalKind, ApprovalMode, ApprovalRequest, AuthStartLoginResult,
-    Capabilities, DomainEvent, Model, ProviderId, ServiceTier, Thread, UserInputOption,
-    UserInputQuestion, UserInputRequest,
+    Capabilities, DomainEvent, McpServer, Model, ProviderId, ServiceTier, SkillsListResult, Thread,
+    UserInputOption, UserInputQuestion, UserInputRequest,
 };
 use serde_json::{Map, Value, json};
 use std::collections::HashMap;
@@ -265,6 +265,69 @@ impl CodexAdapter {
             .filter(|raw| !raw.get("hidden").and_then(Value::as_bool).unwrap_or(false))
             .map(|raw| map_model(method, raw))
             .collect()
+    }
+
+    pub fn list_mcp_servers(
+        &self,
+        thread_id: Option<&str>,
+    ) -> Result<Vec<McpServer>, CodexAdapterError> {
+        let method = "mcpServerStatus/list";
+        let mut servers = Vec::new();
+        let mut cursor: Option<String> = None;
+        let mut seen = std::collections::HashSet::new();
+        loop {
+            let mut params = Map::new();
+            params.insert("detail".into(), Value::String("full".into()));
+            insert_option(&mut params, "threadId", thread_id);
+            insert_option(&mut params, "cursor", cursor.as_deref());
+            let response = self.call(method, Value::Object(params))?;
+            let data = response
+                .get("data")
+                .and_then(Value::as_array)
+                .ok_or_else(|| invalid(method, "missing data array"))?;
+            for status in data {
+                servers.push(
+                    map_server_status(status, None).map_err(|message| invalid(method, &message))?,
+                );
+            }
+            cursor = match response.get("nextCursor") {
+                None | Some(Value::Null) => None,
+                Some(Value::String(cursor)) if !cursor.is_empty() => Some(cursor.clone()),
+                Some(_) => return Err(invalid(method, "invalid nextCursor")),
+            };
+            let Some(next) = cursor.as_ref() else {
+                break;
+            };
+            if !seen.insert(next.clone()) {
+                return Err(invalid(method, "repeated nextCursor"));
+            }
+        }
+        Ok(servers)
+    }
+
+    pub fn list_skills(&self, project_path: &str) -> Result<SkillsListResult, CodexAdapterError> {
+        let method = "skills/list";
+        let response = self.call(
+            method,
+            json!({ "cwds": [project_path], "forceReload": true }),
+        )?;
+        map_skill_list(&response, project_path, None).map_err(|message| invalid(method, &message))
+    }
+
+    pub fn set_skill_enabled(
+        &self,
+        skill_id: &str,
+        enabled: bool,
+    ) -> Result<bool, CodexAdapterError> {
+        let method = "skills/config/write";
+        let response = self.call(
+            method,
+            json!({ "path": skill_id, "name": null, "enabled": enabled }),
+        )?;
+        response
+            .get("effectiveEnabled")
+            .and_then(Value::as_bool)
+            .ok_or_else(|| invalid(method, "missing effectiveEnabled"))
     }
 
     pub fn start_thread(
@@ -998,6 +1061,22 @@ mod tests {
         assert_eq!(models[0].id, "gpt-test");
         assert_eq!(models[0].reasoning_efforts, ["medium", "high"]);
         assert_eq!(models[0].service_tiers[0].id, "priority");
+        let mcp = adapter.list_mcp_servers(Some("thread-1")).unwrap();
+        assert_eq!(
+            mcp.iter()
+                .map(|server| server.id.as_str())
+                .collect::<Vec<_>>(),
+            ["docs", "files"]
+        );
+        assert_eq!(mcp[0].tools[0].name, "search");
+        let skills = adapter.list_skills("/repo").unwrap();
+        assert_eq!(skills.skills[0].name, "docs");
+        assert_eq!(skills.errors[0].message, "invalid frontmatter");
+        assert!(
+            adapter
+                .set_skill_enabled("/repo/docs/SKILL.md", true)
+                .unwrap()
+        );
 
         let thread = adapter
             .start_thread(
@@ -1171,6 +1250,89 @@ mod tests {
                         "nextCursor": null
                     }),
                 ),
+                "mcpServerStatus/list" if request["params"].get("cursor").is_none() => {
+                    assert_eq!(request["params"]["detail"], "full");
+                    assert_eq!(request["params"]["threadId"], "thread-1");
+                    respond(
+                        &mut stdout,
+                        id.unwrap(),
+                        json!({
+                            "data": [{
+                                "name": "docs",
+                                "serverInfo": {
+                                    "name": "docs",
+                                    "title": "Documentation",
+                                    "version": "1.0.0",
+                                    "description": "Captured documentation server"
+                                },
+                                "authStatus": "unsupported",
+                                "tools": {
+                                    "search": {
+                                        "name": "search",
+                                        "description": "Search docs",
+                                        "inputSchema": { "type": "object" }
+                                    }
+                                },
+                                "resources": [],
+                                "resourceTemplates": []
+                            }],
+                            "nextCursor": "page-2"
+                        }),
+                    );
+                }
+                "mcpServerStatus/list" => {
+                    assert_eq!(request["params"]["cursor"], "page-2");
+                    respond(
+                        &mut stdout,
+                        id.unwrap(),
+                        json!({
+                            "data": [{
+                                "name": "files",
+                                "serverInfo": null,
+                                "authStatus": "notLoggedIn",
+                                "tools": {},
+                                "resources": [],
+                                "resourceTemplates": []
+                            }],
+                            "nextCursor": null
+                        }),
+                    );
+                }
+                "skills/list" => {
+                    assert_eq!(request["params"]["cwds"], json!(["/repo"]));
+                    assert_eq!(request["params"]["forceReload"], true);
+                    respond(
+                        &mut stdout,
+                        id.unwrap(),
+                        json!({
+                            "data": [{
+                                "cwd": "/repo",
+                                "skills": [{
+                                    "name": "docs",
+                                    "description": "Read docs",
+                                    "interface": { "displayName": "Docs" },
+                                    "path": "/repo/docs/SKILL.md",
+                                    "scope": "repo",
+                                    "enabled": true
+                                }],
+                                "errors": [{
+                                    "path": "/repo/broken/SKILL.md",
+                                    "message": "invalid frontmatter"
+                                }]
+                            }]
+                        }),
+                    );
+                }
+                "skills/config/write" => {
+                    assert_eq!(request["params"]["path"], "/repo/docs/SKILL.md");
+                    assert_eq!(request["params"]["name"], Value::Null);
+                    assert_eq!(request["params"]["enabled"], true);
+                    respond(
+                        &mut stdout,
+                        id.unwrap(),
+                        json!({ "effectiveEnabled": true }),
+                    );
+                }
                 "thread/start" => {
                     assert_eq!(request["params"]["cwd"], "/repo");
                     assert_eq!(

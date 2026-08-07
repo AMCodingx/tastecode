@@ -2,14 +2,18 @@ use harness_protocol::{Item, ItemStatus, ItemType, MessageRole};
 use serde_json::Value;
 use uuid::Uuid;
 
+mod mcp;
 mod notification;
 mod runtime;
+mod skills;
 
 pub use harness_agent::{AgentHandlers as CodexHandlers, StartOptions, TurnOptions};
+pub use mcp::{CODEX_MCP_CAPABILITIES, map_startup_status};
 pub use notification::{NotificationMappingError, map_domain_notification};
 pub use runtime::{
     CODEX_CAPABILITIES, CodexAdapter, CodexAdapterError, CodexLaunchOptions, CodexRuntime,
 };
+pub use skills::CODEX_SKILL_CAPABILITIES;
 
 /// Context supplied by the Codex lifecycle notification around a thread item.
 #[derive(Clone, Copy, Debug, PartialEq)]
