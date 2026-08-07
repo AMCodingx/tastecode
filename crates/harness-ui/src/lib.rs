@@ -4,6 +4,7 @@ mod assets;
 mod chat;
 mod chrome;
 mod client_state;
+mod downloads;
 mod model_selection;
 mod preferences;
 mod preview_capture;
