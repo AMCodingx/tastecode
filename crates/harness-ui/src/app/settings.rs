@@ -1703,10 +1703,10 @@ impl HarnessApp {
                 .clone()
                 .unwrap_or_else(|| server.id.clone());
             let scope = match server.scope {
-                harness_protocol::McpServerScope::Project => "project",
-                harness_protocol::McpServerScope::Global => "global",
+                harness_protocol::McpServerScope::Project => "Project",
+                harness_protocol::McpServerScope::Global => "Global",
             };
-            let (status, ready) = mcp_status(server);
+            let (status, _ready) = mcp_status(server);
             let detail_key = (provider, project_path.clone(), server.id.clone());
             let expanded = self.mcp_expanded_servers.contains(&detail_key);
             let expand_view = cx.weak_entity();
@@ -1718,8 +1718,11 @@ impl HarnessApp {
             );
             let details = div()
                 .id(SharedString::from(format!("mcp-details-{}", server.id)))
-                .mt(px(9.0))
-                .text_size(px(10.5))
+                .mt(px(10.0))
+                .flex()
+                .items_center()
+                .gap(px(5.0))
+                .text_size(px(12.5))
                 .text_color(theme.text_3.hsla())
                 .cursor_pointer()
                 .on_click(move |_event, _window, cx| {
@@ -1731,6 +1734,7 @@ impl HarnessApp {
                         cx.notify();
                     });
                 })
+                .child(if expanded { "▾" } else { "▸" })
                 .child(if expanded {
                     format!("Hide · {summary}")
                 } else {
@@ -1740,16 +1744,14 @@ impl HarnessApp {
                 if server.tools.is_empty() {
                     div()
                         .mt(px(8.0))
-                        .text_size(px(10.5))
+                        .text_size(px(12.5))
                         .text_color(theme.text_3.hsla())
                         .child("No tools reported.")
                         .into_any_element()
                 } else {
                     div()
                         .mt(px(8.0))
-                        .pl(px(10.0))
-                        .border_l_1()
-                        .border_color(theme.line.hsla())
+                        .pl(px(18.0))
                         .flex()
                         .flex_col()
                         .gap(px(5.0))
@@ -1760,10 +1762,10 @@ impl HarnessApp {
                                 |description| format!("{title} — {description}"),
                             );
                             div()
-                                .text_size(px(10.5))
-                                .line_height(px(15.0))
+                                .text_size(px(12.5))
+                                .line_height(relative(1.45))
                                 .text_color(theme.text_2.hsla())
-                                .child(line)
+                                .child(format!("• {line}"))
                         }))
                         .into_any_element()
                 }
@@ -1771,23 +1773,27 @@ impl HarnessApp {
             let failure = match &server.startup {
                 McpStartupStatus::Failed { message } => Some(
                     div()
-                        .mt(px(8.0))
-                        .text_size(px(10.5))
+                        .mt(px(10.0))
+                        .flex()
+                        .items_center()
+                        .gap(px(6.0))
+                        .text_size(px(11.5))
                         .text_color(theme.error.hsla())
+                        .child(settings_icon("icons/triangle-alert.svg", 13.0))
                         .child(message.clone()),
                 ),
                 _ => None,
             };
             rows.push(
                 div()
-                    .min_h(px(76.0))
+                    .min_h(px(46.0))
                     .w_full()
                     .flex()
                     .items_start()
                     .justify_between()
                     .gap(px(20.0))
                     .px(px(16.0))
-                    .py(px(14.0))
+                    .py(px(6.0))
                     .when(index > 0, |row| {
                         row.border_t_1().border_color(theme.line.hsla())
                     })
@@ -1805,27 +1811,19 @@ impl HarnessApp {
                                     .gap(px(7.0))
                                     .child(
                                         div()
-                                            .text_size(px(12.5))
-                                            .font_weight(FontWeight::MEDIUM)
+                                            .text_size(px(13.5))
+                                            .font_weight(FontWeight(550.0))
                                             .text_color(theme.text.hsla())
                                             .child(name),
                                     )
                                     .child(mcp_badge(scope, theme))
-                                    .child(mcp_badge(status, theme))
-                                    .when(ready, |heading| {
-                                        heading.child(
-                                            div()
-                                                .size(px(5.0))
-                                                .rounded_full()
-                                                .bg(theme.success.hsla()),
-                                        )
-                                    }),
+                                    .child(mcp_badge(status, theme)),
                             )
                             .child(
                                 div()
-                                    .mt(px(6.0))
+                                    .mt(px(7.0))
                                     .truncate()
-                                    .text_size(px(11.0))
+                                    .text_size(px(12.5))
                                     .text_color(theme.text_3.hsla())
                                     .child(mcp_transport_label(server.transport.as_ref())),
                             )
@@ -3615,15 +3613,7 @@ fn mcp_action_button(
 }
 
 fn mcp_badge(label: &'static str, theme: Theme) -> AnyElement {
-    div()
-        .px(px(6.0))
-        .py(px(1.0))
-        .rounded(px(8.0))
-        .bg(theme.surface_2.hsla())
-        .text_size(px(9.5))
-        .text_color(theme.text_3.hsla())
-        .child(label)
-        .into_any_element()
+    inventory_badge(label, theme)
 }
 
 fn mcp_transport_label(transport: Option<&McpTransport>) -> String {
