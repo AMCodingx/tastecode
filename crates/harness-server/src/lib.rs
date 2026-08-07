@@ -40,7 +40,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{Receiver, Sender, TryRecvError};
 use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use thiserror::Error;
 use tungstenite::handshake::server::{Request as HandshakeRequest, Response as HandshakeResponse};
 use tungstenite::protocol::CloseFrame;
@@ -50,6 +50,8 @@ use tungstenite::{Error as WebSocketError, Message, WebSocket, accept_hdr};
 pub const DEFAULT_PORT: u16 = 4311;
 const IO_POLL_INTERVAL: Duration = Duration::from_millis(40);
 const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(2);
+const HEARTBEAT_INTERVAL: Duration = Duration::from_secs(5);
+const HEARTBEAT_TIMEOUT: Duration = Duration::from_secs(15);
 const MAX_CONNECTION_REQUESTS: usize = 32;
 
 #[derive(Clone, Debug)]
@@ -474,6 +476,7 @@ fn run_connection(
     pushes: Receiver<PendingPush>,
 ) {
     let mut sequence = 0_u64;
+    let mut heartbeat = ConnectionHeartbeat::new(Instant::now());
     let (response_tx, response_rx) = std::sync::mpsc::channel();
     let mut workers = Vec::new();
     loop {
@@ -487,16 +490,29 @@ fn run_connection(
         {
             break;
         }
+        let now = Instant::now();
+        if heartbeat.expired(now) {
+            break;
+        }
+        if heartbeat.should_ping(now) {
+            if socket.send(Message::Ping(Vec::new().into())).is_err() {
+                break;
+            }
+            heartbeat.ping_sent(now);
+        }
         match socket.read() {
             Ok(Message::Text(text)) => {
+                heartbeat.received(Instant::now());
                 dispatch_request(state, connection_id, &response_tx, &mut workers, &text);
             }
             Ok(Message::Binary(bytes)) => {
+                heartbeat.received(Instant::now());
                 if let Ok(text) = std::str::from_utf8(&bytes) {
                     dispatch_request(state, connection_id, &response_tx, &mut workers, text);
                 }
             }
             Ok(Message::Ping(_) | Message::Pong(_)) => {
+                heartbeat.received(Instant::now());
                 if socket.flush().is_err() {
                     break;
                 }
@@ -509,6 +525,55 @@ fn run_connection(
     state.cancel_connection_voice(connection_id);
     for worker in workers {
         let _ = worker.join();
+    }
+}
+
+struct ConnectionHeartbeat {
+    last_received: Instant,
+    last_ping: Instant,
+}
+
+impl ConnectionHeartbeat {
+    fn new(now: Instant) -> Self {
+        Self {
+            last_received: now,
+            last_ping: now,
+        }
+    }
+
+    fn received(&mut self, now: Instant) {
+        self.last_received = now;
+    }
+
+    fn should_ping(&self, now: Instant) -> bool {
+        now.duration_since(self.last_ping) >= HEARTBEAT_INTERVAL
+    }
+
+    fn ping_sent(&mut self, now: Instant) {
+        self.last_ping = now;
+    }
+
+    fn expired(&self, now: Instant) -> bool {
+        now.duration_since(self.last_received) >= HEARTBEAT_TIMEOUT
+    }
+}
+
+#[cfg(test)]
+mod heartbeat_tests {
+    use super::*;
+
+    #[test]
+    fn pings_and_expires_from_inbound_activity() {
+        let start = Instant::now();
+        let mut heartbeat = ConnectionHeartbeat::new(start);
+        assert!(!heartbeat.should_ping(start + HEARTBEAT_INTERVAL - Duration::from_millis(1)));
+        assert!(heartbeat.should_ping(start + HEARTBEAT_INTERVAL));
+
+        heartbeat.ping_sent(start + HEARTBEAT_INTERVAL);
+        assert!(!heartbeat.should_ping(start + HEARTBEAT_INTERVAL * 2 - Duration::from_millis(1)));
+        heartbeat.received(start + HEARTBEAT_TIMEOUT - Duration::from_millis(1));
+        assert!(!heartbeat.expired(start + HEARTBEAT_TIMEOUT));
+        assert!(heartbeat.expired(start + HEARTBEAT_TIMEOUT * 2 - Duration::from_millis(1)));
     }
 }
 
