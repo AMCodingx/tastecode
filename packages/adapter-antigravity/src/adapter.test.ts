@@ -9,6 +9,7 @@ import {
   antigravityTurnArgs,
   parseAntigravityModels,
 } from './adapter.js'
+import { resetAntigravityIndexForTests } from './models.js'
 
 /** Frames captured from agy 1.1.10 on Windows through real non-TTY pipes. */
 const CAPTURED_FRAMES = [
@@ -118,6 +119,58 @@ describe('Antigravity turn invocation', () => {
     expect(prompt).toContain('No filler.')
     expect(prompt).toContain('Hello there')
   })
+
+  it('resolves a changed effort on the next invocation', async () => {
+    const [model] = parseAntigravityModels(
+      'gemini-3.6-flash-high\ngemini-3.6-flash-medium\ngemini-3.6-flash-low\n',
+    )
+    const record: { command?: string; args?: string[] } = {}
+    const child = new FakeChild()
+    const adapter = new AntigravityAdapter({ spawn: fakeSpawn(record, child) })
+    const thread = await adapter.startThread('C:\\repo', {
+      model: model!.id,
+      effort: 'high',
+    })
+
+    await adapter.sendTurn(thread.id, 'Use less reasoning', [], {
+      model: model!.id,
+      effort: 'low',
+    })
+
+    expect(
+      record.args?.slice(record.args.indexOf('--model'), record.args.indexOf('--model') + 2),
+    ).toEqual(['--model', 'gemini-3.6-flash-low'])
+  })
+
+  it('refreshes a cold model index before applying an effort', async () => {
+    resetAntigravityIndexForTests()
+    const discovery = new FakeChild()
+    const turn = new FakeChild()
+    const record: { command?: string; args?: string[] } = {}
+    const adapter = new AntigravityAdapter({
+      spawn: (command, args) => {
+        if (args[0] === 'models') return discovery as unknown as ChildProcessWithoutNullStreams
+        return fakeSpawn(record, turn)(command, args)
+      },
+    })
+    const thread = await adapter.startThread('C:\\repo', {
+      model: 'gemini-3.6-flash-high',
+      effort: 'low',
+    })
+
+    const sending = adapter.sendTurn(thread.id, 'Use less reasoning')
+    discovery.stdout.write(
+      'gemini-3.6-flash-high\tGemini 3.6 Flash (High)\n' +
+        'gemini-3.6-flash-low\tGemini 3.6 Flash (Low)\n',
+    )
+    discovery.stdout.end()
+    discovery.emit('exit', 0)
+    await sending
+
+    expect(
+      record.args?.slice(record.args.indexOf('--model'), record.args.indexOf('--model') + 2),
+    ).toEqual(['--model', 'gemini-3.6-flash-low'])
+  })
 })
 
 describe('Antigravity model list', () => {
@@ -139,7 +192,11 @@ describe('Antigravity model list', () => {
 
   it('collapses the agy models output into base models with efforts', () => {
     const models = parseAntigravityModels(
-      'gemini-3.6-flash-high\ngemini-3.6-flash-low\nclaude-sonnet-4-6\n',
+      'Fetching available models...\n' +
+        'gemini-3.6-flash-high\tGemini 3.6 Flash (High)\n' +
+        'gemini-3.6-flash-low\tGemini 3.6 Flash (Low)\n' +
+        'claude-sonnet-4-6\tClaude Sonnet 4.6\n' +
+        'futuremodel\n',
     )
     expect(models).toMatchObject([
       {
@@ -152,6 +209,12 @@ describe('Antigravity model list', () => {
       {
         id: 'claude-sonnet-4-6',
         displayName: 'Claude Sonnet 4.6',
+        isDefault: false,
+        reasoningEfforts: [],
+      },
+      {
+        id: 'futuremodel',
+        displayName: 'Futuremodel',
         isDefault: false,
         reasoningEfforts: [],
       },

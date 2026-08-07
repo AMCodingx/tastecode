@@ -52,6 +52,23 @@ export type AntigravityStartOptions = {
   approval?: ApprovalMode | undefined
 }
 
+export type AntigravityTurnOptions = Pick<AntigravityStartOptions, 'model' | 'effort'>
+
+function applyAntigravityTurnOptions(
+  current: AntigravityStartOptions,
+  next: AntigravityTurnOptions,
+): AntigravityStartOptions {
+  if (Object.keys(next).length === 0) return current
+  const merged = { ...current }
+  for (const field of ['model', 'effort'] as const) {
+    if (!(field in next)) continue
+    const value = next[field]
+    if (value === undefined) delete merged[field]
+    else merged[field] = value
+  }
+  return merged
+}
+
 /**
  * The per-turn argv. The prompt may be multi-line because the binary is
  * spawned directly (never through cmd.exe).
@@ -160,8 +177,24 @@ export class AntigravityAdapter extends EventEmitter<AntigravityAdapterEvents> {
     }
   }
 
-  async sendTurn(threadId: string, text: string, attachments: string[] = []): Promise<string> {
+  async sendTurn(
+    threadId: string,
+    text: string,
+    attachments: string[] = [],
+    options: AntigravityTurnOptions = {},
+  ): Promise<string> {
     if (attachments.length) throw new Error('Antigravity attachments are not supported yet')
+    this.#options = applyAntigravityTurnOptions(this.#options, options)
+    // The picker normally warms this process-wide index. A server restart can
+    // resume straight into a turn, though, and passing the collapsed anchor
+    // id in that case silently loses a non-default effort selection.
+    if (this.#options.model && this.#options.effort && !getAntigravityIndex()) {
+      try {
+        await this.listModels()
+      } catch (error) {
+        this.emit('log', `Antigravity effort discovery failed: ${String(error)}`)
+      }
+    }
     const turnId = `${threadId}-turn-${++this.#turnCounter}`
     const prompt =
       this.#instructionsPending && this.#options.instructions
@@ -352,10 +385,24 @@ export class AntigravityAdapter extends EventEmitter<AntigravityAdapterEvents> {
 }
 
 export function parseAntigravityModels(output: string): Model[] {
-  const slugs = output
-    .split('\n')
-    .map((line) => line.trim())
-    .filter(Boolean)
+  const slugs = [
+    ...new Set(
+      output
+        .split('\n')
+        .map((line) => line.trim())
+        .filter(Boolean)
+        // agy 1.1.10 printed one slug per line. Starting in 1.1.11 it prints a
+        // table (`slug<TAB>Display Name`), so only the first column belongs on
+        // the wire. A status sentence uses ordinary single spaces; a table
+        // column uses a tab or padding, while a legacy id has no remainder.
+        .map((line) => {
+          const slug = line.split(/\s+/, 1)[0] ?? ''
+          const remainder = line.slice(slug.length)
+          return remainder && !/^(?:\t| {2,})/.test(remainder) ? '' : slug
+        })
+        .filter((slug) => /^[\w./:-]+$/i.test(slug) && !/^(?:id|model|model-id)$/i.test(slug)),
+    ),
+  ]
   const { models, index } = collapseAntigravityModels(slugs)
   rememberAntigravityIndex(index)
   return models
