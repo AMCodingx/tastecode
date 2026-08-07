@@ -15,9 +15,10 @@ use crate::theme::{CHAT_WIDTH, RADIUS_XL, Theme, ThemeMode};
 use crate::zoom::px;
 use diff::DiffUiState;
 use gpui::{
-    Animation, AnimationExt, AnyElement, App, ClipboardEntry, Context, Entity, EventEmitter,
-    Focusable, FontWeight, Image, ImageFormat, ListAlignment, ListOffset, ListState, ObjectFit,
-    Render, SharedString, StyledImage, Window, div, img, prelude::*, relative, svg,
+    Animation, AnimationExt, AnyElement, App, BoxShadow, ClipboardEntry, Context, Entity,
+    EventEmitter, Focusable, FontWeight, Image, ImageFormat, ListAlignment, ListOffset, ListState,
+    ObjectFit, Render, SharedString, StyledImage, Window, div, img, linear_color_stop,
+    linear_gradient, point, prelude::*, relative, svg,
 };
 use gpui_component::RopeExt;
 use gpui_component::input::{Input, InputEvent, InputState};
@@ -303,6 +304,9 @@ pub(crate) struct ChatView {
     clear_composer: bool,
     restore_composer: Option<String>,
     creating: bool,
+    sending: bool,
+    send_motion_generation: u64,
+    interrupt_pending: bool,
     history_in_flight: bool,
     pending_live: Vec<ThreadEventPush>,
     delta_flush_scheduled: bool,
@@ -426,6 +430,9 @@ impl ChatView {
             clear_composer: false,
             restore_composer: None,
             creating: false,
+            sending: false,
+            send_motion_generation: 0,
+            interrupt_pending: false,
             history_in_flight: false,
             pending_live: Vec::new(),
             delta_flush_scheduled: false,
@@ -505,6 +512,9 @@ impl ChatView {
         self.clear_composer = true;
         self.restore_composer = None;
         self.creating = false;
+        self.sending = false;
+        self.send_motion_generation = self.send_motion_generation.wrapping_add(1);
+        self.interrupt_pending = false;
         self.history_in_flight = self
             .session
             .as_ref()
@@ -675,6 +685,9 @@ impl ChatView {
                 };
                 match result {
                     Ok(()) => {
+                        if !self.state.running {
+                            self.interrupt_pending = false;
+                        }
                         let new_len = self.state.timeline_len();
                         let presentation_rows = self.presentation.rebuild(&self.state);
                         if !was_running
@@ -754,6 +767,7 @@ impl ChatView {
             ChatUpdate::Error { thread_id, message } if self.is_selected(&thread_id) => {
                 self.loading = false;
                 self.history_in_flight = false;
+                self.interrupt_pending = false;
                 self.error = Some(message);
                 self.flush_pending_live(cx);
                 cx.notify();
@@ -784,6 +798,7 @@ impl ChatView {
                 restore_attachments,
             } if self.is_selected(&thread_id) => {
                 self.loading = false;
+                self.interrupt_pending = false;
                 self.error = Some(message);
                 self.restore_composer = Some(restore_text);
                 self.attachments = restore_attachments
@@ -1025,6 +1040,9 @@ impl ChatView {
         }
 
         if applied {
+            if !self.state.running {
+                self.interrupt_pending = false;
+            }
             let new_len = self.state.timeline_len();
             let reveal_keys = streamed_bytes
                 .keys()
@@ -1440,6 +1458,21 @@ impl ChatView {
         }
         self.clear_composer = true;
         self.composer_menu = None;
+        self.sending = true;
+        self.send_motion_generation = self.send_motion_generation.wrapping_add(1);
+        let send_motion_generation = self.send_motion_generation;
+        cx.spawn(async move |view, cx| {
+            cx.background_executor()
+                .timer(Duration::from_millis(180))
+                .await;
+            let _ = view.update(cx, |this, cx| {
+                if this.send_motion_generation == send_motion_generation {
+                    this.sending = false;
+                    cx.notify();
+                }
+            });
+        })
+        .detach();
         let attachments = std::mem::take(&mut self.attachments)
             .into_iter()
             .filter_map(|attachment| attachment.path)
@@ -1472,14 +1505,19 @@ impl ChatView {
         let has_text = !self.composer.read(cx).value().trim().is_empty();
         let has_draft = has_text || !self.attachments.is_empty();
         if self.state.running && !has_draft {
+            if self.interrupt_pending {
+                return;
+            }
             if let Some(thread_id) = self
                 .session
                 .as_ref()
                 .and_then(|session| session.thread_id.as_ref())
             {
+                self.interrupt_pending = true;
                 cx.emit(ChatEvent::Interrupt {
                     thread_id: thread_id.clone(),
                 });
+                cx.notify();
             }
         } else {
             self.submit(false, cx);
@@ -2690,6 +2728,107 @@ impl ChatView {
         )
     }
 
+    fn composer_primary_action(
+        &self,
+        show_stop: bool,
+        send_disabled: bool,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let theme = self.theme;
+        let stopping = show_stop && self.interrupt_pending;
+        let disabled = !show_stop && send_disabled;
+        let composer_orb: gpui::Hsla = if theme.mode == ThemeMode::Dark {
+            gpui::rgb(0xededed).into()
+        } else {
+            gpui::rgb(0x1d1d1f).into()
+        };
+        let composer_stop: gpui::Hsla = if theme.mode == ThemeMode::Dark {
+            gpui::rgb(0x2b2b2b).into()
+        } else {
+            gpui::rgb(0x1d1d1f).into()
+        };
+        let stopping_background: gpui::Hsla = if theme.mode == ThemeMode::Dark {
+            gpui::rgb(0x2b2b2b).into()
+        } else {
+            gpui::rgb(0x7a7a7c).into()
+        };
+        let background = if disabled {
+            theme.surface_3.hsla()
+        } else if stopping {
+            stopping_background
+        } else if show_stop {
+            composer_stop
+        } else {
+            composer_orb.opacity(0.90)
+        };
+        let foreground = if disabled {
+            theme.text_3.hsla()
+        } else if theme.mode == ThemeMode::Dark {
+            gpui::rgb(0x101010).into()
+        } else {
+            gpui::white()
+        };
+        let hover_background: gpui::Hsla = if show_stop {
+            if theme.mode == ThemeMode::Dark {
+                gpui::rgb(0x4e4e4e).into()
+            } else {
+                gpui::rgb(0x1f1f21).into()
+            }
+        } else {
+            composer_orb
+        };
+        let shadows = if disabled || show_stop {
+            Vec::new()
+        } else {
+            vec![BoxShadow {
+                color: composer_orb.opacity(0.24),
+                offset: point(px(0.0), px(1.0)),
+                blur_radius: px(2.0),
+                spread_radius: px(0.0),
+            }]
+        };
+
+        div()
+            .relative()
+            .ml(px(2.0))
+            .size(px(30.0))
+            .rounded_full()
+            .when(show_stop, |beam| {
+                beam.child(composer_beam("composer-send-beam", 15.0, theme, 0.72))
+            })
+            .child(
+                div()
+                    .id("composer-primary-action")
+                    .absolute()
+                    .inset_0()
+                    .rounded_full()
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .overflow_hidden()
+                    .bg(background)
+                    .shadow(shadows)
+                    .text_color(foreground)
+                    .when(!disabled && !stopping, |button| {
+                        button
+                            .cursor_pointer()
+                            .hover(move |style| style.inset(px(-0.75)).bg(hover_background))
+                            .active(|style| style.inset(px(1.2)).opacity(0.84))
+                            .on_click(cx.listener(|this, _event, _window, cx| {
+                                this.primary_action(cx);
+                            }))
+                    })
+                    .child(composer_primary_icon(
+                        show_stop,
+                        stopping,
+                        self.sending,
+                        self.send_motion_generation,
+                        theme,
+                    )),
+            )
+            .into_any_element()
+    }
+
     fn composer(&self, window: &Window, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = self.theme;
         let session = self.session.clone();
@@ -2706,6 +2845,22 @@ impl ChatView {
         let is_new_session = session
             .as_ref()
             .is_some_and(|session| session.thread_id.is_none());
+        let composer_focused = self.composer.read(cx).focus_handle(cx).is_focused(window);
+        let prompt_shadow = if theme.mode == ThemeMode::Dark {
+            BoxShadow {
+                color: gpui::black().opacity(0.70),
+                offset: point(px(0.0), px(14.0)),
+                blur_radius: px(34.0),
+                spread_radius: px(-26.0),
+            }
+        } else {
+            BoxShadow {
+                color: gpui::rgba(0x18181b2e).into(),
+                offset: point(px(0.0), px(12.0)),
+                blur_radius: px(30.0),
+                spread_radius: px(-18.0),
+            }
+        };
         let popover = self.composer_popover(is_new_session, cx);
         let user_input = self.user_input_card(is_new_session, cx);
         let queue_panel = self.queue_panel(window, cx);
@@ -2721,7 +2876,7 @@ impl ChatView {
             .flex_none()
             .px(px(24.0))
             .pt(px(4.0))
-            .pb(px(12.0))
+            .pb(px(if is_new_session { 8.0 } else { 12.0 }))
             .child(
                 div()
                     .relative()
@@ -2735,146 +2890,162 @@ impl ChatView {
                     .when_some(queue_panel, |composer, queue| composer.child(queue))
                     .child(
                         div()
-                            .rounded(px(18.0))
-                            .border_1()
-                            .border_color(theme.line.hsla())
-                            .bg(theme.prompt.hsla())
-                            .overflow_hidden()
-                            .when(is_new_session, |prompt| {
-                                prompt.child(
-                                    div()
-                                        .h(px(36.0))
-                                        .flex()
-                                        .items_center()
-                                        .gap(px(4.0))
-                                        .px(px(8.0))
-                                        .bg(theme.surface_2.hsla())
-                                        .text_size(px(12.0))
-                                        .text_color(theme.text_2.hsla())
-                                        .child(self.project_shelf_trigger(cx))
-                                        .child(
-                                            div()
-                                                .id("composer-isolation")
-                                                .h(px(28.0))
-                                                .px(px(8.0))
-                                                .flex()
-                                                .items_center()
-                                                .gap(px(6.0))
-                                                .rounded(px(7.0))
-                                                .cursor_pointer()
-                                                .hover(move |style| {
-                                                    style
-                                                        .bg(theme.surface_3.hsla())
-                                                        .text_color(theme.text.hsla())
-                                                })
-                                                .on_click(cx.listener(
-                                                    |_this, _event, _window, cx| {
-                                                        cx.emit(ChatEvent::ToggleIsolation);
-                                                    },
-                                                ))
-                                                .child(svg_icon(
-                                                    if self.composer_settings.isolate {
-                                                        "icons/git-branch.svg"
-                                                    } else {
-                                                        "icons/folder.svg"
-                                                    },
-                                                    14.0,
-                                                ))
-                                                .child(if self.composer_settings.isolate {
-                                                    "Isolated"
-                                                } else {
-                                                    "Local"
-                                                }),
-                                        )
-                                        .when(!self.stage_settings.branches.is_empty(), |shelf| {
-                                            shelf.child(self.branch_shelf_trigger(cx))
-                                        }),
-                                )
+                            .relative()
+                            .rounded(px(crate::RADIUS_2XL))
+                            .when(self.composer_settings.design_mode, |box_| {
+                                box_.child(composer_beam(
+                                    "composer-design-beam",
+                                    crate::RADIUS_2XL,
+                                    theme,
+                                    0.74,
+                                ))
                             })
-                            .when_some(self.attachment_chips(cx), |prompt, chips| {
-                                prompt.child(chips)
-                            })
-                            .child(
-                                Input::new(&self.composer)
-                                    .appearance(false)
-                                    .bordered(false)
-                                    .focus_bordered(false)
-                                    .h(px(68.0))
-                                    .px(px(14.0))
-                                    .py(px(10.0))
-                                    .text_size(px(14.0))
-                                    .line_height(relative(1.55))
-                                    .text_color(theme.text.hsla()),
-                            )
                             .child(
                                 div()
-                                    .flex()
-                                    .items_center()
-                                    .gap(px(6.0))
-                                    .px(px(8.0))
-                                    .pt(px(4.0))
-                                    .pb(px(8.0))
-                                    .child(icon_tool_button(
-                                        "composer-attach",
-                                        "icons/plus.svg",
-                                        None,
-                                        false,
-                                        theme,
-                                        Some(attach_action),
-                                    ))
-                                    .child(self.permission_trigger(running, cx))
-                                    .child(icon_tool_button(
-                                        "composer-design",
-                                        "icons/palette.svg",
-                                        Some("Design"),
-                                        self.composer_settings.design_mode,
-                                        theme,
-                                        Some(design_action),
-                                    ))
-                                    .when(self.voice_phase == VoicePhase::Idle, |tools| {
-                                        tools
-                                            .child(div().flex_1())
-                                            .when_some(
-                                                self.model_trigger(running, cx),
-                                                |tools, trigger| tools.child(trigger),
-                                            )
-                                            .when(
-                                                self.composer_settings.voice_available && !running,
-                                                |tools| tools.child(self.voice_button(cx)),
-                                            )
+                                    .relative()
+                                    .rounded(px(crate::RADIUS_2XL))
+                                    .border_1()
+                                    .border_color(if composer_focused {
+                                        theme.line_strong.hsla()
+                                    } else {
+                                        theme.line.hsla()
+                                    })
+                                    .bg(theme.prompt.hsla())
+                                    .shadow(vec![prompt_shadow])
+                                    .overflow_hidden()
+                                    .when(is_new_session, |prompt| {
+                                        prompt.child(
+                                            div()
+                                                .h(px(36.0))
+                                                .flex()
+                                                .items_center()
+                                                .gap(px(4.0))
+                                                .px(px(8.0))
+                                                .bg(theme.surface_2.hsla())
+                                                .text_size(px(12.0))
+                                                .text_color(theme.text_2.hsla())
+                                                .child(self.project_shelf_trigger(cx))
+                                                .child(
+                                                    div()
+                                                        .id("composer-isolation")
+                                                        .h(px(28.0))
+                                                        .px(px(8.0))
+                                                        .flex()
+                                                        .items_center()
+                                                        .gap(px(6.0))
+                                                        .rounded(px(7.0))
+                                                        .cursor_pointer()
+                                                        .hover(move |style| {
+                                                            style
+                                                                .bg(theme.surface_3.hsla())
+                                                                .text_color(theme.text.hsla())
+                                                        })
+                                                        .on_click(cx.listener(
+                                                            |_this, _event, _window, cx| {
+                                                                cx.emit(ChatEvent::ToggleIsolation);
+                                                            },
+                                                        ))
+                                                        .child(svg_icon(
+                                                            if self.composer_settings.isolate {
+                                                                "icons/git-branch.svg"
+                                                            } else {
+                                                                "icons/folder.svg"
+                                                            },
+                                                            14.0,
+                                                        ))
+                                                        .child(if self.composer_settings.isolate {
+                                                            "Isolated"
+                                                        } else {
+                                                            "Local"
+                                                        }),
+                                                )
+                                                .when(
+                                                    !self.stage_settings.branches.is_empty(),
+                                                    |shelf| {
+                                                        shelf.child(self.branch_shelf_trigger(cx))
+                                                    },
+                                                ),
+                                        )
+                                    })
+                                    .when_some(self.attachment_chips(cx), |prompt, chips| {
+                                        prompt.child(chips)
+                                    })
+                                    .child(
+                                        Input::new(&self.composer)
+                                            .appearance(false)
+                                            .bordered(false)
+                                            .focus_bordered(false)
+                                            .h(px(68.0))
+                                            .px(px(18.0))
+                                            .pt(px(16.0))
+                                            .pb(px(8.0))
+                                            .text_size(px(14.0))
+                                            .line_height(relative(1.55))
+                                            .text_color(theme.text.hsla()),
+                                    )
+                                    .child(
+                                        div()
+                                            .flex()
+                                            .items_center()
+                                            .gap(px(6.0))
+                                            .px(px(8.0))
+                                            .pt(px(4.0))
+                                            .pb(px(8.0))
+                                            .child(icon_tool_button(
+                                                "composer-attach",
+                                                "icons/plus.svg",
+                                                None,
+                                                false,
+                                                theme,
+                                                Some(attach_action),
+                                            ))
+                                            .child(self.permission_trigger(running, cx))
                                             .child(
                                                 div()
-                                                    .id("composer-primary-action")
-                                                    .size(px(28.0))
-                                                    .rounded(px(9.0))
-                                                    .flex()
-                                                    .items_center()
-                                                    .justify_center()
-                                                    .bg(theme.text.hsla())
-                                                    .text_color(theme.background.hsla())
-                                                    .text_size(px(13.0))
-                                                    .font_weight(FontWeight::SEMIBOLD)
-                                                    .opacity(if !show_stop && send_disabled {
-                                                        0.42
-                                                    } else {
-                                                        1.0
-                                                    })
-                                                    .when(show_stop || !send_disabled, |button| {
-                                                        button
-                                                            .cursor_pointer()
-                                                            .active(|style| style.opacity(0.72))
-                                                            .on_click(cx.listener(
-                                                                |this, _event, _window, cx| {
-                                                                    this.primary_action(cx);
-                                                                },
+                                                    .relative()
+                                                    .rounded(px(crate::RADIUS_XL))
+                                                    .when(
+                                                        self.composer_settings.design_mode,
+                                                        |beam| {
+                                                            beam.child(composer_beam(
+                                                                "composer-design-button-beam",
+                                                                crate::RADIUS_XL,
+                                                                theme,
+                                                                0.82,
                                                             ))
-                                                    })
-                                                    .child(if show_stop { "■" } else { "↑" }),
+                                                        },
+                                                    )
+                                                    .child(icon_tool_button(
+                                                        "composer-design",
+                                                        "icons/palette.svg",
+                                                        Some("Design"),
+                                                        self.composer_settings.design_mode,
+                                                        theme,
+                                                        Some(design_action),
+                                                    )),
                                             )
-                                    })
-                                    .when(self.voice_phase != VoicePhase::Idle, |tools| {
-                                        tools.child(self.voice_bar(running, cx))
-                                    }),
+                                            .when(self.voice_phase == VoicePhase::Idle, |tools| {
+                                                tools
+                                                    .child(div().flex_1())
+                                                    .when_some(
+                                                        self.model_trigger(running, cx),
+                                                        |tools, trigger| tools.child(trigger),
+                                                    )
+                                                    .when(
+                                                        self.composer_settings.voice_available
+                                                            && !running,
+                                                        |tools| tools.child(self.voice_button(cx)),
+                                                    )
+                                                    .child(self.composer_primary_action(
+                                                        show_stop,
+                                                        send_disabled,
+                                                        cx,
+                                                    ))
+                                            })
+                                            .when(self.voice_phase != VoicePhase::Idle, |tools| {
+                                                tools.child(self.voice_bar(running, cx))
+                                            }),
+                                    ),
                             ),
                     ),
             )
@@ -4306,6 +4477,104 @@ fn icon_tool_button(
             if label.is_some() { 13.0 } else { 15.0 },
         ))
         .when_some(label, |button, label| button.child(label))
+}
+
+fn composer_primary_icon(
+    show_stop: bool,
+    stopping: bool,
+    sending: bool,
+    send_motion_generation: u64,
+    theme: Theme,
+) -> AnyElement {
+    if show_stop {
+        let icon = svg().path("icons/square.svg").size(px(9.0)).flex_none();
+        if stopping {
+            icon.with_animation(
+                "composer-stopping",
+                theme.repeating_animation(Duration::from_millis(900)),
+                |icon, delta| {
+                    let pulse = (std::f32::consts::PI * delta).sin();
+                    let scale = 1.0 - 0.14 * pulse;
+                    icon.opacity(1.0 - 0.55 * pulse)
+                        .with_transformation(gpui::Transformation::scale(gpui::size(scale, scale)))
+                },
+            )
+            .into_any_element()
+        } else {
+            icon.with_animation(
+                "composer-stop-icon-in",
+                Animation::new(theme.motion_duration(Duration::from_millis(150)))
+                    .with_easing(crate::theme::web_ease_out),
+                |icon, delta| {
+                    let scale = 0.55 + 0.45 * delta;
+                    icon.opacity(delta).with_transformation(
+                        gpui::Transformation::scale(gpui::size(scale, scale))
+                            .with_rotation(gpui::radians((-18.0_f32 * (1.0 - delta)).to_radians())),
+                    )
+                },
+            )
+            .into_any_element()
+        }
+    } else {
+        let icon = svg().path("icons/arrow-up.svg").size(px(15.0)).flex_none();
+        if sending {
+            icon.with_animation(
+                ("composer-send-motion", send_motion_generation),
+                Animation::new(theme.motion_duration(Duration::from_millis(180))),
+                |icon, delta| {
+                    let pulse = (std::f32::consts::PI * delta).sin();
+                    let scale = 1.0 - 0.06 * pulse;
+                    icon.with_transformation(
+                        gpui::Transformation::scale(gpui::size(scale, scale))
+                            .with_translation(point(px(0.0), px(-2.0 * pulse))),
+                    )
+                },
+            )
+            .into_any_element()
+        } else {
+            icon.with_animation(
+                "composer-send-icon-in",
+                Animation::new(theme.motion_duration(Duration::from_millis(150)))
+                    .with_easing(crate::theme::web_ease_out),
+                |icon, delta| {
+                    let scale = 0.72 + 0.28 * delta;
+                    icon.opacity(delta).with_transformation(
+                        gpui::Transformation::scale(gpui::size(scale, scale))
+                            .with_translation(point(px(0.0), px(-6.0 * (1.0 - delta)))),
+                    )
+                },
+            )
+            .into_any_element()
+        }
+    }
+}
+
+fn composer_beam(id: &'static str, radius: f32, theme: Theme, opacity: f32) -> AnyElement {
+    let from: gpui::Hsla = gpui::rgb(0xb9a7ff).into();
+    let to: gpui::Hsla = gpui::rgb(0x87c7d8).into();
+    div()
+        .absolute()
+        .inset(px(-1.0))
+        .rounded(px(radius + 1.0))
+        .opacity(opacity)
+        .shadow(vec![BoxShadow {
+            color: theme.attention.hsla().opacity(0.16 * opacity),
+            offset: point(px(0.0), px(0.0)),
+            blur_radius: px(9.0),
+            spread_radius: px(0.0),
+        }])
+        .with_animation(
+            id,
+            theme.repeating_animation(Duration::from_millis(3_600)),
+            move |beam, delta| {
+                beam.bg(linear_gradient(
+                    delta * 360.0,
+                    linear_color_stop(from, 0.0),
+                    linear_color_stop(to, 1.0),
+                ))
+            },
+        )
+        .into_any_element()
 }
 
 type UiAction = Rc<dyn Fn(&mut App)>;
