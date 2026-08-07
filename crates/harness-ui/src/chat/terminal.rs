@@ -1048,18 +1048,14 @@ impl ChatView {
             .flex_1()
             .flex()
             .overflow_hidden()
-            .px(px(14.0))
+            .pl(px(14.0))
+            .pr(px(12.0))
             .pb(px(8.0))
             .font_family("Geist Mono")
             .text_size(px(12.5))
             .line_height(px(CELL_HEIGHT))
             .cursor_text()
             .track_focus(&self.terminal_ui.focus)
-            .when(focused, |viewport| {
-                viewport
-                    .border_l_2()
-                    .border_color(theme.attention.hsla().opacity(0.55))
-            })
             .on_key_down(cx.listener(Self::terminal_key_down))
             .on_mouse_down(MouseButton::Left, cx.listener(Self::terminal_mouse_down))
             .on_mouse_move(cx.listener(|this, event, _window, cx| {
@@ -1069,7 +1065,18 @@ impl ChatView {
             .on_scroll_wheel(cx.listener(|this, event, _window, cx| {
                 this.terminal_scroll(event, cx);
             }))
-            .child(terminal_grid);
+            .child(terminal_grid)
+            .when(focused, |viewport| {
+                viewport.child(
+                    div()
+                        .absolute()
+                        .top_0()
+                        .bottom_0()
+                        .left_0()
+                        .w(px(2.0))
+                        .bg(theme.attention.hsla().opacity(0.55)),
+                )
+            });
 
         let header = div()
             .h(px(32.0))
@@ -1083,8 +1090,8 @@ impl ChatView {
             .pb(px(2.0))
             .child(
                 div()
-                    .text_size(px(12.0))
-                    .font_weight(FontWeight::MEDIUM)
+                    .text_size(px(12.5))
+                    .font_weight(FontWeight(520.0))
                     .text_color(theme.text_2.hsla())
                     .child("Terminal"),
             )
@@ -1092,7 +1099,7 @@ impl ChatView {
                 div()
                     .max_w(px(360.0))
                     .truncate()
-                    .text_size(px(10.5))
+                    .text_size(px(11.5))
                     .text_color(match status {
                         TerminalStatus::Open => theme.success.hsla(),
                         TerminalStatus::Error => theme.error.hsla(),
@@ -1112,6 +1119,7 @@ impl ChatView {
                         actions.child(terminal_action_button(
                             "terminal-restart",
                             "icons/rotate-ccw.svg",
+                            13.0,
                             true,
                             theme,
                             cx.listener(|this, _event, _window, cx| {
@@ -1122,6 +1130,7 @@ impl ChatView {
                     .child(terminal_action_button(
                         "terminal-copy",
                         "icons/copy.svg",
+                        13.0,
                         has_selection,
                         theme,
                         cx.listener(|this, _event, _window, cx| {
@@ -1131,6 +1140,7 @@ impl ChatView {
                     .child(terminal_action_button(
                         "terminal-close",
                         "icons/x.svg",
+                        14.0,
                         true,
                         theme,
                         cx.listener(|this, _event, _window, cx| {
@@ -1199,30 +1209,34 @@ impl ChatView {
 fn terminal_action_button(
     id: &'static str,
     icon: &'static str,
+    icon_size: f32,
     enabled: bool,
     theme: Theme,
     action: impl Fn(&gpui::ClickEvent, &mut Window, &mut App) + 'static,
 ) -> AnyElement {
     div()
         .id(id)
-        .size(px(25.0))
+        .size(px(22.0))
+        .flex_none()
         .flex()
         .items_center()
         .justify_center()
-        .rounded(px(6.0))
-        .opacity(if enabled { 1.0 } else { 0.3 })
+        .rounded(px(3.0))
+        .text_color(theme.text_3.hsla())
+        .opacity(0.0)
+        .hover(move |style| {
+            style
+                .bg(theme.surface_2.hsla())
+                .text_color(theme.text.hsla())
+                .opacity(1.0)
+        })
         .when(enabled, |button| {
             button
                 .cursor_pointer()
-                .hover(move |style| style.bg(theme.surface.hsla()))
+                .active(|style| style.top(px(1.0)))
                 .on_click(action)
         })
-        .child(
-            svg()
-                .path(icon)
-                .size(px(13.0))
-                .text_color(theme.text_3.hsla()),
-        )
+        .child(svg().path(icon).size(px(icon_size)))
         .into_any_element()
 }
 

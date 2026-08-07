@@ -3,6 +3,7 @@ use crate::chat::terminal::{
     CELL_HEIGHT, CELL_WIDTH, DEFAULT_ROWS, EngineEvent, TerminalEngine, TerminalSelection,
     ansi_index_rgb, render_terminal_run, terminal_input_for_keystroke, terminal_paste_data,
 };
+use crate::chrome;
 use crate::client_state::{AuthTarget, ProviderTerminalKind};
 use crate::theme::Theme;
 use crate::zoom::px;
@@ -590,13 +591,17 @@ impl Render for ProviderTerminalView {
             .w_auto()
             .mx(px(12.0))
             .mb(px(10.0))
-            .p(px(8.0))
+            .px(px(12.0))
+            .py(px(8.0))
             .relative()
             .overflow_hidden()
-            .rounded(px(8.0))
+            .rounded(px(5.0))
             .border_1()
             .border_color(if focused {
-                theme.attention.hsla().opacity(0.48)
+                theme
+                    .line
+                    .hsla()
+                    .blend(theme.attention.hsla().opacity(0.45))
             } else {
                 theme.line.hsla()
             })
@@ -620,6 +625,7 @@ impl Render for ProviderTerminalView {
             .on_scroll_wheel(cx.listener(|this, event, _window, cx| {
                 this.scroll(event, cx);
             }))
+            .child(chrome::top_highlight(theme))
             .child(grid)
     }
 }
