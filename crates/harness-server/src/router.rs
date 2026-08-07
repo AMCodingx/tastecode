@@ -862,7 +862,12 @@ pub(crate) fn route(
             }
             state
                 .agents
-                .respond_to_user_input(&params.thread_id, &params.request_id, &params.answers)
+                .respond_to_user_input(
+                    state,
+                    &params.thread_id,
+                    &params.request_id,
+                    &params.answers,
+                )
                 .map_err(RouteError::internal)?;
             empty_result()
         }

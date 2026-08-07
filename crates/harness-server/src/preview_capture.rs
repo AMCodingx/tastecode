@@ -1,7 +1,3 @@
-// Capture is consumed by the native design workflow. Keep the coordinator
-// independently testable while that state machine is linked into the server.
-#![allow(dead_code)]
-
 use crate::push::PushBus;
 use harness_protocol::{
     PreviewCaptureRequest, PreviewCaptureResult, PreviewScreenshot, PreviewViewport, channel,

@@ -1,5 +1,11 @@
 use crate::ServerState;
 use crate::api_workspace_tools::ApiWorkspaceToolFactory;
+use crate::design_preview_runner::start_design_preview;
+use crate::design_workflow::{
+    DESIGN_REPAIR_LIMIT, DesignFlow, DesignFlowPhase, DesignInput, DesignLiveState,
+    DesignOperation, design_attachments, open_turn, parse_stored_design_flow, prompt_for_phase,
+    unresolved_design_input,
+};
 use crate::model_connections::ModelConnectionStore;
 use harness_adapter_acp::AcpRuntime;
 use harness_adapter_api::{ApiRuntime, ApiToolFactory};
@@ -12,20 +18,37 @@ use harness_agent::{
     ControlHandlers, CredentialValues, ProviderControl, StartOptions, TurnOptions,
 };
 use harness_credentials::CredentialStore;
+use harness_design_agent::{
+    BriefingOutput, BriefingQuestion, BuildPhaseOutput, DESIGN_BRIEF_ATTACHMENT,
+    ExplicitBriefAnswer, RepairPhaseOutput, ReviewScreenshot, ReviewVerdict, design_asset_prompt,
+    design_brand_prompt, design_briefing_continuation, design_briefing_prompt, design_build_prompt,
+    design_page_prompt, design_phase_correction_prompt, design_preview_prompt,
+    design_repair_prompt, final_briefing_question, parse_asset_phase_output,
+    parse_brand_phase_output, parse_briefing_output, parse_build_phase_output,
+    parse_page_phase_output, parse_preview_phase_output, parse_repair_phase_output,
+    parse_review_phase_output, read_brand_system, read_design_brief, read_page_blueprint,
+    write_asset_manifest, write_brand_system, write_design_brief, write_page_blueprint,
+    write_visual_review,
+};
 use harness_protocol::{
-    Account, ApprovalDecision, AuthEventPush, AuthStartLoginResult, DomainEvent, McpAuth,
-    McpCapabilities, McpConfigValue, McpListResult, McpOAuthPush, McpOAuthStartResult, McpServer,
-    McpServerConfig, McpServerScope, McpStartupStatus, McpTransport, Model, ProviderId, QueuedTurn,
-    SendTurnResult, Skill, SkillCapabilities, SkillSource, SkillsListResult, Thread,
-    ThreadEventPush, ThreadInboxStatus, ThreadLifecyclePush, ThreadQueuePush, ThreadQueueResult,
-    VoiceStatusReason, VoiceStatusResult, VoiceTranscribeParams, channel,
+    Account, ApprovalDecision, AuthEventPush, AuthStartLoginResult, DomainEvent, Item, ItemStatus,
+    ItemType, McpAuth, McpCapabilities, McpConfigValue, McpListResult, McpOAuthPush,
+    McpOAuthStartResult, McpServer, McpServerConfig, McpServerScope, McpStartupStatus,
+    McpTransport, MessageRole, Model, ProviderId, QueuedTurn, SendTurnResult, Skill,
+    SkillCapabilities, SkillSource, SkillsListResult, Thread, ThreadEventPush, ThreadInboxStatus,
+    ThreadLifecyclePush, ThreadQueuePush, ThreadQueueResult, TurnStatus, UserInputOption,
+    UserInputQuestion, UserInputRequest, VoiceStatusReason, VoiceStatusResult,
+    VoiceTranscribeParams, channel,
 };
 use harness_store::{NewCheckpoint, NewThread};
 use harness_workspace::Worktree;
+use serde_json::Value;
 use std::collections::{HashMap, HashSet, VecDeque};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Condvar, Mutex, Weak};
 use std::thread;
+use std::time::Duration;
 use uuid::Uuid;
 
 const REPLY_STYLE_INSTRUCTIONS: &str = "Write like a clear, capable teammate.\n\n- Lead with the useful answer or outcome.\n- Use plain, specific language. Avoid generic AI filler, canned praise, and throat-clearing.\n- Keep routine replies compact, but include detail when the task needs it.\n- Prefer short paragraphs and only use lists when they improve scanning.\n- Do not use em dashes. Use a comma, colon, parentheses, or a new sentence instead.\n- Be warm and direct without slang overload or forced personality.\n- Never omit risks, blockers, or verification results just to sound concise.";
@@ -209,12 +232,33 @@ type ProjectSession = (String, Arc<dyn AgentSession>);
 #[derive(Default)]
 struct LiveState {
     sessions: HashMap<String, Arc<dyn AgentSession>>,
+    event_bridges: HashMap<String, Weak<EventBridge>>,
     session_order: Vec<String>,
     active_turns: HashSet<String>,
     starting_turns: HashSet<String>,
     terminal_while_starting: HashSet<String>,
     queues: HashMap<String, VecDeque<QueuedEntry>>,
     draining: HashSet<String>,
+    design: DesignLiveState,
+}
+
+enum DesignOutputAction {
+    Continue,
+    RequestInput {
+        questions: Vec<BriefingQuestion>,
+        final_question: bool,
+    },
+    NotDesign,
+}
+
+enum DesignContinuation {
+    None,
+    Prompt {
+        prompt: String,
+        attachments: Vec<String>,
+    },
+    Operation(DesignOperation),
+    Complete(String),
 }
 
 struct ResumeSlot {
@@ -720,7 +764,7 @@ impl AgentManager {
             cleanup_failed_worktree(worktree.as_ref());
             return Err(error.to_string());
         }
-        self.attach_session(&thread.id, session);
+        self.attach_session(&thread.id, session, &bridge);
         bridge.attach(thread.id.clone());
         Ok(thread)
     }
@@ -735,6 +779,7 @@ impl AgentManager {
             let mut live = lock(&self.live);
             let busy = live.active_turns.contains(&request.thread_id)
                 || live.starting_turns.contains(&request.thread_id)
+                || live.design.owns_thread(&request.thread_id)
                 || live
                     .queues
                     .get(&request.thread_id)
@@ -846,10 +891,82 @@ impl AgentManager {
 
     pub(crate) fn respond_to_user_input(
         &self,
+        state: &Arc<ServerState>,
         thread_id: &str,
         request_id: &str,
         answers: &HashMap<String, Vec<String>>,
     ) -> Result<(), String> {
+        let design_input = {
+            let mut live = lock(&self.live);
+            let matches = live
+                .design
+                .inputs
+                .get(request_id)
+                .is_some_and(|input| input.thread_id == thread_id);
+            if matches {
+                live.design.input_by_thread.remove(thread_id);
+                live.design.inputs.remove(request_id)
+            } else {
+                None
+            }
+        };
+        if let Some(input) = design_input {
+            record_event(
+                state,
+                thread_id,
+                DomainEvent::UserInputResolved {
+                    id: request_id.into(),
+                },
+            );
+            let mut flow = self.take_design_flow(thread_id)?;
+            let no_more_details = input.final_question
+                && answers
+                    .get(harness_design_agent::FINAL_BRIEFING_QUESTION_ID)
+                    .into_iter()
+                    .flatten()
+                    .any(|answer| answer.starts_with("No, that's everything"));
+            if !no_more_details {
+                for question in &input.questions {
+                    let answer = answers
+                        .get(&question.id)
+                        .map(|answers| answers.join(", "))
+                        .unwrap_or_default();
+                    let answer = answer.trim();
+                    if !answer.is_empty() {
+                        flow.explicit_answers.push(ExplicitBriefAnswer {
+                            question: question.question.clone(),
+                            answer: answer.into(),
+                        });
+                    }
+                }
+            }
+            let prompt = if no_more_details {
+                if let Some(brief) = flow.pending_brief.take() {
+                    match self.complete_design_brief(&mut flow, brief) {
+                        Ok(()) => flow
+                            .pending_prompt
+                            .take()
+                            .ok_or_else(|| "design prompt is unavailable".to_owned())?,
+                        Err(error) if !flow.correcting => {
+                            flow.correcting = true;
+                            design_phase_correction_prompt(&error)
+                        }
+                        Err(error) => {
+                            self.put_design_flow(state, thread_id, flow)?;
+                            self.fail_design_flow(state, thread_id, &error);
+                            return Ok(());
+                        }
+                    }
+                } else {
+                    design_briefing_continuation(&input.questions, answers)
+                }
+            } else {
+                design_briefing_continuation(&input.questions, answers)
+            };
+            self.put_design_flow(state, thread_id, flow)?;
+            self.schedule_design_prompt(state, thread_id, prompt, Vec::new());
+            return Ok(());
+        }
         let session = self.live_session(thread_id)?;
         session
             .respond_to_user_input(request_id, answers)
@@ -867,7 +984,7 @@ impl AgentManager {
     }
 
     pub(crate) fn close(&self, thread_id: &str) {
-        let session = {
+        let (session, preview, bridge) = {
             let mut live = lock(&self.live);
             live.active_turns.remove(thread_id);
             live.starting_turns.remove(thread_id);
@@ -876,15 +993,27 @@ impl AgentManager {
             live.draining.remove(thread_id);
             live.session_order
                 .retain(|candidate| candidate != thread_id);
-            live.sessions.remove(thread_id)
+            (
+                live.sessions.remove(thread_id),
+                live.design.clear_thread(thread_id),
+                live.event_bridges
+                    .remove(thread_id)
+                    .and_then(|bridge| bridge.upgrade()),
+            )
         };
+        if let Some(bridge) = bridge {
+            bridge.set_design_active(false);
+        }
+        if let Some(preview) = preview {
+            let _ = preview.stop();
+        }
         if let Some(session) = session {
             session.dispose();
         }
     }
 
     pub(crate) fn dispose_all(&self) {
-        let sessions = {
+        let (sessions, previews) = {
             let mut live = lock(&self.live);
             live.active_turns.clear();
             live.starting_turns.clear();
@@ -892,11 +1021,24 @@ impl AgentManager {
             live.queues.clear();
             live.draining.clear();
             live.session_order.clear();
-            live.sessions
+            live.event_bridges.clear();
+            let sessions = live
+                .sessions
                 .drain()
                 .map(|(_, session)| session)
-                .collect::<Vec<_>>()
+                .collect::<Vec<_>>();
+            let previews = live
+                .design
+                .previews
+                .drain()
+                .map(|(_, preview)| preview)
+                .collect::<Vec<_>>();
+            live.design = DesignLiveState::default();
+            (sessions, previews)
         };
+        for preview in previews {
+            let _ = preview.stop();
+        }
         for session in sessions {
             session.dispose();
         }
@@ -941,6 +1083,27 @@ impl AgentManager {
         session: &Arc<dyn AgentSession>,
     ) -> Result<String, String> {
         self.checkpoint(state, thread_id, text);
+        if attachments
+            .iter()
+            .any(|attachment| attachment == DESIGN_BRIEF_ATTACHMENT)
+        {
+            let workspace_path = self.thread_workspace_path(state, thread_id)?;
+            let flow = DesignFlow::new(workspace_path, text.into(), options);
+            self.replace_design_flow(state, thread_id, flow)?;
+            let visible_attachments = attachments
+                .iter()
+                .filter(|attachment| attachment.as_str() != DESIGN_BRIEF_ATTACHMENT)
+                .cloned()
+                .collect::<Vec<_>>();
+            return self.run_design_turn_with_session(
+                state,
+                thread_id,
+                &design_briefing_prompt(text),
+                &visible_attachments,
+                session,
+                false,
+            );
+        }
         let result = session
             .send_turn(thread_id, text, attachments, options)
             .map_err(|error| error.to_string());
@@ -957,6 +1120,956 @@ impl AgentManager {
             schedule_drain(state, thread_id.into());
         }
         result
+    }
+
+    fn run_design_turn_with_session(
+        &self,
+        state: &Arc<ServerState>,
+        thread_id: &str,
+        prompt: &str,
+        attachments: &[String],
+        session: &Arc<dyn AgentSession>,
+        report_failure: bool,
+    ) -> Result<String, String> {
+        let options = {
+            let mut live = lock(&self.live);
+            let flow = live
+                .design
+                .flows
+                .get(thread_id)
+                .ok_or_else(|| "design flow is unavailable".to_owned())?;
+            let options = flow.options.turn_options();
+            live.starting_turns.insert(thread_id.into());
+            live.design.starting_threads.insert(thread_id.into());
+            options
+        };
+        let result = session
+            .send_turn(thread_id, prompt, attachments, &options)
+            .map_err(|error| error.to_string());
+        let completed_during_start = {
+            let mut live = lock(&self.live);
+            live.starting_turns.remove(thread_id);
+            live.design.starting_threads.remove(thread_id);
+            let completed = live.terminal_while_starting.remove(thread_id);
+            if let Ok(turn_id) = &result
+                && !completed
+            {
+                live.active_turns.insert(thread_id.into());
+                live.design
+                    .turns
+                    .entry(turn_id.clone())
+                    .or_insert_with(|| thread_id.into());
+            }
+            completed
+        };
+        if completed_during_start {
+            schedule_drain(state, thread_id.into());
+        }
+        if let Err(error) = &result {
+            if report_failure {
+                self.fail_design_flow(state, thread_id, error);
+            } else {
+                self.clear_design_flow(state, thread_id);
+            }
+        }
+        result
+    }
+
+    fn send_design_turn(
+        &self,
+        state: &Arc<ServerState>,
+        thread_id: &str,
+        prompt: String,
+        attachments: Vec<String>,
+    ) -> Result<String, String> {
+        let session = self.live_session(thread_id)?;
+        self.run_design_turn_with_session(state, thread_id, &prompt, &attachments, &session, true)
+    }
+
+    fn thread_workspace_path(
+        &self,
+        state: &ServerState,
+        thread_id: &str,
+    ) -> Result<String, String> {
+        let thread = lock(&state.store)
+            .thread(thread_id)
+            .map_err(|error| error.to_string())?
+            .ok_or_else(|| format!("no such thread: {thread_id}"))?;
+        Ok(thread.worktree_path.unwrap_or(thread.project_path))
+    }
+
+    fn replace_design_flow(
+        &self,
+        state: &ServerState,
+        thread_id: &str,
+        flow: DesignFlow,
+    ) -> Result<(), String> {
+        let (preview, bridge) = {
+            let mut live = lock(&self.live);
+            let preview = live.design.clear_thread(thread_id);
+            live.design.flows.insert(thread_id.into(), flow);
+            let bridge = live.event_bridges.get(thread_id).and_then(Weak::upgrade);
+            (preview, bridge)
+        };
+        if let Some(bridge) = bridge {
+            bridge.set_design_active(true);
+        }
+        if let Some(preview) = preview {
+            let _ = preview.stop();
+        }
+        if let Err(error) = self.persist_design_flow(state, thread_id) {
+            self.clear_design_flow(state, thread_id);
+            return Err(error);
+        }
+        Ok(())
+    }
+
+    fn persist_design_flow(&self, state: &ServerState, thread_id: &str) -> Result<(), String> {
+        let value = {
+            let live = lock(&self.live);
+            live.design
+                .flows
+                .get(thread_id)
+                .map(serde_json::to_value)
+                .transpose()
+                .map_err(|error| error.to_string())?
+        };
+        if let Some(value) = value {
+            lock(&state.store)
+                .set_design_run(thread_id, &value)
+                .map_err(|error| error.to_string())?;
+        }
+        Ok(())
+    }
+
+    fn take_design_flow(&self, thread_id: &str) -> Result<DesignFlow, String> {
+        let mut live = lock(&self.live);
+        let flow = live
+            .design
+            .flows
+            .remove(thread_id)
+            .ok_or_else(|| "design flow is unavailable".to_owned())?;
+        live.design.processing.insert(thread_id.into());
+        Ok(flow)
+    }
+
+    fn put_design_flow(
+        &self,
+        state: &ServerState,
+        thread_id: &str,
+        flow: DesignFlow,
+    ) -> Result<(), String> {
+        {
+            let mut live = lock(&self.live);
+            live.design.processing.remove(thread_id);
+            live.design.flows.insert(thread_id.into(), flow);
+        }
+        self.persist_design_flow(state, thread_id)
+    }
+
+    fn clear_design_flow(&self, state: &ServerState, thread_id: &str) {
+        let (preview, bridge) = {
+            let mut live = lock(&self.live);
+            let preview = live.design.clear_thread(thread_id);
+            let bridge = live.event_bridges.get(thread_id).and_then(Weak::upgrade);
+            (preview, bridge)
+        };
+        if let Some(bridge) = bridge {
+            bridge.set_design_active(false);
+        }
+        if let Some(preview) = preview {
+            let _ = preview.stop();
+        }
+        let _ = lock(&state.store).delete_design_run(thread_id);
+    }
+
+    fn complete_design_activity(
+        &self,
+        state: &Arc<ServerState>,
+        thread_id: &str,
+        turn_id: &str,
+        status: ItemStatus,
+    ) {
+        let item = lock(&self.live).design.activity_items.remove(turn_id);
+        if let Some(mut item) = item {
+            item.status = status;
+            record_event(state, thread_id, DomainEvent::ItemCompleted { item });
+        }
+    }
+
+    fn fail_design_flow(&self, state: &Arc<ServerState>, thread_id: &str, error: &str) {
+        let turn_ids = {
+            let live = lock(&self.live);
+            live.design
+                .turns
+                .iter()
+                .filter(|(_, owner)| owner.as_str() == thread_id)
+                .map(|(turn_id, _)| turn_id.clone())
+                .collect::<Vec<_>>()
+        };
+        for turn_id in turn_ids {
+            self.complete_design_activity(state, thread_id, &turn_id, ItemStatus::Failed);
+        }
+        self.clear_design_flow(state, thread_id);
+        record_event(
+            state,
+            thread_id,
+            DomainEvent::ThreadError {
+                thread_id: thread_id.into(),
+                message: format!("Design mode failed: {error}"),
+            },
+        );
+    }
+
+    fn finish_design_flow(
+        &self,
+        state: &Arc<ServerState>,
+        thread_id: &str,
+        turn_id: &str,
+        summary: &str,
+    ) {
+        self.clear_design_flow(state, thread_id);
+        record_event(
+            state,
+            thread_id,
+            DomainEvent::ItemCompleted {
+                item: Item {
+                    id: format!("design-complete-{}", Uuid::new_v4()),
+                    turn_id: turn_id.into(),
+                    item_type: ItemType::Message,
+                    status: ItemStatus::Completed,
+                    role: Some(MessageRole::Assistant),
+                    text: Some(format!("Website built. {summary}")),
+                    command: None,
+                    exit_code: None,
+                    duration_ms: None,
+                    path: None,
+                    lines_added: None,
+                    lines_removed: None,
+                    created_at: now_ms(),
+                },
+            },
+        );
+        schedule_drain(state, thread_id.into());
+    }
+
+    fn request_design_input(
+        &self,
+        state: &Arc<ServerState>,
+        thread_id: &str,
+        turn_id: &str,
+        questions: Vec<BriefingQuestion>,
+        final_question: bool,
+    ) {
+        let request_id = Uuid::new_v4().to_string();
+        let request = UserInputRequest {
+            id: request_id.clone(),
+            turn_id: turn_id.into(),
+            questions: questions
+                .iter()
+                .map(|question| UserInputQuestion {
+                    id: question.id.clone(),
+                    header: question.header.clone(),
+                    question: question.question.clone(),
+                    allow_other: question.allow_other,
+                    secret: false,
+                    options: Some(
+                        question
+                            .options
+                            .iter()
+                            .map(|option| UserInputOption {
+                                label: option.label.clone(),
+                                description: option.description.clone(),
+                            })
+                            .collect(),
+                    ),
+                })
+                .collect(),
+            auto_resolution_ms: None,
+            created_at: now_ms(),
+        };
+        {
+            let mut live = lock(&self.live);
+            live.design.inputs.insert(
+                request_id.clone(),
+                DesignInput {
+                    thread_id: thread_id.into(),
+                    questions,
+                    final_question,
+                },
+            );
+            live.design
+                .input_by_thread
+                .insert(thread_id.into(), request_id);
+        }
+        record_event(
+            state,
+            thread_id,
+            DomainEvent::UserInputRequested { request },
+        );
+    }
+
+    fn accept_design_output(
+        &self,
+        state: &Arc<ServerState>,
+        thread_id: &str,
+        turn_id: &str,
+        text: &str,
+    ) -> Result<bool, String> {
+        let mut flow = self.take_design_flow(thread_id)?;
+        let action = self.apply_design_output(&mut flow, text);
+        let action = match action {
+            Ok(action) => action,
+            Err(error) => {
+                let persistence = self.put_design_flow(state, thread_id, flow);
+                return Err(persistence.err().unwrap_or(error));
+            }
+        };
+        if matches!(action, DesignOutputAction::NotDesign) {
+            self.complete_design_activity(state, thread_id, turn_id, ItemStatus::Completed);
+            self.clear_design_flow(state, thread_id);
+            record_event(
+                state,
+                thread_id,
+                DomainEvent::ItemCompleted {
+                    item: Item {
+                        id: format!("design-not-applicable-{}", Uuid::new_v4()),
+                        turn_id: turn_id.into(),
+                        item_type: ItemType::Message,
+                        status: ItemStatus::Completed,
+                        role: Some(MessageRole::Assistant),
+                        text: Some(
+                            "Design mode was turned off because this request is not a website design task."
+                                .into(),
+                        ),
+                        command: None,
+                        exit_code: None,
+                        duration_ms: None,
+                        path: None,
+                        lines_added: None,
+                        lines_removed: None,
+                        created_at: now_ms(),
+                    },
+                },
+            );
+            return Ok(false);
+        }
+        self.put_design_flow(state, thread_id, flow)?;
+        if let DesignOutputAction::RequestInput {
+            questions,
+            final_question,
+        } = action
+        {
+            self.request_design_input(state, thread_id, turn_id, questions, final_question);
+        }
+        Ok(true)
+    }
+
+    fn apply_design_output(
+        &self,
+        flow: &mut DesignFlow,
+        text: &str,
+    ) -> Result<DesignOutputAction, String> {
+        if flow.phase == DesignFlowPhase::Brief {
+            let output = parse_briefing_output(text).map_err(|error| error.to_string())?;
+            flow.correcting = false;
+            return match output {
+                BriefingOutput::Questions { questions, .. } => {
+                    flow.asked_questions = true;
+                    flow.final_asked = false;
+                    flow.pending_brief = None;
+                    Ok(DesignOutputAction::RequestInput {
+                        questions,
+                        final_question: false,
+                    })
+                }
+                BriefingOutput::NotDesign { .. } => Ok(DesignOutputAction::NotDesign),
+                BriefingOutput::Complete { brief, .. }
+                    if flow.asked_questions && !flow.final_asked =>
+                {
+                    flow.pending_brief = Some(brief);
+                    flow.final_asked = true;
+                    Ok(DesignOutputAction::RequestInput {
+                        questions: vec![final_briefing_question()],
+                        final_question: true,
+                    })
+                }
+                BriefingOutput::Complete { brief, .. } => {
+                    self.complete_design_brief(flow, brief)?;
+                    Ok(DesignOutputAction::Continue)
+                }
+            };
+        }
+
+        let workspace = Path::new(&flow.workspace_path);
+        match flow.phase {
+            DesignFlowPhase::Brand => {
+                let output = parse_brand_phase_output(text).map_err(|error| error.to_string())?;
+                let value = serde_json::to_value(output).map_err(|error| error.to_string())?;
+                let brand =
+                    write_brand_system(workspace, &value).map_err(|error| error.to_string())?;
+                flow.correcting = false;
+                flow.phase = DesignFlowPhase::Page;
+                flow.pending_prompt = Some(design_page_prompt(
+                    &read_design_brief(workspace).map_err(|error| error.to_string())?,
+                    &brand,
+                ));
+            }
+            DesignFlowPhase::Page => {
+                let output = parse_page_phase_output(text).map_err(|error| error.to_string())?;
+                let value = serde_json::to_value(output).map_err(|error| error.to_string())?;
+                let page =
+                    write_page_blueprint(workspace, &value).map_err(|error| error.to_string())?;
+                flow.correcting = false;
+                flow.phase = DesignFlowPhase::Assets;
+                flow.pending_prompt = Some(design_asset_prompt(
+                    &read_design_brief(workspace).map_err(|error| error.to_string())?,
+                    &read_brand_system(workspace).map_err(|error| error.to_string())?,
+                    &page,
+                ));
+            }
+            DesignFlowPhase::Assets => {
+                let output = parse_asset_phase_output(text).map_err(|error| error.to_string())?;
+                let value = serde_json::to_value(output).map_err(|error| error.to_string())?;
+                let assets =
+                    write_asset_manifest(workspace, &value).map_err(|error| error.to_string())?;
+                flow.correcting = false;
+                flow.phase = DesignFlowPhase::Build;
+                flow.pending_prompt = Some(design_build_prompt(
+                    &read_design_brief(workspace).map_err(|error| error.to_string())?,
+                    &read_brand_system(workspace).map_err(|error| error.to_string())?,
+                    &read_page_blueprint(workspace).map_err(|error| error.to_string())?,
+                    &assets,
+                ));
+            }
+            DesignFlowPhase::Build => {
+                let output = parse_build_phase_output(text).map_err(|error| error.to_string())?;
+                if let BuildPhaseOutput::Failed { error, .. } = output {
+                    return Err(error);
+                }
+                flow.correcting = false;
+                flow.phase = DesignFlowPhase::Preview;
+                flow.pending_prompt = Some(design_preview_prompt());
+            }
+            DesignFlowPhase::Preview => {
+                let plan = parse_preview_phase_output(text).map_err(|error| error.to_string())?;
+                flow.correcting = false;
+                flow.preview_url = Some(plan.url.clone());
+                flow.preview_plan = Some(plan);
+                flow.pending_operation = Some(DesignOperation::StartPreview);
+            }
+            DesignFlowPhase::Review => {
+                let review = parse_review_phase_output(text).map_err(|error| error.to_string())?;
+                let review =
+                    write_visual_review(workspace, &review).map_err(|error| error.to_string())?;
+                flow.correcting = false;
+                flow.review = Some(review.clone());
+                let preview_url = flow
+                    .preview_url
+                    .as_deref()
+                    .ok_or_else(|| "preview URL is unavailable".to_owned())?;
+                if review.verdict == ReviewVerdict::Pass {
+                    flow.phase = DesignFlowPhase::Complete;
+                    let repaired = if flow.repair_attempt == 0 {
+                        String::new()
+                    } else {
+                        format!(
+                            " after {} repair attempt{}",
+                            flow.repair_attempt,
+                            if flow.repair_attempt == 1 { "" } else { "s" }
+                        )
+                    };
+                    flow.completion = Some(format!(
+                        "Preview ready at {preview_url}. Visual review passed{repaired}."
+                    ));
+                } else if flow.repair_attempt >= DESIGN_REPAIR_LIMIT {
+                    flow.phase = DesignFlowPhase::Complete;
+                    let finding_count = review.findings.len();
+                    flow.completion = Some(format!(
+                        "Preview ready at {preview_url}. Visual review stopped after {DESIGN_REPAIR_LIMIT} repair attempts with {finding_count} finding{} remaining.",
+                        if finding_count == 1 { "" } else { "s" }
+                    ));
+                } else {
+                    flow.phase = DesignFlowPhase::Repair;
+                    flow.repair_attempt += 1;
+                    flow.pending_prompt = Some(
+                        design_repair_prompt(&review, flow.repair_attempt, DESIGN_REPAIR_LIMIT)
+                            .map_err(|error| error.to_string())?,
+                    );
+                }
+            }
+            DesignFlowPhase::Repair => {
+                let output = parse_repair_phase_output(text).map_err(|error| error.to_string())?;
+                if let RepairPhaseOutput::Failed { summary, .. } = output {
+                    return Err(summary);
+                }
+                flow.correcting = false;
+                flow.pending_operation = Some(DesignOperation::CaptureReview);
+            }
+            DesignFlowPhase::Brief | DesignFlowPhase::Complete => {
+                return Err(format!("unexpected design phase {:?}", flow.phase));
+            }
+        }
+        Ok(DesignOutputAction::Continue)
+    }
+
+    fn complete_design_brief(&self, flow: &mut DesignFlow, brief: Value) -> Result<(), String> {
+        let mut brief = brief
+            .as_object()
+            .cloned()
+            .ok_or_else(|| "completed briefing output must contain a brief".to_owned())?;
+        brief.insert(
+            "explicitAnswers".into(),
+            serde_json::to_value(&flow.explicit_answers).map_err(|error| error.to_string())?,
+        );
+        let brief = write_design_brief(Path::new(&flow.workspace_path), &Value::Object(brief))
+            .map_err(|error| error.to_string())?;
+        flow.phase = DesignFlowPhase::Brand;
+        flow.pending_brief = None;
+        flow.pending_prompt = Some(design_brand_prompt(&brief));
+        Ok(())
+    }
+
+    fn handle_session_event(&self, state: &Arc<ServerState>, thread_id: &str, event: DomainEvent) {
+        if matches!(event, DomainEvent::ThreadError { .. })
+            && lock(&self.live).design.owns_thread(thread_id)
+        {
+            let turn_ids = {
+                let live = lock(&self.live);
+                live.design
+                    .turns
+                    .iter()
+                    .filter(|(_, owner)| owner.as_str() == thread_id)
+                    .map(|(turn_id, _)| turn_id.clone())
+                    .collect::<Vec<_>>()
+            };
+            for turn_id in turn_ids {
+                self.complete_design_activity(state, thread_id, &turn_id, ItemStatus::Failed);
+            }
+            self.clear_design_flow(state, thread_id);
+            record_event(state, thread_id, event.clone());
+            return;
+        }
+
+        if let DomainEvent::TurnStarted { turn } = &event {
+            let activity = {
+                let mut live = lock(&self.live);
+                let design_turn = live.design.starting_threads.contains(thread_id)
+                    || live
+                        .design
+                        .turns
+                        .get(&turn.id)
+                        .is_some_and(|owner| owner == thread_id);
+                if design_turn && live.design.flows.contains_key(thread_id) {
+                    live.design.turns.insert(turn.id.clone(), thread_id.into());
+                    let phase = live
+                        .design
+                        .flows
+                        .get(thread_id)
+                        .map(|flow| flow.phase)
+                        .expect("checked design flow disappeared");
+                    let item = Item {
+                        id: format!("design-activity-{}", Uuid::new_v4()),
+                        turn_id: turn.id.clone(),
+                        item_type: ItemType::ToolCall,
+                        status: ItemStatus::Started,
+                        role: None,
+                        text: Some(format!("design:{}", design_phase_key(phase))),
+                        command: None,
+                        exit_code: None,
+                        duration_ms: None,
+                        path: None,
+                        lines_added: None,
+                        lines_removed: None,
+                        created_at: now_ms(),
+                    };
+                    live.design
+                        .activity_items
+                        .insert(turn.id.clone(), item.clone());
+                    Some(item)
+                } else {
+                    None
+                }
+            };
+            record_event(state, thread_id, event);
+            if let Some(item) = activity {
+                record_event(state, thread_id, DomainEvent::ItemStarted { item });
+            }
+            return;
+        }
+
+        let Some(turn_id) = event_turn_id(&event) else {
+            record_event(state, thread_id, event);
+            return;
+        };
+        let is_design_turn = lock(&self.live)
+            .design
+            .turns
+            .get(turn_id)
+            .is_some_and(|owner| owner == thread_id);
+        if !is_design_turn {
+            record_event(state, thread_id, event);
+            return;
+        }
+
+        if let DomainEvent::ItemStarted { item } | DomainEvent::ItemCompleted { item } = &event
+            && item.item_type == ItemType::Message
+            && item.role == Some(MessageRole::User)
+        {
+            let replacement = lock(&self.live)
+                .design
+                .flows
+                .get(thread_id)
+                .filter(|flow| !flow.asked_questions)
+                .map(|flow| flow.original_request.clone());
+            if let Some(text) = replacement {
+                let mut item = item.clone();
+                item.text = Some(text);
+                let visible = match event {
+                    DomainEvent::ItemStarted { .. } => DomainEvent::ItemStarted { item },
+                    DomainEvent::ItemCompleted { .. } => DomainEvent::ItemCompleted { item },
+                    _ => unreachable!(),
+                };
+                record_event(state, thread_id, visible);
+            }
+            return;
+        }
+
+        if let DomainEvent::ItemStarted { item } = &event
+            && item.item_type == ItemType::Message
+            && item.role == Some(MessageRole::Assistant)
+        {
+            lock(&self.live)
+                .design
+                .message_items
+                .insert(item.id.clone());
+            return;
+        }
+        if let DomainEvent::ItemDelta { item_id, .. } = &event
+            && lock(&self.live).design.message_items.contains(item_id)
+        {
+            return;
+        }
+        if let DomainEvent::ItemCompleted { item } = &event
+            && item.item_type == ItemType::Message
+            && item.role == Some(MessageRole::Assistant)
+        {
+            let already_accepted = {
+                let mut live = lock(&self.live);
+                live.design.message_items.remove(&item.id);
+                live.design.accepted_outputs.contains(turn_id)
+            };
+            if already_accepted {
+                return;
+            }
+            match self.accept_design_output(
+                state,
+                thread_id,
+                turn_id,
+                item.text.as_deref().unwrap_or_default(),
+            ) {
+                Ok(true) => {
+                    let mut live = lock(&self.live);
+                    if live
+                        .design
+                        .turns
+                        .get(turn_id)
+                        .is_some_and(|owner| owner == thread_id)
+                    {
+                        live.design.accepted_outputs.insert(turn_id.into());
+                    }
+                }
+                Ok(false) => {}
+                Err(error) => {
+                    lock(&self.live)
+                        .design
+                        .output_errors
+                        .insert(turn_id.into(), error);
+                }
+            }
+            return;
+        }
+
+        if let DomainEvent::TurnCompleted { status, .. } = &event {
+            let (activity, accepted, output_error) = {
+                let mut live = lock(&self.live);
+                let activity = live.design.activity_items.remove(turn_id);
+                let accepted = live.design.accepted_outputs.remove(turn_id);
+                let output_error = live.design.output_errors.remove(turn_id);
+                live.design.turns.remove(turn_id);
+                (activity, accepted, output_error)
+            };
+            if let Some(mut item) = activity {
+                item.status = if *status == TurnStatus::Completed {
+                    ItemStatus::Completed
+                } else {
+                    ItemStatus::Failed
+                };
+                record_event(state, thread_id, DomainEvent::ItemCompleted { item });
+            }
+            if *status != TurnStatus::Completed {
+                self.clear_design_flow(state, thread_id);
+                record_event(state, thread_id, event);
+                return;
+            }
+
+            let output_error = if accepted {
+                None
+            } else {
+                Some(output_error.unwrap_or_else(|| {
+                    "design response did not contain a completed assistant message".into()
+                }))
+            };
+            let continuation =
+                self.prepare_design_continuation(state, thread_id, output_error.as_deref());
+            record_event(state, thread_id, event.clone());
+            match continuation {
+                Ok(DesignContinuation::None) => {}
+                Ok(DesignContinuation::Prompt {
+                    prompt,
+                    attachments,
+                }) => self.schedule_design_prompt(state, thread_id, prompt, attachments),
+                Ok(DesignContinuation::Operation(operation)) => {
+                    self.schedule_design_operation(state, thread_id, turn_id, operation)
+                }
+                Ok(DesignContinuation::Complete(summary)) => {
+                    self.finish_design_flow(state, thread_id, turn_id, &summary);
+                }
+                Err(error) => self.fail_design_flow(state, thread_id, &error),
+            }
+            return;
+        }
+
+        record_event(state, thread_id, event);
+    }
+
+    fn prepare_design_continuation(
+        &self,
+        state: &ServerState,
+        thread_id: &str,
+        output_error: Option<&str>,
+    ) -> Result<DesignContinuation, String> {
+        let mut flow = self.take_design_flow(thread_id)?;
+        if let Some(error) = output_error {
+            if flow.correcting {
+                self.put_design_flow(state, thread_id, flow)?;
+                return Err(error.into());
+            }
+            flow.correcting = true;
+            flow.pending_prompt = Some(design_phase_correction_prompt(error));
+        }
+        let continuation = if let Some(summary) = flow.completion.clone() {
+            DesignContinuation::Complete(summary)
+        } else if let Some(prompt) = flow.pending_prompt.take() {
+            let attachments = design_attachments(&flow);
+            DesignContinuation::Prompt {
+                prompt,
+                attachments,
+            }
+        } else if let Some(operation) = flow.pending_operation.take() {
+            DesignContinuation::Operation(operation)
+        } else {
+            DesignContinuation::None
+        };
+        self.put_design_flow(state, thread_id, flow)?;
+        Ok(continuation)
+    }
+
+    fn schedule_design_prompt(
+        &self,
+        state: &Arc<ServerState>,
+        thread_id: &str,
+        prompt: String,
+        attachments: Vec<String>,
+    ) {
+        let weak_state = Arc::downgrade(state);
+        let thread_id = thread_id.to_owned();
+        let _ = thread::Builder::new()
+            .name("harness-design-turn".into())
+            .spawn(move || {
+                let Some(state) = weak_state.upgrade() else {
+                    return;
+                };
+                if let Err(error) =
+                    state
+                        .agents
+                        .send_design_turn(&state, &thread_id, prompt, attachments)
+                    && lock(&state.agents.live).design.owns_thread(&thread_id)
+                {
+                    state.agents.fail_design_flow(&state, &thread_id, &error);
+                }
+            });
+    }
+
+    fn schedule_design_operation(
+        &self,
+        state: &Arc<ServerState>,
+        thread_id: &str,
+        turn_id: &str,
+        operation: DesignOperation,
+    ) {
+        let weak_state = Arc::downgrade(state);
+        let thread_id = thread_id.to_owned();
+        let turn_id = turn_id.to_owned();
+        let _ = thread::Builder::new()
+            .name("harness-design-preview".into())
+            .spawn(move || {
+                let Some(state) = weak_state.upgrade() else {
+                    return;
+                };
+                if let Err(error) = state
+                    .agents
+                    .run_design_operation(&state, &thread_id, &turn_id, operation)
+                    && lock(&state.agents.live).design.owns_thread(&thread_id)
+                {
+                    state.agents.fail_design_flow(&state, &thread_id, &error);
+                }
+            });
+    }
+
+    fn run_design_operation(
+        &self,
+        state: &Arc<ServerState>,
+        thread_id: &str,
+        turn_id: &str,
+        operation: DesignOperation,
+    ) -> Result<(), String> {
+        let flow = lock(&self.live)
+            .design
+            .flows
+            .get(thread_id)
+            .cloned()
+            .ok_or_else(|| "design flow is unavailable".to_owned())?;
+        let plan = flow
+            .preview_plan
+            .clone()
+            .ok_or_else(|| "Preview plan is unavailable".to_owned())?;
+        let preview = if operation == DesignOperation::StartPreview {
+            let old_preview = lock(&self.live).design.previews.remove(thread_id);
+            if let Some(old_preview) = old_preview {
+                let _ = old_preview.stop();
+            }
+            Arc::new(
+                start_design_preview(
+                    Path::new(&flow.workspace_path),
+                    &plan,
+                    Duration::from_secs(30),
+                )
+                .map_err(|error| error.to_string())?,
+            )
+        } else if let Some(preview) = lock(&self.live).design.previews.get(thread_id).cloned() {
+            preview
+        } else {
+            Arc::new(
+                start_design_preview(
+                    Path::new(&flow.workspace_path),
+                    &plan,
+                    Duration::from_secs(30),
+                )
+                .map_err(|error| error.to_string())?,
+            )
+        };
+        {
+            let mut live = lock(&self.live);
+            if live
+                .design
+                .flows
+                .get(thread_id)
+                .is_none_or(|current| current.id != flow.id)
+            {
+                drop(live);
+                let _ = preview.stop();
+                return Ok(());
+            }
+            live.design
+                .previews
+                .insert(thread_id.into(), Arc::clone(&preview));
+        }
+        {
+            let mut current = self.take_design_flow(thread_id)?;
+            current.preview_url = Some(preview.url().into());
+            self.put_design_flow(state, thread_id, current)?;
+        }
+
+        let session = self.live_session(thread_id)?;
+        if !session.capabilities().images {
+            self.finish_without_visual_review(
+                state,
+                thread_id,
+                turn_id,
+                "the selected provider does not declare image support",
+            );
+            return Ok(());
+        }
+        if !state.preview_capture.available() {
+            self.finish_without_visual_review(
+                state,
+                thread_id,
+                turn_id,
+                "desktop capture is unavailable",
+            );
+            return Ok(());
+        }
+        let screenshots = match state.preview_capture.capture(
+            preview.url().into(),
+            preview
+                .viewports()
+                .iter()
+                .map(|viewport| harness_protocol::PreviewViewport {
+                    width: viewport.width,
+                    height: viewport.height,
+                })
+                .collect(),
+        ) {
+            Ok(screenshots) => screenshots,
+            Err(crate::preview_capture::PreviewCaptureError::Unavailable) => {
+                self.finish_without_visual_review(
+                    state,
+                    thread_id,
+                    turn_id,
+                    "desktop capture is unavailable",
+                );
+                return Ok(());
+            }
+            Err(error) => return Err(error.to_string()),
+        };
+        let screenshots = screenshots
+            .into_iter()
+            .map(|screenshot| ReviewScreenshot {
+                path: screenshot.path,
+                width: screenshot.width,
+                height: screenshot.height,
+            })
+            .collect::<Vec<_>>();
+        let mut current = self.take_design_flow(thread_id)?;
+        current.phase = DesignFlowPhase::Review;
+        current.screenshots = Some(screenshots);
+        let prompt = prompt_for_phase(&current)?;
+        let attachments = design_attachments(&current);
+        self.put_design_flow(state, thread_id, current)?;
+        self.schedule_design_prompt(state, thread_id, prompt, attachments);
+        Ok(())
+    }
+
+    fn finish_without_visual_review(
+        &self,
+        state: &Arc<ServerState>,
+        thread_id: &str,
+        turn_id: &str,
+        reason: &str,
+    ) {
+        let preview_url = lock(&self.live)
+            .design
+            .flows
+            .get(thread_id)
+            .and_then(|flow| flow.preview_url.clone())
+            .unwrap_or_else(|| "the local preview".into());
+        self.finish_design_flow(
+            state,
+            thread_id,
+            turn_id,
+            &format!("Preview ready at {preview_url}. Visual review skipped because {reason}."),
+        );
     }
 
     fn checkpoint(&self, state: &ServerState, thread_id: &str, label: &str) {
@@ -1260,19 +2373,111 @@ impl AgentManager {
             session.dispose();
             return Err(format!("thread {thread_id} was closed while resuming"));
         }
-        self.attach_session(thread_id, Arc::clone(&session));
+        self.attach_session(thread_id, Arc::clone(&session), &bridge);
+        self.restore_design_flow(state, thread_id, workspace);
         bridge.attach(thread_id.into());
         Ok(session)
     }
 
-    fn attach_session(&self, thread_id: &str, session: Arc<dyn AgentSession>) {
-        let previous = {
+    fn restore_design_flow(&self, state: &Arc<ServerState>, thread_id: &str, workspace_path: &str) {
+        let (stored, history) = {
+            let store = lock(&state.store);
+            let stored = store.design_run(thread_id).ok().flatten();
+            let history = store.history(thread_id, 0).unwrap_or_default();
+            (stored, history)
+        };
+        let Some(mut flow) =
+            stored.and_then(|value| parse_stored_design_flow(value, workspace_path.to_owned()))
+        else {
+            return;
+        };
+        let flow_id = flow.id.clone();
+        let pending_prompt = flow.pending_prompt.take();
+        let pending_operation = flow.pending_operation.take();
+        let completion = flow.completion.clone();
+        {
+            let mut live = lock(&self.live);
+            live.design.flows.insert(thread_id.into(), flow.clone());
+            if let Some(bridge) = live.event_bridges.get(thread_id).and_then(Weak::upgrade) {
+                bridge.set_design_active(true);
+            }
+            if let Some((request_id, mut input)) = unresolved_design_input(&history) {
+                input.thread_id = thread_id.into();
+                live.design
+                    .input_by_thread
+                    .insert(thread_id.into(), request_id.clone());
+                live.design.inputs.insert(request_id, input);
+                return;
+            }
+            if let Some(turn_id) = open_turn(&history) {
+                live.design.turns.insert(turn_id, thread_id.into());
+                return;
+            }
+        }
+
+        if let Some(summary) = completion {
+            self.finish_design_flow(
+                state,
+                thread_id,
+                &format!("design-resumed-{}", Uuid::new_v4()),
+                &summary,
+            );
+            return;
+        }
+        if let Some(operation) = pending_operation {
+            if lock(&self.live)
+                .design
+                .flows
+                .get(thread_id)
+                .is_some_and(|current| current.id == flow_id)
+            {
+                let _ = self.persist_design_flow(state, thread_id);
+                self.schedule_design_operation(
+                    state,
+                    thread_id,
+                    &format!("design-resumed-{}", Uuid::new_v4()),
+                    operation,
+                );
+            }
+            return;
+        }
+        let prompt = match pending_prompt {
+            Some(prompt) => Ok(prompt),
+            None => prompt_for_phase(&flow),
+        };
+        match prompt {
+            Ok(prompt) => {
+                if let Err(error) = self.persist_design_flow(state, thread_id) {
+                    self.fail_design_flow(state, thread_id, &error);
+                    return;
+                }
+                self.schedule_design_prompt(state, thread_id, prompt, design_attachments(&flow));
+            }
+            Err(error) => self.fail_design_flow(state, thread_id, &error),
+        }
+    }
+
+    fn attach_session(
+        &self,
+        thread_id: &str,
+        session: Arc<dyn AgentSession>,
+        bridge: &Arc<EventBridge>,
+    ) {
+        let (previous, previous_bridge) = {
             let mut live = lock(&self.live);
             if !live.sessions.contains_key(thread_id) {
                 live.session_order.push(thread_id.into());
             }
-            live.sessions.insert(thread_id.into(), session)
+            let previous = live.sessions.insert(thread_id.into(), session);
+            let previous_bridge = live
+                .event_bridges
+                .insert(thread_id.into(), Arc::downgrade(bridge))
+                .and_then(|bridge| bridge.upgrade());
+            (previous, previous_bridge)
         };
+        if let Some(previous_bridge) = previous_bridge {
+            previous_bridge.set_design_active(false);
+        }
         if let Some(previous) = previous {
             previous.dispose();
         }
@@ -1315,6 +2520,7 @@ impl AgentManager {
             let mut live = lock(&self.live);
             if live.active_turns.contains(thread_id)
                 || live.starting_turns.contains(thread_id)
+                || live.design.owns_thread(thread_id)
                 || !live.draining.insert(thread_id.into())
             {
                 return;
@@ -1473,6 +2679,7 @@ fn broadcast_project_changed(
 struct EventBridge {
     state: Weak<ServerState>,
     route: Mutex<EventRoute>,
+    design_active: AtomicBool,
 }
 
 #[derive(Default)]
@@ -1486,6 +2693,19 @@ impl EventBridge {
         Self {
             state,
             route: Mutex::new(EventRoute::default()),
+            design_active: AtomicBool::new(false),
+        }
+    }
+
+    fn set_design_active(&self, active: bool) {
+        self.design_active.store(active, Ordering::Release);
+    }
+
+    fn forward(&self, state: &Arc<ServerState>, thread_id: &str, event: DomainEvent) {
+        if self.design_active.load(Ordering::Acquire) {
+            state.agents.handle_session_event(state, thread_id, event);
+        } else {
+            record_event(state, thread_id, event);
         }
     }
 
@@ -1497,19 +2717,20 @@ impl EventBridge {
         };
         drop(route);
         if let Some(state) = self.state.upgrade() {
-            record_event(&state, &thread_id, event);
+            self.forward(&state, &thread_id, event);
         }
     }
 
     fn attach(&self, thread_id: String) {
-        let mut route = lock(&self.route);
-        route.thread_id = Some(thread_id.clone());
+        let buffered = {
+            let mut route = lock(&self.route);
+            route.thread_id = Some(thread_id.clone());
+            std::mem::take(&mut route.buffered)
+        };
         if let Some(state) = self.state.upgrade() {
-            for event in route.buffered.drain(..) {
-                record_event(&state, &thread_id, event);
+            for event in buffered {
+                self.forward(&state, &thread_id, event);
             }
-        } else {
-            route.buffered.clear();
         }
     }
 }
@@ -1599,6 +2820,42 @@ fn queue_result(live: &LiveState, thread_id: &str) -> ThreadQueueResult {
         .get(thread_id)
         .is_some_and(|session| session.capabilities().steer);
     ThreadQueueResult { items, can_steer }
+}
+
+fn event_turn_id(event: &DomainEvent) -> Option<&str> {
+    match event {
+        DomainEvent::TurnStarted { turn } => Some(&turn.id),
+        DomainEvent::ItemStarted { item } | DomainEvent::ItemCompleted { item } => {
+            Some(&item.turn_id)
+        }
+        DomainEvent::ItemDelta { turn_id, .. }
+        | DomainEvent::TurnCompleted { turn_id, .. }
+        | DomainEvent::PlanUpdated { turn_id, .. }
+        | DomainEvent::DiffUpdated { turn_id, .. } => Some(turn_id),
+        DomainEvent::UserInputRequested { request } => Some(&request.turn_id),
+        DomainEvent::ApprovalReviewStarted { review }
+        | DomainEvent::ApprovalReviewCompleted { review } => Some(&review.turn_id),
+        DomainEvent::ThreadStarted { .. }
+        | DomainEvent::ThreadError { .. }
+        | DomainEvent::UsageUpdated { .. }
+        | DomainEvent::ApprovalRequested { .. }
+        | DomainEvent::ApprovalResolved { .. }
+        | DomainEvent::UserInputResolved { .. } => None,
+    }
+}
+
+fn design_phase_key(phase: DesignFlowPhase) -> &'static str {
+    match phase {
+        DesignFlowPhase::Brief => "brief",
+        DesignFlowPhase::Brand => "brand",
+        DesignFlowPhase::Page => "page",
+        DesignFlowPhase::Assets => "assets",
+        DesignFlowPhase::Build => "build",
+        DesignFlowPhase::Preview => "preview",
+        DesignFlowPhase::Review => "review",
+        DesignFlowPhase::Repair => "repair",
+        DesignFlowPhase::Complete => "complete",
+    }
 }
 
 fn cleanup_failed_worktree(worktree: Option<&Worktree>) {

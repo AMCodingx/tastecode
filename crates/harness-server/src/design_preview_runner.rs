@@ -1,6 +1,3 @@
-// The native Design Mode state machine consumes this module in the next integration step.
-#![allow(dead_code)]
-
 use crate::safe_command_environment::safe_command_environment;
 use harness_design_agent::{PreviewPlan, PreviewViewport};
 use harness_proc::{SpawnOptions, SpawnedChild, spawn_cli};
@@ -34,7 +31,6 @@ pub(crate) enum PreviewError {
 pub(crate) struct RunningPreview {
     url: String,
     viewports: Vec<PreviewViewport>,
-    output: Arc<Mutex<Vec<u8>>>,
     process: Mutex<PreviewProcess>,
 }
 
@@ -50,11 +46,6 @@ impl RunningPreview {
 
     pub(crate) fn viewports(&self) -> &[PreviewViewport] {
         &self.viewports
-    }
-
-    pub(crate) fn output(&self) -> String {
-        let output = lock(&self.output);
-        String::from_utf8_lossy(&output).into_owned()
     }
 
     pub(crate) fn stop(&self) -> Result<(), PreviewError> {
@@ -133,7 +124,6 @@ pub(crate) fn start_design_preview(
     Ok(RunningPreview {
         url: plan.url.clone(),
         viewports: plan.viewports.clone(),
-        output,
         process: Mutex::new(PreviewProcess {
             child: Some(child),
             readers,
