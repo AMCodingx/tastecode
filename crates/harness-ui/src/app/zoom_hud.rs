@@ -1,9 +1,10 @@
 use super::{HarnessApp, sync_component_theme};
 use crate::chrome;
+use crate::motion_icon::motion_icon;
 use crate::theme::{TITLEBAR_HEIGHT, Theme};
 use crate::zoom;
 use crate::zoom::px;
-use gpui::{AnyElement, Context, KeyDownEvent, Window, div, prelude::*, svg};
+use gpui::{AnyElement, Context, KeyDownEvent, SharedString, Window, div, prelude::*};
 use std::time::Duration;
 
 const MIN_ZOOM: f32 = 0.5;
@@ -171,6 +172,7 @@ impl HarnessApp {
                 .child(
                     div()
                         .id("zoom-hud-reset")
+                        .group("zoom-hud-reset-hover")
                         .min_w(px(30.0))
                         .h(px(30.0))
                         .flex()
@@ -194,7 +196,13 @@ impl HarnessApp {
                                     this.apply_app_zoom(AppZoomAction::Reset, window, cx);
                                 }))
                         })
-                        .child(svg().path("icons/rotate-ccw.svg").size(px(13.0)))
+                        .child(motion_icon(
+                            "zoom-hud-reset-icon",
+                            "icons/rotate-ccw.svg",
+                            13.0,
+                            "zoom-hud-reset-hover",
+                            theme,
+                        ))
                         .child("Reset"),
                 )
                 .into_any_element(),
@@ -212,6 +220,7 @@ fn zoom_hud_icon_button(
 ) -> AnyElement {
     div()
         .id(id)
+        .group(id)
         .min_w(px(30.0))
         .h(px(30.0))
         .flex()
@@ -231,7 +240,13 @@ fn zoom_hud_icon_button(
                 .active(|style| style.opacity(0.82))
                 .on_click(on_click)
         })
-        .child(svg().path(icon).size(px(icon_size)))
+        .child(motion_icon(
+            SharedString::from(format!("{id}-icon")),
+            icon,
+            icon_size,
+            id,
+            theme,
+        ))
         .into_any_element()
 }
 
