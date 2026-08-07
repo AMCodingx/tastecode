@@ -2781,8 +2781,13 @@ dependencies = [
 name = "harness-adapter-claude-code"
 version = "0.1.0"
 dependencies = [
+ "harness-agent",
+ "harness-proc",
  "harness-protocol",
+ "serde",
  "serde_json",
+ "tempfile",
+ "uuid",
 ]
 
 [[package]]
