@@ -79,6 +79,10 @@ impl StageControlsState {
     pub(super) fn panic_stopping(&self) -> bool {
         self.panic_stopping
     }
+
+    pub(super) fn checkpoint_count(&self) -> usize {
+        self.checkpoints.len()
+    }
 }
 
 impl HarnessApp {

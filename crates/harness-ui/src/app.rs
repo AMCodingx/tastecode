@@ -28,9 +28,9 @@ use anyhow::Result;
 use command_palette::{CommandPaletteState, CommandScope};
 use gpui::{
     Animation, AnimationExt, App, Application, Bounds, Context, CursorStyle, Entity, FocusHandle,
-    Focusable, FontWeight, KeyDownEvent, MouseButton, MouseDownEvent, MouseMoveEvent,
-    PathPromptOptions, Pixels, Render, TitlebarOptions, Window, WindowAppearance,
-    WindowBackgroundAppearance, WindowBounds, WindowOptions, div, point, prelude::*, size, svg,
+    Focusable, KeyDownEvent, MouseButton, MouseDownEvent, MouseMoveEvent, PathPromptOptions,
+    Pixels, Render, TitlebarOptions, Window, WindowAppearance, WindowBackgroundAppearance,
+    WindowBounds, WindowOptions, div, point, prelude::*, size, svg,
 };
 use gpui_component::Root;
 use gpui_component::input::{InputEvent, InputState};
@@ -418,7 +418,6 @@ impl HarnessApp {
             ChatEvent::SelectBranch { branch } => {
                 this.select_workspace_branch(branch.clone(), cx);
             }
-            ChatEvent::OpenRollback => this.open_rollback(cx),
             ChatEvent::OpenCheckpoint { checkpoint_id } => {
                 this.open_rollback_checkpoint(*checkpoint_id, cx);
             }
@@ -818,7 +817,6 @@ impl HarnessApp {
                             project_path,
                             project_name,
                             provider,
-                            branch: None,
                         },
                         cx,
                     );
@@ -981,7 +979,6 @@ impl HarnessApp {
                             project_path: project.path.clone(),
                             project_name: project.name.clone(),
                             provider: session.provider,
-                            branch: session.worktree_branch.clone(),
                         },
                         session.agent.clone(),
                     )
@@ -1128,7 +1125,6 @@ impl HarnessApp {
             project_path: project.path.clone(),
             project_name: project.name.clone(),
             provider: choice.provider,
-            branch: None,
         };
         self.selected_thread_id = None;
         self.active_project_path = Some(project.path.clone());
@@ -1765,6 +1761,29 @@ impl HarnessApp {
         } else {
             12.0
         };
+        let rail_width = if self.sidebar_collapsed {
+            0.0
+        } else {
+            self.sidebar_width
+        };
+        let stage_left = if self.sidebar_collapsed {
+            left_padding + 30.0
+        } else {
+            self.sidebar_width
+        };
+        let session = self.selected_thread_id.as_deref().and_then(|thread_id| {
+            self.state
+                .projects
+                .iter()
+                .flat_map(|project| project.sessions.iter())
+                .find(|session| session.id == thread_id)
+                .cloned()
+        });
+        let terminal_open = self.chat.read(cx).terminal_visible();
+        let checkpoint_count = session
+            .as_ref()
+            .filter(|session| !session.running)
+            .map_or(0, |_| self.stage_controls.checkpoint_count());
 
         div()
             .relative()
@@ -1775,8 +1794,7 @@ impl HarnessApp {
             .items_center()
             .pl(px(left_padding))
             .pr(px(12.0))
-            .bg(theme.titlebar.hsla())
-            .child(crate::chrome::top_highlight(theme))
+            .bg(theme.background.hsla())
             .on_mouse_down(MouseButton::Left, |event, window, _cx| {
                 if event.click_count == 2 {
                     window.titlebar_double_click();
@@ -1784,9 +1802,23 @@ impl HarnessApp {
                     window.start_window_move();
                 }
             })
+            .when(rail_width > 0.0, |titlebar| {
+                titlebar.child(
+                    div()
+                        .absolute()
+                        .top_0()
+                        .bottom_0()
+                        .left_0()
+                        .w(px(rail_width))
+                        .bg(theme.rail.hsla())
+                        .border_r_1()
+                        .border_color(theme.line.hsla()),
+                )
+            })
             .child(
                 div()
                     .id("toggle-sidebar")
+                    .relative()
                     .size(px(22.0))
                     .flex()
                     .items_center()
@@ -1805,15 +1837,98 @@ impl HarnessApp {
                     }))
                     .child(icon("icons/panel-left.svg", 15.0)),
             )
-            .child(
-                div()
-                    .ml(px(8.0))
-                    .text_size(px(12.5))
-                    .font_weight(FontWeight::MEDIUM)
-                    .text_color(theme.titlebar_symbol.hsla())
-                    .opacity(0.78)
-                    .child("Personal Harness"),
-            )
+            .when_some(session, |titlebar, session| {
+                let branch = session.worktree_branch.clone();
+                titlebar.child(
+                    div()
+                        .absolute()
+                        .top_0()
+                        .bottom_0()
+                        .left(px(stage_left))
+                        .right_0()
+                        .min_w(px(0.0))
+                        .flex()
+                        .items_center()
+                        .gap(px(10.0))
+                        .px(px(16.0))
+                        .child(
+                            div()
+                                .min_w(px(0.0))
+                                .truncate()
+                                .text_size(px(12.5))
+                                .text_color(theme.text_3.hsla())
+                                .child(session.title),
+                        )
+                        .child(
+                            div()
+                                .ml_auto()
+                                .flex_none()
+                                .flex()
+                                .items_center()
+                                .gap(px(8.0))
+                                .child(
+                                    titlebar_tool_button(
+                                        "titlebar-terminal",
+                                        "icons/square-terminal.svg",
+                                        13.0,
+                                        "Terminal",
+                                        terminal_open,
+                                        theme,
+                                    )
+                                    .on_mouse_down(MouseButton::Left, |_event, _window, cx| {
+                                        cx.stop_propagation()
+                                    })
+                                    .on_click(cx.listener(
+                                        |this, _event, _window, cx| {
+                                            this.chat.update(cx, |chat, cx| {
+                                                chat.toggle_terminal_from_shell(cx);
+                                            });
+                                        },
+                                    )),
+                                )
+                                .when_some(branch, |tools, branch| {
+                                    tools.child(
+                                        div()
+                                            .max_w(px(190.0))
+                                            .min_w(px(0.0))
+                                            .flex()
+                                            .items_center()
+                                            .gap(px(5.0))
+                                            .truncate()
+                                            .font_family("Geist Mono")
+                                            .text_size(px(11.5))
+                                            .text_color(theme.text_3.hsla())
+                                            .child(icon("icons/git-branch.svg", 12.0))
+                                            .child(div().min_w(px(0.0)).truncate().child(branch)),
+                                    )
+                                })
+                                .when(checkpoint_count > 0, |tools| {
+                                    let label = format!(
+                                        "{checkpoint_count} checkpoint{}",
+                                        if checkpoint_count == 1 { "" } else { "s" }
+                                    );
+                                    tools.child(
+                                        titlebar_tool_button(
+                                            "titlebar-checkpoints",
+                                            "icons/history.svg",
+                                            12.0,
+                                            label,
+                                            false,
+                                            theme,
+                                        )
+                                        .on_mouse_down(MouseButton::Left, |_event, _window, cx| {
+                                            cx.stop_propagation()
+                                        })
+                                        .on_click(
+                                            cx.listener(|this, _event, _window, cx| {
+                                                this.open_rollback(cx)
+                                            }),
+                                        ),
+                                    )
+                                }),
+                        ),
+                )
+            })
     }
 
     fn begin_sidebar_resize(&mut self, event: &MouseDownEvent, cx: &mut Context<Self>) {
@@ -2233,6 +2348,35 @@ fn apply_project_session_order(sessions: &mut [SessionSummary], order: &[String]
 
 fn icon(path: &'static str, size: f32) -> impl IntoElement {
     svg().path(path).size(px(size))
+}
+
+fn titlebar_tool_button(
+    id: &'static str,
+    icon_path: &'static str,
+    icon_size: f32,
+    label: impl IntoElement,
+    open: bool,
+    theme: Theme,
+) -> gpui::Stateful<gpui::Div> {
+    div()
+        .id(id)
+        .h(px(28.0))
+        .px(px(8.0))
+        .flex()
+        .items_center()
+        .gap(px(5.0))
+        .rounded(px(3.0))
+        .text_size(px(12.5))
+        .text_color(if open {
+            theme.text.hsla()
+        } else {
+            theme.text_3.hsla()
+        })
+        .cursor_pointer()
+        .hover(move |style| style.bg(theme.surface.hsla()).text_color(theme.text.hsla()))
+        .active(|style| style.opacity(0.72))
+        .child(icon(icon_path, icon_size))
+        .child(label)
 }
 
 fn resolve_reasoning_effort(

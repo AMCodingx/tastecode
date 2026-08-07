@@ -64,7 +64,6 @@ pub(crate) struct SessionContext {
     pub(crate) project_path: String,
     pub(crate) project_name: String,
     pub(crate) provider: ProviderId,
-    pub(crate) branch: Option<String>,
 }
 
 pub(crate) enum ChatEvent {
@@ -117,7 +116,6 @@ pub(crate) enum ChatEvent {
     SelectBranch {
         branch: String,
     },
-    OpenRollback,
     OpenCheckpoint {
         checkpoint_id: u64,
     },
@@ -226,11 +224,6 @@ enum ComposerMenu {
     Branch,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum HeaderMenu {
-    Project,
-}
-
 struct InputFieldSync {
     value: String,
     masked: bool,
@@ -330,7 +323,6 @@ pub(crate) struct ChatView {
     effort_dither_generation: u64,
     stage_settings: StageSettings,
     composer_menu: Option<ComposerMenu>,
-    header_menu: Option<HeaderMenu>,
     attachments: Vec<ComposerAttachment>,
     attachment_error: Option<String>,
     active_user_input_id: Option<String>,
@@ -466,7 +458,6 @@ impl ChatView {
             effort_dither_generation: 0,
             stage_settings: StageSettings::default(),
             composer_menu: None,
-            header_menu: None,
             attachments: Vec::new(),
             attachment_error: None,
             active_user_input_id: None,
@@ -552,7 +543,6 @@ impl ChatView {
         self.attachments.clear();
         self.attachment_error = None;
         self.composer_menu = None;
-        self.header_menu = None;
         self.reset_effort_interaction();
         self.active_user_input_id = None;
         self.user_input_step = 0;
@@ -1825,18 +1815,7 @@ impl ChatView {
         cx.notify();
     }
 
-    fn toggle_header_menu(&mut self, menu: HeaderMenu, cx: &mut Context<Self>) {
-        self.header_menu = if self.header_menu == Some(menu) {
-            None
-        } else {
-            Some(menu)
-        };
-        self.composer_menu = None;
-        cx.notify();
-    }
-
     fn choose_project(&mut self, path: String, cx: &mut Context<Self>) {
-        self.header_menu = None;
         self.composer_menu = None;
         cx.emit(ChatEvent::SelectProject { path });
         cx.notify();
@@ -2028,237 +2007,6 @@ impl ChatView {
             .models
             .iter()
             .find(|choice| choice.key == *key)
-    }
-
-    fn header(&self, cx: &Context<Self>) -> impl IntoElement {
-        let theme = self.theme;
-        let session = self.session.clone();
-        div()
-            .relative()
-            .min_h(px(44.0))
-            .w_full()
-            .flex()
-            .items_center()
-            .gap(px(10.0))
-            .px(px(16.0))
-            .py(px(8.0))
-            .child(self.header_project_picker(cx))
-            .child(
-                div()
-                    .min_w(px(0.0))
-                    .truncate()
-                    .text_size(px(12.5))
-                    .text_color(theme.text_3.hsla())
-                    .child(session.as_ref().map_or_else(
-                        || SharedString::from(""),
-                        |value| {
-                            if value.thread_id.is_some() {
-                                value.title.clone().into()
-                            } else {
-                                SharedString::from("")
-                            }
-                        },
-                    )),
-            )
-            .child(
-                div()
-                    .ml_auto()
-                    .flex_none()
-                    .flex()
-                    .items_center()
-                    .gap(px(8.0))
-                    .child(self.terminal_header_button(cx))
-                    .when_some(
-                        session.as_ref().and_then(|value| value.branch.clone()),
-                        |tools, branch| {
-                            tools.child(
-                                div()
-                                    .max_w(px(190.0))
-                                    .min_w(px(0.0))
-                                    .flex()
-                                    .items_center()
-                                    .gap(px(5.0))
-                                    .truncate()
-                                    .font_family("Geist Mono")
-                                    .text_size(px(11.5))
-                                    .text_color(theme.text_3.hsla())
-                                    .child(svg_icon("icons/git-branch.svg", 12.0))
-                                    .child(div().min_w(px(0.0)).truncate().child(branch)),
-                            )
-                        },
-                    )
-                    .when(
-                        !self.state.running && !self.stage_settings.checkpoints.is_empty(),
-                        |tools| tools.child(self.rollback_header_button(cx)),
-                    ),
-            )
-            .when(self.header_menu == Some(HeaderMenu::Project), |row| {
-                row.child(self.header_project_menu(cx))
-            })
-    }
-
-    fn header_project_picker(&self, cx: &Context<Self>) -> AnyElement {
-        let theme = self.theme;
-        let enabled = !self.stage_settings.projects.is_empty();
-        let open = self.header_menu == Some(HeaderMenu::Project);
-        let label = self.session.as_ref().map_or_else(
-            || SharedString::from("No project"),
-            |session| SharedString::from(path_label(&session.project_path).to_owned()),
-        );
-        div()
-            .id("header-project")
-            .h(px(31.0))
-            .max_w(px(190.0))
-            .flex_none()
-            .flex()
-            .items_center()
-            .gap(px(6.0))
-            .px(px(8.0))
-            .rounded(px(5.0))
-            .border_1()
-            .border_color(if open {
-                theme.line_strong.hsla()
-            } else {
-                theme.line.hsla().opacity(0.0)
-            })
-            .text_size(px(12.5))
-            .font_weight(FontWeight(520.0))
-            .text_color(theme.text.hsla())
-            .opacity(if enabled { 1.0 } else { 0.48 })
-            .when(enabled, |picker| {
-                picker
-                    .cursor_pointer()
-                    .hover(move |style| style.bg(theme.surface.hsla()))
-                    .on_click(cx.listener(|this, event, _window, cx| {
-                        cx.stop_propagation();
-                        let _ = event;
-                        this.toggle_header_menu(HeaderMenu::Project, cx);
-                    }))
-            })
-            .child(div().min_w(px(0.0)).truncate().child(label))
-            .child(
-                div()
-                    .flex_none()
-                    .text_color(theme.text_3.hsla())
-                    .child(svg_icon("icons/chevron-down.svg", 11.0)),
-            )
-            .into_any_element()
-    }
-
-    fn header_project_menu(&self, cx: &Context<Self>) -> AnyElement {
-        let theme = self.theme;
-        let active_path = self
-            .session
-            .as_ref()
-            .map(|session| session.project_path.clone());
-        div()
-            .id("header-project-menu")
-            .occlude()
-            .absolute()
-            .left(px(16.0))
-            .top(px(38.0))
-            .w(px(330.0))
-            .max_h(px(300.0))
-            .overflow_y_scroll()
-            .rounded(px(11.0))
-            .border_1()
-            .border_color(theme.line_strong.hsla())
-            .bg(theme.surface_2.hsla())
-            .shadow_lg()
-            .p(px(5.0))
-            .children(
-                self.stage_settings
-                    .projects
-                    .iter()
-                    .cloned()
-                    .enumerate()
-                    .map(|(index, project)| {
-                        let selected = active_path.as_deref() == Some(project.path.as_str());
-                        let path = project.path.clone();
-                        div()
-                            .id(("header-project-option", index))
-                            .min_h(px(45.0))
-                            .w_full()
-                            .flex()
-                            .items_center()
-                            .gap(px(8.0))
-                            .px(px(8.0))
-                            .rounded(px(8.0))
-                            .when(selected, |row| row.bg(theme.surface_3.hsla()))
-                            .cursor_pointer()
-                            .hover(move |style| style.bg(theme.surface_3.hsla()))
-                            .on_click(cx.listener(move |this, _event, _window, cx| {
-                                this.choose_project(path.clone(), cx);
-                            }))
-                            .child(
-                                div()
-                                    .flex_none()
-                                    .text_color(theme.text_3.hsla())
-                                    .child(svg_icon("icons/folder.svg", 14.0)),
-                            )
-                            .child(
-                                div()
-                                    .min_w(px(0.0))
-                                    .flex_1()
-                                    .flex()
-                                    .flex_col()
-                                    .child(
-                                        div()
-                                            .truncate()
-                                            .text_size(px(12.0))
-                                            .font_weight(FontWeight::MEDIUM)
-                                            .text_color(theme.text.hsla())
-                                            .child(path_label(&project.path).to_owned()),
-                                    )
-                                    .child(
-                                        div()
-                                            .mt(px(1.0))
-                                            .truncate()
-                                            .font_family("Geist Mono")
-                                            .text_size(px(9.5))
-                                            .text_color(theme.text_3.hsla())
-                                            .child(project.path),
-                                    ),
-                            )
-                            .when(selected, |row| row.child(svg_icon("icons/check.svg", 12.0)))
-                    }),
-            )
-            .with_animation(
-                "header-project-menu",
-                Animation::new(theme.motion.fast).with_easing(crate::theme::web_ease_out),
-                |menu, delta| menu.top(px(34.0 + 4.0 * delta)).opacity(delta),
-            )
-            .into_any_element()
-    }
-
-    fn rollback_header_button(&self, cx: &Context<Self>) -> AnyElement {
-        let theme = self.theme;
-        let count = self.stage_settings.checkpoints.len();
-        div()
-            .id("header-checkpoints")
-            .h(px(28.0))
-            .px(px(8.0))
-            .flex()
-            .items_center()
-            .gap(px(5.0))
-            .rounded(px(3.0))
-            .text_size(px(12.5))
-            .text_color(theme.text_3.hsla())
-            .cursor_pointer()
-            .hover(move |style| style.bg(theme.surface.hsla()).text_color(theme.text.hsla()))
-            .active(|style| style.opacity(0.72))
-            .on_click(cx.listener(|this, _event, _window, cx| {
-                this.header_menu = None;
-                this.composer_menu = None;
-                cx.emit(ChatEvent::OpenRollback);
-                cx.notify();
-            }))
-            .child(svg_icon("icons/history.svg", 12.0))
-            .child(format!(
-                "{count} checkpoint{}",
-                if count == 1 { "" } else { "s" }
-            ))
-            .into_any_element()
     }
 
     fn structured_surfaces(&self, weak: &gpui::WeakEntity<Self>) -> Option<AnyElement> {
@@ -5020,7 +4768,6 @@ impl Render for ChatView {
             .on_key_down(cx.listener(|this, event, window, cx| {
                 this.handle_thread_navigation_key(event, window, cx);
             }))
-            .child(self.header(cx))
             .child(
                 div()
                     .relative()

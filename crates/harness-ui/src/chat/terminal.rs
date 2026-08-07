@@ -498,44 +498,18 @@ impl TerminalUiState {
 }
 
 impl ChatView {
+    pub(crate) fn terminal_visible(&self) -> bool {
+        self.terminal_ui.visible
+    }
+
+    pub(crate) fn toggle_terminal_from_shell(&mut self, cx: &mut Context<Self>) {
+        self.toggle_terminal(cx);
+    }
+
     pub(super) fn scale_terminal_for_app_zoom(&mut self, ratio: f32) {
         self.terminal_ui.height *= ratio;
         self.terminal_ui.resize_drag = None;
         self.terminal_ui.viewport_bounds = None;
-    }
-
-    pub(super) fn terminal_header_button(&self, cx: &Context<Self>) -> AnyElement {
-        let enabled = self
-            .session
-            .as_ref()
-            .is_some_and(|session| session.thread_id.is_some());
-        let open = self.terminal_ui.visible;
-        let theme = self.theme;
-        if !enabled {
-            return div().into_any_element();
-        }
-        div()
-            .id("header-terminal")
-            .h(px(28.0))
-            .px(px(8.0))
-            .flex()
-            .items_center()
-            .gap(px(5.0))
-            .rounded(px(3.0))
-            .text_size(px(12.5))
-            .text_color(if open {
-                theme.text.hsla()
-            } else {
-                theme.text_3.hsla()
-            })
-            .cursor_pointer()
-            .hover(move |style| style.bg(theme.surface.hsla()).text_color(theme.text.hsla()))
-            .on_click(cx.listener(|this, _event, _window, cx| {
-                this.toggle_terminal(cx);
-            }))
-            .child(super::svg_icon("icons/square-terminal.svg", 13.0))
-            .child("Terminal")
-            .into_any_element()
     }
 
     pub(super) fn release_terminal_for_session_change(&mut self, cx: &mut Context<Self>) {
