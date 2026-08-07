@@ -10,6 +10,7 @@ members = [
   "crates/harness-adapter-opencode",
   "crates/harness-client",
   "crates/harness-credentials",
+  "crates/harness-design-agent",
   "crates/harness-adapter-codex",
   "crates/harness-proc",
   "crates/harness-protocol",
