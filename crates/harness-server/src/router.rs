@@ -1647,7 +1647,7 @@ struct ThreadSteerQueuedParams {
 struct ThreadMoveQueuedParams {
     thread_id: String,
     queued_turn_id: String,
-    direction: crate::agents::QueueDirection,
+    direction: harness_protocol::QueueDirection,
 }
 
 #[derive(Deserialize)]

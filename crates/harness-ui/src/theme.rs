@@ -68,6 +68,11 @@ pub struct Theme {
     pub surface: ColorToken,
     pub surface_2: ColorToken,
     pub surface_3: ColorToken,
+    pub queue_background: ColorToken,
+    pub queue_line: ColorToken,
+    pub queue_text: ColorToken,
+    pub queue_action: ColorToken,
+    pub queue_hover: ColorToken,
     pub line: ColorToken,
     pub line_strong: ColorToken,
     pub text: ColorToken,
@@ -102,6 +107,11 @@ impl Theme {
             surface: ColorToken(0x1a1a1a),
             surface_2: ColorToken(0x222222),
             surface_3: ColorToken(0x2b2b2b),
+            queue_background: ColorToken(0x222222),
+            queue_line: ColorToken(0x2b2b2b),
+            queue_text: ColorToken(0xededed),
+            queue_action: ColorToken(0x8a8a8a),
+            queue_hover: ColorToken(0x2b2b2b),
             line: ColorToken(0x262626),
             line_strong: ColorToken(0x333333),
             text: ColorToken(0xededed),
@@ -126,6 +136,11 @@ impl Theme {
             surface: ColorToken(0xfafafa),
             surface_2: ColorToken(0xf5f5f6),
             surface_3: ColorToken(0xececef),
+            queue_background: ColorToken(0xffffff),
+            queue_line: ColorToken(0xeeeeef),
+            queue_text: ColorToken(0x18181b),
+            queue_action: ColorToken(0x96969a),
+            queue_hover: ColorToken(0xf5f5f6),
             line: ColorToken(0xebebed),
             line_strong: ColorToken(0xdedee2),
             text: ColorToken(0x27272a),
@@ -223,9 +238,15 @@ mod tests {
         assert_eq!(dark.background, ColorToken(0x0f0f0f));
         assert_eq!(dark.rail, ColorToken(0x131313));
         assert_eq!(dark.text, ColorToken(0xededed));
+        assert_eq!(dark.queue_background, ColorToken(0x222222));
+        assert_eq!(dark.queue_line, ColorToken(0x2b2b2b));
+        assert_eq!(dark.queue_action, ColorToken(0x8a8a8a));
         assert_eq!(light.background, ColorToken(0xfdfdfd));
         assert_eq!(light.text, ColorToken(0x27272a));
         assert_eq!(light.line, ColorToken(0xebebed));
+        assert_eq!(light.queue_background, ColorToken(0xffffff));
+        assert_eq!(light.queue_line, ColorToken(0xeeeeef));
+        assert_eq!(light.queue_action, ColorToken(0x96969a));
     }
 
     #[test]

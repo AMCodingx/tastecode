@@ -35,10 +35,10 @@ use harness_protocol::{
     ItemType, McpAuth, McpCapabilities, McpConfigValue, McpListResult, McpOAuthPush,
     McpOAuthStartResult, McpServer, McpServerConfig, McpServerScope, McpStartupStatus,
     McpTransport, MessageRole, Model, PanicStopResult, PanicStopSessionResult, ProviderId,
-    QueuedTurn, SendTurnResult, Skill, SkillCapabilities, SkillSource, SkillsListResult, Thread,
-    ThreadEventPush, ThreadInboxStatus, ThreadLifecyclePush, ThreadQueuePush, ThreadQueueResult,
-    TurnStatus, UserInputOption, UserInputQuestion, UserInputRequest, VoiceStatusReason,
-    VoiceStatusResult, VoiceTranscribeParams, channel,
+    QueueDirection, QueuedTurn, SendTurnResult, Skill, SkillCapabilities, SkillSource,
+    SkillsListResult, Thread, ThreadEventPush, ThreadInboxStatus, ThreadLifecyclePush,
+    ThreadQueuePush, ThreadQueueResult, TurnStatus, UserInputOption, UserInputQuestion,
+    UserInputRequest, VoiceStatusReason, VoiceStatusResult, VoiceTranscribeParams, channel,
 };
 use harness_store::{NewCheckpoint, NewThread};
 use harness_workspace::Worktree;
@@ -260,13 +260,6 @@ enum DesignContinuation {
     },
     Operation(DesignOperation),
     Complete(String),
-}
-
-#[derive(Clone, Copy, serde::Deserialize)]
-#[serde(rename_all = "lowercase")]
-pub(crate) enum QueueDirection {
-    Up,
-    Down,
 }
 
 struct ResumeSlot {

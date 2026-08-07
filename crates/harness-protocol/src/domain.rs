@@ -1229,6 +1229,13 @@ pub enum PanicStopSessionResult {
     },
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum QueueDirection {
+    Up,
+    Down,
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct QueuedTurn {
@@ -1358,6 +1365,18 @@ mod tests {
                     }
                 ]
             })
+        );
+    }
+
+    #[test]
+    fn queue_directions_match_the_lowercase_wire_contract() {
+        assert_eq!(
+            serde_json::to_value(QueueDirection::Up).unwrap(),
+            json!("up")
+        );
+        assert_eq!(
+            serde_json::from_value::<QueueDirection>(json!("down")).unwrap(),
+            QueueDirection::Down
         );
     }
 

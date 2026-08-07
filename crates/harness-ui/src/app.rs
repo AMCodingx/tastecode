@@ -211,6 +211,30 @@ impl HarnessApp {
                 );
             }
             ChatEvent::Interrupt { thread_id } => this.state.interrupt(thread_id),
+            ChatEvent::DeleteQueuedTurn {
+                thread_id,
+                queued_turn_id,
+            } => {
+                let update = this.state.delete_queued_turn(thread_id, queued_turn_id);
+                this.apply_client_update(update, cx);
+            }
+            ChatEvent::MoveQueuedTurn {
+                thread_id,
+                queued_turn_id,
+                direction,
+            } => {
+                let update = this
+                    .state
+                    .move_queued_turn(thread_id, queued_turn_id, *direction);
+                this.apply_client_update(update, cx);
+            }
+            ChatEvent::SteerQueuedTurn {
+                thread_id,
+                queued_turn_id,
+            } => {
+                let update = this.state.steer_queued_turn(thread_id, queued_turn_id);
+                this.apply_client_update(update, cx);
+            }
             ChatEvent::Create {
                 project_path,
                 text,

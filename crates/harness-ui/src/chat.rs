@@ -14,8 +14,8 @@ use gpui_component::RopeExt;
 use gpui_component::input::{Input, InputEvent, InputState};
 use harness_protocol::{
     ApprovalDecision, ApprovalKind, ApprovalMode, ApprovalReview, ApprovalReviewStatus,
-    DiffDecision, Item, ItemStatus, ItemType, MessageRole, ProviderId, RiskLevel, ThreadEventPush,
-    ThreadQueueResult, UserInputQuestion, VoiceMimeType, VoiceTranscribeParams,
+    DiffDecision, Item, ItemStatus, ItemType, MessageRole, ProviderId, QueueDirection, RiskLevel,
+    ThreadEventPush, ThreadQueueResult, UserInputQuestion, VoiceMimeType, VoiceTranscribeParams,
 };
 use harness_state::{ApplyOutcome, HistoryError, ThreadState};
 use std::collections::{HashMap, HashSet};
@@ -51,6 +51,19 @@ pub(crate) enum ChatEvent {
     },
     Interrupt {
         thread_id: String,
+    },
+    DeleteQueuedTurn {
+        thread_id: String,
+        queued_turn_id: String,
+    },
+    MoveQueuedTurn {
+        thread_id: String,
+        queued_turn_id: String,
+        direction: QueueDirection,
+    },
+    SteerQueuedTurn {
+        thread_id: String,
+        queued_turn_id: String,
     },
     Create {
         project_path: String,
@@ -965,6 +978,77 @@ impl ChatView {
         }
     }
 
+    fn emit_delete_queued_turn(&self, queued_turn_id: String, cx: &mut Context<Self>) {
+        if let Some(thread_id) = self
+            .session
+            .as_ref()
+            .and_then(|session| session.thread_id.clone())
+        {
+            cx.emit(ChatEvent::DeleteQueuedTurn {
+                thread_id,
+                queued_turn_id,
+            });
+        }
+    }
+
+    fn emit_move_queued_turn(
+        &self,
+        queued_turn_id: String,
+        direction: QueueDirection,
+        cx: &mut Context<Self>,
+    ) {
+        if let Some(thread_id) = self
+            .session
+            .as_ref()
+            .and_then(|session| session.thread_id.clone())
+        {
+            cx.emit(ChatEvent::MoveQueuedTurn {
+                thread_id,
+                queued_turn_id,
+                direction,
+            });
+        }
+    }
+
+    fn emit_steer_queued_turn(&self, queued_turn_id: String, cx: &mut Context<Self>) {
+        if let Some(thread_id) = self
+            .session
+            .as_ref()
+            .and_then(|session| session.thread_id.clone())
+        {
+            cx.emit(ChatEvent::SteerQueuedTurn {
+                thread_id,
+                queued_turn_id,
+            });
+        }
+    }
+
+    fn edit_queued_turn(
+        &mut self,
+        queued_turn_id: &str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(queued_turn) = self
+            .queue
+            .items
+            .iter()
+            .find(|queued_turn| queued_turn.id == queued_turn_id)
+            .cloned()
+        else {
+            return;
+        };
+        let draft = self.composer.read(cx).value().to_string();
+        let text = merge_queued_draft(&queued_turn.text, &draft);
+        self.composer.update(cx, |composer, cx| {
+            composer.set_value(text, window, cx);
+            composer.focus(window, cx);
+        });
+        merge_unique_attachments(&mut self.attachments, queued_turn.attachments);
+        self.emit_delete_queued_turn(queued_turn.id, cx);
+        cx.notify();
+    }
+
     fn start_voice(&mut self, cx: &mut Context<Self>) {
         if self.voice_phase != VoicePhase::Idle
             || !self.composer_settings.voice_available
@@ -1755,7 +1839,210 @@ impl ChatView {
         )
     }
 
-    fn composer(&self, cx: &mut Context<Self>) -> impl IntoElement {
+    fn queue_panel(&self, window: &Window, cx: &Context<Self>) -> Option<AnyElement> {
+        if self.queue.items.is_empty() {
+            return None;
+        }
+        let theme = self.theme;
+        let can_steer = self.queue.can_steer;
+        let queue_len = self.queue.items.len();
+        let maximum_height = (window.viewport_size().height * 0.4).min(px(280.0));
+        let rows = self
+            .queue
+            .items
+            .iter()
+            .cloned()
+            .enumerate()
+            .map(|(index, queued_turn)| {
+                let move_up_id = queued_turn.id.clone();
+                let move_down_id = queued_turn.id.clone();
+                let steer_id = queued_turn.id.clone();
+                let edit_id = queued_turn.id.clone();
+                let delete_id = queued_turn.id.clone();
+                let move_up = div()
+                    .id(("queue-move-up", index))
+                    .w(px(20.0))
+                    .flex_1()
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .text_color(theme.queue_action.hsla())
+                    .opacity(if index == 0 { 0.25 } else { 1.0 })
+                    .when(index > 0, |button| {
+                        button
+                            .cursor_pointer()
+                            .hover(move |style| style.text_color(theme.text.hsla()))
+                            .on_click(cx.listener(move |this, _event, _window, cx| {
+                                this.emit_move_queued_turn(
+                                    move_up_id.clone(),
+                                    QueueDirection::Up,
+                                    cx,
+                                );
+                            }))
+                    })
+                    .child(svg_icon("icons/arrow-up.svg", 12.0));
+                let move_down = div()
+                    .id(("queue-move-down", index))
+                    .w(px(20.0))
+                    .flex_1()
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .text_color(theme.queue_action.hsla())
+                    .opacity(if index + 1 == queue_len { 0.25 } else { 1.0 })
+                    .when(index + 1 < queue_len, |button| {
+                        button
+                            .cursor_pointer()
+                            .hover(move |style| style.text_color(theme.text.hsla()))
+                            .on_click(cx.listener(move |this, _event, _window, cx| {
+                                this.emit_move_queued_turn(
+                                    move_down_id.clone(),
+                                    QueueDirection::Down,
+                                    cx,
+                                );
+                            }))
+                    })
+                    .child(svg_icon("icons/arrow-down.svg", 12.0));
+                let steer = can_steer.then(|| {
+                    div()
+                        .id(("queue-steer", index))
+                        .h(px(28.0))
+                        .flex_none()
+                        .px(px(6.0))
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .gap(px(5.0))
+                        .rounded(px(8.0))
+                        .text_size(px(13.5))
+                        .text_color(theme.queue_action.hsla())
+                        .cursor_pointer()
+                        .hover(move |style| {
+                            style
+                                .bg(theme.queue_hover.hsla())
+                                .text_color(theme.text.hsla())
+                        })
+                        .active(|style| style.opacity(0.72))
+                        .on_click(cx.listener(move |this, _event, _window, cx| {
+                            this.emit_steer_queued_turn(steer_id.clone(), cx);
+                        }))
+                        .child(svg_icon("icons/corner-down-right.svg", 15.0))
+                        .child("Steer")
+                });
+                let edit = div()
+                    .id(("queue-edit", index))
+                    .size(px(28.0))
+                    .flex_none()
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .rounded(px(8.0))
+                    .text_color(theme.queue_action.hsla())
+                    .cursor_pointer()
+                    .hover(move |style| {
+                        style
+                            .bg(theme.queue_hover.hsla())
+                            .text_color(theme.text.hsla())
+                    })
+                    .active(|style| style.opacity(0.72))
+                    .on_click(cx.listener(move |this, _event, window, cx| {
+                        this.edit_queued_turn(&edit_id, window, cx);
+                    }))
+                    .child(svg_icon("icons/pencil.svg", 14.0));
+                let delete = div()
+                    .id(("queue-delete", index))
+                    .size(px(28.0))
+                    .flex_none()
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .rounded(px(8.0))
+                    .text_color(theme.queue_action.hsla())
+                    .cursor_pointer()
+                    .hover(move |style| {
+                        style
+                            .bg(theme.queue_hover.hsla())
+                            .text_color(theme.text.hsla())
+                    })
+                    .active(|style| style.opacity(0.72))
+                    .on_click(cx.listener(move |this, _event, _window, cx| {
+                        this.emit_delete_queued_turn(delete_id.clone(), cx);
+                    }))
+                    .child(svg_icon("icons/trash-2.svg", 15.0));
+                let row_animation_id = SharedString::from(format!("queue-row-{}", queued_turn.id));
+                div()
+                    .relative()
+                    .min_w(px(0.0))
+                    .min_h(px(38.0))
+                    .flex()
+                    .items_center()
+                    .gap(px(10.0))
+                    .px(px(7.0))
+                    .text_color(theme.queue_text.hsla())
+                    .child(
+                        div()
+                            .h(px(38.0))
+                            .w(px(25.0))
+                            .flex_none()
+                            .flex()
+                            .flex_col()
+                            .pl(px(5.0))
+                            .border_l_2()
+                            .border_color(theme.queue_line.hsla())
+                            .child(move_up)
+                            .child(move_down),
+                    )
+                    .child(
+                        div()
+                            .min_w(px(0.0))
+                            .flex_1()
+                            .truncate()
+                            .text_size(px(13.5))
+                            .child(queued_turn.text),
+                    )
+                    .when_some(steer, |row, steer| row.child(steer))
+                    .child(edit)
+                    .child(delete)
+                    .with_animation(
+                        row_animation_id,
+                        Animation::new(Duration::from_millis(240)).with_easing(ease_out_quint()),
+                        |row, delta| row.top(px(4.0 * (1.0 - delta))).opacity(delta),
+                    )
+                    .into_any_element()
+            })
+            .collect::<Vec<_>>();
+
+        Some(
+            div()
+                .id("composer-queue-scroll")
+                .absolute()
+                .left(px(28.0))
+                .right(px(28.0))
+                .bottom(relative(1.0))
+                .mb(px(-9.0))
+                .min_w(px(0.0))
+                .max_h(maximum_height)
+                .overflow_y_scroll()
+                .pt(px(5.0))
+                .px(px(9.0))
+                .pb(px(14.0))
+                .rounded_t(px(20.0))
+                .border_t_1()
+                .border_l_1()
+                .border_r_1()
+                .border_color(theme.queue_line.hsla())
+                .bg(theme.queue_background.hsla())
+                .children(rows)
+                .with_animation(
+                    "composer-queue-panel",
+                    Animation::new(theme.motion.fast).with_easing(ease_out_quint()),
+                    |panel, delta| panel.opacity(delta),
+                )
+                .into_any_element(),
+        )
+    }
+
+    fn composer(&self, window: &Window, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = self.theme;
         let session = self.session.clone();
         let has_draft = !self.composer.read(cx).value().trim().is_empty();
@@ -1765,6 +2052,7 @@ impl ChatView {
             .is_some_and(|session| session.thread_id.is_none());
         let popover = self.composer_popover(is_new_session, cx);
         let user_input = self.user_input_card(is_new_session, cx);
+        let queue_panel = self.queue_panel(window, cx);
         let attach_view = cx.weak_entity();
         let attach_action: UiAction = Rc::new(move |cx| {
             let _ = attach_view.update(cx, |_this, cx| cx.emit(ChatEvent::PickAttachments));
@@ -1788,6 +2076,7 @@ impl ChatView {
                         composer.child(user_input)
                     })
                     .when_some(popover, |composer, popover| composer.child(popover))
+                    .when_some(queue_panel, |composer, queue| composer.child(queue))
                     .child(
                         div()
                             .rounded(px(18.0))
@@ -2614,11 +2903,8 @@ impl Render for ChatView {
             .child(div().flex_1().min_h(px(0.0)).child(self.timeline(cx)))
             .when_some(structured_surfaces, |view, surfaces| view.child(surfaces))
             .when_some(control_surface, |view, surface| view.child(surface))
-            .when(!self.queue.items.is_empty(), |view| {
-                view.child(queue_summary(self.queue.items.len(), self.theme))
-            })
             .when_some(terminal_pane, |view, terminal| view.child(terminal))
-            .child(self.composer(cx))
+            .child(self.composer(window, cx))
     }
 }
 
@@ -3004,26 +3290,6 @@ fn path_label(path: &str) -> &str {
         .unwrap_or(path)
 }
 
-fn queue_summary(count: usize, theme: Theme) -> impl IntoElement {
-    div()
-        .w_full()
-        .max_w(px(CHAT_WIDTH - 56.0))
-        .mx_auto()
-        .mb(px(-5.0))
-        .px(px(12.0))
-        .py(px(7.0))
-        .rounded_t(px(12.0))
-        .border_1()
-        .border_color(theme.line.hsla())
-        .bg(theme.surface.hsla())
-        .text_size(px(11.5))
-        .text_color(theme.text_3.hsla())
-        .child(format!(
-            "{count} queued prompt{}",
-            if count == 1 { "" } else { "s" }
-        ))
-}
-
 fn provider_label(provider: ProviderId) -> &'static str {
     match provider {
         ProviderId::Codex => "Codex",
@@ -3055,6 +3321,23 @@ fn design_phase_label(text: &str) -> Option<&'static str> {
         Some("Refining the website")
     } else {
         None
+    }
+}
+
+fn merge_queued_draft(queued: &str, draft: &str) -> String {
+    let draft = draft.trim();
+    if draft.is_empty() {
+        queued.into()
+    } else {
+        format!("{queued}\n\n{draft}")
+    }
+}
+
+fn merge_unique_attachments(current: &mut Vec<String>, queued: Vec<String>) {
+    for attachment in queued {
+        if !current.contains(&attachment) {
+            current.push(attachment);
+        }
     }
 }
 
@@ -3116,6 +3399,25 @@ mod tests {
         let inserted = insert_transcript_at_cursor("hello world", " spoken words ", 5).unwrap();
         assert_eq!(inserted.text, "hello spoken words world");
         assert_eq!(inserted.cursor, 18);
+    }
+
+    #[test]
+    fn queued_prompt_edit_preserves_the_draft_and_deduplicates_attachments() {
+        assert_eq!(
+            merge_queued_draft("Polish the queue", "  keep this draft  "),
+            "Polish the queue\n\nkeep this draft"
+        );
+        assert_eq!(
+            merge_queued_draft("Polish the queue", "  "),
+            "Polish the queue"
+        );
+
+        let mut attachments = vec!["/work/existing.png".into()];
+        merge_unique_attachments(
+            &mut attachments,
+            vec!["/work/reference.png".into(), "/work/existing.png".into()],
+        );
+        assert_eq!(attachments, ["/work/existing.png", "/work/reference.png"]);
     }
 
     #[test]

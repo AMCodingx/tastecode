@@ -7,12 +7,12 @@ use harness_protocol::{
     ModelConnection, ModelConnectionInput, ModelConnectionResult, ModelConnectionsResult,
     ModelsListResult, PROTOCOL_VERSION, PreviewCaptureRequest, PreviewCaptureResult,
     ProjectAddedResult, ProjectSummary, ProjectsListResult, ProviderId, ProviderStatus,
-    ProvidersListResult, Response, ReviewDiffResult, SendTurnResult, ServerWelcome, SessionDiff,
-    SessionSummary, SidebarMode, SidebarSettings, SkillEnabledResult, SkillInstalledResult,
-    SkillsListResult, SystemInfo, TerminalExitPush, TerminalOpenedResult, TerminalOutputPush,
-    ThreadEventPush, ThreadHistoryResult, ThreadInboxStatus, ThreadLifecycle, ThreadLifecyclePush,
-    ThreadQueuePush, ThreadQueueResult, ThreadStartResult, UpdateCheckResult, VoiceStatusResult,
-    VoiceTranscribeParams, VoiceTranscriptionResult, channel, method,
+    ProvidersListResult, QueueDirection, Response, ReviewDiffResult, SendTurnResult, ServerWelcome,
+    SessionDiff, SessionSummary, SidebarMode, SidebarSettings, SkillEnabledResult,
+    SkillInstalledResult, SkillsListResult, SystemInfo, TerminalExitPush, TerminalOpenedResult,
+    TerminalOutputPush, ThreadEventPush, ThreadHistoryResult, ThreadInboxStatus, ThreadLifecycle,
+    ThreadLifecyclePush, ThreadQueuePush, ThreadQueueResult, ThreadStartResult, UpdateCheckResult,
+    VoiceStatusResult, VoiceTranscribeParams, VoiceTranscriptionResult, channel, method,
 };
 use serde::Deserialize;
 use serde_json::{Value, json};
@@ -337,6 +337,9 @@ enum PendingRequest {
         replace: bool,
     },
     Queue {
+        thread_id: String,
+    },
+    QueueMutation {
         thread_id: String,
     },
     SendTurn {
@@ -1207,6 +1210,70 @@ impl ClientState {
         );
     }
 
+    pub(crate) fn delete_queued_turn(
+        &mut self,
+        thread_id: &str,
+        queued_turn_id: &str,
+    ) -> ClientUpdate {
+        self.send_queue_mutation(
+            method::THREAD_DELETE_QUEUED_TURN,
+            thread_id,
+            queue_mutation_params(thread_id, queued_turn_id, None),
+        )
+    }
+
+    pub(crate) fn move_queued_turn(
+        &mut self,
+        thread_id: &str,
+        queued_turn_id: &str,
+        direction: QueueDirection,
+    ) -> ClientUpdate {
+        self.send_queue_mutation(
+            method::THREAD_MOVE_QUEUED_TURN,
+            thread_id,
+            queue_mutation_params(thread_id, queued_turn_id, Some(direction)),
+        )
+    }
+
+    pub(crate) fn steer_queued_turn(
+        &mut self,
+        thread_id: &str,
+        queued_turn_id: &str,
+    ) -> ClientUpdate {
+        let sent = self.send_request(
+            method::THREAD_STEER_QUEUED_TURN,
+            queue_mutation_params(thread_id, queued_turn_id, None),
+            PendingRequest::Steer {
+                thread_id: thread_id.into(),
+            },
+        );
+        if sent {
+            ClientUpdate::default()
+        } else {
+            ClientUpdate::shell_changed()
+        }
+    }
+
+    fn send_queue_mutation(
+        &mut self,
+        method_name: &str,
+        thread_id: &str,
+        params: Value,
+    ) -> ClientUpdate {
+        let sent = self.send_request(
+            method_name,
+            params,
+            PendingRequest::QueueMutation {
+                thread_id: thread_id.into(),
+            },
+        );
+        if sent {
+            ClientUpdate::default()
+        } else {
+            ClientUpdate::shell_changed()
+        }
+    }
+
     pub(crate) fn interrupt(&mut self, thread_id: &str) {
         self.send_request(
             method::THREAD_INTERRUPT,
@@ -2008,6 +2075,7 @@ impl ClientState {
                     }
                 }
                 Some(PendingRequest::Interrupt { .. })
+                | Some(PendingRequest::QueueMutation { .. })
                 | Some(PendingRequest::Steer { .. })
                 | Some(PendingRequest::RespondApproval { .. })
                 | Some(PendingRequest::RespondUserInput { .. })
@@ -3315,6 +3383,7 @@ impl PendingRequest {
         match self {
             Self::History { thread_id, .. }
             | Self::Queue { thread_id }
+            | Self::QueueMutation { thread_id }
             | Self::SendTurn { thread_id, .. }
             | Self::Steer { thread_id }
             | Self::Interrupt { thread_id }
@@ -3401,6 +3470,21 @@ fn send_turn_params(thread_id: &str, request: SendTurnRequest) -> Value {
     }
     if let Some(service_tier) = request.service_tier {
         params.insert("serviceTier".into(), json!(service_tier));
+    }
+    Value::Object(params)
+}
+
+fn queue_mutation_params(
+    thread_id: &str,
+    queued_turn_id: &str,
+    direction: Option<QueueDirection>,
+) -> Value {
+    let mut params = serde_json::Map::from_iter([
+        ("threadId".into(), json!(thread_id)),
+        ("queuedTurnId".into(), json!(queued_turn_id)),
+    ]);
+    if let Some(direction) = direction {
+        params.insert("direction".into(), json!(direction));
     }
     Value::Object(params)
 }
@@ -3684,6 +3768,25 @@ mod tests {
                 "model": "gpt-test",
                 "effort": "high",
                 "serviceTier": "priority"
+            })
+        );
+    }
+
+    #[test]
+    fn queue_mutation_params_match_delete_move_and_steer_contracts() {
+        assert_eq!(
+            queue_mutation_params("thread-1", "queued-1", None),
+            json!({
+                "threadId": "thread-1",
+                "queuedTurnId": "queued-1"
+            })
+        );
+        assert_eq!(
+            queue_mutation_params("thread-1", "queued-2", Some(QueueDirection::Down)),
+            json!({
+                "threadId": "thread-1",
+                "queuedTurnId": "queued-2",
+                "direction": "down"
             })
         );
     }
