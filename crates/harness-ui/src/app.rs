@@ -20,24 +20,25 @@ use crate::model_selection::{
 use crate::preferences::{NativePreferences, SourceSelection, ThemePreference};
 use crate::preview_capture::PreviewCaptureRuntime;
 use crate::sidebar::{
-    SelectionModifiers, SidebarActions, SidebarMenuRequest, SidebarProps, ordered_inbox_ids,
-    sidebar,
+    SelectionModifiers, SessionDropPosition, SidebarActions, SidebarMenuRequest, SidebarProps,
+    ordered_inbox_ids, sidebar,
 };
 use crate::theme::{TITLEBAR_HEIGHT, Theme, ThemeMode};
 use crate::zoom::{self, px};
 use anyhow::Result;
 use command_palette::{CommandPaletteState, CommandScope};
 use gpui::{
-    Animation, AnimationExt, App, Application, Bounds, Context, Entity, FocusHandle, Focusable,
-    FontWeight, KeyDownEvent, MouseButton, MouseDownEvent, MouseMoveEvent, PathPromptOptions,
-    Pixels, Render, TitlebarOptions, Window, WindowAppearance, WindowBackgroundAppearance,
-    WindowBounds, WindowOptions, div, point, prelude::*, size, svg,
+    Animation, AnimationExt, App, Application, Bounds, Context, CursorStyle, Entity, FocusHandle,
+    Focusable, FontWeight, KeyDownEvent, MouseButton, MouseDownEvent, MouseMoveEvent,
+    PathPromptOptions, Pixels, Render, TitlebarOptions, Window, WindowAppearance,
+    WindowBackgroundAppearance, WindowBounds, WindowOptions, div, point, prelude::*, size, svg,
 };
 use gpui_component::Root;
 use gpui_component::input::{InputEvent, InputState};
 use harness_client::Endpoint;
 use harness_protocol::{
-    ApprovalMode, Model, ModelConnectionPreset, ProviderId, SidebarMode, ThreadInboxStatus,
+    ApprovalMode, Model, ModelConnectionPreset, ProviderId, SessionSummary, SidebarMode,
+    ThreadInboxStatus,
 };
 use provider_terminal::{ProviderTerminalKey, ProviderTerminalView};
 use session_search::SessionSearchState;
@@ -102,6 +103,7 @@ struct HarnessApp {
     sidebar_transition: u64,
     sidebar_width: f32,
     sidebar_resize_drag: Option<SidebarResizeDrag>,
+    sidebar_session_drag: Option<String>,
     sidebar_resize_focus: FocusHandle,
     state: ClientState,
     chat: Entity<ChatView>,
@@ -584,6 +586,7 @@ impl HarnessApp {
             sidebar_transition: 0,
             sidebar_width,
             sidebar_resize_drag: None,
+            sidebar_session_drag: None,
             sidebar_resize_focus: cx.focus_handle(),
             state,
             chat,
@@ -688,6 +691,7 @@ impl HarnessApp {
             }
         }
         if shell_changed {
+            self.reconcile_session_order();
             self.sync_model_selection();
         }
         if self.state.model_catalog_loaded
@@ -1504,6 +1508,96 @@ impl HarnessApp {
         }
     }
 
+    fn begin_sidebar_session_drag(
+        &mut self,
+        thread_id: String,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.sidebar_session_drag = Some(thread_id);
+        cx.on_next_frame(window, |_this, window, cx| {
+            cx.set_active_drag_cursor_style(CursorStyle::ClosedHand, window);
+        });
+        cx.notify();
+    }
+
+    fn finish_sidebar_session_drag(&mut self, cx: &mut Context<Self>) {
+        if self.sidebar_session_drag.take().is_some() {
+            cx.notify();
+        }
+    }
+
+    fn reorder_sidebar_session(
+        &mut self,
+        project_path: String,
+        source_id: String,
+        target_id: String,
+        position: SessionDropPosition,
+        cx: &mut Context<Self>,
+    ) {
+        self.sidebar_session_drag = None;
+        let Some(project) = self
+            .state
+            .projects
+            .iter_mut()
+            .find(|project| project.path == project_path)
+        else {
+            cx.notify();
+            return;
+        };
+        if reorder_project_sessions(&mut project.sessions, &source_id, &target_id, position) {
+            self.preferences.session_order.insert(
+                project_path,
+                project
+                    .sessions
+                    .iter()
+                    .map(|session| session.id.clone())
+                    .collect(),
+            );
+            self.persist_native_preferences();
+        }
+        cx.notify();
+    }
+
+    fn reconcile_session_order(&mut self) {
+        if !self.state.projects_loaded
+            || self.state.projects.is_empty()
+            || self.preferences.session_order.is_empty()
+        {
+            return;
+        }
+        for project in &mut self.state.projects {
+            if let Some(order) = self.preferences.session_order.get(&project.path) {
+                apply_project_session_order(&mut project.sessions, order);
+            }
+        }
+
+        let mut next = self.preferences.session_order.clone();
+        let live_paths = self
+            .state
+            .projects
+            .iter()
+            .map(|project| project.path.as_str())
+            .collect::<HashSet<_>>();
+        next.retain(|path, _| live_paths.contains(path.as_str()));
+        for project in &self.state.projects {
+            if next.contains_key(&project.path) {
+                next.insert(
+                    project.path.clone(),
+                    project
+                        .sessions
+                        .iter()
+                        .map(|session| session.id.clone())
+                        .collect(),
+                );
+            }
+        }
+        if next != self.preferences.session_order {
+            self.preferences.session_order = next;
+            self.persist_native_preferences();
+        }
+    }
+
     fn sidebar_actions(&self, cx: &Context<Self>) -> SidebarActions {
         let select_view = cx.weak_entity();
         let choose_view = select_view.clone();
@@ -1520,6 +1614,8 @@ impl HarnessApp {
         let wake_thread_view = select_view.clone();
         let unsettle_thread_view = select_view.clone();
         let rename_thread_view = select_view.clone();
+        let begin_session_drag_view = select_view.clone();
+        let reorder_session_view = select_view.clone();
         let archive_thread_view = select_view.clone();
         let open_menu_view = select_view.clone();
         let toggle_snoozed_view = select_view.clone();
@@ -1616,6 +1712,16 @@ impl HarnessApp {
             rename_thread: Rc::new(move |thread_id, cx| {
                 let _ = rename_thread_view.update(cx, |this, cx| {
                     this.begin_rename_thread(thread_id, cx);
+                });
+            }),
+            begin_session_drag: Rc::new(move |thread_id, window, cx| {
+                let _ = begin_session_drag_view.update(cx, |this, cx| {
+                    this.begin_sidebar_session_drag(thread_id, window, cx);
+                });
+            }),
+            reorder_session: Rc::new(move |project_path, source_id, target_id, position, cx| {
+                let _ = reorder_session_view.update(cx, |this, cx| {
+                    this.reorder_sidebar_session(project_path, source_id, target_id, position, cx);
                 });
             }),
             archive_thread: Rc::new(move |thread_id, cx| {
@@ -1868,6 +1974,7 @@ impl Render for HarnessApp {
                 rename_input: self.sidebar_controls.input.clone(),
                 renaming_project: self.sidebar_controls.renaming_project(),
                 renaming_thread: self.sidebar_controls.renaming_thread(),
+                dragging_thread: self.sidebar_session_drag.as_deref(),
                 scope_open: self.scope_open,
                 new_thread_picker: self.new_thread_picker,
                 collapsed_projects: &self.collapsed_projects,
@@ -1997,6 +2104,7 @@ impl Render for HarnessApp {
                 MouseButton::Left,
                 cx.listener(|this, _event, _window, cx| {
                     this.finish_sidebar_resize(cx);
+                    this.finish_sidebar_session_drag(cx);
                 }),
             )
             .capture_key_down(cx.listener(|this, event: &KeyDownEvent, window, cx| {
@@ -2080,6 +2188,60 @@ fn theme_mode_for_appearance(appearance: WindowAppearance) -> ThemeMode {
 
 fn clamp_rail_width(width: f32) -> f32 {
     width.round().clamp(MIN_RAIL_PREVIEW_WIDTH, MAX_RAIL_WIDTH)
+}
+
+fn reorder_project_sessions(
+    sessions: &mut Vec<SessionSummary>,
+    source_id: &str,
+    target_id: &str,
+    position: SessionDropPosition,
+) -> bool {
+    if source_id == target_id {
+        return false;
+    }
+    let Some(source_index) = sessions.iter().position(|session| session.id == source_id) else {
+        return false;
+    };
+    if !sessions.iter().any(|session| session.id == target_id) {
+        return false;
+    }
+    let moved = sessions.remove(source_index);
+    let target_index = sessions
+        .iter()
+        .position(|session| session.id == target_id)
+        .expect("the validated target remains after removing a different source");
+    let insert_index = target_index + usize::from(matches!(position, SessionDropPosition::After));
+    if insert_index == source_index {
+        sessions.insert(source_index, moved);
+        return false;
+    }
+    sessions.insert(insert_index, moved);
+    true
+}
+
+fn apply_project_session_order(sessions: &mut [SessionSummary], order: &[String]) -> bool {
+    if sessions.len() < 2 || order.is_empty() {
+        return false;
+    }
+    let before = sessions
+        .iter()
+        .map(|session| session.id.clone())
+        .collect::<Vec<_>>();
+    let ranks = order
+        .iter()
+        .enumerate()
+        .map(|(index, id)| (id.as_str(), index))
+        .collect::<HashMap<_, _>>();
+    sessions.sort_by_key(|session| {
+        ranks
+            .get(session.id.as_str())
+            .map_or((0, 0), |rank| (1, *rank))
+    });
+    let after = sessions
+        .iter()
+        .map(|session| session.id.clone())
+        .collect::<Vec<_>>();
+    after != before
 }
 
 fn icon(path: &'static str, size: f32) -> impl IntoElement {
@@ -2208,6 +2370,26 @@ fn sync_component_theme(theme: Theme, cx: &mut App) {
 mod tests {
     use super::*;
 
+    fn session(id: &str) -> SessionSummary {
+        SessionSummary {
+            id: id.into(),
+            title: id.into(),
+            provider: ProviderId::Codex,
+            agent: None,
+            created_at: 0.0,
+            running: false,
+            pinned: false,
+            status: Some(ThreadInboxStatus::Idle),
+            unread: Some(false),
+            lifecycle: Some(harness_protocol::ThreadLifecycle::Active {
+                keep_active: false,
+                woke_at: None,
+            }),
+            closed_at: None,
+            worktree_branch: None,
+        }
+    }
+
     fn model(efforts: &[&str], default: Option<&str>) -> Model {
         Model {
             id: "model".into(),
@@ -2244,5 +2426,65 @@ mod tests {
         assert_eq!(clamp_rail_width(248.4), 248.0);
         assert_eq!(clamp_rail_width(248.6), 249.0);
         assert_eq!(clamp_rail_width(500.0), MAX_RAIL_WIDTH);
+    }
+
+    #[test]
+    fn classic_sidebar_reorders_before_and_after_without_false_changes() {
+        let mut sessions = vec![session("a"), session("b"), session("c")];
+
+        assert!(reorder_project_sessions(
+            &mut sessions,
+            "a",
+            "b",
+            SessionDropPosition::After,
+        ));
+        assert_eq!(
+            sessions
+                .iter()
+                .map(|session| session.id.as_str())
+                .collect::<Vec<_>>(),
+            ["b", "a", "c"]
+        );
+        assert!(!reorder_project_sessions(
+            &mut sessions,
+            "a",
+            "b",
+            SessionDropPosition::After,
+        ));
+        assert!(reorder_project_sessions(
+            &mut sessions,
+            "c",
+            "b",
+            SessionDropPosition::Before,
+        ));
+        assert_eq!(
+            sessions
+                .iter()
+                .map(|session| session.id.as_str())
+                .collect::<Vec<_>>(),
+            ["c", "b", "a"]
+        );
+        assert!(!reorder_project_sessions(
+            &mut sessions,
+            "missing",
+            "b",
+            SessionDropPosition::Before,
+        ));
+    }
+
+    #[test]
+    fn saved_sidebar_order_keeps_new_sessions_ahead_of_known_rows() {
+        let mut sessions = vec![session("a"), session("new"), session("b")];
+        let order = vec!["b".into(), "a".into()];
+
+        assert!(apply_project_session_order(&mut sessions, &order));
+        assert_eq!(
+            sessions
+                .iter()
+                .map(|session| session.id.as_str())
+                .collect::<Vec<_>>(),
+            ["new", "b", "a"]
+        );
+        assert!(!apply_project_session_order(&mut sessions, &order));
     }
 }

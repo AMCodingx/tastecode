@@ -6,7 +6,7 @@ use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::PathBuf;
 
-const PREFERENCES_VERSION: u8 = 5;
+const PREFERENCES_VERSION: u8 = 6;
 const PREFERENCES_FILE: &str = "gpui-settings.json";
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -40,6 +40,7 @@ pub(crate) struct NativePreferences {
     pub(crate) backdrop: Backdrop,
     pub(crate) sidebar_glass: u8,
     pub(crate) rail_width: u16,
+    pub(crate) session_order: HashMap<String, Vec<String>>,
     pub(crate) hidden_models: HashSet<String>,
     pub(crate) selected_model_key: Option<String>,
     pub(crate) model_by_source: HashMap<String, SourceSelection>,
@@ -58,6 +59,7 @@ impl Default for NativePreferences {
             backdrop: Backdrop::Default,
             sidebar_glass: 35,
             rail_width: 248,
+            session_order: HashMap::new(),
             hidden_models: HashSet::new(),
             selected_model_key: None,
             model_by_source: HashMap::new(),
@@ -143,6 +145,7 @@ mod tests {
         assert_eq!(preferences.accent, Accent::Neutral);
         assert_eq!(preferences.sidebar_glass, 35);
         assert_eq!(preferences.rail_width, 248);
+        assert!(preferences.session_order.is_empty());
         assert!(preferences.hidden_models.is_empty());
         assert_eq!(preferences.selected_model_key, None);
         assert!(preferences.model_by_source.is_empty());
@@ -160,6 +163,10 @@ mod tests {
             rail_width: 312,
             ..NativePreferences::default()
         };
+        preferences.session_order.insert(
+            "/work/harness".into(),
+            vec!["thread-2".into(), "thread-1".into()],
+        );
         preferences.hidden_models.insert("codex:gpt-5".into());
         preferences.selected_model_key = Some("cursor:composer-2".into());
         preferences.model_by_source.insert(

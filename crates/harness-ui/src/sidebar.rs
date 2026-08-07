@@ -26,6 +26,8 @@ pub(crate) type SidebarAction = Rc<dyn Fn(&mut App)>;
 pub(crate) type SelectScope = Rc<dyn Fn(Option<String>, &mut App)>;
 pub(crate) type ProjectAction = Rc<dyn Fn(String, &mut App)>;
 pub(crate) type OpenSidebarMenu = Rc<dyn Fn(SidebarMenuRequest, Point<Pixels>, &mut App)>;
+pub(crate) type BeginSessionDrag = Rc<dyn Fn(String, &mut Window, &mut App)>;
+pub(crate) type ReorderSession = Rc<dyn Fn(String, String, String, SessionDropPosition, &mut App)>;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum SidebarMenuRequest {
@@ -42,6 +44,12 @@ pub(crate) enum SidebarMenuRequest {
 pub(crate) struct SelectionModifiers {
     pub(crate) shift: bool,
     pub(crate) additive: bool,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum SessionDropPosition {
+    Before,
+    After,
 }
 
 #[derive(Clone)]
@@ -61,6 +69,8 @@ pub(crate) struct SidebarActions {
     pub(crate) wake_thread: ProjectAction,
     pub(crate) unsettle_thread: ProjectAction,
     pub(crate) rename_thread: ProjectAction,
+    pub(crate) begin_session_drag: BeginSessionDrag,
+    pub(crate) reorder_session: ReorderSession,
     pub(crate) archive_thread: ProjectAction,
     pub(crate) open_menu: OpenSidebarMenu,
     pub(crate) toggle_snoozed: SidebarAction,
@@ -84,6 +94,7 @@ pub(crate) struct SidebarProps<'a> {
     pub(crate) rename_input: Entity<InputState>,
     pub(crate) renaming_project: Option<&'a str>,
     pub(crate) renaming_thread: Option<&'a str>,
+    pub(crate) dragging_thread: Option<&'a str>,
     pub(crate) scope_open: bool,
     pub(crate) new_thread_picker: bool,
     pub(crate) collapsed_projects: &'a std::collections::HashSet<String>,
@@ -103,10 +114,48 @@ pub(crate) struct SidebarProps<'a> {
 }
 
 #[derive(Clone, Copy)]
-struct SidebarRename<'a> {
-    project: Option<&'a str>,
-    thread: Option<&'a str>,
-    input: &'a Entity<InputState>,
+struct SidebarRowState<'a> {
+    renaming_project: Option<&'a str>,
+    renaming_thread: Option<&'a str>,
+    rename_input: &'a Entity<InputState>,
+    dragging_thread: Option<&'a str>,
+    classic_row_width: f32,
+}
+
+#[derive(Clone)]
+struct SessionDrag {
+    project_path: String,
+    session_id: String,
+    title: String,
+    width: f32,
+    theme: Theme,
+}
+
+struct SessionDragPreview(SessionDrag);
+
+impl gpui::Render for SessionDragPreview {
+    fn render(&mut self, _window: &mut Window, _cx: &mut gpui::Context<Self>) -> impl IntoElement {
+        div()
+            .h(px(28.0))
+            .w(px(self.0.width))
+            .flex()
+            .items_center()
+            .pl(px(32.0))
+            .pr(px(8.0))
+            .rounded(px(RADIUS_MD))
+            .bg(classic_session_active_background(self.0.theme))
+            .shadow(classic_session_active_shadows(self.0.theme))
+            .text_size(px(12.5))
+            .text_color(self.0.theme.text.hsla())
+            .opacity(0.94)
+            .child(
+                div()
+                    .min_w(px(0.0))
+                    .flex_1()
+                    .truncate()
+                    .child(self.0.title.clone()),
+            )
+    }
 }
 
 pub fn sidebar(props: SidebarProps<'_>, actions: SidebarActions) -> impl IntoElement {
@@ -124,6 +173,7 @@ pub fn sidebar(props: SidebarProps<'_>, actions: SidebarActions) -> impl IntoEle
         rename_input,
         renaming_project,
         renaming_thread,
+        dragging_thread,
         scope_open,
         new_thread_picker,
         collapsed_projects,
@@ -141,10 +191,12 @@ pub fn sidebar(props: SidebarProps<'_>, actions: SidebarActions) -> impl IntoEle
         glass,
         width,
     } = props;
-    let rename = SidebarRename {
-        project: renaming_project,
-        thread: renaming_thread,
-        input: &rename_input,
+    let row_state = SidebarRowState {
+        renaming_project,
+        renaming_thread,
+        rename_input: &rename_input,
+        dragging_thread,
+        classic_row_width: (width - 16.0).max(0.0),
     };
     div()
         .relative()
@@ -185,7 +237,7 @@ pub fn sidebar(props: SidebarProps<'_>, actions: SidebarActions) -> impl IntoEle
                 selected_thread_id,
                 collapsed_projects,
                 expanded_project_sessions,
-                rename,
+                row_state,
                 actions.clone(),
             )
             .into_any_element()
@@ -204,7 +256,7 @@ pub fn sidebar(props: SidebarProps<'_>, actions: SidebarActions) -> impl IntoEle
                 snoozed_expanded,
                 settled_expanded,
                 settled_limit,
-                rename,
+                row_state,
                 actions.clone(),
             )
             .into_any_element()
@@ -797,7 +849,7 @@ fn sidebar_body(
     snoozed_expanded: bool,
     settled_expanded: bool,
     settled_limit: usize,
-    rename: SidebarRename<'_>,
+    row_state: SidebarRowState<'_>,
     actions: SidebarActions,
 ) -> impl IntoElement {
     let normalized_query = query.trim().to_lowercase();
@@ -916,7 +968,7 @@ fn sidebar_body(
                                 selected_ids.contains(&session.id),
                                 thread_menu_request(&session.id, selected_ids, &ordered_ids),
                                 row_navigation(&session.id, &ordered_ids, row_focus),
-                                rename,
+                                row_state,
                                 &actions,
                             )
                         })),
@@ -952,7 +1004,7 @@ fn sidebar_body(
                                 thread_menu_request(&session.id, selected_ids, &ordered_ids),
                                 row_navigation(&session.id, &ordered_ids, row_focus),
                                 actions.wake_thread.clone(),
-                                rename,
+                                row_state,
                                 &actions,
                             )
                         }))
@@ -991,7 +1043,7 @@ fn sidebar_body(
                                     thread_menu_request(&session.id, selected_ids, &ordered_ids),
                                     row_navigation(&session.id, &ordered_ids, row_focus),
                                     actions.unsettle_thread.clone(),
-                                    rename,
+                                    row_state,
                                     &actions,
                                 )
                             }))
@@ -1072,7 +1124,7 @@ fn classic_sidebar_body(
     selected_thread_id: Option<&str>,
     collapsed_projects: &std::collections::HashSet<String>,
     expanded_project_sessions: &std::collections::HashSet<String>,
-    rename: SidebarRename<'_>,
+    row_state: SidebarRowState<'_>,
     actions: SidebarActions,
 ) -> impl IntoElement {
     let mut pinned_sessions = projects
@@ -1105,9 +1157,10 @@ fn classic_sidebar_body(
                 pinned_sessions.into_iter().map(|session| {
                     classic_session_row(
                         session,
+                        None,
                         selected_thread_id == Some(session.id.as_str()),
                         true,
-                        rename,
+                        row_state,
                         theme,
                         &actions,
                     )
@@ -1121,7 +1174,7 @@ fn classic_sidebar_body(
                 selected_thread_id,
                 !collapsed_projects.contains(&project.path),
                 expanded_project_sessions.contains(&project.path),
-                rename,
+                row_state,
                 theme,
                 &actions,
             )
@@ -1133,7 +1186,7 @@ fn classic_project(
     selected_thread_id: Option<&str>,
     expanded: bool,
     show_all: bool,
-    rename: SidebarRename<'_>,
+    row_state: SidebarRowState<'_>,
     theme: Theme,
     actions: &SidebarActions,
 ) -> AnyElement {
@@ -1157,12 +1210,12 @@ fn classic_project(
     };
     let drawer_height = classic_project_drawer_height(visible.len(), has_more);
     let drawer_open = expanded && !sessions.is_empty();
-    let header = if rename.project == Some(project.path.as_str()) {
+    let header = if row_state.renaming_project == Some(project.path.as_str()) {
         div()
             .w_full()
             .flex()
             .items_center()
-            .child(sidebar_inline_rename(rename.input, theme, false))
+            .child(sidebar_inline_rename(row_state.rename_input, theme, false))
             .into_any_element()
     } else {
         div()
@@ -1263,9 +1316,10 @@ fn classic_project(
         .map(|session| {
             classic_session_row(
                 session,
+                Some(project.path.as_str()),
                 selected_thread_id == Some(session.id.as_str()),
                 false,
-                rename,
+                row_state,
                 theme,
                 actions,
             )
@@ -1402,19 +1456,20 @@ fn classic_project_menu_button(
 
 fn classic_session_row(
     session: &SessionSummary,
+    project_path: Option<&str>,
     active: bool,
     standalone: bool,
-    rename: SidebarRename<'_>,
+    row_state: SidebarRowState<'_>,
     theme: Theme,
     actions: &SidebarActions,
 ) -> AnyElement {
-    if rename.thread == Some(session.id.as_str()) {
+    if row_state.renaming_thread == Some(session.id.as_str()) {
         return div()
             .h(px(28.0))
             .w_full()
             .flex()
             .items_center()
-            .child(sidebar_inline_rename(rename.input, theme, false))
+            .child(sidebar_inline_rename(row_state.rename_input, theme, false))
             .into_any_element();
     }
     let thread_id = session.id.clone();
@@ -1425,7 +1480,7 @@ fn classic_session_row(
     let status = status_for(session);
     let status_element = classic_session_status(status, &thread_id, theme);
     let action_background = classic_session_action_background(theme, active);
-    div()
+    let row = div()
         .id(SharedString::from(format!(
             "classic-session:{}",
             session.id
@@ -1559,8 +1614,120 @@ fn classic_session_row(
                     actions.archive_thread.clone(),
                     theme,
                 )),
+        );
+    if standalone {
+        return row.into_any_element();
+    }
+
+    let project_path = project_path.expect("project sessions always carry their project path");
+    let drag = SessionDrag {
+        project_path: project_path.into(),
+        session_id: thread_id.clone(),
+        title: session.title.clone(),
+        width: row_state.classic_row_width,
+        theme,
+    };
+    let begin_drag = actions.begin_session_drag.clone();
+    row.cursor_grab()
+        .when(
+            row_state.dragging_thread == Some(session.id.as_str()),
+            |row| row.opacity(0.45).cursor_grabbing(),
+        )
+        .on_drag(drag, move |drag, _offset, window, cx| {
+            begin_drag(drag.session_id.clone(), window, cx);
+            cx.new(|_| SessionDragPreview(drag.clone()))
+        })
+        .child(classic_session_drop_zone(
+            project_path,
+            session.id.as_str(),
+            SessionDropPosition::Before,
+            theme,
+            actions.reorder_session.clone(),
+        ))
+        .child(classic_session_drop_zone(
+            project_path,
+            session.id.as_str(),
+            SessionDropPosition::After,
+            theme,
+            actions.reorder_session.clone(),
+        ))
+        .into_any_element()
+}
+
+fn classic_session_drop_zone(
+    project_path: &str,
+    target_id: &str,
+    position: SessionDropPosition,
+    theme: Theme,
+    reorder: ReorderSession,
+) -> AnyElement {
+    let group: SharedString = format!(
+        "session-drop:{}:{target_id}:{}",
+        project_path,
+        match position {
+            SessionDropPosition::Before => "before",
+            SessionDropPosition::After => "after",
+        }
+    )
+    .into();
+    let zone_project = project_path.to_owned();
+    let zone_target = target_id.to_owned();
+    let line_project = zone_project.clone();
+    let line_target = zone_target.clone();
+    let drop_project = zone_project.clone();
+    let drop_target = zone_target.clone();
+
+    div()
+        .group(group.clone())
+        .absolute()
+        .left_0()
+        .right_0()
+        .h(relative(0.5))
+        .when(position == SessionDropPosition::Before, |zone| zone.top_0())
+        .when(position == SessionDropPosition::After, |zone| {
+            zone.bottom_0()
+        })
+        .can_drop(move |value, _window, _cx| {
+            value
+                .downcast_ref::<SessionDrag>()
+                .is_some_and(|drag| session_drop_is_valid(drag, &zone_project, &zone_target))
+        })
+        .on_drop(move |drag: &SessionDrag, _window, cx| {
+            reorder(
+                drop_project.clone(),
+                drag.session_id.clone(),
+                drop_target.clone(),
+                position,
+                cx,
+            );
+        })
+        .child(
+            div()
+                .absolute()
+                .left(px(26.0))
+                .right(px(6.0))
+                .h(px(2.0))
+                .rounded_full()
+                .bg(theme.text.hsla())
+                .opacity(0.0)
+                .when(position == SessionDropPosition::Before, |line| {
+                    line.top(px(-1.0))
+                })
+                .when(position == SessionDropPosition::After, |line| {
+                    line.bottom(px(-1.0))
+                })
+                .can_drop(move |value, _window, _cx| {
+                    value.downcast_ref::<SessionDrag>().is_some_and(|drag| {
+                        session_drop_is_valid(drag, &line_project, &line_target)
+                    })
+                })
+                .group_drag_over::<SessionDrag>(group, |line| line.opacity(1.0)),
         )
         .into_any_element()
+}
+
+fn session_drop_is_valid(drag: &SessionDrag, project_path: &str, target_id: &str) -> bool {
+    drag.project_path == project_path && drag.session_id != target_id
 }
 
 fn classic_session_active_background(theme: Theme) -> Background {
@@ -2005,10 +2172,10 @@ fn active_inbox_row(
     multi_selected: bool,
     menu_request: SidebarMenuRequest,
     navigation: Option<RowNavigation>,
-    rename: SidebarRename<'_>,
+    row_state: SidebarRowState<'_>,
     actions: &SidebarActions,
 ) -> AnyElement {
-    if rename.thread == Some(session.id.as_str()) {
+    if row_state.renaming_thread == Some(session.id.as_str()) {
         return div()
             .min_h(px(76.0))
             .w_full()
@@ -2017,7 +2184,7 @@ fn active_inbox_row(
             .rounded(px(RADIUS_MD))
             .bg(chrome_raised(theme))
             .shadow(chrome_shadows(theme))
-            .child(sidebar_inline_rename(rename.input, theme, false))
+            .child(sidebar_inline_rename(row_state.rename_input, theme, false))
             .into_any_element();
     }
     let thread_id = session.id.clone();
@@ -2671,7 +2838,7 @@ fn inbox_shelf_row(
     menu_request: SidebarMenuRequest,
     navigation: Option<RowNavigation>,
     direct_action: ProjectAction,
-    rename: SidebarRename<'_>,
+    row_state: SidebarRowState<'_>,
     actions: &SidebarActions,
 ) -> AnyElement {
     let thread_id = session.id.clone();
@@ -2690,7 +2857,7 @@ fn inbox_shelf_row(
     } else {
         theme.surface.hsla()
     };
-    let renaming = rename.thread == Some(session.id.as_str());
+    let renaming = row_state.renaming_thread == Some(session.id.as_str());
 
     div()
         .id(SharedString::from(format!("shelf:{thread_id}")))
@@ -2711,7 +2878,7 @@ fn inbox_shelf_row(
         .when(current || multi_selected, |row| row.bg(row_background))
         .hover(move |style| style.bg(row_background))
         .child(if renaming {
-            sidebar_inline_rename(rename.input, theme, true)
+            sidebar_inline_rename(row_state.rename_input, theme, true)
         } else {
             div()
                 .id(SharedString::from(format!("shelf-main:{thread_id}")))
@@ -3066,6 +3233,21 @@ mod tests {
             (height, 1.0)
         );
         assert_eq!(classic_project_drawer_state(false, height, 1.0), (0.0, 0.0));
+    }
+
+    #[test]
+    fn classic_sidebar_drop_targets_stay_inside_the_source_project() {
+        let drag = SessionDrag {
+            project_path: "/work/harness".into(),
+            session_id: "thread-1".into(),
+            title: "Thread 1".into(),
+            width: 232.0,
+            theme: Theme::dark(),
+        };
+
+        assert!(session_drop_is_valid(&drag, "/work/harness", "thread-2"));
+        assert!(!session_drop_is_valid(&drag, "/work/other", "thread-2"));
+        assert!(!session_drop_is_valid(&drag, "/work/harness", "thread-1"));
     }
 
     #[test]
