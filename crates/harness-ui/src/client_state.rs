@@ -14,7 +14,7 @@ use harness_protocol::{
 };
 use serde::Deserialize;
 use serde_json::{Value, json};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 pub(crate) struct ClientState {
@@ -30,6 +30,7 @@ pub(crate) struct ClientState {
     pub(crate) accounts: HashMap<AuthTarget, Account>,
     pub(crate) auth_busy: Option<AuthTarget>,
     pub(crate) auth_error: Option<String>,
+    pub(crate) provider_terminal_busy: Option<AuthTarget>,
     pub(crate) acp_agents: Vec<AcpAgent>,
     pub(crate) model_catalog: Vec<ModelChoice>,
     pub(crate) model_catalog_loaded: bool,
@@ -45,6 +46,9 @@ pub(crate) struct ClientState {
     pub(crate) skills_error: Option<String>,
     skills_scope: Option<(ProviderId, String)>,
     skills_generation: u64,
+    settings_terminal_ids: HashSet<String>,
+    early_terminal_output: PendingTerminalOutput,
+    early_terminal_exits: HashMap<String, Option<i32>>,
     pending: HashMap<String, PendingRequest>,
     catalog_discovery_pending: usize,
     catalog_model_pending: usize,
@@ -81,6 +85,75 @@ pub(crate) struct ScopedSkillsInventory {
 pub(crate) struct AuthTarget {
     pub(crate) provider: ProviderId,
     pub(crate) agent: Option<String>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub(crate) enum ProviderTerminalKind {
+    Install,
+    SignIn,
+}
+
+#[derive(Default)]
+struct PendingTerminalOutput {
+    by_terminal: HashMap<String, VecDeque<String>>,
+    order: VecDeque<String>,
+    bytes: usize,
+}
+
+const EARLY_TERMINAL_OUTPUT_LIMIT: usize = 512 * 1024;
+const EARLY_TERMINAL_OUTPUT_PER_ID: usize = 128 * 1024;
+const EARLY_TERMINAL_EXIT_LIMIT: usize = 64;
+
+impl PendingTerminalOutput {
+    fn push(&mut self, terminal_id: String, mut data: String) {
+        if data.len() > EARLY_TERMINAL_OUTPUT_PER_ID {
+            data = bounded_utf8_tail(data, EARLY_TERMINAL_OUTPUT_PER_ID);
+        }
+        if !self.by_terminal.contains_key(&terminal_id) {
+            self.order.push_back(terminal_id.clone());
+        }
+        while self.bytes + data.len() > EARLY_TERMINAL_OUTPUT_LIMIT {
+            let Some(oldest) = self.order.pop_front() else {
+                break;
+            };
+            self.remove(&oldest);
+        }
+        let chunks = self.by_terminal.entry(terminal_id).or_default();
+        let mut terminal_bytes = chunks.iter().map(String::len).sum::<usize>();
+        while terminal_bytes + data.len() > EARLY_TERMINAL_OUTPUT_PER_ID {
+            let Some(removed) = chunks.pop_front() else {
+                break;
+            };
+            terminal_bytes = terminal_bytes.saturating_sub(removed.len());
+            self.bytes = self.bytes.saturating_sub(removed.len());
+        }
+        self.bytes += data.len();
+        chunks.push_back(data);
+    }
+
+    fn take(&mut self, terminal_id: &str) -> Vec<String> {
+        let chunks = self.by_terminal.remove(terminal_id).unwrap_or_default();
+        self.order.retain(|id| id != terminal_id);
+        self.bytes = self
+            .bytes
+            .saturating_sub(chunks.iter().map(String::len).sum::<usize>());
+        chunks.into_iter().collect()
+    }
+
+    fn remove(&mut self, terminal_id: &str) {
+        if let Some(chunks) = self.by_terminal.remove(terminal_id) {
+            self.bytes = self
+                .bytes
+                .saturating_sub(chunks.iter().map(String::len).sum::<usize>());
+        }
+        self.order.retain(|id| id != terminal_id);
+    }
+
+    fn clear(&mut self) {
+        self.by_terminal.clear();
+        self.order.clear();
+        self.bytes = 0;
+    }
 }
 
 impl AuthTarget {
@@ -174,6 +247,10 @@ enum PendingRequest {
     },
     AuthSignOut {
         target: AuthTarget,
+    },
+    ProviderTerminal {
+        target: AuthTarget,
+        kind: ProviderTerminalKind,
     },
     AcpAgents,
     Models {
@@ -280,6 +357,24 @@ pub(crate) enum ShellEvent {
     },
     OpenUrl {
         url: String,
+    },
+    ProviderTerminalOpened {
+        target: AuthTarget,
+        kind: ProviderTerminalKind,
+        terminal_id: String,
+        buffered_output: Vec<String>,
+        early_exit: Option<Option<i32>>,
+    },
+    ProviderTerminalOutput(TerminalOutputPush),
+    ProviderTerminalExit(TerminalExitPush),
+    ProviderTerminalError {
+        target: Option<AuthTarget>,
+        kind: Option<ProviderTerminalKind>,
+        terminal_id: Option<String>,
+        message: String,
+    },
+    ProviderTerminalClosed {
+        terminal_id: String,
     },
 }
 
@@ -394,6 +489,7 @@ impl ClientState {
             accounts: HashMap::new(),
             auth_busy: None,
             auth_error: None,
+            provider_terminal_busy: None,
             acp_agents: Vec::new(),
             model_catalog: Vec::new(),
             model_catalog_loaded: fixture,
@@ -409,6 +505,9 @@ impl ClientState {
             skills_error: None,
             skills_scope: None,
             skills_generation: 0,
+            settings_terminal_ids: HashSet::new(),
+            early_terminal_output: PendingTerminalOutput::default(),
+            early_terminal_exits: HashMap::new(),
             pending: HashMap::new(),
             catalog_discovery_pending: 0,
             catalog_model_pending: 0,
@@ -562,6 +661,52 @@ impl ClientState {
         ) {
             self.auth_busy = None;
             self.auth_error = self.notice.clone();
+        }
+        ClientUpdate::shell_changed()
+    }
+
+    pub(crate) fn start_provider_terminal(
+        &mut self,
+        target: AuthTarget,
+        kind: ProviderTerminalKind,
+        columns: u16,
+        rows: u16,
+    ) -> ClientUpdate {
+        self.provider_terminal_busy = Some(target.clone());
+        self.auth_error = None;
+        let mut params = auth_params(&target);
+        if let Value::Object(params) = &mut params {
+            params.insert("columns".into(), json!(columns));
+            params.insert("rows".into(), json!(rows));
+        }
+        let request_method = match kind {
+            ProviderTerminalKind::Install => method::PROVIDERS_INSTALL,
+            ProviderTerminalKind::SignIn => method::PROVIDERS_LAUNCH,
+        };
+        if !self.send_request(
+            request_method,
+            params,
+            PendingRequest::ProviderTerminal {
+                target: target.clone(),
+                kind,
+            },
+        ) {
+            self.provider_terminal_busy = None;
+            let message = self
+                .notice
+                .clone()
+                .unwrap_or_else(|| "The provider terminal could not be started.".into());
+            self.auth_error = Some(message.clone());
+            return ClientUpdate {
+                shell_changed: true,
+                chat: Vec::new(),
+                shell_events: vec![ShellEvent::ProviderTerminalError {
+                    target: Some(target),
+                    kind: Some(kind),
+                    terminal_id: None,
+                    message,
+                }],
+            };
         }
         ClientUpdate::shell_changed()
     }
@@ -1104,6 +1249,23 @@ impl ClientState {
                     None => error.message,
                 };
                 match pending {
+                    Some(PendingRequest::ProviderTerminal { target, kind }) => {
+                        if self.provider_terminal_busy.as_ref() == Some(&target) {
+                            self.provider_terminal_busy = None;
+                        }
+                        self.clear_orphaned_provider_terminal_events();
+                        self.auth_error = Some(message.clone());
+                        ClientUpdate {
+                            shell_changed: true,
+                            chat: Vec::new(),
+                            shell_events: vec![ShellEvent::ProviderTerminalError {
+                                target: Some(target),
+                                kind: Some(kind),
+                                terminal_id: None,
+                                message,
+                            }],
+                        }
+                    }
                     Some(PendingRequest::AuthStatus { target }) => {
                         self.accounts.insert(
                             target,
@@ -1235,10 +1397,23 @@ impl ClientState {
                     Some(PendingRequest::TerminalInput { terminal_id })
                     | Some(PendingRequest::TerminalResize { terminal_id })
                     | Some(PendingRequest::TerminalClose { terminal_id }) => {
-                        ClientUpdate::chat(ChatUpdate::TerminalError {
-                            terminal_id,
-                            message,
-                        })
+                        if self.settings_terminal_ids.contains(&terminal_id) {
+                            ClientUpdate {
+                                shell_changed: true,
+                                chat: Vec::new(),
+                                shell_events: vec![ShellEvent::ProviderTerminalError {
+                                    target: None,
+                                    kind: None,
+                                    terminal_id: Some(terminal_id),
+                                    message,
+                                }],
+                            }
+                        } else {
+                            ClientUpdate::chat(ChatUpdate::TerminalError {
+                                terminal_id,
+                                message,
+                            })
+                        }
                     }
                     Some(request) => match request.thread_id() {
                         Some(thread_id) => {
@@ -1271,6 +1446,9 @@ impl ClientState {
                 }
                 Some(PendingRequest::AuthSignOut { target }) => {
                     self.handle_auth_sign_out_response(target)
+                }
+                Some(PendingRequest::ProviderTerminal { target, kind }) => {
+                    self.handle_provider_terminal_response(result, target, kind)
                 }
                 Some(PendingRequest::ConnectionUpsert {
                     connection_id,
@@ -1405,14 +1583,29 @@ impl ClientState {
                 }
                 Some(PendingRequest::TerminalOpen { thread_id }) => {
                     match serde_json::from_value::<TerminalOpenedResult>(result) {
-                        Ok(opened) => ClientUpdate::chat(ChatUpdate::TerminalOpened {
-                            thread_id,
-                            terminal_id: opened.terminal_id,
-                        }),
+                        Ok(opened) => {
+                            self.early_terminal_output.remove(&opened.terminal_id);
+                            self.early_terminal_exits.remove(&opened.terminal_id);
+                            ClientUpdate::chat(ChatUpdate::TerminalOpened {
+                                thread_id,
+                                terminal_id: opened.terminal_id,
+                            })
+                        }
                         Err(error) => ClientUpdate::chat(ChatUpdate::TerminalOpenError {
                             thread_id,
                             message: format!("terminal.open was invalid: {error}"),
                         }),
+                    }
+                }
+                Some(PendingRequest::TerminalClose { terminal_id }) => {
+                    if self.settings_terminal_ids.remove(&terminal_id) {
+                        ClientUpdate {
+                            shell_changed: true,
+                            chat: Vec::new(),
+                            shell_events: vec![ShellEvent::ProviderTerminalClosed { terminal_id }],
+                        }
+                    } else {
+                        ClientUpdate::default()
                     }
                 }
                 Some(PendingRequest::Interrupt { .. })
@@ -1421,7 +1614,6 @@ impl ClientState {
                 | Some(PendingRequest::RespondUserInput { .. })
                 | Some(PendingRequest::TerminalInput { .. })
                 | Some(PendingRequest::TerminalResize { .. })
-                | Some(PendingRequest::TerminalClose { .. })
                 | Some(PendingRequest::RenameThread)
                 | Some(PendingRequest::Capabilities)
                 | None => ClientUpdate::default(),
@@ -1438,6 +1630,26 @@ impl ClientState {
             return ClientUpdate::shell_changed();
         }
         match pending {
+            PendingRequest::ProviderTerminal { target, kind } => {
+                if self.provider_terminal_busy.as_ref() == Some(&target) {
+                    self.provider_terminal_busy = None;
+                }
+                self.clear_orphaned_provider_terminal_events();
+                let message = String::from(
+                    "The server connection was lost before the provider terminal opened.",
+                );
+                self.auth_error = Some(message.clone());
+                ClientUpdate {
+                    shell_changed: true,
+                    chat: Vec::new(),
+                    shell_events: vec![ShellEvent::ProviderTerminalError {
+                        target: Some(target),
+                        kind: Some(kind),
+                        terminal_id: None,
+                        message,
+                    }],
+                }
+            }
             PendingRequest::AuthStatus { target } => {
                 if self.auth_busy.as_ref() == Some(&target) {
                     self.auth_busy = None;
@@ -1528,12 +1740,26 @@ impl ClientState {
             PendingRequest::TerminalInput { terminal_id }
             | PendingRequest::TerminalResize { terminal_id }
             | PendingRequest::TerminalClose { terminal_id } => {
-                ClientUpdate::chat(ChatUpdate::TerminalError {
-                    terminal_id,
-                    message:
-                        "The server connection was lost before the terminal request completed."
-                            .into(),
-                })
+                let message = String::from(
+                    "The server connection was lost before the terminal request completed.",
+                );
+                if self.settings_terminal_ids.contains(&terminal_id) {
+                    ClientUpdate {
+                        shell_changed: true,
+                        chat: Vec::new(),
+                        shell_events: vec![ShellEvent::ProviderTerminalError {
+                            target: None,
+                            kind: None,
+                            terminal_id: Some(terminal_id),
+                            message,
+                        }],
+                    }
+                } else {
+                    ClientUpdate::chat(ChatUpdate::TerminalError {
+                        terminal_id,
+                        message,
+                    })
+                }
             }
             request => match request.thread_id() {
                 Some(thread_id) => ClientUpdate::chat(ChatUpdate::Error {
@@ -2004,6 +2230,50 @@ impl ClientState {
         ClientUpdate::shell_changed()
     }
 
+    fn handle_provider_terminal_response(
+        &mut self,
+        result: Value,
+        target: AuthTarget,
+        kind: ProviderTerminalKind,
+    ) -> ClientUpdate {
+        match serde_json::from_value::<TerminalOpenedResult>(result) {
+            Ok(opened) => {
+                self.provider_terminal_busy = None;
+                self.settings_terminal_ids
+                    .insert(opened.terminal_id.clone());
+                let buffered_output = self.early_terminal_output.take(&opened.terminal_id);
+                let early_exit = self.early_terminal_exits.remove(&opened.terminal_id);
+                self.clear_orphaned_provider_terminal_events();
+                ClientUpdate {
+                    shell_changed: true,
+                    chat: Vec::new(),
+                    shell_events: vec![ShellEvent::ProviderTerminalOpened {
+                        target,
+                        kind,
+                        terminal_id: opened.terminal_id,
+                        buffered_output,
+                        early_exit,
+                    }],
+                }
+            }
+            Err(error) => {
+                self.provider_terminal_busy = None;
+                let message = format!("Provider terminal response was invalid: {error}");
+                self.auth_error = Some(message.clone());
+                ClientUpdate {
+                    shell_changed: true,
+                    chat: Vec::new(),
+                    shell_events: vec![ShellEvent::ProviderTerminalError {
+                        target: Some(target),
+                        kind: Some(kind),
+                        terminal_id: None,
+                        message,
+                    }],
+                }
+            }
+        }
+    }
+
     fn update_catalog_loaded(&mut self) {
         self.model_catalog_loaded =
             self.catalog_discovery_pending == 0 && self.catalog_model_pending == 0;
@@ -2011,6 +2281,18 @@ impl ClientState {
             self.model_catalog
                 .sort_by_key(|choice| choice.catalog_order);
         }
+    }
+
+    fn clear_orphaned_provider_terminal_events(&mut self) {
+        if self
+            .pending
+            .values()
+            .any(|pending| matches!(pending, PendingRequest::ProviderTerminal { .. }))
+        {
+            return;
+        }
+        self.early_terminal_output.clear();
+        self.early_terminal_exits.clear();
     }
 
     fn handle_settings_response(&mut self, result: Value) -> ClientUpdate {
@@ -2268,15 +2550,53 @@ impl ClientState {
                     ClientUpdate::shell_changed()
                 }
             },
-            channel::TERMINAL_OUTPUT => match serde_json::from_value::<TerminalOutputPush>(data) {
-                Ok(push) => ClientUpdate::chat(ChatUpdate::TerminalOutput(push)),
-                Err(error) => {
-                    self.notice = Some(format!("terminal.output push was invalid: {error}"));
-                    ClientUpdate::shell_changed()
+            channel::TERMINAL_OUTPUT => {
+                match serde_json::from_value::<TerminalOutputPush>(data) {
+                    Ok(push) if self.settings_terminal_ids.contains(&push.terminal_id) => {
+                        ClientUpdate {
+                            shell_changed: false,
+                            chat: Vec::new(),
+                            shell_events: vec![ShellEvent::ProviderTerminalOutput(push)],
+                        }
+                    }
+                    Ok(push) => {
+                        if self.pending.values().any(|pending| {
+                            matches!(pending, PendingRequest::ProviderTerminal { .. })
+                        }) {
+                            self.early_terminal_output
+                                .push(push.terminal_id.clone(), push.data.clone());
+                        }
+                        ClientUpdate::chat(ChatUpdate::TerminalOutput(push))
+                    }
+                    Err(error) => {
+                        self.notice = Some(format!("terminal.output push was invalid: {error}"));
+                        ClientUpdate::shell_changed()
+                    }
                 }
-            },
+            }
             channel::TERMINAL_EXIT => match serde_json::from_value::<TerminalExitPush>(data) {
-                Ok(push) => ClientUpdate::chat(ChatUpdate::TerminalExit(push)),
+                Ok(push) if self.settings_terminal_ids.remove(&push.terminal_id) => ClientUpdate {
+                    shell_changed: true,
+                    chat: Vec::new(),
+                    shell_events: vec![ShellEvent::ProviderTerminalExit(push)],
+                },
+                Ok(push) => {
+                    if self
+                        .pending
+                        .values()
+                        .any(|pending| matches!(pending, PendingRequest::ProviderTerminal { .. }))
+                    {
+                        if self.early_terminal_exits.len() >= EARLY_TERMINAL_EXIT_LIMIT
+                            && !self.early_terminal_exits.contains_key(&push.terminal_id)
+                            && let Some(oldest) = self.early_terminal_exits.keys().next().cloned()
+                        {
+                            self.early_terminal_exits.remove(&oldest);
+                        }
+                        self.early_terminal_exits
+                            .insert(push.terminal_id.clone(), push.exit_code);
+                    }
+                    ClientUpdate::chat(ChatUpdate::TerminalExit(push))
+                }
                 Err(error) => {
                     self.notice = Some(format!("terminal.exit push was invalid: {error}"));
                     ClientUpdate::shell_changed()
@@ -2411,6 +2731,7 @@ impl PendingRequest {
             | Self::AuthStatus { .. }
             | Self::AuthStart { .. }
             | Self::AuthSignOut { .. }
+            | Self::ProviderTerminal { .. }
             | Self::AcpAgents
             | Self::Models { .. }
             | Self::McpList { .. }
@@ -2430,6 +2751,14 @@ fn unix_time_ms() -> f64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map_or(0.0, |duration| duration.as_millis() as f64)
+}
+
+fn bounded_utf8_tail(value: String, maximum: usize) -> String {
+    let mut start = value.len().saturating_sub(maximum);
+    while !value.is_char_boundary(start) {
+        start += 1;
+    }
+    value[start..].to_owned()
 }
 
 fn send_turn_params(thread_id: &str, request: SendTurnRequest) -> Value {
@@ -2780,6 +3109,96 @@ mod tests {
             update.chat.as_slice(),
             [ChatUpdate::TerminalOutput(push)]
                 if push.terminal_id == "terminal-1" && push.data == "hello"
+        ));
+    }
+
+    #[test]
+    fn provider_terminal_replays_output_that_arrives_before_the_open_response() {
+        let mut state = ClientState::new(true);
+        let target = AuthTarget::provider(ProviderId::OpenCode);
+        state.pending.insert(
+            "provider-install".into(),
+            PendingRequest::ProviderTerminal {
+                target: target.clone(),
+                kind: ProviderTerminalKind::Install,
+            },
+        );
+
+        let early = state.handle_push(
+            channel::TERMINAL_OUTPUT,
+            json!({ "terminalId": "install-1", "data": "Downloading…" }),
+        );
+        assert!(matches!(
+            early.chat.as_slice(),
+            [ChatUpdate::TerminalOutput(push)] if push.terminal_id == "install-1"
+        ));
+
+        let opened = state.handle_response(Response::Success {
+            id: "provider-install".into(),
+            result: json!({ "terminalId": "install-1" }),
+        });
+        assert!(matches!(
+            opened.shell_events.as_slice(),
+            [ShellEvent::ProviderTerminalOpened {
+                target: opened_target,
+                kind: ProviderTerminalKind::Install,
+                terminal_id,
+                buffered_output,
+                early_exit: None,
+            }] if opened_target == &target
+                && terminal_id == "install-1"
+                && buffered_output == &["Downloading…"]
+        ));
+
+        let live = state.handle_push(
+            channel::TERMINAL_OUTPUT,
+            json!({ "terminalId": "install-1", "data": "Done" }),
+        );
+        assert!(!live.shell_changed);
+        assert!(matches!(
+            live.shell_events.as_slice(),
+            [ShellEvent::ProviderTerminalOutput(push)]
+                if push.terminal_id == "install-1" && push.data == "Done"
+        ));
+
+        let exit = state.handle_push(
+            channel::TERMINAL_EXIT,
+            json!({ "terminalId": "install-1", "exitCode": 0 }),
+        );
+        assert!(matches!(
+            exit.shell_events.as_slice(),
+            [ShellEvent::ProviderTerminalExit(push)]
+                if push.terminal_id == "install-1" && push.exit_code == Some(0)
+        ));
+    }
+
+    #[test]
+    fn provider_terminal_preserves_an_exit_that_wins_the_open_race() {
+        let mut state = ClientState::new(true);
+        let target = AuthTarget::agent(ProviderId::Acp, "gemini".into());
+        state.pending.insert(
+            "provider-login".into(),
+            PendingRequest::ProviderTerminal {
+                target,
+                kind: ProviderTerminalKind::SignIn,
+            },
+        );
+        state.handle_push(
+            channel::TERMINAL_EXIT,
+            json!({ "terminalId": "login-1", "exitCode": 7 }),
+        );
+
+        let opened = state.handle_response(Response::Success {
+            id: "provider-login".into(),
+            result: json!({ "terminalId": "login-1" }),
+        });
+        assert!(matches!(
+            opened.shell_events.as_slice(),
+            [ShellEvent::ProviderTerminalOpened {
+                kind: ProviderTerminalKind::SignIn,
+                early_exit: Some(Some(7)),
+                ..
+            }]
         ));
     }
 

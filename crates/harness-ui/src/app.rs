@@ -1,3 +1,4 @@
+mod provider_terminal;
 mod settings;
 
 use crate::assets::{HarnessAssets, register_fonts};
@@ -18,6 +19,8 @@ use gpui::{
 use gpui_component::Root;
 use gpui_component::input::{InputEvent, InputState};
 use harness_protocol::{ApprovalMode, Model, ModelConnectionPreset};
+use provider_terminal::{ProviderTerminalKey, ProviderTerminalView};
+use std::collections::HashMap;
 use std::rc::Rc;
 
 const APP_WIDTH: f32 = 1180.0;
@@ -90,6 +93,8 @@ struct HarnessApp {
     connection_base_url: Entity<InputState>,
     connection_default_model: Entity<InputState>,
     connection_api_key: Entity<InputState>,
+    provider_terminals: HashMap<ProviderTerminalKey, Entity<ProviderTerminalView>>,
+    provider_terminal_ids: HashMap<String, ProviderTerminalKey>,
     fixture: bool,
 }
 
@@ -339,6 +344,8 @@ impl HarnessApp {
             connection_base_url,
             connection_default_model,
             connection_api_key,
+            provider_terminals: HashMap::new(),
+            provider_terminal_ids: HashMap::new(),
             fixture,
         }
     }
@@ -451,6 +458,35 @@ impl HarnessApp {
                 self.state.select_thread(&thread_id);
             }
             ShellEvent::OpenUrl { url } => cx.open_url(&url),
+            ShellEvent::ProviderTerminalOpened {
+                target,
+                kind,
+                terminal_id,
+                buffered_output,
+                early_exit,
+            } => self.apply_provider_terminal_opened(
+                target,
+                kind,
+                terminal_id,
+                buffered_output,
+                early_exit,
+                cx,
+            ),
+            ShellEvent::ProviderTerminalOutput(push) => {
+                self.apply_provider_terminal_output(push.terminal_id, push.data, cx)
+            }
+            ShellEvent::ProviderTerminalExit(push) => {
+                self.apply_provider_terminal_exit(push.terminal_id, push.exit_code, cx);
+            }
+            ShellEvent::ProviderTerminalError {
+                target,
+                kind,
+                terminal_id,
+                message,
+            } => self.apply_provider_terminal_error(target, kind, terminal_id, message, cx),
+            ShellEvent::ProviderTerminalClosed { terminal_id } => {
+                self.apply_provider_terminal_closed(terminal_id, cx);
+            }
         }
     }
 

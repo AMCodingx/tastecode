@@ -1,5 +1,6 @@
 use super::HarnessApp;
-use crate::client_state::AuthTarget;
+use super::provider_terminal::{ProviderTerminalKey, ProviderTerminalPhase};
+use crate::client_state::{AuthTarget, ProviderTerminalKind};
 use crate::preferences::{FontPreference, NativePreferences, ThemePreference};
 use crate::theme::{Accent, Backdrop, Theme, ThemeMode};
 use gpui::{
@@ -244,6 +245,10 @@ impl HarnessApp {
         let mut providers = Vec::new();
         for (index, provider) in self.state.provider_statuses.iter().enumerate() {
             let target = AuthTarget::provider(provider.id);
+            let install_key =
+                ProviderTerminalKey::new(target.clone(), ProviderTerminalKind::Install);
+            let sign_in_key =
+                ProviderTerminalKey::new(target.clone(), ProviderTerminalKind::SignIn);
             let account = self.state.accounts.get(&target);
             let signed_in = account
                 .map(|account| account.signed_in)
@@ -260,7 +265,14 @@ impl HarnessApp {
                     (false, _) => "Sign-in required",
                 }
             };
-            let note = provider.problem.clone().unwrap_or_else(|| {
+            let idle_note = provider.problem.clone().unwrap_or_else(|| {
+                if !provider.installed {
+                    return provider
+                        .setup
+                        .as_ref()
+                        .and_then(|setup| setup.install_command.clone())
+                        .unwrap_or_else(|| "Provider CLI is not installed.".into());
+                }
                 if let Some(account) = account
                     && account.signed_in
                 {
@@ -281,14 +293,93 @@ impl HarnessApp {
                     )
                 }
             });
-            let busy = self.state.auth_busy.as_ref() == Some(&target);
+            let terminal_key = if !provider.installed {
+                Some(&install_key)
+            } else if !signed_in
+                && provider
+                    .setup
+                    .as_ref()
+                    .is_some_and(|setup| setup.login == ProviderLogin::Provider)
+            {
+                Some(&sign_in_key)
+            } else {
+                None
+            };
+            let terminal =
+                terminal_key.and_then(|key| self.provider_terminal_snapshot(key, &idle_note, cx));
+            let note = terminal
+                .as_ref()
+                .map_or_else(|| idle_note.clone(), |terminal| terminal.note.clone());
+            let busy = self.state.auth_busy.as_ref() == Some(&target)
+                || self.state.provider_terminal_busy.is_some();
             let trailing = if busy {
                 status_pill("Working…", false, theme)
             } else if !provider.installed {
                 if let Some(setup) = &provider.setup {
-                    let url = setup.install_url.clone();
-                    let action: SettingsAction = Rc::new(move |cx| cx.open_url(&url));
-                    provider_action_button(index, "Install guide", false, theme, action)
+                    if setup.install_command.is_some() {
+                        match terminal.as_ref().map(|terminal| terminal.phase) {
+                            Some(ProviderTerminalPhase::Starting) => {
+                                status_pill("Starting…", false, theme)
+                            }
+                            Some(ProviderTerminalPhase::Running) => {
+                                let key = install_key.clone();
+                                let view = cx.weak_entity();
+                                let action: SettingsAction = Rc::new(move |cx| {
+                                    let key = key.clone();
+                                    let _ = view.update(cx, |this, cx| {
+                                        this.toggle_provider_terminal(&key, cx);
+                                    });
+                                });
+                                provider_action_button(
+                                    index,
+                                    if terminal.as_ref().is_some_and(|terminal| terminal.visible) {
+                                        "Hide terminal"
+                                    } else {
+                                        "Installing…"
+                                    },
+                                    false,
+                                    theme,
+                                    action,
+                                )
+                            }
+                            Some(ProviderTerminalPhase::Succeeded) => {
+                                status_pill("Installed", true, theme)
+                            }
+                            Some(ProviderTerminalPhase::Failed | ProviderTerminalPhase::Error)
+                            | None => {
+                                let target = target.clone();
+                                let title = provider.display_name.clone();
+                                let view = cx.weak_entity();
+                                let action: SettingsAction = Rc::new(move |cx| {
+                                    let target = target.clone();
+                                    let title = title.clone();
+                                    let _ = view.update(cx, |this, cx| {
+                                        this.start_provider_terminal(
+                                            target,
+                                            ProviderTerminalKind::Install,
+                                            title,
+                                            cx,
+                                        );
+                                    });
+                                });
+                                provider_action_button(
+                                    index,
+                                    if terminal.is_some() {
+                                        "Retry install"
+                                    } else {
+                                        "Install"
+                                    },
+                                    false,
+                                    theme,
+                                    action,
+                                )
+                            }
+                        }
+                    } else {
+                        let url = setup.install_url.clone();
+                        let action: SettingsAction = Rc::new(move |cx| cx.open_url(&url));
+                        provider_action_button(index, "Install first", false, theme, action)
+                    }
                 } else {
                     status_pill(status, false, theme)
                 }
@@ -317,6 +408,65 @@ impl HarnessApp {
                     theme,
                     action,
                 )
+            } else if provider
+                .setup
+                .as_ref()
+                .is_some_and(|setup| setup.login == ProviderLogin::Provider)
+                && !signed_in
+            {
+                match terminal.as_ref().map(|terminal| terminal.phase) {
+                    Some(ProviderTerminalPhase::Starting) => status_pill("Starting…", false, theme),
+                    Some(ProviderTerminalPhase::Running) => {
+                        let key = sign_in_key.clone();
+                        let view = cx.weak_entity();
+                        let action: SettingsAction = Rc::new(move |cx| {
+                            let key = key.clone();
+                            let _ = view.update(cx, |this, cx| {
+                                this.toggle_provider_terminal(&key, cx);
+                            });
+                        });
+                        provider_action_button(
+                            index,
+                            if terminal.as_ref().is_some_and(|terminal| terminal.visible) {
+                                "Hide terminal"
+                            } else {
+                                "Show terminal"
+                            },
+                            false,
+                            theme,
+                            action,
+                        )
+                    }
+                    Some(ProviderTerminalPhase::Succeeded) => status_pill("Checking…", true, theme),
+                    Some(ProviderTerminalPhase::Failed | ProviderTerminalPhase::Error) | None => {
+                        let target = target.clone();
+                        let title = provider.display_name.clone();
+                        let view = cx.weak_entity();
+                        let action: SettingsAction = Rc::new(move |cx| {
+                            let target = target.clone();
+                            let title = title.clone();
+                            let _ = view.update(cx, |this, cx| {
+                                this.start_provider_terminal(
+                                    target,
+                                    ProviderTerminalKind::SignIn,
+                                    title,
+                                    cx,
+                                );
+                            });
+                        });
+                        provider_action_button(
+                            index,
+                            if terminal.is_some() {
+                                "Retry sign-in"
+                            } else {
+                                "Sign in"
+                            },
+                            false,
+                            theme,
+                            action,
+                        )
+                    }
+                }
             } else {
                 status_pill(status, ready, theme)
             };
@@ -327,6 +477,11 @@ impl HarnessApp {
                 trailing,
                 theme,
             ));
+            if let Some(key) = terminal_key
+                && let Some(terminal) = self.provider_terminal_element(key, cx)
+            {
+                providers.push(terminal);
+            }
         }
         if providers.is_empty() {
             providers.push(settings_empty_row(
@@ -433,6 +588,10 @@ impl HarnessApp {
         let mut agents = Vec::new();
         for (index, agent) in self.state.acp_agents.iter().enumerate() {
             let target = AuthTarget::agent(ProviderId::Acp, agent.id.clone());
+            let install_key =
+                ProviderTerminalKey::new(target.clone(), ProviderTerminalKind::Install);
+            let sign_in_key =
+                ProviderTerminalKey::new(target.clone(), ProviderTerminalKind::SignIn);
             let account = self.state.accounts.get(&target);
             let signed_in = account.is_some_and(|account| account.signed_in);
             let status = if agent.installed && agent.verified && signed_in {
@@ -442,7 +601,14 @@ impl HarnessApp {
             } else {
                 "Not installed"
             };
-            let note = agent.problem.clone().unwrap_or_else(|| {
+            let idle_note = agent.problem.clone().unwrap_or_else(|| {
+                if !agent.installed {
+                    return agent
+                        .setup
+                        .install_command
+                        .clone()
+                        .unwrap_or_else(|| "Provider CLI is not installed.".into());
+                }
                 if let Some(account) = account
                     && account.signed_in
                 {
@@ -462,10 +628,141 @@ impl HarnessApp {
                     "ACP-compatible coding agent".into()
                 }
             });
-            let trailing = if !agent.installed {
-                let url = agent.setup.install_url.clone();
-                let action: SettingsAction = Rc::new(move |cx| cx.open_url(&url));
-                provider_action_button(1_000 + index, "Install guide", false, theme, action)
+            let terminal_key = if !agent.installed {
+                Some(&install_key)
+            } else if !signed_in {
+                Some(&sign_in_key)
+            } else {
+                None
+            };
+            let terminal =
+                terminal_key.and_then(|key| self.provider_terminal_snapshot(key, &idle_note, cx));
+            let note = terminal
+                .as_ref()
+                .map_or_else(|| idle_note.clone(), |terminal| terminal.note.clone());
+            let busy = self.state.provider_terminal_busy.is_some();
+            let action_index = 1_000 + index;
+            let trailing = if busy {
+                status_pill("Working…", false, theme)
+            } else if !agent.installed {
+                if agent.setup.install_command.is_some() {
+                    match terminal.as_ref().map(|terminal| terminal.phase) {
+                        Some(ProviderTerminalPhase::Starting) => {
+                            status_pill("Starting…", false, theme)
+                        }
+                        Some(ProviderTerminalPhase::Running) => {
+                            let key = install_key.clone();
+                            let view = cx.weak_entity();
+                            let action: SettingsAction = Rc::new(move |cx| {
+                                let key = key.clone();
+                                let _ = view.update(cx, |this, cx| {
+                                    this.toggle_provider_terminal(&key, cx);
+                                });
+                            });
+                            provider_action_button(
+                                action_index,
+                                if terminal.as_ref().is_some_and(|terminal| terminal.visible) {
+                                    "Hide terminal"
+                                } else {
+                                    "Installing…"
+                                },
+                                false,
+                                theme,
+                                action,
+                            )
+                        }
+                        Some(ProviderTerminalPhase::Succeeded) => {
+                            status_pill("Installed", true, theme)
+                        }
+                        Some(ProviderTerminalPhase::Failed | ProviderTerminalPhase::Error)
+                        | None => {
+                            let target = target.clone();
+                            let title = agent.name.clone();
+                            let view = cx.weak_entity();
+                            let action: SettingsAction = Rc::new(move |cx| {
+                                let target = target.clone();
+                                let title = title.clone();
+                                let _ = view.update(cx, |this, cx| {
+                                    this.start_provider_terminal(
+                                        target,
+                                        ProviderTerminalKind::Install,
+                                        title,
+                                        cx,
+                                    );
+                                });
+                            });
+                            provider_action_button(
+                                action_index,
+                                if terminal.is_some() {
+                                    "Retry install"
+                                } else {
+                                    "Install"
+                                },
+                                false,
+                                theme,
+                                action,
+                            )
+                        }
+                    }
+                } else {
+                    let url = agent.setup.install_url.clone();
+                    let action: SettingsAction = Rc::new(move |cx| cx.open_url(&url));
+                    provider_action_button(action_index, "Install first", false, theme, action)
+                }
+            } else if !signed_in {
+                match terminal.as_ref().map(|terminal| terminal.phase) {
+                    Some(ProviderTerminalPhase::Starting) => status_pill("Starting…", false, theme),
+                    Some(ProviderTerminalPhase::Running) => {
+                        let key = sign_in_key.clone();
+                        let view = cx.weak_entity();
+                        let action: SettingsAction = Rc::new(move |cx| {
+                            let key = key.clone();
+                            let _ = view.update(cx, |this, cx| {
+                                this.toggle_provider_terminal(&key, cx);
+                            });
+                        });
+                        provider_action_button(
+                            action_index,
+                            if terminal.as_ref().is_some_and(|terminal| terminal.visible) {
+                                "Hide terminal"
+                            } else {
+                                "Show terminal"
+                            },
+                            false,
+                            theme,
+                            action,
+                        )
+                    }
+                    Some(ProviderTerminalPhase::Succeeded) => status_pill("Checking…", true, theme),
+                    Some(ProviderTerminalPhase::Failed | ProviderTerminalPhase::Error) | None => {
+                        let target = target.clone();
+                        let title = agent.name.clone();
+                        let view = cx.weak_entity();
+                        let action: SettingsAction = Rc::new(move |cx| {
+                            let target = target.clone();
+                            let title = title.clone();
+                            let _ = view.update(cx, |this, cx| {
+                                this.start_provider_terminal(
+                                    target,
+                                    ProviderTerminalKind::SignIn,
+                                    title,
+                                    cx,
+                                );
+                            });
+                        });
+                        provider_action_button(
+                            action_index,
+                            if terminal.is_some() {
+                                "Retry sign-in"
+                            } else {
+                                "Sign in"
+                            },
+                            false,
+                            theme,
+                            action,
+                        )
+                    }
+                }
             } else {
                 status_pill(status, agent.verified && signed_in, theme)
             };
@@ -476,6 +773,11 @@ impl HarnessApp {
                 trailing,
                 theme,
             ));
+            if let Some(key) = terminal_key
+                && let Some(terminal) = self.provider_terminal_element(key, cx)
+            {
+                agents.push(terminal);
+            }
         }
         if !agents.is_empty() {
             blocks.push(settings_group("ACP agents", agents, theme));
@@ -1792,6 +2094,7 @@ impl HarnessApp {
         let theme = self.theme;
         self.chat
             .update(cx, |chat, cx| chat.update_theme(theme, cx));
+        self.update_provider_terminal_themes(cx);
         self.persist_native_preferences();
         cx.notify();
     }
