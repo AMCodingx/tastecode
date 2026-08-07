@@ -8,10 +8,14 @@ pub enum ProviderId {
     Codex,
     #[serde(rename = "claude-code")]
     ClaudeCode,
+    #[serde(rename = "grok")]
+    Grok,
     #[serde(rename = "cursor")]
     Cursor,
     #[serde(rename = "opencode")]
     OpenCode,
+    #[serde(rename = "antigravity")]
+    Antigravity,
     #[serde(rename = "acp")]
     Acp,
     #[serde(rename = "api")]
@@ -1322,6 +1326,11 @@ mod tests {
         assert_eq!(
             serde_json::to_value(ProviderId::ClaudeCode).unwrap(),
             "claude-code"
+        );
+        assert_eq!(serde_json::to_value(ProviderId::Grok).unwrap(), "grok");
+        assert_eq!(
+            serde_json::to_value(ProviderId::Antigravity).unwrap(),
+            "antigravity"
         );
         assert_eq!(
             serde_json::to_value(ApprovalMode::AutoReview).unwrap(),

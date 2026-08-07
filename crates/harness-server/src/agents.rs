@@ -120,6 +120,9 @@ impl RuntimeRegistry for NativeRuntimes {
             ProviderId::ClaudeCode => Err(AgentError::Failed(
                 "Claude Code does not accept an ACP agent or model connection".into(),
             )),
+            ProviderId::Grok => Err(AgentError::Failed(
+                "Grok runtime is not available in this build".into(),
+            )),
             ProviderId::Cursor if agent.is_none() && connection_id.is_none() => {
                 Ok(self.cursor.clone())
             }
@@ -131,6 +134,9 @@ impl RuntimeRegistry for NativeRuntimes {
             }
             ProviderId::OpenCode => Err(AgentError::Failed(
                 "OpenCode does not accept an ACP agent or model connection".into(),
+            )),
+            ProviderId::Antigravity => Err(AgentError::Failed(
+                "Antigravity runtime is not available in this build".into(),
             )),
             ProviderId::Acp if connection_id.is_some() => Err(AgentError::Failed(
                 "ACP sessions do not accept a model connection".into(),
@@ -188,9 +194,12 @@ impl RuntimeRegistry for NativeRuntimes {
                 start_o_auth: false,
                 cancel_o_auth: false,
             },
-            ProviderId::ClaudeCode | ProviderId::Cursor | ProviderId::Acp | ProviderId::Api => {
-                unsupported_mcp_capabilities()
-            }
+            ProviderId::ClaudeCode
+            | ProviderId::Grok
+            | ProviderId::Cursor
+            | ProviderId::Antigravity
+            | ProviderId::Acp
+            | ProviderId::Api => unsupported_mcp_capabilities(),
         }
     }
 
@@ -3112,8 +3121,10 @@ fn provider_key(provider: ProviderId) -> &'static str {
     match provider {
         ProviderId::Codex => "codex",
         ProviderId::ClaudeCode => "claude-code",
+        ProviderId::Grok => "grok",
         ProviderId::Cursor => "cursor",
         ProviderId::OpenCode => "opencode",
+        ProviderId::Antigravity => "antigravity",
         ProviderId::Acp => "acp",
         ProviderId::Api => "api",
     }

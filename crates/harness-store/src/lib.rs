@@ -745,8 +745,10 @@ fn parse_provider(value: &str) -> Result<ProviderId> {
     match value {
         "codex" => Ok(ProviderId::Codex),
         "claude-code" => Ok(ProviderId::ClaudeCode),
+        "grok" => Ok(ProviderId::Grok),
         "cursor" => Ok(ProviderId::Cursor),
         "opencode" => Ok(ProviderId::OpenCode),
+        "antigravity" => Ok(ProviderId::Antigravity),
         "acp" => Ok(ProviderId::Acp),
         "api" => Ok(ProviderId::Api),
         _ => Err(StoreError::UnknownProvider(value.into())),
@@ -757,8 +759,10 @@ fn provider_key(provider: ProviderId) -> &'static str {
     match provider {
         ProviderId::Codex => "codex",
         ProviderId::ClaudeCode => "claude-code",
+        ProviderId::Grok => "grok",
         ProviderId::Cursor => "cursor",
         ProviderId::OpenCode => "opencode",
+        ProviderId::Antigravity => "antigravity",
         ProviderId::Acp => "acp",
         ProviderId::Api => "api",
     }

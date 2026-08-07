@@ -4716,8 +4716,10 @@ fn provider_key(provider: ProviderId) -> &'static str {
     match provider {
         ProviderId::Codex => "codex",
         ProviderId::ClaudeCode => "claude-code",
+        ProviderId::Grok => "grok",
         ProviderId::Cursor => "cursor",
         ProviderId::OpenCode => "opencode",
+        ProviderId::Antigravity => "antigravity",
         ProviderId::Acp => "acp",
         ProviderId::Api => "api",
     }

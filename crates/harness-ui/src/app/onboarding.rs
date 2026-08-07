@@ -1448,8 +1448,10 @@ fn onboarding_provider_mark(provider: ProviderId, theme: Theme, size: f32) -> An
         .text_color(theme.text_2.hsla())
         .child(match provider {
             ProviderId::ClaudeCode => "A",
+            ProviderId::Grok => "G",
             ProviderId::Cursor => "C",
             ProviderId::OpenCode => "O",
+            ProviderId::Antigravity => "A",
             ProviderId::Acp => "A",
             ProviderId::Api => "↔",
             ProviderId::Codex => unreachable!(),

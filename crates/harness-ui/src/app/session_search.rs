@@ -735,8 +735,10 @@ fn search_provider_label(provider: ProviderId) -> &'static str {
     match provider {
         ProviderId::Codex => "Codex",
         ProviderId::ClaudeCode => "Claude Code",
+        ProviderId::Grok => "grok",
         ProviderId::Cursor => "Cursor",
         ProviderId::OpenCode => "OpenCode",
+        ProviderId::Antigravity => "antigravity",
         ProviderId::Acp => "Gemini, Kimi & Qwen",
         ProviderId::Api => "api",
     }
