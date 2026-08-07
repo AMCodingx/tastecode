@@ -138,7 +138,7 @@ impl ChatView {
             |_, cx| MarkdownSelectionState::new(overlay.source.clone(), cx),
         );
         selection.update(cx, |selection, _| {
-            selection.set_source(overlay.source.clone());
+            selection.set_source(&overlay.source);
         });
         let context = RenderContext {
             id: "markdown-table-fullscreen",
@@ -251,9 +251,9 @@ pub(super) fn markdown_view(
         cx,
         |_, cx| MarkdownSelectionState::new(text.clone(), cx),
     );
-    selection.update(cx, |selection, _| selection.set_source(text.clone()));
-    let parsed = ::markdown::to_mdast(&text, &ParseOptions::gfm());
-    let Ok(Node::Root(root)) = parsed else {
+    selection.update(cx, |selection, _| selection.set_source(&text));
+    let parsed = selection.read(cx).document.root.clone();
+    let Some(root) = parsed.as_deref() else {
         return fallback_markdown(id, text, theme, window, cx);
     };
     let definitions = collect_definitions(&root.children);
@@ -325,7 +325,7 @@ struct MarkdownSelectionSegment {
 
 struct MarkdownSelectionState {
     focus: FocusHandle,
-    source: String,
+    document: MarkdownDocument,
     start: Option<Point<Pixels>>,
     end: Option<Point<Pixels>>,
     is_selecting: bool,
@@ -337,7 +337,7 @@ impl MarkdownSelectionState {
     fn new(source: String, cx: &mut gpui::Context<Self>) -> Self {
         Self {
             focus: cx.focus_handle(),
-            source,
+            document: MarkdownDocument::new(source),
             start: None,
             end: None,
             is_selecting: false,
@@ -346,9 +346,8 @@ impl MarkdownSelectionState {
         }
     }
 
-    fn set_source(&mut self, source: String) {
-        if self.source != source {
-            self.source = source;
+    fn set_source(&mut self, source: &str) {
+        if self.document.set_source(source) {
             self.clear();
             self.segments.clear();
             self.anchors.clear();
@@ -424,7 +423,7 @@ impl MarkdownSelectionState {
         if !self.has_selection() {
             return None;
         }
-        selected_markdown_text(&self.source, self.segments.values())
+        selected_markdown_text(&self.document.source, self.segments.values())
     }
 
     fn update_anchor(&mut self, key: String, bounds: Bounds<Pixels>) {
@@ -435,6 +434,35 @@ impl MarkdownSelectionState {
         let from = self.anchors.get(from)?;
         let to = self.anchors.get(to)?;
         Some(to.top() - from.top())
+    }
+}
+
+struct MarkdownDocument {
+    source: String,
+    root: Option<Arc<::markdown::mdast::Root>>,
+}
+
+impl MarkdownDocument {
+    fn new(source: String) -> Self {
+        let root = parse_markdown_root(&source);
+        Self { source, root }
+    }
+
+    fn set_source(&mut self, source: &str) -> bool {
+        if self.source == source {
+            return false;
+        }
+        self.source.clear();
+        self.source.push_str(source);
+        self.root = parse_markdown_root(source);
+        true
+    }
+}
+
+fn parse_markdown_root(source: &str) -> Option<Arc<::markdown::mdast::Root>> {
+    match ::markdown::to_mdast(source, &ParseOptions::gfm()).ok()? {
+        Node::Root(root) => Some(Arc::new(root)),
+        _ => None,
     }
 }
 
@@ -4085,6 +4113,81 @@ mod tests {
             &ParseOptions::gfm(),
         );
         assert!(matches!(parsed, Ok(Node::Root(_))));
+    }
+
+    #[test]
+    fn markdown_document_reuses_unchanged_ast_and_reparses_changes() {
+        let mut document = MarkdownDocument::new("First **answer**".into());
+        let first = document.root.clone().expect("parse first document");
+
+        assert!(!document.set_source("First **answer**"));
+        assert!(Arc::ptr_eq(
+            &first,
+            document.root.as_ref().expect("retain cached document")
+        ));
+        assert!(document.set_source("Second `answer`"));
+        assert_eq!(document.source, "Second `answer`");
+        assert!(!Arc::ptr_eq(
+            &first,
+            document.root.as_ref().expect("parse changed document")
+        ));
+    }
+
+    #[test]
+    #[ignore = "performance benchmark"]
+    fn benchmark_repeated_markdown_parse() {
+        const SAMPLES: usize = 9;
+        const ITERATIONS: usize = 50;
+        let text = (0..80)
+            .map(|index| {
+                format!(
+                    "## Result {index}\n\nA response with **formatted text**, [a link](https://example.com), and `inline code`.\n\n- first item\n- second item\n\n```rust\nfn result_{index}() -> usize {{ {index} }}\n```\n\n| Name | Value |\n| --- | ---: |\n| row | {index} |\n\n"
+                )
+            })
+            .collect::<String>();
+        let mut samples = Vec::with_capacity(SAMPLES);
+        for _ in 0..SAMPLES {
+            let started = Instant::now();
+            for _ in 0..ITERATIONS {
+                std::hint::black_box(
+                    ::markdown::to_mdast(&text, &ParseOptions::gfm()).expect("parse markdown"),
+                );
+            }
+            samples.push(started.elapsed());
+        }
+        samples.sort_unstable();
+        let median = samples[SAMPLES / 2];
+        let p95 = samples[((SAMPLES as f64 * 0.95).ceil() as usize - 1).min(SAMPLES - 1)];
+        println!(
+            "markdown_parse bytes={} iterations={ITERATIONS} median_ns={} p95_ns={} median_ns_per_parse={:.2} p95_ns_per_parse={:.2}",
+            text.len(),
+            median.as_nanos(),
+            p95.as_nanos(),
+            median.as_nanos() as f64 / ITERATIONS as f64,
+            p95.as_nanos() as f64 / ITERATIONS as f64,
+        );
+
+        let mut document = MarkdownDocument::new(text.clone());
+        let mut cache_samples = Vec::with_capacity(SAMPLES);
+        for _ in 0..SAMPLES {
+            let started = Instant::now();
+            for _ in 0..ITERATIONS {
+                std::hint::black_box(document.set_source(std::hint::black_box(text.as_str())));
+                std::hint::black_box(document.root.as_ref());
+            }
+            cache_samples.push(started.elapsed());
+        }
+        cache_samples.sort_unstable();
+        let median = cache_samples[SAMPLES / 2];
+        let p95 = cache_samples[((SAMPLES as f64 * 0.95).ceil() as usize - 1).min(SAMPLES - 1)];
+        println!(
+            "markdown_cache_hit bytes={} iterations={ITERATIONS} median_ns={} p95_ns={} median_ns_per_hit={:.2} p95_ns_per_hit={:.2}",
+            text.len(),
+            median.as_nanos(),
+            p95.as_nanos(),
+            median.as_nanos() as f64 / ITERATIONS as f64,
+            p95.as_nanos() as f64 / ITERATIONS as f64,
+        );
     }
 
     #[test]
