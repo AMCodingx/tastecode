@@ -16,6 +16,7 @@ use crate::client_state::{
 use crate::model_selection::{
     fast_mode_off_value, fast_service_tier, is_fast_mode_enabled, next_service_tier, source_key,
 };
+use crate::motion_icon::motion_icon;
 use crate::preferences::{FontPreference, NativePreferences, SourceSelection, ThemePreference};
 use crate::preview_capture::PreviewCaptureRuntime;
 use crate::sidebar::{
@@ -29,8 +30,8 @@ use command_palette::{CommandPaletteState, CommandScope};
 use gpui::{
     Animation, AnimationExt, App, Application, Bounds, Context, CursorStyle, Entity, FocusHandle,
     Focusable, KeyDownEvent, MouseButton, MouseDownEvent, MouseMoveEvent, PathPromptOptions,
-    Pixels, Render, TitlebarOptions, Window, WindowAppearance, WindowBackgroundAppearance,
-    WindowBounds, WindowOptions, div, point, prelude::*, size, svg,
+    Pixels, Render, SharedString, TitlebarOptions, Window, WindowAppearance,
+    WindowBackgroundAppearance, WindowBounds, WindowOptions, div, point, prelude::*, size, svg,
 };
 use gpui_component::Root;
 use gpui_component::input::{InputEvent, InputState};
@@ -1867,6 +1868,7 @@ impl HarnessApp {
             .child(
                 div()
                     .id("toggle-sidebar")
+                    .group("toggle-sidebar-hover")
                     .relative()
                     .size(px(22.0))
                     .flex()
@@ -1884,7 +1886,13 @@ impl HarnessApp {
                     .on_click(cx.listener(|this, _event, _window, cx| {
                         this.toggle_sidebar(cx);
                     }))
-                    .child(icon("icons/panel-left.svg", 15.0)),
+                    .child(motion_icon(
+                        "toggle-sidebar-icon",
+                        "icons/panel-left.svg",
+                        15.0,
+                        "toggle-sidebar-hover",
+                        theme,
+                    )),
             )
             .when_some(session, |titlebar, session| {
                 let branch = session.worktree_branch.clone();
@@ -1947,7 +1955,13 @@ impl HarnessApp {
                                             .font_family("Geist Mono")
                                             .text_size(px(11.5))
                                             .text_color(theme.text_3.hsla())
-                                            .child(icon("icons/git-branch.svg", 12.0))
+                                            .child(motion_icon(
+                                                "titlebar-branch-icon",
+                                                "icons/git-branch.svg",
+                                                12.0,
+                                                "titlebar-branch-icon-direct-hover",
+                                                theme,
+                                            ))
                                             .child(div().min_w(px(0.0)).truncate().child(branch)),
                                     )
                                 })
@@ -2425,8 +2439,11 @@ fn titlebar_tool_button(
     open: bool,
     theme: Theme,
 ) -> gpui::Stateful<gpui::Div> {
+    let hover_group: SharedString = format!("{id}:hover").into();
+    let icon_id: SharedString = format!("{id}:icon").into();
     div()
         .id(id)
+        .group(hover_group.clone())
         .h(px(28.0))
         .px(px(8.0))
         .flex()
@@ -2442,7 +2459,13 @@ fn titlebar_tool_button(
         .cursor_pointer()
         .hover(move |style| style.bg(theme.surface.hsla()).text_color(theme.text.hsla()))
         .active(|style| style.opacity(0.72))
-        .child(icon(icon_path, icon_size))
+        .child(motion_icon(
+            icon_id,
+            icon_path,
+            icon_size,
+            hover_group,
+            theme,
+        ))
         .child(label)
 }
 
