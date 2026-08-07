@@ -4,7 +4,12 @@ import { readFileSync } from 'node:fs'
 import type { DomainEvent } from '@harness/contracts'
 import type { Event } from '@opencode-ai/sdk'
 import { afterEach, describe, expect, it } from 'vitest'
-import { OpenCodeAdapter, OPENCODE_CAPABILITIES, openCodeMcpConfig } from './adapter.js'
+import {
+  OpenCodeAdapter,
+  OPENCODE_CAPABILITIES,
+  openCodeMcpConfig,
+  openCodeReasoningEfforts,
+} from './adapter.js'
 
 const CAPTURED = JSON.parse(
   readFileSync(new URL('./fixtures/events.json', import.meta.url), 'utf8'),
@@ -26,6 +31,7 @@ describe('OpenCode adapter', () => {
     adapter.on('event', (event) => events.push(event))
     const thread = await adapter.startThread('C:\\repo', {
       model: 'provider-1/model-1',
+      effort: 'high',
       instructions: 'Answer plainly.',
     })
     const completed = new Promise<void>((resolve) => {
@@ -34,7 +40,10 @@ describe('OpenCode adapter', () => {
       })
     })
 
-    await adapter.sendTurn(thread.id, 'Check the repository')
+    await adapter.sendTurn(thread.id, 'Check the repository', [], {
+      model: 'provider-1/model-1',
+      effort: 'low',
+    })
     await mock.waitFor('/session/session-1/prompt_async')
     for (const event of CAPTURED) mock.broadcast(event)
     await completed
@@ -66,6 +75,7 @@ describe('OpenCode adapter', () => {
     const prompt = mock.requests.find((request) => request.url.includes('prompt_async'))
     expect(prompt?.body).toMatchObject({
       model: { providerID: 'provider-1', modelID: 'model-1' },
+      variant: 'low',
       system: 'Answer plainly.',
       parts: [{ type: 'text', text: 'Check the repository' }],
     })
@@ -142,10 +152,155 @@ describe('OpenCode adapter', () => {
     await adapter.interrupt(thread.id)
     expect(mock.requests.some((request) => request.url.includes('/abort'))).toBe(true)
     await expect(adapter.listModels()).resolves.toMatchObject([
-      { id: 'provider-1/model-1', displayName: 'Provider One · Model One', isDefault: true },
+      {
+        id: 'provider-1/model-1',
+        displayName: 'Provider One · Model One',
+        isDefault: true,
+        reasoningEfforts: ['default', 'low', 'high'],
+        defaultReasoningEffort: 'default',
+      },
     ])
     expect(adapter.capabilities).toEqual(OPENCODE_CAPABILITIES)
     adapter.dispose()
+  })
+
+  it('reads model-specific variants from both OpenCode catalog shapes', () => {
+    expect(
+      openCodeReasoningEfforts({
+        variants: { low: {}, high: {}, obsolete: { disabled: true } },
+      }),
+    ).toEqual(['default', 'low', 'high'])
+    expect(
+      openCodeReasoningEfforts({
+        variants: [{ id: 'fast' }, { id: 'deep' }, { id: 'off', disabled: true }],
+      }),
+    ).toEqual(['default', 'fast', 'deep'])
+  })
+
+  it("uses each OpenCode v2 model's own variants on the wire", async () => {
+    const mock = await serveOpenCodeV2()
+    const adapter = new OpenCodeAdapter({ baseUrl: mock.baseUrl })
+    const events: DomainEvent[] = []
+    adapter.on('event', (event) => events.push(event))
+
+    await expect(adapter.listModels()).resolves.toMatchObject([
+      {
+        id: 'provider-1/model-1',
+        displayName: 'Provider One · Model One',
+        isDefault: true,
+        reasoningEfforts: ['default', 'low', 'high'],
+      },
+      {
+        id: 'provider-1/model-2',
+        displayName: 'Provider One · Model Two',
+        reasoningEfforts: ['default', 'max'],
+      },
+    ])
+
+    const thread = await adapter.startThread('C:\\repo', {
+      model: 'provider-1/model-1',
+      effort: 'high',
+      instructions: 'Answer plainly.',
+    })
+    const completed = new Promise<void>((resolve) => {
+      adapter.on('event', (event) => {
+        if (event.type === 'turn.completed') resolve()
+      })
+    })
+    await adapter.sendTurn(thread.id, 'Check it', [], { effort: 'low' })
+    await mock.waitFor('/api/session/session-v2/model')
+    await mock.waitFor('/api/session/session-v2/prompt')
+    mock.broadcast({
+      type: 'session.reasoning.started',
+      created: 200,
+      data: { sessionID: 'session-v2', assistantMessageID: 'message-v2', ordinal: 0 },
+    })
+    mock.broadcast({
+      type: 'session.reasoning.delta',
+      data: {
+        sessionID: 'session-v2',
+        assistantMessageID: 'message-v2',
+        ordinal: 0,
+        delta: 'Checking.',
+      },
+    })
+    mock.broadcast({
+      type: 'session.reasoning.ended',
+      data: {
+        sessionID: 'session-v2',
+        assistantMessageID: 'message-v2',
+        ordinal: 0,
+        text: 'Checking.',
+      },
+    })
+    mock.broadcast({
+      type: 'session.text.started',
+      data: { sessionID: 'session-v2', assistantMessageID: 'message-v2', ordinal: 0 },
+    })
+    mock.broadcast({
+      type: 'session.text.delta',
+      data: {
+        sessionID: 'session-v2',
+        assistantMessageID: 'message-v2',
+        ordinal: 0,
+        delta: 'Done.',
+      },
+    })
+    mock.broadcast({
+      type: 'session.text.ended',
+      data: {
+        sessionID: 'session-v2',
+        assistantMessageID: 'message-v2',
+        ordinal: 0,
+        text: 'Done.',
+      },
+    })
+    mock.broadcast({
+      type: 'session.usage.updated',
+      data: {
+        sessionID: 'session-v2',
+        tokens: { input: 10, output: 5, reasoning: 2, cache: { read: 3, write: 0 } },
+        cost: 0.01,
+      },
+    })
+    mock.broadcast({ type: 'session.execution.succeeded', data: { sessionID: 'session-v2' } })
+    await completed
+
+    expect(events).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ type: 'item.delta', textDelta: 'Checking.' }),
+        expect.objectContaining({ type: 'item.delta', textDelta: 'Done.' }),
+        expect.objectContaining({
+          type: 'usage.updated',
+          usage: {
+            inputTokens: 10,
+            cachedInputTokens: 3,
+            outputTokens: 5,
+            reasoningTokens: 2,
+            totalTokens: 17,
+            costUsd: 0.01,
+          },
+        }),
+        expect.objectContaining({ type: 'turn.completed', status: 'completed' }),
+      ]),
+    )
+    expect(
+      mock.requests.find((request) => request.method === 'POST' && request.url.endsWith('/model'))
+        ?.body,
+    ).toEqual({ model: { providerID: 'provider-1', id: 'model-1', variant: 'low' } })
+    expect(
+      mock.requests.find((request) => request.method === 'POST' && request.url.endsWith('/prompt'))
+        ?.body,
+    ).toEqual({ text: 'Answer plainly.\n\nCheck it' })
+    adapter.dispose()
+  })
+
+  it('rejects automatic approval review on resumed sessions too', async () => {
+    await expect(
+      new OpenCodeAdapter().resumeThread('opencode-session-1', 'C:\\repo', {
+        approval: 'auto-review',
+      }),
+    ).rejects.toThrow('automatic approval review')
   })
 })
 
@@ -198,7 +353,13 @@ async function serveOpenCode(): Promise<{
             id: 'provider-1',
             name: 'Provider One',
             env: [],
-            models: { 'model-1': { id: 'model-1', name: 'Model One' } },
+            models: {
+              'model-1': {
+                id: 'model-1',
+                name: 'Model One',
+                variants: { low: {}, high: {} },
+              },
+            },
           },
         ],
         default: { 'provider-1': 'model-1' },
@@ -214,6 +375,121 @@ async function serveOpenCode(): Promise<{
     )
       return json(response, session)
     if (request.url?.includes('/prompt_async')) {
+      response.writeHead(204)
+      return response.end()
+    }
+    return json(response, true)
+  })
+  servers.push(server)
+  server.listen(0, '127.0.0.1')
+  await once(server, 'listening')
+  const address = server.address()
+  if (!address || typeof address === 'string') throw new Error('mock server did not bind')
+  return {
+    baseUrl: `http://127.0.0.1:${address.port}`,
+    requests,
+    broadcast(event) {
+      for (const response of streams) response.write(`data: ${JSON.stringify(event)}\n\n`)
+    },
+    waitFor(url) {
+      const request = requests.find((entry) => entry.url.startsWith(url))
+      return request
+        ? Promise.resolve(request)
+        : new Promise((resolve) => waiters.push({ url, resolve }))
+    },
+  }
+}
+
+async function serveOpenCodeV2(): Promise<{
+  baseUrl: string
+  requests: RequestRecord[]
+  broadcast(event: unknown): void
+  waitFor(url: string): Promise<RequestRecord>
+}> {
+  const requests: RequestRecord[] = []
+  const streams = new Set<ServerResponse>()
+  const waiters: { url: string; resolve: (request: RequestRecord) => void }[] = []
+  const session = {
+    id: 'session-v2',
+    title: 'Harness v2 session',
+    time: { created: 100 },
+  }
+  const server = createServer(async (request, response) => {
+    if (request.url === '/api/event') {
+      response.writeHead(200, {
+        'content-type': 'text/event-stream',
+        connection: 'keep-alive',
+        'cache-control': 'no-cache',
+      })
+      response.write(`data: ${JSON.stringify({ type: 'server.connected', data: {} })}\n\n`)
+      streams.add(response)
+      request.on('close', () => streams.delete(response))
+      return
+    }
+    const record = {
+      method: request.method ?? 'GET',
+      url: request.url ?? '',
+      body: await requestBody(request),
+    }
+    requests.push(record)
+    const waiter = waiters.find((entry) => record.url.startsWith(entry.url))
+    if (waiter) {
+      waiters.splice(waiters.indexOf(waiter), 1)
+      waiter.resolve(record)
+    }
+    if (request.url === '/api/health') return json(response, { healthy: true })
+    if (request.url?.startsWith('/api/provider')) {
+      return json(response, { data: [{ id: 'provider-1', name: 'Provider One' }] })
+    }
+    if (request.url?.startsWith('/api/model')) {
+      return json(response, {
+        data: [
+          {
+            id: 'model-1',
+            providerID: 'provider-1',
+            name: 'Model One',
+            enabled: true,
+            variants: [{ id: 'low' }, { id: 'high' }],
+          },
+          {
+            id: 'model-2',
+            providerID: 'provider-1',
+            name: 'Model Two',
+            enabled: true,
+            variants: [{ id: 'max' }],
+          },
+        ],
+      })
+    }
+    if (request.url?.startsWith('/api/agent')) {
+      return json(response, {
+        data: [
+          {
+            id: 'build',
+            mode: 'primary',
+            model: { providerID: 'provider-1', id: 'model-1' },
+          },
+        ],
+      })
+    }
+    if (request.method === 'GET' && request.url === '/api/session/session-v2') {
+      return json(response, { data: session })
+    }
+    if (request.method === 'POST' && request.url === '/api/session') {
+      return json(response, { data: session })
+    }
+    if (request.method === 'POST' && request.url?.endsWith('/model')) {
+      response.writeHead(204)
+      return response.end()
+    }
+    if (request.method === 'POST' && request.url?.endsWith('/prompt')) {
+      return json(response, { data: { id: 'input-v2' } })
+    }
+    if (request.method === 'POST' && request.url?.endsWith('/interrupt')) {
+      response.writeHead(204)
+      return response.end()
+    }
+    if (request.method === 'POST' && request.url?.includes('/permission/')) {
       response.writeHead(204)
       return response.end()
     }

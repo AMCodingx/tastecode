@@ -309,6 +309,9 @@ importers:
       '@harness/contracts':
         specifier: workspace:*
         version: link:../contracts
+      '@harness/proc':
+        specifier: workspace:*
+        version: link:../proc
       '@opencode-ai/sdk':
         specifier: 1.18.11
         version: 1.18.11

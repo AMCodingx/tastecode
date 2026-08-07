@@ -1,4 +1,5 @@
 import { EventEmitter } from 'node:events'
+import { randomUUID } from 'node:crypto'
 import type {
   ApprovalDecision,
   ApprovalMode,
@@ -8,13 +9,9 @@ import type {
   Model,
   Thread,
 } from '@harness/contracts'
-import {
-  createOpencodeClient,
-  createOpencodeServer,
-  type Event,
-  type OpencodeClient,
-} from '@opencode-ai/sdk'
-import { OpenCodeEventMapper } from './events.js'
+import { createOpencodeClient, type OpencodeClient } from '@opencode-ai/sdk'
+import { killTree, spawnCli } from '@harness/proc'
+import { OpenCodeEventMapper, type OpenCodeV2Event, type OpenCodeWireEvent } from './events.js'
 
 export const OPENCODE_CAPABILITIES: Capabilities = {
   steer: false,
@@ -26,6 +23,60 @@ export const OPENCODE_CAPABILITIES: Capabilities = {
 }
 
 type Events = { event: [DomainEvent]; log: [string] }
+type OpenCodeProtocol = 'v1' | 'v2'
+
+export type OpenCodeStartOptions = {
+  model?: string | undefined
+  effort?: string | undefined
+  approval?: ApprovalMode | undefined
+  instructions?: string | undefined
+}
+
+export type OpenCodeTurnOptions = Pick<OpenCodeStartOptions, 'model' | 'effort'>
+
+const OPENCODE_DEFAULT_VARIANT = 'default'
+
+function applyOpenCodeTurnOptions(
+  current: OpenCodeTurnOptions,
+  next: OpenCodeTurnOptions,
+): OpenCodeTurnOptions {
+  if (Object.keys(next).length === 0) return current
+  const merged = { ...current }
+  for (const field of ['model', 'effort'] as const) {
+    if (!(field in next)) continue
+    const value = next[field]
+    if (value === undefined) delete merged[field]
+    else merged[field] = value
+  }
+  return merged
+}
+
+function record(value: unknown): Record<string, unknown> {
+  return value && typeof value === 'object' && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : {}
+}
+
+/** OpenCode owns variant names and can add custom ones in project config.
+ *  Accept both catalog shapes it uses for variants so the result remains
+ *  model-specific instead of guessing from the underlying provider name. */
+export function openCodeReasoningEfforts(model: unknown): string[] {
+  const value = record(model).variants ?? record(record(model).options).variants
+  const variants = Array.isArray(value)
+    ? value
+        .map((entry) => record(entry))
+        .filter((entry) => entry.disabled !== true)
+        .map((entry) => entry.id)
+        .filter((id): id is string => typeof id === 'string' && id.length > 0)
+    : Object.entries(record(value))
+        .filter(([, entry]) => record(entry).disabled !== true)
+        .map(([id]) => id)
+  if (variants.length === 0) return []
+  return [
+    OPENCODE_DEFAULT_VARIANT,
+    ...new Set(variants.filter((id) => id !== OPENCODE_DEFAULT_VARIANT)),
+  ]
+}
 
 /**
  * Harness MCP config as the `mcp` block of an opencode config. Credential
@@ -89,6 +140,8 @@ export class OpenCodeAdapter extends EventEmitter<Events> {
   readonly #mcpCredentials: Record<string, string>
   #baseUrl: string | undefined
   #server: { close(): void } | undefined
+  #protocol: OpenCodeProtocol | undefined
+  #authorization: string | undefined
   #client: OpencodeClient | undefined
   #workspacePath = ''
   #sessionId: string | undefined
@@ -102,7 +155,9 @@ export class OpenCodeAdapter extends EventEmitter<Events> {
   #approval: ApprovalMode = 'ask'
   #pendingApprovals = new Set<string>()
   #model: string | undefined
+  #effort: string | undefined
   #instructions: string | undefined
+  #instructionsPending = false
 
   constructor(
     options: {
@@ -122,39 +177,52 @@ export class OpenCodeAdapter extends EventEmitter<Events> {
   }
 
   async start(): Promise<void> {
-    if (this.#baseUrl) return
+    if (this.#baseUrl && this.#protocol) return
     if (this.#configuredBaseUrl) {
       this.#baseUrl = this.#configuredBaseUrl
+      this.#protocol = await this.#detectProtocol()
       return
     }
     try {
-      const serverOptions: Parameters<typeof createOpencodeServer>[0] = {
-        hostname: '127.0.0.1',
-        port: 0,
-      }
-      if (this.#mcpServers.length > 0) {
-        serverOptions.config = {
-          mcp: openCodeMcpConfig(this.#mcpServers, this.#mcpCredentials) as never,
-        }
-      }
-      const server = await createOpencodeServer(serverOptions)
+      const config =
+        this.#mcpServers.length > 0
+          ? { mcp: openCodeMcpConfig(this.#mcpServers, this.#mcpCredentials) }
+          : {}
+      const server = await launchOpenCodeServer(config)
       this.#server = server
       this.#baseUrl = server.url
+      this.#authorization = server.authorization
+      this.#protocol = await this.#detectProtocol()
     } catch {
       throw new Error('OpenCode is unavailable. Install it and run `opencode` once to sign in.')
     }
   }
 
-  async startThread(
-    workspacePath: string,
-    options: { model?: string; approval?: ApprovalMode; instructions?: string } = {},
-  ): Promise<Thread> {
+  async startThread(workspacePath: string, options: OpenCodeStartOptions = {}): Promise<Thread> {
     this.#validateApproval(options.approval)
     await this.start()
     this.#workspacePath = workspacePath
     this.#approval = options.approval ?? 'ask'
     this.#model = options.model
+    this.#effort = options.effort
     this.#instructions = options.instructions
+    this.#instructionsPending = Boolean(options.instructions)
+    if (this.#protocol === 'v2') {
+      const model = openCodeV2Model(this.#model, this.#effort)
+      const result = await this.#v2Request<{ data: OpenCodeV2Session }>('/api/session', {
+        method: 'POST',
+        body: JSON.stringify({
+          title: 'Personal Harness',
+          location: { directory: workspacePath },
+          ...(model ? { model } : {}),
+        }),
+      })
+      const session = result.data
+      this.#sessionId = session.id
+      this.#threadId = `opencode-${session.id}`
+      await this.#subscribe()
+      return openCodeThread(session, workspacePath)
+    }
     this.#client = this.#newClient(workspacePath)
     await this.#subscribe()
     const { data: session } = await this.#client.session.create({
@@ -175,14 +243,29 @@ export class OpenCodeAdapter extends EventEmitter<Events> {
   async resumeThread(
     threadId: string,
     workspacePath: string,
-    options: { instructions?: string } = {},
+    options: OpenCodeStartOptions = {},
   ): Promise<Thread> {
+    this.#validateApproval(options.approval)
     await this.start()
     this.#workspacePath = workspacePath
+    this.#approval = options.approval ?? 'ask'
+    this.#model = options.model
+    this.#effort = options.effort
     this.#instructions = options.instructions
+    this.#instructionsPending = false
+    const sessionId = threadId.startsWith('opencode-') ? threadId.slice(9) : threadId
+    if (this.#protocol === 'v2') {
+      const result = await this.#v2Request<{ data: OpenCodeV2Session }>(
+        `/api/session/${encodeURIComponent(sessionId)}`,
+      )
+      const session = result.data
+      this.#sessionId = session.id
+      this.#threadId = `opencode-${session.id}`
+      await this.#subscribe()
+      return openCodeThread(session, workspacePath)
+    }
     this.#client = this.#newClient(workspacePath)
     await this.#subscribe()
-    const sessionId = threadId.startsWith('opencode-') ? threadId.slice(9) : threadId
     const { data: session } = await this.#client.session.get({
       path: { id: sessionId },
       throwOnError: true,
@@ -198,12 +281,27 @@ export class OpenCodeAdapter extends EventEmitter<Events> {
     }
   }
 
-  async sendTurn(threadId: string, text: string, attachments: string[] = []): Promise<string> {
-    if (!this.#client || !this.#sessionId || threadId !== this.#threadId) {
+  async sendTurn(
+    threadId: string,
+    text: string,
+    attachments: string[] = [],
+    options: OpenCodeTurnOptions = {},
+  ): Promise<string> {
+    if (
+      (this.#protocol === 'v1' && !this.#client) ||
+      !this.#sessionId ||
+      threadId !== this.#threadId
+    ) {
       throw new Error('OpenCode session has not started')
     }
     if (attachments.length) throw new Error('OpenCode attachments are not supported yet')
     if (this.#turnId) throw new Error('a turn is already running')
+    const selection = applyOpenCodeTurnOptions(
+      { model: this.#model, effort: this.#effort },
+      options,
+    )
+    this.#model = selection.model
+    this.#effort = selection.effort
     const turnId = `${threadId}-turn-${++this.#turnCounter}`
     this.#turnId = turnId
     this.#turnSawActivity = false
@@ -212,23 +310,36 @@ export class OpenCodeAdapter extends EventEmitter<Events> {
       type: 'turn.started',
       turn: { id: turnId, threadId, status: 'running', createdAt: Date.now() },
     })
+    if (this.#protocol === 'v2') {
+      void this.#sendV2Turn(text, turnId).catch(() => this.#failTurn(turnId))
+      return turnId
+    }
     const model = parseModel(this.#model)
-    void this.#client.session
-      .promptAsync({
-        path: { id: this.#sessionId },
-        body: {
-          parts: [{ type: 'text', text }],
-          ...(model ? { model } : {}),
-          ...(this.#instructions ? { system: this.#instructions } : {}),
-        },
-        throwOnError: true,
-      })
-      .catch(() => this.#failTurn(turnId))
+    const variant =
+      this.#effort && this.#effort !== OPENCODE_DEFAULT_VARIANT ? this.#effort : undefined
+    void this.#client!.session.promptAsync({
+      path: { id: this.#sessionId },
+      body: {
+        parts: [{ type: 'text', text }],
+        ...(model ? { model } : {}),
+        ...(variant ? { variant } : {}),
+        ...(this.#instructions ? { system: this.#instructions } : {}),
+      } as never,
+      throwOnError: true,
+    }).catch(() => this.#failTurn(turnId))
     return turnId
   }
 
   async interrupt(threadId: string): Promise<void> {
-    if (!this.#client || !this.#sessionId || threadId !== this.#threadId) return
+    if (!this.#sessionId || threadId !== this.#threadId) return
+    if (this.#protocol === 'v2') {
+      await this.#v2Request(`/api/session/${encodeURIComponent(this.#sessionId)}/interrupt`, {
+        method: 'POST',
+      })
+      this.#finishTurn('interrupted')
+      return
+    }
+    if (!this.#client) return
     await this.#client.session.abort({
       path: { id: this.#sessionId },
       throwOnError: true,
@@ -237,10 +348,23 @@ export class OpenCodeAdapter extends EventEmitter<Events> {
   }
 
   respondToApproval(approvalId: string, decision: ApprovalDecision): void {
-    if (!this.#client || !this.#sessionId || !this.#pendingApprovals.has(approvalId)) return
+    if (!this.#sessionId || !this.#pendingApprovals.has(approvalId)) return
     this.#pendingApprovals.delete(approvalId)
     const response =
       decision === 'approve-session' ? 'always' : decision === 'approve' ? 'once' : 'reject'
+    if (this.#protocol === 'v2') {
+      void this.#v2Request(
+        `/api/session/${encodeURIComponent(this.#sessionId)}/permission/${encodeURIComponent(approvalId)}/reply`,
+        { method: 'POST', body: JSON.stringify({ reply: response }) },
+      )
+        .then(() => this.emit('event', { type: 'approval.resolved', id: approvalId }))
+        .catch(() => this.emit('log', 'OpenCode permission response failed'))
+      if (decision === 'abort') {
+        void this.interrupt(this.#threadId!).catch(() => this.emit('log', 'OpenCode abort failed'))
+      }
+      return
+    }
+    if (!this.#client) return
     void this.#client
       .postSessionIdPermissionsPermissionId({
         path: { id: this.#sessionId, permissionID: approvalId },
@@ -258,19 +382,26 @@ export class OpenCodeAdapter extends EventEmitter<Events> {
 
   async listModels(): Promise<Model[]> {
     await this.start()
+    if (this.#protocol === 'v2') return this.#listV2Models()
     const { data: result } = await this.#newClient().provider.list({
       throwOnError: true,
     })
     return result.all
       .filter((provider) => result.connected.includes(provider.id))
       .flatMap((provider) =>
-        Object.values(provider.models).map((model) => ({
-          id: `${provider.id}/${model.id}`,
-          displayName: `${provider.name} · ${model.name}`,
-          isDefault: result.default[provider.id] === model.id,
-          reasoningEfforts: [],
-          serviceTiers: [],
-        })),
+        Object.values(provider.models).map((model) => {
+          const reasoningEfforts = openCodeReasoningEfforts(model)
+          return {
+            id: `${provider.id}/${model.id}`,
+            displayName: `${provider.name} · ${model.name}`,
+            isDefault: result.default[provider.id] === model.id,
+            reasoningEfforts,
+            ...(reasoningEfforts.length > 0
+              ? { defaultReasoningEffort: OPENCODE_DEFAULT_VARIANT }
+              : {}),
+            serviceTiers: [],
+          }
+        }),
       )
   }
 
@@ -282,10 +413,15 @@ export class OpenCodeAdapter extends EventEmitter<Events> {
     // Without this a disposed instance stays pointed at the closed port and a
     // later start() early-returns into connection errors instead of respawning.
     this.#baseUrl = this.#configuredBaseUrl
+    this.#protocol = undefined
+    this.#authorization = undefined
     this.#client = undefined
     this.#sessionId = undefined
     this.#threadId = undefined
     this.#turnId = undefined
+    this.#model = undefined
+    this.#effort = undefined
+    this.#instructionsPending = false
     this.#pendingApprovals.clear()
   }
 
@@ -293,6 +429,7 @@ export class OpenCodeAdapter extends EventEmitter<Events> {
     return createOpencodeClient({
       baseUrl: this.#baseUrl!,
       ...(directory ? { directory } : {}),
+      ...(this.#authorization ? { headers: { authorization: this.#authorization } } : {}),
     })
   }
 
@@ -300,6 +437,10 @@ export class OpenCodeAdapter extends EventEmitter<Events> {
     this.#eventController?.abort()
     const controller = new AbortController()
     this.#eventController = controller
+    if (this.#protocol === 'v2') {
+      await this.#subscribeV2(controller)
+      return
+    }
     const { stream } = await this.#client!.event.subscribe({ signal: controller.signal })
     void (async () => {
       try {
@@ -313,8 +454,172 @@ export class OpenCodeAdapter extends EventEmitter<Events> {
     })()
   }
 
-  #onEvent(event: Event): void {
+  async #detectProtocol(): Promise<OpenCodeProtocol> {
+    try {
+      const response = await fetch(new URL('/api/health', this.#baseUrl), {
+        headers: this.#authorization ? { authorization: this.#authorization } : {},
+        signal: AbortSignal.timeout(1500),
+      })
+      if (!response.ok) return 'v1'
+      const health = record(await response.json())
+      return health.healthy === true ? 'v2' : 'v1'
+    } catch {
+      return 'v1'
+    }
+  }
+
+  async #v2Request<T = unknown>(path: string, init: RequestInit = {}): Promise<T> {
+    const headers = new Headers(init.headers)
+    if (this.#authorization) headers.set('authorization', this.#authorization)
+    if (init.body !== undefined) headers.set('content-type', 'application/json')
+    const response = await fetch(new URL(path, this.#baseUrl), { ...init, headers })
+    if (!response.ok) throw new Error(`OpenCode v2 request failed (${response.status})`)
+    if (response.status === 204) return undefined as T
+    return (await response.json()) as T
+  }
+
+  async #subscribeV2(controller: AbortController): Promise<void> {
+    const response = await fetch(new URL('/api/event', this.#baseUrl), {
+      headers: this.#authorization ? { authorization: this.#authorization } : {},
+      signal: controller.signal,
+    })
+    if (!response.ok || !response.body) throw new Error('OpenCode v2 event stream failed')
+    void readOpenCodeSse(response.body, (event) => this.#onEvent(event), controller.signal).catch(
+      () => {
+        if (!controller.signal.aborted) {
+          this.emit('log', 'OpenCode event stream disconnected')
+          this.#failTurn()
+        }
+      },
+    )
+  }
+
+  async #sendV2Turn(text: string, turnId: string): Promise<void> {
+    const sessionId = this.#sessionId!
+    const model = openCodeV2Model(this.#model, this.#effort)
+    if (model) {
+      await this.#v2Request(`/api/session/${encodeURIComponent(sessionId)}/model`, {
+        method: 'POST',
+        body: JSON.stringify({ model }),
+      })
+    }
+    if (this.#turnId !== turnId) return
+    const prompt =
+      this.#instructionsPending && this.#instructions ? `${this.#instructions}\n\n${text}` : text
+    await this.#v2Request(`/api/session/${encodeURIComponent(sessionId)}/prompt`, {
+      method: 'POST',
+      body: JSON.stringify({ text: prompt }),
+    })
+    this.#instructionsPending = false
+  }
+
+  async #listV2Models(): Promise<Model[]> {
+    const location = `?location%5Bdirectory%5D=${encodeURIComponent(this.#workspacePath || process.cwd())}`
+    let providers: OpenCodeV2Provider[] = []
+    let models: OpenCodeV2CatalogModel[] = []
+    // The v2 service starts accepting HTTP before its location-scoped catalog
+    // has loaded. Retry that empty-but-successful state briefly; otherwise the
+    // first picker open would incorrectly fall back to "Provider default".
+    for (let attempt = 0; attempt < 5; attempt += 1) {
+      providers = (
+        await this.#v2Request<{ data: OpenCodeV2Provider[] }>(`/api/provider${location}`)
+      ).data
+      models = (await this.#v2Request<{ data: OpenCodeV2CatalogModel[] }>(`/api/model${location}`))
+        .data
+      if (models.length > 0) break
+      if (attempt < 4) await new Promise((resolve) => setTimeout(resolve, 250))
+    }
+    // A cold v2 service can publish connected providers one tick before its
+    // model catalog. Resolving those providers once triggers catalog loading;
+    // this stays data-driven and avoids any provider-name special case.
+    if (models.length === 0 && providers.length > 0) {
+      await Promise.all(
+        providers.map((provider) =>
+          this.#v2Request(`/api/provider/${encodeURIComponent(provider.id)}${location}`),
+        ),
+      )
+      models = (await this.#v2Request<{ data: OpenCodeV2CatalogModel[] }>(`/api/model${location}`))
+        .data
+    }
+    const agents = await this.#v2Request<{ data: OpenCodeV2Agent[] }>(
+      `/api/agent${location}`,
+    ).catch(() => ({ data: [] }))
+    const defaultModel =
+      agents.data.find((agent) => agent.id === 'build')?.model ??
+      agents.data.find((agent) => agent.mode === 'primary')?.model
+    const providerNames = new Map(providers.map((provider) => [provider.id, provider.name]))
+    return models
+      .filter((model) => model.enabled !== false && providerNames.has(model.providerID))
+      .map((model) => {
+        const reasoningEfforts = openCodeReasoningEfforts(model)
+        return {
+          id: `${model.providerID}/${model.id}`,
+          displayName: `${providerNames.get(model.providerID)} · ${model.name}`,
+          isDefault: defaultModel?.providerID === model.providerID && defaultModel.id === model.id,
+          reasoningEfforts,
+          ...(reasoningEfforts.length > 0
+            ? { defaultReasoningEffort: OPENCODE_DEFAULT_VARIANT }
+            : {}),
+          serviceTiers: [],
+        }
+      })
+  }
+
+  #onV2Event(event: OpenCodeV2Event): void {
+    const data = event.data
+    if (event.type === 'permission.asked') {
+      const approvalId = typeof data.id === 'string' ? data.id : ''
+      if (!approvalId) return
+      const action = typeof data.action === 'string' ? data.action : ''
+      const resources = Array.isArray(data.resources)
+        ? data.resources.filter((value): value is string => typeof value === 'string')
+        : []
+      const command = /bash|shell|command|execute/i.test(action)
+      this.#pendingApprovals.add(approvalId)
+      if (this.#approval === 'full' || (this.#approval === 'auto' && !command)) {
+        this.respondToApproval(
+          approvalId,
+          this.#approval === 'full' ? 'approve-session' : 'approve',
+        )
+        return
+      }
+      this.emit('event', {
+        type: 'approval.requested',
+        request: {
+          id: approvalId,
+          kind: command ? 'command' : 'file_change',
+          ...(command
+            ? { command: resources.join(' ') || action }
+            : { path: resources[0] || action }),
+          createdAt: event.created ?? Date.now(),
+        },
+      })
+      return
+    }
+    if (event.type === 'permission.replied') {
+      const approvalId = typeof data.requestID === 'string' ? data.requestID : ''
+      if (approvalId && this.#pendingApprovals.delete(approvalId)) {
+        this.emit('event', { type: 'approval.resolved', id: approvalId })
+      }
+      return
+    }
+    if (sessionId(event) === this.#sessionId) this.#turnSawActivity = true
+    if (this.#mapper) {
+      for (const domainEvent of this.#mapper.translate(event)) this.emit('event', domainEvent)
+    }
+    if (event.type === 'session.execution.succeeded') this.#finishTurn('completed')
+    else if (event.type === 'session.execution.interrupted') this.#finishTurn('interrupted')
+    else if (event.type === 'session.execution.failed' || event.type === 'session.step.failed') {
+      this.#failTurn()
+    }
+  }
+
+  #onEvent(event: OpenCodeWireEvent): void {
     if (sessionId(event) !== undefined && sessionId(event) !== this.#sessionId) return
+    if ('data' in event) {
+      this.#onV2Event(event)
+      return
+    }
     if (event.type === 'permission.updated') {
       const permission = event.properties
       const command = /bash|shell|command/i.test(permission.type)
@@ -419,7 +724,147 @@ function parseModel(
   return { providerID: value.slice(0, slash), modelID: value.slice(slash + 1) }
 }
 
-function sessionId(event: Event): string | undefined {
+type OpenCodeV2Session = {
+  id: string
+  title?: string
+  time?: { created?: number }
+}
+
+type OpenCodeV2Provider = { id: string; name: string }
+type OpenCodeV2CatalogModel = {
+  id: string
+  providerID: string
+  name: string
+  enabled?: boolean
+  variants?: unknown
+}
+type OpenCodeV2Agent = {
+  id: string
+  mode?: string
+  model?: { id: string; providerID: string; variant?: string }
+}
+
+function openCodeThread(session: OpenCodeV2Session, workspacePath: string): Thread {
+  return {
+    id: `opencode-${session.id}`,
+    provider: 'opencode',
+    workspacePath,
+    title: session.title || 'OpenCode session',
+    createdAt: session.time?.created ?? Date.now(),
+  }
+}
+
+function openCodeV2Model(
+  value: string | undefined,
+  effort: string | undefined,
+): { id: string; providerID: string; variant?: string } | undefined {
+  const model = parseModel(value)
+  if (!model) return undefined
+  return {
+    id: model.modelID,
+    providerID: model.providerID,
+    ...(effort && effort !== OPENCODE_DEFAULT_VARIANT ? { variant: effort } : {}),
+  }
+}
+
+async function launchOpenCodeServer(config: Record<string, unknown>): Promise<{
+  url: string
+  authorization: string
+  close(): void
+}> {
+  // OpenCode v2 currently fixes the Basic-auth username to `opencode`; only
+  // the password is configurable on the wire.
+  const username = 'opencode'
+  const password = randomUUID()
+  const authorization = `Basic ${Buffer.from(`${username}:${password}`).toString('base64')}`
+  return new Promise((resolve, reject) => {
+    const child = spawnCli('opencode', ['serve', '--hostname=127.0.0.1', '--port=0'], {
+      env: {
+        OPENCODE_SERVER_USERNAME: username,
+        OPENCODE_SERVER_PASSWORD: password,
+        ...(Object.keys(config).length > 0
+          ? { OPENCODE_CONFIG_CONTENT: JSON.stringify(config) }
+          : {}),
+      },
+    })
+    let output = ''
+    let settled = false
+    const finish = (error?: Error, url?: string) => {
+      if (settled) return
+      settled = true
+      clearTimeout(timer)
+      if (error || !url) {
+        killTree(child)
+        reject(error ?? new Error('OpenCode server did not publish a URL'))
+        return
+      }
+      resolve({ url, authorization, close: () => killTree(child) })
+    }
+    const timer = setTimeout(() => finish(new Error('OpenCode server did not start')), 7000)
+    child.stdout.setEncoding('utf8')
+    child.stdout.on('data', (chunk: string) => {
+      output = `${output}${chunk}`.slice(-4096)
+      const match = output.match(/(?:opencode\s+)?server listening on\s+(https?:\/\/[^\s]+)/i)
+      if (match?.[1]) finish(undefined, match[1])
+    })
+    // Drain stderr without copying it into an exception: startup diagnostics
+    // can include auth details, and the actionable error is the safe one above.
+    child.stderr.on('data', () => undefined)
+    child.on('error', (error) => finish(error))
+    child.on('exit', (code) => {
+      if (!settled) finish(new Error(`OpenCode server exited with code ${code ?? 'unknown'}`))
+    })
+  })
+}
+
+async function readOpenCodeSse(
+  stream: ReadableStream<Uint8Array>,
+  onEvent: (event: OpenCodeV2Event) => void,
+  signal: AbortSignal,
+): Promise<void> {
+  const reader = stream.getReader()
+  const decoder = new TextDecoder()
+  let buffer = ''
+  try {
+    while (!signal.aborted) {
+      const result = await reader.read()
+      if (result.done) return
+      buffer += decoder.decode(result.value, { stream: true })
+      buffer = buffer.replace(/\r\n/g, '\n')
+      let boundary: number
+      while ((boundary = buffer.indexOf('\n\n')) >= 0) {
+        const frame = buffer.slice(0, boundary)
+        buffer = buffer.slice(boundary + 2)
+        const data = frame
+          .split('\n')
+          .filter((line) => line.startsWith('data:'))
+          .map((line) => line.slice(5).trimStart())
+          .join('\n')
+        if (!data) continue
+        try {
+          const parsed = record(JSON.parse(data))
+          if (typeof parsed.type !== 'string') continue
+          onEvent({
+            ...(typeof parsed.id === 'string' ? { id: parsed.id } : {}),
+            ...(typeof parsed.created === 'number' ? { created: parsed.created } : {}),
+            type: parsed.type,
+            data: record(parsed.data),
+          })
+        } catch {
+          // One malformed frame must not disconnect an otherwise healthy SSE
+          // stream; OpenCode will publish the next durable event independently.
+        }
+      }
+    }
+  } finally {
+    reader.releaseLock()
+  }
+}
+
+function sessionId(event: OpenCodeWireEvent): string | undefined {
+  if ('data' in event) {
+    return typeof event.data.sessionID === 'string' ? event.data.sessionID : undefined
+  }
   const properties = event.properties as {
     sessionID?: string
     part?: { sessionID?: string }
