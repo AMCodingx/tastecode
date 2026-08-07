@@ -1,10 +1,14 @@
-use harness_protocol::{ApprovalDecision, ApprovalMode, Capabilities, DomainEvent, Model, Thread};
+use harness_protocol::{
+    Account, ApprovalDecision, ApprovalMode, AuthStartLoginResult, Capabilities, DomainEvent,
+    Model, Thread,
+};
 use std::collections::HashMap;
 use std::sync::Arc;
 use thiserror::Error;
 
 type EventHandler = dyn Fn(DomainEvent) + Send + Sync;
 type LogHandler = dyn Fn(String) + Send + Sync;
+type LoginHandler = dyn Fn(LoginEvent) + Send + Sync;
 
 /// Provider-neutral callbacks installed before an agent process is started.
 /// Events can arrive during initialization, so attaching them afterwards has
@@ -36,6 +40,45 @@ impl AgentHandlers {
 }
 
 impl Default for AgentHandlers {
+    fn default() -> Self {
+        Self::new(|_| {}, |_| {})
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct LoginEvent {
+    pub login_id: Option<String>,
+    pub success: bool,
+    pub error: Option<String>,
+}
+
+#[derive(Clone)]
+pub struct ControlHandlers {
+    login: Arc<LoginHandler>,
+    log: Arc<LogHandler>,
+}
+
+impl ControlHandlers {
+    pub fn new(
+        login: impl Fn(LoginEvent) + Send + Sync + 'static,
+        log: impl Fn(String) + Send + Sync + 'static,
+    ) -> Self {
+        Self {
+            login: Arc::new(login),
+            log: Arc::new(log),
+        }
+    }
+
+    pub fn emit_login(&self, event: LoginEvent) {
+        (self.login)(event);
+    }
+
+    pub fn emit_log(&self, line: impl Into<String>) {
+        (self.log)(line.into());
+    }
+}
+
+impl Default for ControlHandlers {
     fn default() -> Self {
         Self::new(|_| {}, |_| {})
     }
@@ -103,6 +146,19 @@ pub trait AgentSession: Send + Sync {
     fn dispose(&self);
 }
 
+/// Long-lived provider control channel for account and sign-in operations.
+/// OAuth completion is delivered on the same process that started it, so this
+/// object intentionally outlives any one request.
+pub trait ProviderControl: Send + Sync {
+    fn account(&self) -> AgentResult<Account>;
+    fn start_login(&self) -> AgentResult<AuthStartLoginResult>;
+    fn cancel_login(&self, login_id: &str) -> AgentResult<()>;
+    fn use_api_key(&self, api_key: &str) -> AgentResult<Account>;
+    fn sign_out(&self) -> AgentResult<()>;
+    fn list_models(&self) -> AgentResult<Vec<Model>>;
+    fn dispose(&self);
+}
+
 /// Provider construction is separate from session orchestration, making the
 /// shared lifecycle testable without spawning vendor binaries.
 pub trait AgentRuntime: Send + Sync {
@@ -124,6 +180,10 @@ pub trait AgentRuntime: Send + Sync {
     }
 
     fn list_models(&self) -> AgentResult<Vec<Model>>;
+
+    fn open_control(&self, _handlers: ControlHandlers) -> AgentResult<Arc<dyn ProviderControl>> {
+        Err(AgentError::Unsupported("account control"))
+    }
 }
 
 #[cfg(test)]

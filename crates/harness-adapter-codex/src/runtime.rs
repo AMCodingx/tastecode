@@ -1,25 +1,27 @@
 use crate::map_domain_notification;
 use harness_agent::{
-    AgentError, AgentHandlers, AgentResult, AgentRuntime, AgentSession, StartOptions, TurnOptions,
+    AgentError, AgentHandlers, AgentResult, AgentRuntime, AgentSession, ControlHandlers,
+    LoginEvent, ProviderControl, StartOptions, TurnOptions,
 };
 use harness_proc::{
     JsonRpcError, ProcessError, RpcResponder, SpawnOptions, StdioJsonRpc, spawn_cli,
 };
 use harness_protocol::{
-    Account, ApprovalDecision, ApprovalKind, ApprovalMode, ApprovalRequest, Capabilities,
-    DomainEvent, Model, ProviderId, ServiceTier, Thread, UserInputOption, UserInputQuestion,
-    UserInputRequest,
+    Account, ApprovalDecision, ApprovalKind, ApprovalMode, ApprovalRequest, AuthStartLoginResult,
+    Capabilities, DomainEvent, Model, ProviderId, ServiceTier, Thread, UserInputOption,
+    UserInputQuestion, UserInputRequest,
 };
 use serde_json::{Map, Value, json};
 use std::collections::HashMap;
 use std::ffi::{OsStr, OsString};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, RwLock};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use thiserror::Error;
 use uuid::Uuid;
 
 const CLIENT_NAME: &str = "personal-harness";
 const DEFAULT_REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
+type CodexLoginHandler = dyn Fn(LoginEvent) + Send + Sync;
 
 pub const CODEX_CAPABILITIES: Capabilities = Capabilities {
     steer: true,
@@ -104,6 +106,7 @@ pub struct CodexAdapter {
     rpc: StdioJsonRpc,
     pending: Arc<Mutex<PendingRequests>>,
     handlers: CodexHandlers,
+    login_handler: Arc<RwLock<Arc<CodexLoginHandler>>>,
     request_timeout: Duration,
 }
 
@@ -141,7 +144,14 @@ impl CodexAdapter {
         let child = spawn_cli(program, args, spawn_options)?;
         let rpc = StdioJsonRpc::new(child, "codex app-server")?;
         let pending = Arc::new(Mutex::new(PendingRequests::default()));
-        configure_handlers(&rpc, Arc::clone(&pending), handlers.clone());
+        let login_handler: Arc<RwLock<Arc<CodexLoginHandler>>> =
+            Arc::new(RwLock::new(Arc::new(|_| {})));
+        configure_handlers(
+            &rpc,
+            Arc::clone(&pending),
+            Arc::clone(&login_handler),
+            handlers.clone(),
+        );
         rpc.request(
             "initialize",
             json!({
@@ -158,6 +168,7 @@ impl CodexAdapter {
             rpc,
             pending,
             handlers,
+            login_handler,
             request_timeout,
         })
     }
@@ -207,6 +218,40 @@ impl CodexAdapter {
                 plan: None,
             },
         }
+    }
+
+    pub fn on_login(&self, handler: impl Fn(LoginEvent) + Send + Sync + 'static) {
+        *write_lock(&self.login_handler) = Arc::new(handler);
+    }
+
+    pub fn start_login(&self) -> Result<AuthStartLoginResult, CodexAdapterError> {
+        let method = "account/login/start";
+        let response = self.call(method, json!({ "type": "chatgpt" }))?;
+        if response.get("type").and_then(Value::as_str) != Some("chatgpt") {
+            return Err(invalid(method, "unexpected login response type"));
+        }
+        Ok(AuthStartLoginResult {
+            login_id: response_str(method, &response, &["loginId"])?.into(),
+            auth_url: Some(response_str(method, &response, &["authUrl"])?.into()),
+        })
+    }
+
+    pub fn cancel_login(&self, login_id: &str) -> Result<(), CodexAdapterError> {
+        self.call("account/login/cancel", json!({ "loginId": login_id }))?;
+        Ok(())
+    }
+
+    pub fn use_api_key(&self, api_key: &str) -> Result<Account, CodexAdapterError> {
+        self.call(
+            "account/login/start",
+            json!({ "type": "apiKey", "apiKey": api_key }),
+        )?;
+        Ok(self.account())
+    }
+
+    pub fn sign_out(&self) -> Result<(), CodexAdapterError> {
+        self.call("account/logout", json!({}))?;
+        Ok(())
     }
 
     pub fn list_models(&self) -> Result<Vec<Model>, CodexAdapterError> {
@@ -425,6 +470,36 @@ impl AgentSession for CodexAdapter {
     }
 }
 
+impl ProviderControl for CodexAdapter {
+    fn account(&self) -> AgentResult<Account> {
+        Ok(CodexAdapter::account(self))
+    }
+
+    fn start_login(&self) -> AgentResult<AuthStartLoginResult> {
+        CodexAdapter::start_login(self).map_err(agent_error)
+    }
+
+    fn cancel_login(&self, login_id: &str) -> AgentResult<()> {
+        CodexAdapter::cancel_login(self, login_id).map_err(agent_error)
+    }
+
+    fn use_api_key(&self, api_key: &str) -> AgentResult<Account> {
+        CodexAdapter::use_api_key(self, api_key).map_err(agent_error)
+    }
+
+    fn sign_out(&self) -> AgentResult<()> {
+        CodexAdapter::sign_out(self).map_err(agent_error)
+    }
+
+    fn list_models(&self) -> AgentResult<Vec<Model>> {
+        CodexAdapter::list_models(self).map_err(agent_error)
+    }
+
+    fn dispose(&self) {
+        CodexAdapter::dispose(self);
+    }
+}
+
 impl AgentRuntime for CodexRuntime {
     fn start(
         &self,
@@ -466,11 +541,26 @@ impl AgentRuntime for CodexRuntime {
         adapter.dispose();
         result
     }
+
+    fn open_control(&self, handlers: ControlHandlers) -> AgentResult<Arc<dyn ProviderControl>> {
+        let log_handlers = handlers.clone();
+        let adapter = Arc::new(
+            CodexAdapter::launch(
+                self.launch_options(),
+                AgentHandlers::new(|_| {}, move |line| log_handlers.emit_log(line)),
+            )
+            .map_err(agent_error)?,
+        );
+        let login_handlers = handlers;
+        adapter.on_login(move |event| login_handlers.emit_login(event));
+        Ok(adapter)
+    }
 }
 
 fn configure_handlers(
     rpc: &StdioJsonRpc,
     pending: Arc<Mutex<PendingRequests>>,
+    login_handler: Arc<RwLock<Arc<CodexLoginHandler>>>,
     handlers: CodexHandlers,
 ) {
     let stderr_handlers = handlers.clone();
@@ -484,6 +574,26 @@ fn configure_handlers(
     let notification_pending = Arc::clone(&pending);
     let notification_handlers = handlers.clone();
     rpc.on_notification(move |method, params| {
+        if method == "account/login/completed" {
+            let Some(success) = params.get("success").and_then(Value::as_bool) else {
+                notification_handlers
+                    .emit_log("invalid notification: account/login/completed is missing success");
+                return;
+            };
+            let handler = Arc::clone(&read_lock(&login_handler));
+            handler(LoginEvent {
+                login_id: params
+                    .get("loginId")
+                    .and_then(Value::as_str)
+                    .map(str::to_owned),
+                success,
+                error: params
+                    .get("error")
+                    .and_then(Value::as_str)
+                    .map(str::to_owned),
+            });
+            return;
+        }
         if method == "turn/completed" {
             resolve_unanswered(&notification_pending, &notification_handlers);
         }
@@ -821,6 +931,16 @@ fn lock<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
         .unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
+fn read_lock<T>(lock: &RwLock<T>) -> std::sync::RwLockReadGuard<'_, T> {
+    lock.read()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
+fn write_lock<T>(lock: &RwLock<T>) -> std::sync::RwLockWriteGuard<'_, T> {
+    lock.write()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -851,6 +971,28 @@ mod tests {
                 plan: Some("Pro".into()),
             }
         );
+        let (login_tx, login_rx) = mpsc::channel();
+        adapter.on_login(move |event| {
+            let _ = login_tx.send(event);
+        });
+        assert_eq!(
+            adapter.start_login().unwrap(),
+            AuthStartLoginResult {
+                login_id: "login-1".into(),
+                auth_url: Some("https://auth.example/login".into()),
+            }
+        );
+        assert_eq!(
+            login_rx.recv_timeout(Duration::from_secs(2)).unwrap(),
+            LoginEvent {
+                login_id: Some("login-1".into()),
+                success: true,
+                error: None,
+            }
+        );
+        adapter.cancel_login("login-1").unwrap();
+        assert!(adapter.use_api_key("test-only-api-key").unwrap().signed_in);
+        adapter.sign_out().unwrap();
         let models = adapter.list_models().unwrap();
         assert_eq!(models.len(), 1);
         assert_eq!(models[0].id, "gpt-test");
@@ -967,6 +1109,38 @@ mod tests {
                         }
                     }),
                 ),
+                "account/login/start" if request["params"]["type"] == "chatgpt" => {
+                    respond(
+                        &mut stdout,
+                        id.unwrap(),
+                        json!({
+                            "type": "chatgpt",
+                            "loginId": "login-1",
+                            "authUrl": "https://auth.example/login"
+                        }),
+                    );
+                    write_frame(
+                        &mut stdout,
+                        json!({
+                            "jsonrpc": "2.0",
+                            "method": "account/login/completed",
+                            "params": {
+                                "loginId": "login-1",
+                                "success": true,
+                                "error": null
+                            }
+                        }),
+                    );
+                }
+                "account/login/start" if request["params"]["type"] == "apiKey" => {
+                    assert_eq!(request["params"]["apiKey"], "test-only-api-key");
+                    respond(&mut stdout, id.unwrap(), json!({ "type": "apiKey" }));
+                }
+                "account/login/cancel" => {
+                    assert_eq!(request["params"]["loginId"], "login-1");
+                    respond(&mut stdout, id.unwrap(), json!({}));
+                }
+                "account/logout" => respond(&mut stdout, id.unwrap(), json!({})),
                 "model/list" => respond(
                     &mut stdout,
                     id.unwrap(),
