@@ -293,6 +293,15 @@
   padding: 8px 10px 10px;
 }
 
+.rail__foot--inbox {
+  padding: 4px 10px 6px;
+}
+
+.inbox-settings {
+  min-height: 28px;
+  padding-block: 4px;
+}
+
 .account-menu__usage {
   display: grid;
   gap: 7px;
