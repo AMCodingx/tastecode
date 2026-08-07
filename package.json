@@ -7,8 +7,8 @@
     "node": ">=22.18.0"
   },
   "scripts": {
-    "dev": "node tools/scripts/dev.js",
-    "dev:mobile": "node tools/scripts/dev.js --mobile",
+    "dev": "pnpm --filter @harness/server build && node tools/scripts/dev.js",
+    "dev:mobile": "pnpm --filter @harness/server build && node tools/scripts/dev.js --mobile",
     "build": "pnpm -r build",
     "typecheck": "pnpm -r typecheck",
     "test": "pnpm -r test",
