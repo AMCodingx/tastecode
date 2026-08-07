@@ -1197,7 +1197,11 @@ impl ChatView {
                 content,
                 self.theme,
             ),
-            (ItemType::ToolCall, _) => auxiliary_item("Tool call", content, self.theme),
+            (ItemType::ToolCall, _) => auxiliary_item(
+                design_phase_label(content.as_str()).unwrap_or("Tool call"),
+                content,
+                self.theme,
+            ),
             (ItemType::Plan, _) => auxiliary_item("Plan", content, self.theme),
             (ItemType::Error, _) => error_item(content, self.theme),
             (ItemType::Unknown, _) => auxiliary_item("Provider event", content, self.theme),
@@ -3031,6 +3035,29 @@ fn provider_label(provider: ProviderId) -> &'static str {
     }
 }
 
+fn design_phase_label(text: &str) -> Option<&'static str> {
+    let text = text.to_ascii_lowercase();
+    if text.contains("design:brief") {
+        Some("Preparing questions")
+    } else if text.contains("design:brand") {
+        Some("Creating brand direction")
+    } else if text.contains("design:page") {
+        Some("Planning the page")
+    } else if text.contains("design:assets") {
+        Some("Gathering assets")
+    } else if text.contains("design:build") {
+        Some("Building the website")
+    } else if text.contains("design:preview") {
+        Some("Starting the preview")
+    } else if text.contains("design:review") {
+        Some("Reviewing the design")
+    } else if text.contains("design:repair") {
+        Some("Refining the website")
+    } else {
+        None
+    }
+}
+
 fn format_voice_duration(duration: Duration) -> String {
     let seconds = duration.as_secs();
     format!("{}:{:02}", seconds / 60, seconds % 60)
@@ -3095,5 +3122,18 @@ mod tests {
     fn voice_duration_uses_the_web_minutes_and_seconds_format() {
         assert_eq!(format_voice_duration(Duration::from_millis(999)), "0:00");
         assert_eq!(format_voice_duration(Duration::from_secs(65)), "1:05");
+    }
+
+    #[test]
+    fn design_activity_labels_match_the_web_timeline() {
+        assert_eq!(
+            design_phase_label("design:brand"),
+            Some("Creating brand direction")
+        );
+        assert_eq!(
+            design_phase_label("DESIGN:REVIEW"),
+            Some("Reviewing the design")
+        );
+        assert_eq!(design_phase_label("ordinary tool"), None);
     }
 }
