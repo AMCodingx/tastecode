@@ -11,5 +11,6 @@ harness-agent = { path = "../harness-agent" }
 harness-proc = { path = "../harness-proc" }
 harness-protocol = { path = "../harness-protocol" }
 serde_json.workspace = true
+sha2.workspace = true
 thiserror.workspace = true
 uuid.workspace = true

@@ -1,8 +1,10 @@
+use harness_agent::CredentialValues;
 use harness_protocol::{
-    McpAuth, McpAuthMethod, McpCapabilities, McpResource, McpResourceTemplate, McpServer,
-    McpServerScope, McpStartupStatus, McpTool,
+    McpAuth, McpAuthMethod, McpCapabilities, McpConfigValue, McpResource, McpResourceTemplate,
+    McpServer, McpServerConfig, McpServerScope, McpStartupStatus, McpTool, McpTransport,
 };
-use serde_json::{Map, Value};
+use serde_json::{Map, Value, json};
+use sha2::{Digest as _, Sha256};
 use std::collections::BTreeMap;
 
 pub const CODEX_MCP_CAPABILITIES: McpCapabilities = McpCapabilities {
@@ -14,6 +16,125 @@ pub const CODEX_MCP_CAPABILITIES: McpCapabilities = McpCapabilities {
     start_o_auth: true,
     cancel_o_auth: false,
 };
+
+pub(crate) struct PreparedMcpConfig {
+    pub servers: Map<String, Value>,
+    pub environment: BTreeMap<String, String>,
+}
+
+pub(crate) fn prepare_mcp_config(
+    servers: &[McpServerConfig],
+    credentials: &CredentialValues,
+) -> Result<PreparedMcpConfig, String> {
+    let mut prepared = Map::new();
+    let mut environment = BTreeMap::new();
+    for server in servers {
+        if !server.enabled {
+            prepared.insert(server.id.clone(), json!({ "enabled": false }));
+            continue;
+        }
+        let transport = server
+            .transport
+            .as_ref()
+            .ok_or_else(|| format!("enabled MCP server {} has no transport", server.id))?;
+        let value = match transport {
+            McpTransport::Stdio {
+                command,
+                args,
+                cwd,
+                environment,
+            } => {
+                let values = environment
+                    .as_ref()
+                    .map(|values| {
+                        values
+                            .iter()
+                            .map(|(name, value)| {
+                                Ok((name.clone(), config_value(value, credentials)?))
+                            })
+                            .collect::<Result<Map<_, _>, String>>()
+                    })
+                    .transpose()?
+                    .unwrap_or_default();
+                let mut value = Map::new();
+                value.insert("command".into(), Value::String(command.clone()));
+                value.insert("enabled".into(), Value::Bool(true));
+                if let Some(args) = args {
+                    value.insert("args".into(), json!(args));
+                }
+                if let Some(cwd) = cwd {
+                    value.insert("cwd".into(), Value::String(cwd.clone()));
+                }
+                if !values.is_empty() {
+                    value.insert("env".into(), Value::Object(values));
+                }
+                Value::Object(value)
+            }
+            McpTransport::Http { url, headers } => {
+                let mut literal = Map::new();
+                let mut inherited = Map::new();
+                for (name, value) in headers.iter().flatten() {
+                    match value {
+                        McpConfigValue::Literal { value } => {
+                            literal.insert(name.clone(), Value::String(value.clone()));
+                        }
+                        McpConfigValue::Credential { credential_ref } => {
+                            let variable = credential_environment_name(&server.id, name);
+                            environment.insert(
+                                variable.clone(),
+                                secret(credentials, credential_ref)?.into(),
+                            );
+                            inherited.insert(name.clone(), Value::String(variable));
+                        }
+                    }
+                }
+                let mut value = Map::new();
+                value.insert("url".into(), Value::String(url.clone()));
+                value.insert("enabled".into(), Value::Bool(true));
+                if !literal.is_empty() {
+                    value.insert("http_headers".into(), Value::Object(literal));
+                }
+                if !inherited.is_empty() {
+                    value.insert("env_http_headers".into(), Value::Object(inherited));
+                }
+                Value::Object(value)
+            }
+        };
+        prepared.insert(server.id.clone(), value);
+    }
+    Ok(PreparedMcpConfig {
+        servers: prepared,
+        environment,
+    })
+}
+
+fn config_value(value: &McpConfigValue, credentials: &CredentialValues) -> Result<Value, String> {
+    match value {
+        McpConfigValue::Literal { value } => Ok(Value::String(value.clone())),
+        McpConfigValue::Credential { credential_ref } => {
+            Ok(Value::String(secret(credentials, credential_ref)?.into()))
+        }
+    }
+}
+
+fn secret<'a>(credentials: &'a CredentialValues, reference: &str) -> Result<&'a str, String> {
+    credentials
+        .get(reference)
+        .ok_or_else(|| format!("MCP credential \"{reference}\" is unavailable"))
+}
+
+fn credential_environment_name(server_id: &str, header: &str) -> String {
+    let mut hash = Sha256::new();
+    hash.update(server_id.as_bytes());
+    hash.update([0]);
+    hash.update(header.as_bytes());
+    let digest = hash.finalize();
+    let suffix = digest[..8]
+        .iter()
+        .map(|byte| format!("{byte:02X}"))
+        .collect::<String>();
+    format!("HARNESS_MCP_{suffix}")
+}
 
 pub fn map_startup_status(params: &Value) -> Result<McpStartupStatus, String> {
     let object = params
@@ -184,6 +305,111 @@ fn json_object(object: &Map<String, Value>) -> BTreeMap<String, Value> {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn prepares_http_credentials_without_putting_secrets_in_codex_config() {
+        let mut credentials = CredentialValues::default();
+        credentials.insert("docs-token".into(), "super-secret".into());
+        let servers = [McpServerConfig {
+            id: "docs".into(),
+            enabled: true,
+            display_name: None,
+            transport: Some(McpTransport::Http {
+                url: "https://docs.example/mcp".into(),
+                headers: Some(BTreeMap::from([
+                    (
+                        "Authorization".into(),
+                        McpConfigValue::Credential {
+                            credential_ref: "docs-token".into(),
+                        },
+                    ),
+                    (
+                        "X-Client".into(),
+                        McpConfigValue::Literal {
+                            value: "harness".into(),
+                        },
+                    ),
+                ])),
+            }),
+        }];
+
+        let prepared = prepare_mcp_config(&servers, &credentials).unwrap();
+        let variable = credential_environment_name("docs", "Authorization");
+        assert_eq!(prepared.environment.get(&variable).unwrap(), "super-secret");
+        assert_eq!(
+            prepared.servers["docs"]["env_http_headers"]["Authorization"],
+            variable
+        );
+        assert_eq!(
+            prepared.servers["docs"]["http_headers"]["X-Client"],
+            "harness"
+        );
+        assert!(
+            !Value::Object(prepared.servers)
+                .to_string()
+                .contains("super-secret")
+        );
+    }
+
+    #[test]
+    fn resolves_stdio_credentials_inside_the_server_environment() {
+        let mut credentials = CredentialValues::default();
+        credentials.insert("stdio-token".into(), "process-secret".into());
+        let servers = [McpServerConfig {
+            id: "local".into(),
+            enabled: true,
+            display_name: None,
+            transport: Some(McpTransport::Stdio {
+                command: "node".into(),
+                args: Some(vec!["server.js".into()]),
+                cwd: Some("C:\\repo".into()),
+                environment: Some(BTreeMap::from([(
+                    "TOKEN".into(),
+                    McpConfigValue::Credential {
+                        credential_ref: "stdio-token".into(),
+                    },
+                )])),
+            }),
+        }];
+
+        let prepared = prepare_mcp_config(&servers, &credentials).unwrap();
+        assert!(prepared.environment.is_empty());
+        assert_eq!(prepared.servers["local"]["env"]["TOKEN"], "process-secret");
+        assert_eq!(prepared.servers["local"]["cwd"], "C:\\repo");
+    }
+
+    #[test]
+    fn missing_credentials_fail_without_echoing_any_secret() {
+        let servers = [McpServerConfig {
+            id: "docs".into(),
+            enabled: true,
+            display_name: None,
+            transport: Some(McpTransport::Http {
+                url: "https://docs.example/mcp".into(),
+                headers: Some(BTreeMap::from([(
+                    "Authorization".into(),
+                    McpConfigValue::Credential {
+                        credential_ref: "missing-token".into(),
+                    },
+                )])),
+            }),
+        }];
+
+        let error = match prepare_mcp_config(&servers, &CredentialValues::default()) {
+            Ok(_) => panic!("missing credential unexpectedly succeeded"),
+            Err(error) => error,
+        };
+        assert_eq!(error, "MCP credential \"missing-token\" is unavailable");
+    }
+
+    #[test]
+    fn credential_environment_names_are_stable_and_header_specific() {
+        let first = credential_environment_name("docs", "Authorization");
+        assert_eq!(first, credential_environment_name("docs", "Authorization"));
+        assert!(first.starts_with("HARNESS_MCP_"));
+        assert_eq!(first.len(), "HARNESS_MCP_".len() + 16);
+        assert_ne!(first, credential_environment_name("docs", "X-Token"));
+    }
 
     #[test]
     fn maps_captured_tools_resources_auth_and_startup_failures() {

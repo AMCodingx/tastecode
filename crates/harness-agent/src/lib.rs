@@ -1,6 +1,6 @@
 use harness_protocol::{
     Account, ApprovalDecision, ApprovalMode, AuthStartLoginResult, Capabilities, DomainEvent,
-    McpListResult, Model, SkillsListResult, Thread,
+    McpListResult, McpOAuthStartResult, McpServerConfig, Model, SkillsListResult, Thread,
 };
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -157,6 +157,33 @@ impl Default for ControlHandlers {
     }
 }
 
+#[derive(Clone, Default, PartialEq, Eq)]
+pub struct CredentialValues(HashMap<String, String>);
+
+impl CredentialValues {
+    pub fn new(values: HashMap<String, String>) -> Self {
+        Self(values)
+    }
+
+    pub fn get(&self, reference: &str) -> Option<&str> {
+        self.0.get(reference).map(String::as_str)
+    }
+
+    pub fn insert(&mut self, reference: String, value: String) {
+        self.0.insert(reference, value);
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+}
+
+impl std::fmt::Debug for CredentialValues {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(formatter, "CredentialValues([redacted; {}])", self.0.len())
+    }
+}
+
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct StartOptions {
     pub instructions: Option<String>,
@@ -164,6 +191,8 @@ pub struct StartOptions {
     pub service_tier: Option<String>,
     pub effort: Option<String>,
     pub approval: Option<ApprovalMode>,
+    pub mcp_servers: Vec<McpServerConfig>,
+    pub mcp_credentials: CredentialValues,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -214,6 +243,27 @@ pub trait AgentSession: Send + Sync {
         _answers: &HashMap<String, Vec<String>>,
     ) -> AgentResult<bool> {
         Err(AgentError::Unsupported("structured input"))
+    }
+
+    fn list_mcp_servers(&self, _thread_id: &str) -> AgentResult<McpListResult> {
+        Err(AgentError::Unsupported("MCP inventory"))
+    }
+
+    fn reload_mcp_servers(
+        &self,
+        _thread_id: &str,
+        _servers: &[McpServerConfig],
+        _credentials: &CredentialValues,
+    ) -> AgentResult<()> {
+        Err(AgentError::Unsupported("MCP reload"))
+    }
+
+    fn start_mcp_o_auth(
+        &self,
+        _server_id: &str,
+        _thread_id: &str,
+    ) -> AgentResult<McpOAuthStartResult> {
+        Err(AgentError::Unsupported("MCP OAuth"))
     }
 
     fn dispose(&self);
@@ -298,6 +348,16 @@ mod tests {
             receiver.recv().unwrap(),
             DomainEvent::ItemCompleted { item } if item.id == "second"
         ));
+    }
+
+    #[test]
+    fn credential_values_never_expose_secrets_in_debug_output() {
+        let mut credentials = CredentialValues::default();
+        credentials.insert("token".into(), "super-secret".into());
+
+        let debug = format!("{credentials:?}");
+        assert_eq!(debug, "CredentialValues([redacted; 1])");
+        assert!(!debug.contains("super-secret"));
     }
 
     fn item(id: &str) -> Item {

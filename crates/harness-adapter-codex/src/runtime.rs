@@ -1,23 +1,26 @@
 use crate::{
     map_domain_notification,
-    mcp::{CODEX_MCP_CAPABILITIES, map_server_status, map_startup_status},
+    mcp::{
+        CODEX_MCP_CAPABILITIES, PreparedMcpConfig, map_server_status, map_startup_status,
+        prepare_mcp_config,
+    },
     skills::map_skill_list,
 };
 use harness_agent::{
     AgentError, AgentHandlers, AgentResult, AgentRuntime, AgentSession, ControlHandlers,
-    LoginEvent, McpOAuthEvent, ProviderControl, StartOptions, TurnOptions,
+    CredentialValues, LoginEvent, McpOAuthEvent, ProviderControl, StartOptions, TurnOptions,
 };
 use harness_proc::{
     JsonRpcError, ProcessError, RpcResponder, SpawnOptions, StdioJsonRpc, spawn_cli,
 };
 use harness_protocol::{
     Account, ApprovalDecision, ApprovalKind, ApprovalMode, ApprovalRequest, AuthStartLoginResult,
-    Capabilities, DomainEvent, McpListResult, McpOAuthStartResult, McpServer, McpStartupStatus,
-    Model, ProviderId, ServiceTier, SkillsListResult, Thread, UserInputOption, UserInputQuestion,
-    UserInputRequest,
+    Capabilities, DomainEvent, McpListResult, McpOAuthStartResult, McpServer, McpServerConfig,
+    McpStartupStatus, Model, ProviderId, ServiceTier, SkillsListResult, Thread, UserInputOption,
+    UserInputQuestion, UserInputRequest,
 };
 use serde_json::{Map, Value, json};
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::ffi::{OsStr, OsString};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -93,6 +96,8 @@ pub enum CodexAdapterError {
         method: &'static str,
         message: String,
     },
+    #[error("{0}")]
+    Configuration(String),
 }
 
 struct PendingApproval {
@@ -117,6 +122,8 @@ pub struct CodexAdapter {
     pending: Arc<Mutex<PendingRequests>>,
     mcp_startup: Arc<Mutex<HashMap<String, McpStartupStatus>>>,
     mcp_logins: Arc<Mutex<Vec<McpLogin>>>,
+    mcp_servers: Mutex<Map<String, Value>>,
+    mcp_environment: BTreeMap<String, String>,
     handlers: CodexHandlers,
     request_timeout: Duration,
 }
@@ -181,6 +188,8 @@ impl CodexAdapter {
             pending,
             mcp_startup,
             mcp_logins,
+            mcp_servers: Mutex::new(Map::new()),
+            mcp_environment: BTreeMap::new(),
             handlers,
             request_timeout,
         })
@@ -351,6 +360,38 @@ impl CodexAdapter {
         })
     }
 
+    pub fn reload_mcp_servers(
+        &self,
+        thread_id: &str,
+        servers: &[McpServerConfig],
+        credentials: &CredentialValues,
+    ) -> Result<(), CodexAdapterError> {
+        let prepared =
+            prepare_mcp_config(servers, credentials).map_err(CodexAdapterError::Configuration)?;
+        if prepared.environment.iter().any(|(name, value)| {
+            self.mcp_environment.get(name).map(String::as_str) != Some(value.as_str())
+        }) {
+            return Err(CodexAdapterError::Configuration(
+                "start a new session to apply new MCP credentials".into(),
+            ));
+        }
+        let config = json!({ "mcp_servers": prepared.servers.clone() });
+        let reload = self
+            .call(
+                "thread/resume",
+                json!({ "threadId": thread_id, "config": config }),
+            )
+            .and_then(|_| self.call("config/mcpServer/reload", json!({})));
+        if let Err(error) = reload {
+            return Err(CodexAdapterError::Configuration(format!(
+                "Codex could not hot-reload MCP config; start a new session to apply it: {error}"
+            )));
+        }
+        *lock(&self.mcp_servers) = prepared.servers;
+        self.handlers.emit_mcp_changed(Some(thread_id.into()));
+        Ok(())
+    }
+
     pub fn list_skills(&self, project_path: &str) -> Result<SkillsListResult, CodexAdapterError> {
         let method = "skills/list";
         let response = self.call(
@@ -391,9 +432,10 @@ impl CodexAdapter {
             "developerInstructions",
             options.instructions.as_deref(),
         );
-        if let Some(effort) = &options.effort {
-            params.insert("config".into(), json!({ "model_reasoning_effort": effort }));
-        }
+        params.insert(
+            "config".into(),
+            self.session_config(options.effort.as_deref()),
+        );
         if let Some(mode) = options.approval {
             apply_approval_mode(&mut params, mode);
         }
@@ -412,13 +454,21 @@ impl CodexAdapter {
         &self,
         thread_id: &str,
         workspace_path: &str,
-        instructions: Option<&str>,
+        options: &StartOptions,
     ) -> Result<Thread, CodexAdapterError> {
         let method = "thread/resume";
         let mut params = Map::new();
         params.insert("threadId".into(), Value::String(thread_id.into()));
         params.insert("cwd".into(), Value::String(workspace_path.into()));
-        insert_option(&mut params, "developerInstructions", instructions);
+        insert_option(
+            &mut params,
+            "developerInstructions",
+            options.instructions.as_deref(),
+        );
+        params.insert(
+            "config".into(),
+            self.session_config(options.effort.as_deref()),
+        );
         let response = self.call(method, Value::Object(params))?;
         let created_at = response
             .pointer("/thread/createdAt")
@@ -527,6 +577,21 @@ impl CodexAdapter {
     fn call(&self, method: &'static str, params: Value) -> Result<Value, CodexAdapterError> {
         Ok(self.rpc.request(method, params, self.request_timeout)?)
     }
+
+    fn session_config(&self, effort: Option<&str>) -> Value {
+        let mut config = Map::new();
+        if let Some(effort) = effort {
+            config.insert(
+                "model_reasoning_effort".into(),
+                Value::String(effort.into()),
+            );
+        }
+        config.insert(
+            "mcp_servers".into(),
+            Value::Object(lock(&self.mcp_servers).clone()),
+        );
+        Value::Object(config)
+    }
 }
 
 impl Drop for CodexAdapter {
@@ -572,6 +637,30 @@ impl AgentSession for CodexAdapter {
         answers: &HashMap<String, Vec<String>>,
     ) -> AgentResult<bool> {
         CodexAdapter::respond_to_user_input(self, request_id, answers).map_err(agent_error)
+    }
+
+    fn list_mcp_servers(&self, thread_id: &str) -> AgentResult<McpListResult> {
+        Ok(McpListResult {
+            capabilities: CODEX_MCP_CAPABILITIES,
+            servers: CodexAdapter::list_mcp_servers(self, Some(thread_id)).map_err(agent_error)?,
+        })
+    }
+
+    fn reload_mcp_servers(
+        &self,
+        thread_id: &str,
+        servers: &[McpServerConfig],
+        credentials: &CredentialValues,
+    ) -> AgentResult<()> {
+        CodexAdapter::reload_mcp_servers(self, thread_id, servers, credentials).map_err(agent_error)
+    }
+
+    fn start_mcp_o_auth(
+        &self,
+        server_id: &str,
+        thread_id: &str,
+    ) -> AgentResult<McpOAuthStartResult> {
+        CodexAdapter::start_mcp_o_auth(self, server_id, thread_id).map_err(agent_error)
     }
 
     fn dispose(&self) {
@@ -631,7 +720,7 @@ impl AgentRuntime for CodexRuntime {
         options: &StartOptions,
         handlers: AgentHandlers,
     ) -> AgentResult<(Thread, Arc<dyn AgentSession>)> {
-        let adapter = CodexAdapter::launch(self.launch_options(), handlers).map_err(agent_error)?;
+        let adapter = self.launch_session(options, handlers)?;
         match adapter.start_thread(workspace_path, options) {
             Ok(thread) => Ok((thread, Arc::new(adapter))),
             Err(error) => {
@@ -648,8 +737,8 @@ impl AgentRuntime for CodexRuntime {
         options: &StartOptions,
         handlers: AgentHandlers,
     ) -> AgentResult<(Thread, Arc<dyn AgentSession>)> {
-        let adapter = CodexAdapter::launch(self.launch_options(), handlers).map_err(agent_error)?;
-        match adapter.resume_thread(thread_id, workspace_path, options.instructions.as_deref()) {
+        let adapter = self.launch_session(options, handlers)?;
+        match adapter.resume_thread(thread_id, workspace_path, options) {
             Ok(thread) => Ok((thread, Arc::new(adapter))),
             Err(error) => {
                 adapter.dispose();
@@ -676,6 +765,30 @@ impl AgentRuntime for CodexRuntime {
             )
             .map_err(agent_error)?,
         );
+        Ok(adapter)
+    }
+}
+
+impl CodexRuntime {
+    fn launch_session(
+        &self,
+        options: &StartOptions,
+        handlers: AgentHandlers,
+    ) -> AgentResult<CodexAdapter> {
+        let PreparedMcpConfig {
+            servers,
+            environment,
+        } = prepare_mcp_config(&options.mcp_servers, &options.mcp_credentials)
+            .map_err(AgentError::Failed)?;
+        let mut launch_options = self.launch_options();
+        launch_options.environment.extend(
+            environment
+                .iter()
+                .map(|(name, value)| (OsString::from(name), OsString::from(value))),
+        );
+        let mut adapter = CodexAdapter::launch(launch_options, handlers).map_err(agent_error)?;
+        adapter.mcp_servers = Mutex::new(servers);
+        adapter.mcp_environment = environment;
         Ok(adapter)
     }
 }
@@ -1242,6 +1355,26 @@ mod tests {
             .unwrap();
         assert_eq!(thread.id, "thread-1");
 
+        adapter
+            .reload_mcp_servers(
+                "thread-1",
+                &[McpServerConfig {
+                    id: "docs".into(),
+                    enabled: true,
+                    display_name: None,
+                    transport: Some(harness_protocol::McpTransport::Http {
+                        url: "https://docs.example/mcp".into(),
+                        headers: None,
+                    }),
+                }],
+                &CredentialValues::default(),
+            )
+            .unwrap();
+        assert_eq!(
+            mcp_changed_rx.recv_timeout(Duration::from_secs(2)).unwrap(),
+            Some("thread-1".into())
+        );
+
         let turn_adapter = Arc::clone(&adapter);
         let turn = thread::spawn(move || {
             turn_adapter.send_turn(
@@ -1535,11 +1668,28 @@ mod tests {
                         "high"
                     );
                     assert_eq!(request["params"]["approvalsReviewer"], "auto_review");
+                    assert_eq!(request["params"]["config"]["mcp_servers"], json!({}));
                     respond(
                         &mut stdout,
                         id.unwrap(),
                         json!({ "thread": { "id": "thread-1" } }),
                     );
+                }
+                "thread/resume" => {
+                    assert_eq!(request["params"]["threadId"], "thread-1");
+                    assert_eq!(
+                        request["params"]["config"]["mcp_servers"]["docs"]["url"],
+                        "https://docs.example/mcp"
+                    );
+                    respond(
+                        &mut stdout,
+                        id.unwrap(),
+                        json!({ "thread": { "id": "thread-1" } }),
+                    );
+                }
+                "config/mcpServer/reload" => {
+                    assert_eq!(request["params"], json!({}));
+                    respond(&mut stdout, id.unwrap(), json!({}));
                 }
                 "turn/start" => {
                     assert_eq!(request["params"]["input"][1]["type"], "localImage");
