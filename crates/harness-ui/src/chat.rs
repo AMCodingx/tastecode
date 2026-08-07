@@ -2,6 +2,7 @@ mod diff;
 mod presentation;
 mod search;
 pub(crate) mod terminal;
+mod thinking_orb;
 mod transcript;
 mod voice;
 
@@ -274,6 +275,12 @@ pub(crate) struct ChatView {
     transcript_scroll_mode: Rc<Cell<TranscriptScrollMode>>,
     pending_anchor_turn: Option<String>,
     presentation: TranscriptPresentation,
+    entering_transcript_items: HashSet<String>,
+    transcript_motion_epoch: u64,
+    settled_turn_id: Option<String>,
+    settle_generation: u64,
+    working_rail_entering_turn_id: Option<String>,
+    working_rail_entry_generation: u64,
     expanded_transcript_items: HashSet<String>,
     expanded_activities: HashSet<String>,
     copied_transcript_item: Option<String>,
@@ -319,6 +326,7 @@ pub(crate) struct ChatView {
 
 impl ChatView {
     pub(crate) fn new(theme: Theme, window: &mut Window, cx: &mut Context<Self>) -> Self {
+        thinking_orb::initialize_clock();
         let composer = cx.new(|cx| {
             InputState::new(window, cx)
                 .auto_grow(2, 11)
@@ -386,6 +394,12 @@ impl ChatView {
             transcript_scroll_mode,
             pending_anchor_turn: None,
             presentation: TranscriptPresentation::default(),
+            entering_transcript_items: HashSet::new(),
+            transcript_motion_epoch: 0,
+            settled_turn_id: None,
+            settle_generation: 0,
+            working_rail_entering_turn_id: None,
+            working_rail_entry_generation: 0,
             expanded_transcript_items: HashSet::new(),
             expanded_activities: HashSet::new(),
             copied_transcript_item: None,
@@ -465,6 +479,7 @@ impl ChatView {
             .set(TranscriptScrollMode::FollowEnd);
         self.pending_anchor_turn = None;
         self.presentation.clear();
+        self.reset_transcript_motion();
         self.expanded_transcript_items.clear();
         self.expanded_activities.clear();
         self.copied_transcript_item = None;
@@ -633,6 +648,9 @@ impl ChatView {
                 replace,
             } if self.is_selected(&thread_id) => {
                 let old_len = self.state.timeline_len();
+                let was_running = self.state.running;
+                let previous_active_turn_id =
+                    self.state.active_turn().map(|turn| turn.turn.id.clone());
                 let result = if replace {
                     self.state.replace_history(history)
                 } else {
@@ -642,12 +660,31 @@ impl ChatView {
                     Ok(()) => {
                         let new_len = self.state.timeline_len();
                         let presentation_rows = self.presentation.rebuild(&self.state);
+                        if !was_running
+                            && self.state.running
+                            && let Some(turn_id) =
+                                self.state.active_turn().map(|turn| turn.turn.id.clone())
+                        {
+                            self.start_working_rail_entry(turn_id, cx);
+                        } else if was_running
+                            && !self.state.running
+                            && let Some(turn_id) = previous_active_turn_id
+                        {
+                            self.start_turn_settle(turn_id, cx);
+                        }
                         if replace {
+                            self.reset_transcript_item_entries();
                             self.list_state.reset(new_len);
                             self.transcript_scroll_mode
                                 .set(TranscriptScrollMode::FollowEnd);
                             self.pending_anchor_turn = None;
                         } else if new_len > old_len {
+                            let item_ids = (old_len..new_len)
+                                .filter_map(|row| {
+                                    self.state.item_at_row(row).map(|item| item.id.clone())
+                                })
+                                .collect();
+                            self.start_transcript_item_entries(item_ids, cx);
                             self.list_state.splice(old_len..old_len, new_len - old_len);
                             for row in presentation_rows.into_iter().filter(|row| *row < old_len) {
                                 self.list_state.splice(row..row + 1, 1);
@@ -856,6 +893,7 @@ impl ChatView {
         let mut presentation_changed = false;
         let mut applied = false;
         let mut reconcile_after = None;
+        let mut finished_turn_id = None;
 
         let mut events = events.into_iter();
         while let Some(push) = events.next() {
@@ -863,6 +901,17 @@ impl ChatView {
             let started_turn = match &push.event {
                 DomainEvent::TurnStarted { turn } => Some(turn.id.clone()),
                 _ => None,
+            };
+            let finishing_turn = if self.state.running {
+                match &push.event {
+                    DomainEvent::TurnCompleted { turn_id, .. } => Some(turn_id.clone()),
+                    DomainEvent::ThreadError { .. } => {
+                        self.state.active_turn().map(|turn| turn.turn.id.clone())
+                    }
+                    _ => None,
+                }
+            } else {
+                None
             };
             presentation_changed |= matches!(
                 &push.event,
@@ -890,10 +939,16 @@ impl ChatView {
                 ApplyOutcome::Applied(changes) => {
                     applied = true;
                     transcript_changed |= changes.transcript;
-                    if let Some(turn_id) = started_turn
-                        && self.transcript_scroll_mode.get() != TranscriptScrollMode::Free
+                    if let Some(turn_id) = started_turn {
+                        self.start_working_rail_entry(turn_id.clone(), cx);
+                        if self.transcript_scroll_mode.get() != TranscriptScrollMode::Free {
+                            self.pending_anchor_turn = Some(turn_id);
+                        }
+                    }
+                    if !self.state.running
+                        && let Some(turn_id) = finishing_turn
                     {
-                        self.pending_anchor_turn = Some(turn_id);
+                        finished_turn_id = Some(turn_id);
                     }
                     if changes.transcript
                         && let Some(changed_item) = changed_item
@@ -914,6 +969,13 @@ impl ChatView {
 
         if applied {
             let new_len = self.state.timeline_len();
+            let item_ids = (old_len..new_len)
+                .filter_map(|row| self.state.item_at_row(row).map(|item| item.id.clone()))
+                .collect();
+            self.start_transcript_item_entries(item_ids, cx);
+            if let Some(turn_id) = finished_turn_id {
+                self.start_turn_settle(turn_id, cx);
+            }
             let presentation_rows = if presentation_changed {
                 self.presentation.rebuild(&self.state)
             } else {

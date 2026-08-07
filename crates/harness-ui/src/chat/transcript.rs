@@ -1,4 +1,5 @@
 use super::presentation::{RowPresentation, TurnPresentation, is_activity};
+use super::thinking_orb::{ThinkingOrbState, thinking_orb};
 use super::{ChatEvent, ChatView, TranscriptScrollMode};
 use crate::theme::{CHAT_WIDTH, Theme, ThemeMode};
 use crate::zoom::px;
@@ -17,6 +18,12 @@ use std::rc::Rc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 const WORKING_RAIL_HEIGHT: f32 = 54.0;
+const ITEM_ENTRY_LIFETIME: Duration = Duration::from_millis(360);
+const ITEM_ENTRY_DURATION: Duration = Duration::from_millis(280);
+const PROMPT_ENTRY_DURATION: Duration = Duration::from_millis(300);
+const WORKING_RAIL_ENTRY_DURATION: Duration = Duration::from_millis(260);
+const TURN_SETTLE_LIFETIME: Duration = Duration::from_millis(520);
+const TURN_SETTLE_DURATION: Duration = Duration::from_millis(360);
 type ClickHandler = Rc<dyn Fn(&gpui::ClickEvent, &mut Window, &mut App)>;
 
 #[derive(Clone)]
@@ -27,6 +34,10 @@ struct TranscriptRowSnapshot {
     turn: Option<TurnPresentation>,
     visible_activity: Vec<Item>,
     live: bool,
+    entering: bool,
+    settling: bool,
+    motion_epoch: u64,
+    settle_generation: u64,
     show_working_rail: bool,
     working: Option<WorkingSnapshot>,
     expanded: bool,
@@ -38,8 +49,11 @@ struct TranscriptRowSnapshot {
 
 #[derive(Clone)]
 struct WorkingSnapshot {
+    turn_id: String,
     label: String,
     elapsed_ms: f64,
+    entering: bool,
+    motion_epoch: u64,
 }
 
 struct CompletionRailSnapshot {
@@ -48,10 +62,96 @@ struct CompletionRailSnapshot {
     activity: Vec<Item>,
     elapsed_ms: f64,
     expanded: bool,
+    settling: bool,
+    settle_generation: u64,
     theme: Theme,
 }
 
 impl ChatView {
+    pub(super) fn reset_transcript_motion(&mut self) {
+        self.reset_transcript_item_entries();
+        self.settled_turn_id = None;
+        self.settle_generation = self.settle_generation.wrapping_add(1);
+        self.working_rail_entering_turn_id = None;
+        self.working_rail_entry_generation = self.working_rail_entry_generation.wrapping_add(1);
+    }
+
+    pub(super) fn reset_transcript_item_entries(&mut self) {
+        self.transcript_motion_epoch = self.transcript_motion_epoch.wrapping_add(1);
+        self.entering_transcript_items.clear();
+    }
+
+    pub(super) fn start_transcript_item_entries(
+        &mut self,
+        item_ids: Vec<String>,
+        cx: &mut gpui::Context<Self>,
+    ) {
+        if item_ids.is_empty() {
+            return;
+        }
+        self.entering_transcript_items
+            .extend(item_ids.iter().cloned());
+        let epoch = self.transcript_motion_epoch;
+        cx.spawn(async move |view, cx| {
+            cx.background_executor().timer(ITEM_ENTRY_LIFETIME).await;
+            let _ = view.update(cx, |this, cx| {
+                if this.transcript_motion_epoch != epoch {
+                    return;
+                }
+                let mut changed = false;
+                for item_id in &item_ids {
+                    changed |= this.entering_transcript_items.remove(item_id);
+                }
+                if changed {
+                    cx.notify();
+                }
+            });
+        })
+        .detach();
+    }
+
+    pub(super) fn start_turn_settle(&mut self, turn_id: String, cx: &mut gpui::Context<Self>) {
+        self.settled_turn_id = Some(turn_id.clone());
+        self.settle_generation = self.settle_generation.wrapping_add(1);
+        let generation = self.settle_generation;
+        cx.spawn(async move |view, cx| {
+            cx.background_executor().timer(TURN_SETTLE_LIFETIME).await;
+            let _ = view.update(cx, |this, cx| {
+                if this.settle_generation == generation
+                    && this.settled_turn_id.as_deref() == Some(turn_id.as_str())
+                {
+                    this.settled_turn_id = None;
+                    cx.notify();
+                }
+            });
+        })
+        .detach();
+    }
+
+    pub(super) fn start_working_rail_entry(
+        &mut self,
+        turn_id: String,
+        cx: &mut gpui::Context<Self>,
+    ) {
+        self.working_rail_entering_turn_id = Some(turn_id.clone());
+        self.working_rail_entry_generation = self.working_rail_entry_generation.wrapping_add(1);
+        let generation = self.working_rail_entry_generation;
+        cx.spawn(async move |view, cx| {
+            cx.background_executor()
+                .timer(WORKING_RAIL_ENTRY_DURATION)
+                .await;
+            let _ = view.update(cx, |this, cx| {
+                if this.working_rail_entry_generation == generation
+                    && this.working_rail_entering_turn_id.as_deref() == Some(turn_id.as_str())
+                {
+                    this.working_rail_entering_turn_id = None;
+                    cx.notify();
+                }
+            });
+        })
+        .detach();
+    }
+
     pub(super) fn ensure_working_tick(&mut self, cx: &mut gpui::Context<Self>) {
         if !self.state.running || self.working_tick_scheduled {
             return;
@@ -208,6 +308,8 @@ impl ChatView {
             _ => Vec::new(),
         };
         let checkpoint_id = checkpoint_for(&item, &self.stage_settings.checkpoints).map(|it| it.id);
+        let entering = self.entering_transcript_items.contains(&item.id);
+        let settling = self.settled_turn_id.as_deref() == Some(item.turn_id.as_str());
 
         Some(TranscriptRowSnapshot {
             row,
@@ -220,6 +322,10 @@ impl ChatView {
             turn,
             visible_activity,
             live,
+            entering,
+            settling,
+            motion_epoch: self.transcript_motion_epoch,
+            settle_generation: self.settle_generation,
             show_working_rail,
             checkpoint_id,
             theme: self.theme,
@@ -236,16 +342,18 @@ impl ChatView {
     }
 
     fn working_snapshot(&self) -> WorkingSnapshot {
-        let started_at = self
-            .state
-            .active_turn()
-            .map_or_else(now_ms, |turn| turn.turn.created_at);
+        let active_turn = self.state.active_turn();
+        let started_at = active_turn.map_or_else(now_ms, |turn| turn.turn.created_at);
+        let turn_id = active_turn.map_or_else(String::new, |turn| turn.turn.id.clone());
         WorkingSnapshot {
+            entering: self.working_rail_entering_turn_id.as_deref() == Some(turn_id.as_str()),
+            turn_id,
             label: self
                 .last_specific_work_label
                 .clone()
                 .unwrap_or_else(|| "Working".into()),
             elapsed_ms: (now_ms() - started_at).max(0.0),
+            motion_epoch: self.transcript_motion_epoch,
         }
     }
 
@@ -347,6 +455,8 @@ fn render_transcript_row(
                 activity: snapshot.visible_activity.clone(),
                 elapsed_ms: snapshot.turn.as_ref().map_or(0.0, |turn| turn.elapsed_ms),
                 expanded: snapshot.activity_expanded,
+                settling: snapshot.settling,
+                settle_generation: snapshot.settle_generation,
                 theme: snapshot.theme,
             },
             view.clone(),
@@ -363,6 +473,12 @@ fn render_transcript_row(
             _ => auxiliary_item(&snapshot, view.clone()),
         },
         RowPresentation::Suppressed => unreachable!(),
+    };
+    let activity_lead = matches!(snapshot.presentation, RowPresentation::ActivityLead { .. });
+    let body = if snapshot.entering && !(activity_lead && snapshot.settling) {
+        animate_transcript_entry(body, &snapshot.item, snapshot.motion_epoch)
+    } else {
+        body
     };
 
     div()
@@ -382,6 +498,25 @@ fn render_transcript_row(
             12.0
         }))
         .child(body)
+        .into_any_element()
+}
+
+fn animate_transcript_entry(body: AnyElement, item: &Item, motion_epoch: u64) -> AnyElement {
+    let prompt = item.item_type == ItemType::Message && item.role == Some(MessageRole::User);
+    let (duration, offset) = if prompt {
+        (PROMPT_ENTRY_DURATION, 6.0)
+    } else {
+        (ITEM_ENTRY_DURATION, 5.0)
+    };
+    div()
+        .relative()
+        .w_full()
+        .child(body)
+        .with_animation(
+            SharedString::from(format!("transcript-entry:{motion_epoch}:{}", item.id)),
+            Animation::new(duration).with_easing(crate::theme::web_ease_out),
+            move |entry, delta| entry.top(px(offset * (1.0 - delta))).opacity(delta),
+        )
         .into_any_element()
 }
 
@@ -505,6 +640,20 @@ fn assistant_message(
     let show_actions =
         !snapshot.live && snapshot.item.status == ItemStatus::Completed && !text.trim().is_empty();
     let elapsed_ms = snapshot.turn.as_ref().map_or(0.0, |turn| turn.elapsed_ms);
+    let completion = show_completion_rail.then(|| {
+        let summary = completion_summary(
+            format!("empty-completion:{}", snapshot.item.id),
+            elapsed_ms,
+            false,
+            theme,
+            None,
+        );
+        if snapshot.settling {
+            animate_activity_settle(summary, &snapshot.item.turn_id, snapshot.settle_generation)
+        } else {
+            summary
+        }
+    });
 
     div()
         .group(group.clone())
@@ -514,14 +663,8 @@ fn assistant_message(
         .text_size(px(15.0))
         .line_height(relative(1.52))
         .text_color(theme.response_text.hsla())
-        .when(show_completion_rail, |reply| {
-            reply.child(div().mb(px(18.0)).child(completion_summary(
-                format!("empty-completion:{}", snapshot.item.id),
-                elapsed_ms,
-                false,
-                theme,
-                None,
-            )))
+        .when_some(completion, |reply, completion| {
+            reply.child(div().mb(px(18.0)).child(completion))
         })
         .child(markdown_view(
             format!("assistant-markdown:{}", snapshot.item.id),
@@ -578,7 +721,7 @@ fn completion_rail(
     let toggle_turn_id = snapshot.turn_id.clone();
     let row = snapshot.row;
     let theme = snapshot.theme;
-    div()
+    let rail = div()
         .w_full()
         .child(completion_summary(
             format!("completion:{}", snapshot.turn_id),
@@ -631,7 +774,32 @@ fn completion_rail(
                         }
                     })),
             )
-        })
+        });
+    if snapshot.settling {
+        animate_activity_settle(
+            rail.into_any_element(),
+            &snapshot.turn_id,
+            snapshot.settle_generation,
+        )
+    } else {
+        rail.into_any_element()
+    }
+}
+
+fn animate_activity_settle(
+    activity: AnyElement,
+    turn_id: &str,
+    settle_generation: u64,
+) -> AnyElement {
+    div()
+        .relative()
+        .w_full()
+        .child(activity)
+        .with_animation(
+            SharedString::from(format!("activity-settle:{settle_generation}:{turn_id}")),
+            Animation::new(TURN_SETTLE_DURATION).with_easing(crate::theme::web_ease_out),
+            |activity, delta| activity.top(px(4.0 * (1.0 - delta))).opacity(delta),
+        )
         .into_any_element()
 }
 
@@ -673,7 +841,16 @@ fn completion_summary(
 }
 
 fn working_rail(working: WorkingSnapshot, theme: Theme) -> AnyElement {
-    div()
+    let orb_state = if working.label == "Searching" {
+        ThinkingOrbState::Searching
+    } else {
+        ThinkingOrbState::Working
+    };
+    let label_animation_id = SharedString::from(format!(
+        "transcript-working-label:{}",
+        stable_hash(&working.label)
+    ));
+    let rail = div()
         .min_h(px(36.0))
         .pt(px(1.0))
         .px(px(2.0))
@@ -689,32 +866,32 @@ fn working_rail(working: WorkingSnapshot, theme: Theme) -> AnyElement {
                 .flex()
                 .items_center()
                 .justify_center()
-                .child(
-                    svg()
-                        .path("icons/loader-circle.svg")
-                        .size(px(16.0))
-                        .text_color(theme.text_3.hsla())
-                        .with_animation(
-                            "transcript-working-orb",
-                            Animation::new(Duration::from_millis(900)).repeat(),
-                            |spinner, delta| {
-                                spinner
-                                    .with_transformation(Transformation::rotate(percentage(delta)))
-                            },
-                        ),
-                ),
+                .child(thinking_orb(orb_state, theme)),
         )
-        .child(div().child(working.label).with_animation(
-            "transcript-working-label",
+        .child(div().relative().child(working.label).with_animation(
+            label_animation_id,
             Animation::new(Duration::from_millis(180)).with_easing(crate::theme::web_ease_out),
-            |label, delta| label.opacity(delta),
+            |label, delta| label.top(px(3.0 * (1.0 - delta))).opacity(delta),
         ))
         .child(
             div()
                 .text_color(theme.text_3.hsla().opacity(0.72))
                 .child(format!("·  {}", worked_for(working.elapsed_ms))),
-        )
-        .into_any_element()
+        );
+    if working.entering {
+        rail.relative()
+            .with_animation(
+                SharedString::from(format!(
+                    "working-rail-entry:{}:{}",
+                    working.motion_epoch, working.turn_id
+                )),
+                Animation::new(WORKING_RAIL_ENTRY_DURATION).with_easing(crate::theme::web_ease_out),
+                |rail, delta| rail.top(px(3.0 * (1.0 - delta))).opacity(delta),
+            )
+            .into_any_element()
+    } else {
+        rail.into_any_element()
+    }
 }
 
 fn auxiliary_item(snapshot: &TranscriptRowSnapshot, view: Entity<ChatView>) -> AnyElement {
@@ -1125,6 +1302,16 @@ mod tests {
         assert_eq!(worked_for(0.0), "1s");
         assert_eq!(worked_for(60_000.0), "1m");
         assert_eq!(worked_for(62_000.0), "1m 2s");
+    }
+
+    #[test]
+    fn transcript_motion_timing_matches_the_web_contract() {
+        assert_eq!(ITEM_ENTRY_LIFETIME, Duration::from_millis(360));
+        assert_eq!(ITEM_ENTRY_DURATION, Duration::from_millis(280));
+        assert_eq!(PROMPT_ENTRY_DURATION, Duration::from_millis(300));
+        assert_eq!(WORKING_RAIL_ENTRY_DURATION, Duration::from_millis(260));
+        assert_eq!(TURN_SETTLE_DURATION, Duration::from_millis(360));
+        assert_eq!(TURN_SETTLE_LIFETIME, Duration::from_millis(520));
     }
 
     #[test]
