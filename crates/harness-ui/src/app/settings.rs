@@ -2747,7 +2747,7 @@ impl HarnessApp {
                 self.preferences.hidden_models.insert(key.clone());
             }
         }
-        self.sync_model_selection();
+        self.sync_model_selection(cx);
         self.sync_composer_settings(cx);
         self.persist_native_preferences();
         cx.notify();
@@ -2860,7 +2860,7 @@ impl HarnessApp {
             Err(error) => self.state.notice = Some(format!("Could not reset preferences: {error}")),
         }
         self.apply_native_theme(cx);
-        self.sync_model_selection();
+        self.sync_model_selection(cx);
         self.sync_composer_settings(cx);
     }
 

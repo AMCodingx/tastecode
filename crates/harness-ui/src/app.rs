@@ -649,7 +649,7 @@ impl HarnessApp {
             fixture,
         };
         if has_boot_model_catalog {
-            app.sync_model_selection();
+            app.sync_model_selection(cx);
             app.sync_composer_settings(cx);
         }
         app
@@ -694,7 +694,7 @@ impl HarnessApp {
         }
         if shell_changed {
             self.reconcile_session_order();
-            self.sync_model_selection();
+            self.sync_model_selection(cx);
         }
         if self.state.model_catalog_loaded
             && self.selected_model_key.is_some()
@@ -730,31 +730,16 @@ impl HarnessApp {
         }
     }
 
-    fn sync_model_selection(&mut self) {
+    fn sync_model_selection(&mut self, cx: &mut Context<Self>) {
         if !self.state.model_catalog_loaded {
             return;
         }
-        let current = self.selected_model_key.as_ref().and_then(|selected| {
-            self.state.model_catalog.iter().find(|choice| {
-                choice.key == *selected && !self.preferences.hidden_models.contains(&choice.key)
-            })
-        });
-        let Some(choice) = current
-            .or_else(|| {
-                self.state
-                    .model_catalog
-                    .iter()
-                    .filter(|choice| !self.preferences.hidden_models.contains(&choice.key))
-                    .find(|choice| choice.model.is_default)
-            })
-            .or_else(|| {
-                self.state
-                    .model_catalog
-                    .iter()
-                    .find(|choice| !self.preferences.hidden_models.contains(&choice.key))
-            })
-            .cloned()
-        else {
+        let Some(choice) = resolve_model_choice(
+            &self.state.model_catalog,
+            self.selected_model_key.as_deref(),
+            &self.preferences.hidden_models,
+        )
+        .cloned() else {
             self.selected_model_key = self.preferences.selected_model_key.clone();
             let remembered = self.selected_model_key.as_ref().and_then(|selected| {
                 self.preferences
@@ -771,6 +756,9 @@ impl HarnessApp {
         self.effort = effort;
         self.service_tier = service_tier;
         self.remember_model_selection();
+        self.chat.update(cx, |chat, cx| {
+            chat.update_draft_provider(choice.provider, cx);
+        });
     }
 
     fn apply_shell_event(&mut self, event: ShellEvent, cx: &mut Context<Self>) {
@@ -1006,14 +994,15 @@ impl HarnessApp {
             .model_catalog
             .iter()
             .find(|choice| {
-                !self.preferences.hidden_models.contains(&choice.key)
-                    && choice.provider == context.provider
+                choice.provider == context.provider
                     && (context.provider != harness_protocol::ProviderId::Acp
                         || choice.agent_id == agent)
             })
             .map(|choice| choice.key.clone());
         if let Some(key) = matching_model {
             self.select_model(&key, cx);
+            self.sync_model_selection(cx);
+            self.sync_composer_settings(cx);
         }
 
         self.selected_thread_id = Some(thread_id.clone());
@@ -1107,7 +1096,7 @@ impl HarnessApp {
     }
 
     fn begin_new_chat(&mut self, project_path: String, cx: &mut Context<Self>) {
-        self.sync_model_selection();
+        self.sync_model_selection(cx);
         let Some(choice) = self.selected_model_choice().cloned() else {
             self.chat_visible = false;
             self.settings_open = false;
@@ -1199,9 +1188,10 @@ impl HarnessApp {
 
     fn selected_model_choice(&self) -> Option<&crate::client_state::ModelChoice> {
         let key = self.selected_model_key.as_ref()?;
-        self.state.model_catalog.iter().find(|choice| {
-            choice.key == *key && !self.preferences.hidden_models.contains(&choice.key)
-        })
+        self.state
+            .model_catalog
+            .iter()
+            .find(|choice| choice.key == *key)
     }
 
     fn select_model(&mut self, key: &str, cx: &mut Context<Self>) {
@@ -1209,9 +1199,7 @@ impl HarnessApp {
             .state
             .model_catalog
             .iter()
-            .find(|choice| {
-                choice.key == key && !self.preferences.hidden_models.contains(&choice.key)
-            })
+            .find(|choice| choice.key == key)
             .cloned()
         else {
             return;
@@ -2395,6 +2383,27 @@ fn titlebar_tool_button(
         .child(label)
 }
 
+fn resolve_model_choice<'a>(
+    catalog: &'a [crate::client_state::ModelChoice],
+    selected_key: Option<&str>,
+    hidden: &HashSet<String>,
+) -> Option<&'a crate::client_state::ModelChoice> {
+    let selected = selected_key.and_then(|key| catalog.iter().find(|choice| choice.key == key));
+    let first_visible = catalog.iter().find(|choice| !hidden.contains(&choice.key));
+    if selected.is_some_and(|choice| hidden.contains(&choice.key)) {
+        return first_visible.or(selected);
+    }
+    selected
+        .or_else(|| {
+            catalog
+                .iter()
+                .find(|choice| choice.model.is_default && !hidden.contains(&choice.key))
+        })
+        .or(first_visible)
+        .or_else(|| catalog.iter().find(|choice| choice.model.is_default))
+        .or_else(|| catalog.first())
+}
+
 fn resolve_reasoning_effort(
     current: Option<&str>,
     current_model: Option<&Model>,
@@ -2550,6 +2559,23 @@ mod tests {
         }
     }
 
+    fn choice(id: &str, is_default: bool) -> crate::client_state::ModelChoice {
+        let mut model = model(&[], None);
+        model.id = id.into();
+        model.display_name = id.into();
+        model.is_default = is_default;
+        crate::client_state::ModelChoice {
+            key: format!("codex\u{1f}{id}"),
+            provider: ProviderId::Codex,
+            source_name: "Codex".into(),
+            connection_id: None,
+            agent_id: None,
+            agent_name: None,
+            model,
+            catalog_order: (0, 0, 0),
+        }
+    }
+
     #[test]
     fn highest_effort_stays_highest_across_model_vocabularies() {
         let current = model(&["low", "high"], Some("high"));
@@ -2558,6 +2584,34 @@ mod tests {
         assert_eq!(
             resolve_reasoning_effort(Some("high"), Some(&current), &next).as_deref(),
             Some("max")
+        );
+    }
+
+    #[test]
+    fn hidden_selection_uses_the_first_visible_model_but_survives_when_all_are_hidden() {
+        let catalog = vec![
+            choice("selected", false),
+            choice("first-visible", false),
+            choice("default", true),
+        ];
+        let selected_key = catalog[0].key.clone();
+        let mut hidden = HashSet::from([selected_key.clone()]);
+
+        assert_eq!(
+            resolve_model_choice(&catalog, Some(&selected_key), &hidden)
+                .unwrap()
+                .model
+                .id,
+            "first-visible"
+        );
+
+        hidden.extend(catalog.iter().map(|choice| choice.key.clone()));
+        assert_eq!(
+            resolve_model_choice(&catalog, Some(&selected_key), &hidden)
+                .unwrap()
+                .model
+                .id,
+            "selected"
         );
     }
 
