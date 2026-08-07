@@ -76,7 +76,19 @@ pub(crate) fn route(
 ) -> Result<Value, RouteError> {
     match method_name {
         method::CLIENT_CAPABILITIES => {
-            let _: ClientCapabilitiesParams = decode(method_name, params)?;
+            let params: ClientCapabilitiesParams = decode(method_name, params)?;
+            state
+                .preview_capture
+                .set_capability(connection_id, params.preview_capture)
+                .map_err(RouteError::internal)?;
+            empty_result()
+        }
+        method::PREVIEW_CAPTURE_RESULT => {
+            let result: harness_protocol::PreviewCaptureResult = decode(method_name, params)?;
+            state
+                .preview_capture
+                .complete(connection_id, result)
+                .map_err(RouteError::internal)?;
             empty_result()
         }
         method::SYSTEM_INFO => {

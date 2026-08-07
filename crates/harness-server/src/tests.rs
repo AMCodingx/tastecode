@@ -1059,6 +1059,60 @@ fn live_voice_routes_report_provider_support_and_cancel_on_the_same_connection()
 }
 
 #[test]
+fn live_preview_capture_round_trips_through_the_capable_client() {
+    let (_directory, server) = start_test_server(None, |_| {});
+    let mut socket = connect_native(&server, "");
+    assert_welcome(&mut socket);
+    send_request(
+        &mut socket,
+        "capability",
+        "client.capabilities",
+        json!({ "previewCapture": true }),
+    );
+    assert_eq!(
+        read_value(&mut socket),
+        json!({ "id": "capability", "result": {} })
+    );
+
+    let state = Arc::clone(&server.state);
+    let capture = std::thread::spawn(move || {
+        state.preview_capture.capture(
+            "http://127.0.0.1:5173/".into(),
+            vec![harness_protocol::PreviewViewport {
+                width: 390,
+                height: 844,
+            }],
+        )
+    });
+    let requested = read_value(&mut socket);
+    assert_eq!(requested["channel"], "preview.captureRequested");
+    assert_eq!(requested["data"]["url"], "http://127.0.0.1:5173/");
+    let request_id = requested["data"]["requestId"].as_str().unwrap();
+    send_request(
+        &mut socket,
+        "capture-result",
+        "preview.captureResult",
+        json!({
+            "status": "completed",
+            "requestId": request_id,
+            "screenshots": [{
+                "path": "/tmp/preview-mobile.png",
+                "width": 390,
+                "height": 844
+            }]
+        }),
+    );
+    assert_eq!(
+        read_value(&mut socket),
+        json!({ "id": "capture-result", "result": {} })
+    );
+    assert_eq!(capture.join().unwrap().unwrap()[0].width, 390);
+
+    socket.close(None).unwrap();
+    server.close().unwrap();
+}
+
+#[test]
 fn live_connection_routes_keep_api_keys_only_in_the_credential_store() {
     let runtime = Arc::new(FakeRuntime::default());
     let registry = Arc::new(FakeRuntimes { runtime });

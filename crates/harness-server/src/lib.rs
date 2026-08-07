@@ -11,6 +11,7 @@ mod diff_review;
 mod inbox;
 mod mcp_config;
 mod model_connections;
+mod preview_capture;
 mod push;
 mod router;
 mod skill_install;
@@ -197,6 +198,7 @@ fn start_with_prepared_services(
     let store = Store::open(&config.store_path)?;
     recover_worktree_metadata(&store);
     let push = Arc::new(PushBus::new());
+    let preview_capture = preview_capture::PreviewCaptureCoordinator::new(Arc::clone(&push));
     let output_push = Arc::clone(&push);
     let exit_push = Arc::clone(&push);
     let terminals = TerminalManager::new(
@@ -223,6 +225,7 @@ fn start_with_prepared_services(
         model_connections,
         credentials,
         push,
+        preview_capture,
         terminals,
         agents: agents::AgentManager::new(runtimes),
         reviewing_diffs: Mutex::new(HashSet::new()),
@@ -275,6 +278,7 @@ pub(crate) struct ServerState {
     model_connections: Arc<Mutex<model_connections::ModelConnectionStore>>,
     credentials: Arc<dyn CredentialStore>,
     push: Arc<PushBus>,
+    preview_capture: preview_capture::PreviewCaptureCoordinator,
     terminals: TerminalManager,
     agents: agents::AgentManager,
     reviewing_diffs: Mutex<HashSet<String>>,
@@ -435,6 +439,7 @@ fn handle_connection(stream: TcpStream, state: Arc<ServerState>) {
         .push
         .send(connection_id, channel::SERVER_WELCOME, router::welcome());
     run_connection(&mut socket, &state, connection_id, pushes);
+    state.preview_capture.remove(connection_id);
     state.push.remove(connection_id);
 }
 
