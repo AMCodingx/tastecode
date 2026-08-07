@@ -512,7 +512,7 @@ fn native_opencode_runtime_is_registered_without_acp_or_api_routing() {
 }
 
 #[test]
-fn native_grok_runtime_is_registered_without_acp_or_api_routing() {
+fn native_one_shot_runtimes_are_registered_without_acp_or_api_routing() {
     let directory = tempfile::tempdir().unwrap();
     let credentials: Arc<dyn CredentialStore> = Arc::new(MemoryCredentials::default());
     let model_connections = Arc::new(Mutex::new(
@@ -522,21 +522,18 @@ fn native_grok_runtime_is_registered_without_acp_or_api_routing() {
         ),
     ));
     let runtimes = crate::agents::NativeRuntimes::new(model_connections, credentials);
-    let _runtime =
-        crate::agents::RuntimeRegistry::runtime(&runtimes, ProviderId::Grok, None, None).unwrap();
-    assert!(
-        crate::agents::RuntimeRegistry::runtime(&runtimes, ProviderId::Grok, Some("agent"), None,)
-            .is_err()
-    );
-    assert!(
-        crate::agents::RuntimeRegistry::runtime(
-            &runtimes,
-            ProviderId::Grok,
-            None,
-            Some("connection"),
-        )
-        .is_err()
-    );
+    for provider in [ProviderId::Grok, ProviderId::Antigravity] {
+        let _runtime =
+            crate::agents::RuntimeRegistry::runtime(&runtimes, provider, None, None).unwrap();
+        assert!(
+            crate::agents::RuntimeRegistry::runtime(&runtimes, provider, Some("agent"), None)
+                .is_err()
+        );
+        assert!(
+            crate::agents::RuntimeRegistry::runtime(&runtimes, provider, None, Some("connection"),)
+                .is_err()
+        );
+    }
 }
 
 #[test]

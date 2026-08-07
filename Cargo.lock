@@ -2961,6 +2961,7 @@ dependencies = [
  "chrono",
  "dirs 5.0.1",
  "harness-adapter-acp",
+ "harness-adapter-antigravity",
  "harness-adapter-api",
  "harness-adapter-claude-code",
  "harness-adapter-codex",

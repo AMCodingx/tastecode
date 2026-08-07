@@ -8,6 +8,7 @@ use crate::design_workflow::{
 };
 use crate::model_connections::ModelConnectionStore;
 use harness_adapter_acp::AcpRuntime;
+use harness_adapter_antigravity::AntigravityRuntime;
 use harness_adapter_api::{ApiRuntime, ApiToolFactory};
 use harness_adapter_claude_code::ClaudeCodeRuntime;
 use harness_adapter_codex::CodexRuntime;
@@ -78,6 +79,7 @@ pub(crate) struct NativeRuntimes {
     grok: Arc<GrokRuntime>,
     cursor: Arc<CursorRuntime>,
     opencode: Arc<OpenCodeRuntime>,
+    antigravity: Arc<AntigravityRuntime>,
     acp: Mutex<HashMap<String, Arc<AcpRuntime>>>,
     model_connections: Arc<Mutex<ModelConnectionStore>>,
     credentials: Arc<dyn CredentialStore>,
@@ -95,6 +97,7 @@ impl NativeRuntimes {
             grok: Arc::new(GrokRuntime::default()),
             cursor: Arc::new(CursorRuntime::default()),
             opencode: Arc::new(OpenCodeRuntime::default()),
+            antigravity: Arc::new(AntigravityRuntime::default()),
             acp: Mutex::new(HashMap::new()),
             model_connections,
             credentials,
@@ -139,8 +142,11 @@ impl RuntimeRegistry for NativeRuntimes {
             ProviderId::OpenCode => Err(AgentError::Failed(
                 "OpenCode does not accept an ACP agent or model connection".into(),
             )),
+            ProviderId::Antigravity if agent.is_none() && connection_id.is_none() => {
+                Ok(self.antigravity.clone())
+            }
             ProviderId::Antigravity => Err(AgentError::Failed(
-                "Antigravity runtime is not available in this build".into(),
+                "Antigravity does not accept an ACP agent or model connection".into(),
             )),
             ProviderId::Acp if connection_id.is_some() => Err(AgentError::Failed(
                 "ACP sessions do not accept a model connection".into(),

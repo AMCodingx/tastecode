@@ -10,6 +10,7 @@ base64.workspace = true
 chrono.workspace = true
 dirs.workspace = true
 harness-adapter-acp = { path = "../harness-adapter-acp" }
+harness-adapter-antigravity = { path = "../harness-adapter-antigravity" }
 harness-adapter-codex = { path = "../harness-adapter-codex" }
 harness-adapter-api = { path = "../harness-adapter-api" }
 harness-adapter-claude-code = { path = "../harness-adapter-claude-code" }
