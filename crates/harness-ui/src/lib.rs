@@ -6,6 +6,7 @@ mod chrome;
 mod client_state;
 mod downloads;
 mod model_selection;
+mod motion_icon;
 mod preferences;
 mod preview_capture;
 mod provider_icon;

@@ -1,9 +1,11 @@
 use super::HarnessApp;
 use crate::downloads::save_bytes;
+use crate::motion_icon::motion_icon;
 use crate::zoom::px;
 use gpui::{
     Animation, AnimationExt, AnyElement, BoxShadow, Context, FontFeatures, Image, MouseButton,
-    ObjectFit, ScrollHandle, StyledImage, Window, div, img, point, prelude::*, relative, rgba, svg,
+    ObjectFit, ScrollHandle, SharedString, StyledImage, Window, div, img, point, prelude::*,
+    relative, rgba,
 };
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -176,6 +178,7 @@ impl HarnessApp {
                             "icons/download.svg",
                             18.0,
                             false,
+                            self.theme,
                             cx.listener(|this, _event, _window, cx| {
                                 this.download_viewed_image(cx);
                             }),
@@ -185,6 +188,7 @@ impl HarnessApp {
                             "icons/x.svg",
                             19.0,
                             false,
+                            self.theme,
                             cx.listener(|this, _event, _window, cx| {
                                 this.close_image_viewer(cx);
                             }),
@@ -242,6 +246,7 @@ impl HarnessApp {
                             "image-zoom-out",
                             "icons/minus.svg",
                             zoom_out_disabled,
+                            self.theme,
                             cx.listener(|this, _event, _window, cx| {
                                 this.change_image_zoom(-ZOOM_STEP, cx);
                             }),
@@ -259,6 +264,7 @@ impl HarnessApp {
                             "image-zoom-in",
                             "icons/plus.svg",
                             zoom_in_disabled,
+                            self.theme,
                             cx.listener(|this, _event, _window, cx| {
                                 this.change_image_zoom(ZOOM_STEP, cx);
                             }),
@@ -280,10 +286,13 @@ fn image_viewer_action(
     icon: &'static str,
     icon_size: f32,
     disabled: bool,
+    theme: crate::theme::Theme,
     on_click: impl Fn(&gpui::ClickEvent, &mut Window, &mut gpui::App) + 'static,
 ) -> AnyElement {
+    let group: SharedString = format!("{id}:icon-hover").into();
     div()
         .id(id)
+        .group(group.clone())
         .size(px(44.0))
         .flex()
         .items_center()
@@ -301,7 +310,13 @@ fn image_viewer_action(
                 .active(|style| style.size(px(41.36)).m(px(1.32)))
                 .on_click(on_click)
         })
-        .child(svg().path(icon).size(px(icon_size)))
+        .child(motion_icon(
+            SharedString::from(format!("{id}:icon")),
+            icon,
+            icon_size,
+            group,
+            theme,
+        ))
         .into_any_element()
 }
 
@@ -309,10 +324,13 @@ fn image_zoom_button(
     id: &'static str,
     icon: &'static str,
     disabled: bool,
+    theme: crate::theme::Theme,
     on_click: impl Fn(&gpui::ClickEvent, &mut Window, &mut gpui::App) + 'static,
 ) -> AnyElement {
+    let group: SharedString = format!("{id}:icon-hover").into();
     div()
         .id(id)
+        .group(group.clone())
         .size(px(38.0))
         .flex()
         .items_center()
@@ -325,6 +343,12 @@ fn image_zoom_button(
                 .hover(|style| style.bg(rgba(0x00000012)))
                 .on_click(on_click)
         })
-        .child(svg().path(icon).size(px(16.0)))
+        .child(motion_icon(
+            SharedString::from(format!("{id}:icon")),
+            icon,
+            16.0,
+            group,
+            theme,
+        ))
         .into_any_element()
 }
