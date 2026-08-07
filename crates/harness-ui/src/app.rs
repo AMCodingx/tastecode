@@ -35,6 +35,7 @@ use gpui::{
 };
 use gpui_component::Root;
 use gpui_component::input::{InputEvent, InputState};
+use harness_client::Endpoint;
 use harness_protocol::{
     ApprovalMode, Model, ModelConnectionPreset, ProviderId, SidebarMode, ThreadInboxStatus,
 };
@@ -60,9 +61,13 @@ struct SidebarResizeDrag {
 }
 
 pub fn run() -> Result<()> {
+    run_with_endpoint(Endpoint::from_environment()?)
+}
+
+pub fn run_with_endpoint(endpoint: Endpoint) -> Result<()> {
     Application::new()
         .with_assets(HarnessAssets)
-        .run(|cx: &mut App| {
+        .run(move |cx: &mut App| {
             zoom::set_factor(1.0);
             gpui_component::init(cx);
             register_fonts(cx).expect("failed to register bundled Geist fonts");
@@ -80,9 +85,9 @@ pub fn run() -> Result<()> {
                 ..Default::default()
             };
 
-            cx.open_window(options, |window, cx| {
+            cx.open_window(options, move |window, cx| {
                 window.set_window_title("Personal Harness");
-                let app = cx.new(|cx| HarnessApp::new(window, cx));
+                let app = cx.new(|cx| HarnessApp::new(endpoint, window, cx));
                 cx.new(|cx| Root::new(app, window, cx))
             })
             .expect("failed to open the Harness window");
@@ -163,7 +168,7 @@ struct HarnessApp {
 }
 
 impl HarnessApp {
-    fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
+    fn new(endpoint: Endpoint, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let fixture = std::env::var_os("HARNESS_NATIVE_FIXTURE").is_some();
         let mut state = ClientState::new(fixture);
         let preview_capture = PreviewCaptureRuntime::discover();
@@ -491,7 +496,7 @@ impl HarnessApp {
         })
         .detach();
 
-        if !fixture && let Some(events) = state.connect() {
+        if !fixture && let Some(events) = state.connect(endpoint) {
             cx.spawn(async move |view, cx| {
                 while let Ok(event) = events.recv().await {
                     let result = view.update(cx, |this, cx| {

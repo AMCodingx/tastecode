@@ -775,8 +775,8 @@ impl ClientState {
         }
     }
 
-    pub(crate) fn connect(&mut self) -> Option<EventReceiver<ClientEvent>> {
-        match Endpoint::from_environment().and_then(ClientHandle::start) {
+    pub(crate) fn connect(&mut self, endpoint: Endpoint) -> Option<EventReceiver<ClientEvent>> {
+        match ClientHandle::start(endpoint) {
             Ok((client, events)) => {
                 self.client = Some(client);
                 Some(events)

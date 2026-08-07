@@ -78,19 +78,8 @@ impl ServerConfig {
         let host = host
             .parse::<IpAddr>()
             .map_err(|_| ServerError::InvalidHost(host))?;
-        let port = std::env::var("HARNESS_PORT")
-            .ok()
-            .map(|value| {
-                value
-                    .parse::<u16>()
-                    .map_err(|_| ServerError::InvalidPort(value))
-            })
-            .transpose()?
-            .unwrap_or(DEFAULT_PORT);
-        let config_root = std::env::var_os("HARNESS_CONFIG_DIR")
-            .map(PathBuf::from)
-            .or_else(|| dirs::home_dir().map(|home| home.join(".personalharness")))
-            .ok_or(ServerError::MissingConfigDirectory)?;
+        let port = environment_port()?;
+        let config_root = environment_config_root()?;
         Ok(Self {
             address: SocketAddr::new(host, port),
             access_token: std::env::var("HARNESS_ACCESS_TOKEN").ok(),
@@ -99,6 +88,37 @@ impl ServerConfig {
             providers_config_path: config_root.join("providers.json"),
         })
     }
+
+    pub fn embedded_from_environment() -> Result<Self, ServerError> {
+        let port = environment_port()?;
+        let config_root = environment_config_root()?;
+        Ok(Self {
+            address: SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), port),
+            access_token: None,
+            store_path: store_location()?,
+            mcp_config_path: config_root.join("mcp.json"),
+            providers_config_path: config_root.join("providers.json"),
+        })
+    }
+}
+
+fn environment_port() -> Result<u16, ServerError> {
+    std::env::var("HARNESS_PORT")
+        .ok()
+        .map(|value| {
+            value
+                .parse::<u16>()
+                .map_err(|_| ServerError::InvalidPort(value))
+        })
+        .transpose()
+        .map(|port| port.unwrap_or(DEFAULT_PORT))
+}
+
+fn environment_config_root() -> Result<PathBuf, ServerError> {
+    std::env::var_os("HARNESS_CONFIG_DIR")
+        .map(PathBuf::from)
+        .or_else(|| dirs::home_dir().map(|home| home.join(".personalharness")))
+        .ok_or(ServerError::MissingConfigDirectory)
 }
 
 #[derive(Debug, Error)]
@@ -402,6 +422,7 @@ fn run_listener(listener: TcpListener, state: Arc<ServerState>) {
 }
 
 fn handle_connection(stream: TcpStream, state: Arc<ServerState>) {
+    let _ = stream.set_nonblocking(false);
     let _ = stream.set_nodelay(true);
     let _ = stream.set_read_timeout(Some(HANDSHAKE_TIMEOUT));
     let _ = stream.set_write_timeout(Some(HANDSHAKE_TIMEOUT));

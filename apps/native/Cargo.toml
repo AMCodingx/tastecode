@@ -7,5 +7,5 @@ publish.workspace = true
 
 [dependencies]
 anyhow.workspace = true
+harness-server = { path = "../../crates/harness-server" }
 harness-ui = { path = "../../crates/harness-ui" }
-

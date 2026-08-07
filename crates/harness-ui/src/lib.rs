@@ -13,7 +13,8 @@ mod sidebar;
 mod theme;
 mod zoom;
 
-pub use app::run;
+pub use app::{run, run_with_endpoint};
+pub use harness_client::Endpoint;
 pub use theme::{
     Accent, Backdrop, CHAT_WIDTH, ColorToken, Motion, RADIUS_2XL, RADIUS_LG, RADIUS_MD, RADIUS_SM,
     RADIUS_XL, RAIL_WIDTH, TITLEBAR_HEIGHT, Theme, ThemeMode,
