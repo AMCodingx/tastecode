@@ -1,4 +1,5 @@
 mod diff;
+mod search;
 pub(crate) mod terminal;
 mod voice;
 
@@ -19,6 +20,7 @@ use harness_protocol::{
     VoiceMimeType, VoiceTranscribeParams,
 };
 use harness_state::{ApplyOutcome, HistoryError, ThreadState};
+use search::ThreadSearchState;
 use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 use std::time::Duration;
@@ -222,6 +224,7 @@ pub(crate) struct ChatView {
     loading: bool,
     error: Option<String>,
     list_state: ListState,
+    thread_search: ThreadSearchState,
     composer: Entity<InputState>,
     user_input_custom: Entity<InputState>,
     clear_composer: bool,
@@ -265,6 +268,7 @@ impl ChatView {
         });
         let user_input_custom =
             cx.new(|cx| InputState::new(window, cx).placeholder("Type your answer…"));
+        let thread_search = ThreadSearchState::new(window, cx);
         cx.subscribe(&composer, |this, _composer, event, cx| match event {
             InputEvent::PressEnter { secondary } => this.submit(*secondary, cx),
             InputEvent::Change | InputEvent::Focus | InputEvent::Blur => cx.notify(),
@@ -294,6 +298,7 @@ impl ChatView {
             loading: false,
             error: None,
             list_state: ListState::new(0, ListAlignment::Bottom, px(500.0)),
+            thread_search,
             composer,
             user_input_custom,
             clear_composer: false,
@@ -341,6 +346,12 @@ impl ChatView {
                 .read(cx)
                 .focus_handle(cx)
                 .is_focused(window)
+            || self
+                .thread_search
+                .input
+                .read(cx)
+                .focus_handle(cx)
+                .is_focused(window)
             || self.terminal_ui.is_focused(window)
     }
 
@@ -354,6 +365,7 @@ impl ChatView {
         self.loading = true;
         self.error = None;
         self.list_state.reset(0);
+        self.thread_search.close();
         self.clear_composer = true;
         self.restore_composer = None;
         self.creating = false;
@@ -492,6 +504,7 @@ impl ChatView {
                         self.error = None;
                         self.sync_structured_requests();
                         self.sync_diff_summary();
+                        self.refresh_thread_search_hits(cx);
                         self.flush_pending_live(cx);
                     }
                     Err(error) => self.reconcile_after_error(error, cx),
@@ -718,8 +731,10 @@ impl ChatView {
 
         if applied {
             let new_len = self.state.timeline_len();
+            let mut search_rows = Vec::new();
             if new_len > old_len {
                 self.list_state.splice(old_len..old_len, new_len - old_len);
+                search_rows.extend(old_len..new_len);
             } else if transcript_changed {
                 let mut changed_rows = changed_items
                     .into_iter()
@@ -727,14 +742,16 @@ impl ChatView {
                     .collect::<Vec<_>>();
                 changed_rows.sort_unstable();
                 changed_rows.dedup();
-                for row in changed_rows {
-                    self.list_state.splice(row..row + 1, 1);
+                for row in &changed_rows {
+                    self.list_state.splice(*row..*row + 1, 1);
                 }
+                search_rows = changed_rows;
             }
             self.loading = false;
             self.error = None;
             self.sync_structured_requests();
             self.sync_diff_summary();
+            self.refresh_thread_search_rows(&search_rows, cx);
             cx.notify();
         }
 
@@ -3367,6 +3384,7 @@ impl ChatView {
 
 impl Render for ChatView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        self.prepare_thread_search_input(window, cx);
         if let Some(text) = self.restore_composer.take() {
             self.composer.update(cx, |composer, cx| {
                 composer.set_value(text, window, cx);
@@ -3404,6 +3422,7 @@ impl Render for ChatView {
         let structured_surfaces = self.structured_surfaces(cx);
         let control_surface = self.control_surface(cx);
         let terminal_pane = self.terminal_pane(window, cx);
+        let thread_search = self.thread_search_overlay(cx);
         div()
             .size_full()
             .min_w(px(0.0))
@@ -3419,8 +3438,18 @@ impl Render for ChatView {
                     this.finish_terminal_resize(cx);
                 }),
             )
+            .on_key_down(cx.listener(|this, event, window, cx| {
+                this.handle_thread_navigation_key(event, window, cx);
+            }))
             .child(self.header(cx))
-            .child(div().flex_1().min_h(px(0.0)).child(self.timeline(cx)))
+            .child(
+                div()
+                    .relative()
+                    .flex_1()
+                    .min_h(px(0.0))
+                    .child(self.timeline(cx))
+                    .when_some(thread_search, |thread, search| thread.child(search)),
+            )
             .when_some(structured_surfaces, |view, surfaces| view.child(surfaces))
             .when_some(control_surface, |view, surface| view.child(surface))
             .when_some(terminal_pane, |view, terminal| view.child(terminal))
