@@ -1,3 +1,4 @@
+use crate::safe_command_environment::safe_command_environment;
 use harness_adapter_api::{
     ApiTool, ApiToolCall, ApiToolError, ApiToolExecutor, ApiToolFactory, ApiToolResult,
     ApiToolReview, ApiToolSet,
@@ -295,7 +296,9 @@ impl ApiWorkspaceTools {
             .collect::<Vec<_>>();
         let options = SpawnOptions {
             cwd: Some(cwd),
-            environment: safe_command_environment(&self.workspace)?,
+            environment: safe_command_environment(&self.workspace).map_err(|error| {
+                tool_error("could not create project-tool runtime directory", error)
+            })?,
             replace_environment: true,
         };
         run_bounded_command(
@@ -601,35 +604,6 @@ fn append_tail(output: &mut Vec<u8>, chunk: &[u8]) {
         output.drain(..excess);
     }
     output.extend_from_slice(chunk);
-}
-
-fn safe_command_environment(workspace: &Path) -> Result<Vec<(OsString, OsString)>, ApiToolError> {
-    let runtime = std::env::temp_dir().join("personal-harness-project-tools");
-    fs::create_dir_all(&runtime)
-        .map_err(|error| tool_error("could not create project-tool runtime directory", error))?;
-    let mut environment = Vec::new();
-    for key in ["PATH", "PATHEXT", "SYSTEMROOT", "WINDIR", "COMSPEC"] {
-        if let Some(value) = std::env::var_os(key) {
-            environment.push((key.into(), value));
-        }
-    }
-    for key in ["TEMP", "TMP", "APPDATA", "LOCALAPPDATA"] {
-        environment.push((key.into(), runtime.as_os_str().into()));
-    }
-    environment.push(("HOME".into(), workspace.as_os_str().into()));
-    environment.push(("USERPROFILE".into(), workspace.as_os_str().into()));
-    for (key, value) in [
-        ("CI", "1"),
-        ("NO_COLOR", "1"),
-        ("GIT_TERMINAL_PROMPT", "0"),
-        ("GIT_CONFIG_NOSYSTEM", "1"),
-    ] {
-        environment.push((key.into(), value.into()));
-    }
-    let null_file = if cfg!(windows) { "NUL" } else { "/dev/null" };
-    environment.push(("GIT_CONFIG_GLOBAL".into(), null_file.into()));
-    environment.push(("NPM_CONFIG_USERCONFIG".into(), null_file.into()));
-    Ok(environment)
 }
 
 fn sibling_temporary(destination: &Path, suffix: &str) -> Result<PathBuf, ApiToolError> {

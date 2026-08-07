@@ -14,6 +14,7 @@ mod model_connections;
 mod preview_capture;
 mod push;
 mod router;
+mod safe_command_environment;
 mod skill_install;
 mod update_check;
 
