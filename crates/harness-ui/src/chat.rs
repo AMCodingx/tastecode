@@ -11,14 +11,15 @@ mod voice;
 use crate::client_state::{ChatUpdate, ModelChoice};
 use crate::model_selection::{fast_service_tier, is_fast_mode_enabled};
 use crate::provider_icon::provider_icon;
-use crate::theme::{CHAT_WIDTH, RADIUS_XL, Theme, ThemeMode};
+use crate::theme::{CHAT_WIDTH, RADIUS_XL, Theme, ThemeMode, cubic_bezier_timing};
 use crate::zoom::px;
 use diff::DiffUiState;
 use gpui::{
     Animation, AnimationExt, AnyElement, App, Background, BoxShadow, ClipboardEntry, Context,
-    Entity, EventEmitter, Focusable, FontWeight, Image, ImageFormat, ListAlignment, ListOffset,
-    ListState, ObjectFit, Render, ScrollWheelEvent, SharedString, StyledImage, Window, div, img,
-    linear_color_stop, linear_gradient, point, prelude::*, relative, svg,
+    Entity, EventEmitter, Focusable, FontWeight, HighlightStyle, Image, ImageFormat, ListAlignment,
+    ListOffset, ListState, ObjectFit, Render, Rgba, ScrollWheelEvent, SharedString, StyledImage,
+    StyledText, Window, div, img, linear_color_stop, linear_gradient, point, prelude::*, relative,
+    svg,
 };
 use gpui_component::RopeExt;
 use gpui_component::input::{Input, InputEvent, InputState};
@@ -47,6 +48,8 @@ const VOICE_LEVEL_INTERVAL: Duration = Duration::from_millis(45);
 const MAX_WAVEFORM_LEVELS: usize = 160;
 const MAX_PASTED_IMAGE_BYTES: usize = 25 * 1024 * 1024;
 const TRANSCRIPT_BOTTOM_SLACK: f32 = 80.0;
+const DESIGN_BEAM_DURATION: Duration = Duration::from_millis(2_400);
+const SEND_BEAM_DURATION: Duration = Duration::from_millis(1_960);
 
 #[derive(Clone)]
 pub(crate) struct SessionContext {
@@ -311,6 +314,7 @@ pub(crate) struct ChatView {
     pending_live: Vec<ThreadEventPush>,
     delta_flush_scheduled: bool,
     composer_settings: ComposerSettings,
+    design_hovered: bool,
     stage_settings: StageSettings,
     composer_menu: Option<ComposerMenu>,
     header_menu: Option<HeaderMenu>,
@@ -438,6 +442,7 @@ impl ChatView {
             pending_live: Vec::new(),
             delta_flush_scheduled: false,
             composer_settings: ComposerSettings::default(),
+            design_hovered: false,
             stage_settings: StageSettings::default(),
             composer_menu: None,
             header_menu: None,
@@ -2973,7 +2978,14 @@ impl ChatView {
             .size(px(30.0))
             .rounded_full()
             .when(show_stop, |beam| {
-                beam.child(composer_beam("composer-send-beam", 15.0, theme, 0.72))
+                beam.child(composer_beam(
+                    "composer-send-beam",
+                    15.0,
+                    theme,
+                    0.72,
+                    SEND_BEAM_DURATION,
+                    ComposerBeamVariant::Ocean,
+                ))
             })
             .child(
                 div()
@@ -3077,6 +3089,8 @@ impl ChatView {
                                     crate::RADIUS_2XL,
                                     theme,
                                     0.74,
+                                    DESIGN_BEAM_DURATION,
+                                    ComposerBeamVariant::Colorful,
                                 ))
                             })
                             .child(
@@ -3191,17 +3205,14 @@ impl ChatView {
                                                                 crate::RADIUS_XL,
                                                                 theme,
                                                                 0.82,
+                                                                DESIGN_BEAM_DURATION,
+                                                                ComposerBeamVariant::Colorful,
                                                             ))
                                                         },
                                                     )
-                                                    .child(icon_tool_button(
-                                                        "composer-design",
-                                                        "icons/palette.svg",
-                                                        Some("Design"),
-                                                        self.composer_settings.design_mode,
-                                                        theme,
-                                                        Some(design_action),
-                                                    )),
+                                                    .child(
+                                                        self.design_tool_button(design_action, cx),
+                                                    ),
                                             )
                                             .when(self.voice_phase == VoicePhase::Idle, |tools| {
                                                 tools
@@ -3242,6 +3253,78 @@ impl ChatView {
                         .child(error),
                 )
             })
+    }
+
+    fn design_tool_button(&self, action: UiAction, cx: &Context<Self>) -> AnyElement {
+        let theme = self.theme;
+        let active = self.composer_settings.design_mode;
+        let background = if theme.mode == ThemeMode::Dark {
+            theme.surface_3.hsla()
+        } else {
+            theme.prompt.hsla()
+        };
+        let label = if self.design_hovered {
+            if theme.reduced_motion {
+                div().child(design_shimmer_label(0.0)).into_any_element()
+            } else {
+                div()
+                    .with_animation(
+                        "design-label-shimmer",
+                        theme.repeating_animation(DESIGN_BEAM_DURATION),
+                        |label, delta| label.child(design_shimmer_label(delta)),
+                    )
+                    .into_any_element()
+            }
+        } else {
+            div().child("Design").into_any_element()
+        };
+
+        div()
+            .id("composer-design")
+            .min_h(px(34.0))
+            .px(px(12.0))
+            .py(px(5.0))
+            .flex()
+            .items_center()
+            .justify_center()
+            .gap(px(6.0))
+            .rounded(px(RADIUS_XL))
+            .border_1()
+            .border_color(if active {
+                theme.text_3.hsla().opacity(0.8)
+            } else {
+                theme.line_strong.hsla()
+            })
+            .bg(background)
+            .shadow_sm()
+            .text_size(px(13.5))
+            .text_color(if active {
+                theme.text.hsla()
+            } else {
+                theme.text_2.hsla()
+            })
+            .cursor_pointer()
+            .hover(move |style| {
+                style
+                    .bg(if theme.mode == ThemeMode::Dark {
+                        theme.surface_3.hsla()
+                    } else {
+                        theme.surface.hsla()
+                    })
+                    .border_color(theme.text_3.hsla().opacity(0.72))
+                    .text_color(theme.text.hsla())
+            })
+            .active(|style| style.opacity(0.78).top(px(1.0)))
+            .on_hover(cx.listener(|this, hovered, _window, cx| {
+                if this.design_hovered != *hovered {
+                    this.design_hovered = *hovered;
+                    cx.notify();
+                }
+            }))
+            .on_click(move |_event, _window, cx| action(cx))
+            .child(svg_icon("icons/palette.svg", 13.0))
+            .child(label)
+            .into_any_element()
     }
 
     fn voice_button(&self, cx: &Context<Self>) -> AnyElement {
@@ -4256,28 +4339,26 @@ impl ChatView {
                                 .justify_center()
                                 .rounded(px(15.0))
                                 .border_1()
-                                .border_color(if fast {
-                                    theme.attention.hsla()
-                                } else {
-                                    theme.line_strong.hsla()
-                                })
-                                .bg(if fast {
-                                    theme.attention.hsla().opacity(0.14)
-                                } else {
-                                    theme.surface_2.hsla()
-                                })
+                                .border_color(fast_toggle_border(theme, fast))
+                                .bg(fast_toggle_background(theme, fast))
                                 .text_color(if fast {
-                                    theme.attention.hsla()
+                                    theme.text.hsla()
                                 } else {
                                     theme.text_2.hsla()
                                 })
+                                .shadow(fast_toggle_shadows(theme))
                                 .cursor_pointer()
+                                .hover(move |style| {
+                                    style
+                                        .border_color(theme.text_3.hsla())
+                                        .bg(fast_toggle_hover_background(theme))
+                                })
                                 .active(|style| style.opacity(0.72))
                                 .on_click(cx.listener(|this, _event, _window, cx| {
                                     cx.emit(ChatEvent::ToggleFast);
                                     this.composer_menu = Some(ComposerMenu::Model);
                                 }))
-                                .child(svg_icon("icons/zap.svg", 15.0)),
+                                .child(fast_toggle_icon(fast, theme)),
                         )
                     }),
             )
@@ -4775,32 +4856,222 @@ fn composer_primary_icon(
     }
 }
 
-fn composer_beam(id: &'static str, radius: f32, theme: Theme, opacity: f32) -> AnyElement {
-    let from: gpui::Hsla = gpui::rgb(0xb9a7ff).into();
-    let to: gpui::Hsla = gpui::rgb(0x87c7d8).into();
+#[derive(Clone, Copy)]
+enum ComposerBeamVariant {
+    Colorful,
+    Ocean,
+}
+
+impl ComposerBeamVariant {
+    fn palette(self) -> &'static [u32] {
+        match self {
+            Self::Colorful => &[
+                0xff3264, 0x288cff, 0x32c850, 0x1eb9aa, 0x6446ff, 0x287cff, 0xff7828, 0xf032b4,
+                0xb428f0,
+            ],
+            Self::Ocean => &[
+                0x6450dc, 0x3c78ff, 0x5064c8, 0x328cdc, 0x7850ff, 0x4682ff, 0x8c64f0, 0x5a6ee6,
+                0x8246ff,
+            ],
+        }
+    }
+}
+
+fn composer_beam(
+    id: &'static str,
+    radius: f32,
+    theme: Theme,
+    opacity: f32,
+    duration: Duration,
+    variant: ComposerBeamVariant,
+) -> AnyElement {
     div()
         .absolute()
         .inset(px(-1.0))
         .rounded(px(radius + 1.0))
         .opacity(opacity)
-        .shadow(vec![BoxShadow {
-            color: theme.attention.hsla().opacity(0.16 * opacity),
-            offset: point(px(0.0), px(0.0)),
-            blur_radius: px(9.0),
-            spread_radius: px(0.0),
-        }])
         .with_animation(
             id,
-            theme.repeating_animation(Duration::from_millis(3_600)),
+            theme.repeating_animation(duration),
             move |beam, delta| {
+                let from = palette_color(variant.palette(), delta);
+                let to = palette_color(variant.palette(), (delta + 0.34).fract());
+                let glow = palette_color(variant.palette(), (delta + 0.12).fract());
                 beam.bg(linear_gradient(
                     delta * 360.0,
                     linear_color_stop(from, 0.0),
                     linear_color_stop(to, 1.0),
                 ))
+                .shadow(vec![BoxShadow {
+                    color: glow.opacity(0.16 * opacity),
+                    offset: point(px(0.0), px(0.0)),
+                    blur_radius: px(9.0),
+                    spread_radius: px(0.0),
+                }])
             },
         )
         .into_any_element()
+}
+
+fn palette_color(palette: &[u32], progress: f32) -> gpui::Hsla {
+    let progress = progress.rem_euclid(1.0);
+    let scaled = progress * palette.len() as f32;
+    let index = scaled.floor() as usize % palette.len();
+    let next = (index + 1) % palette.len();
+    mix_color(
+        gpui::rgb(palette[index]).into(),
+        gpui::rgb(palette[next]).into(),
+        scaled.fract(),
+    )
+}
+
+fn mix_color(from: gpui::Hsla, to: gpui::Hsla, amount: f32) -> gpui::Hsla {
+    let from = Rgba::from(from);
+    let to = Rgba::from(to);
+    let amount = amount.clamp(0.0, 1.0);
+    Rgba {
+        r: from.r + (to.r - from.r) * amount,
+        g: from.g + (to.g - from.g) * amount,
+        b: from.b + (to.b - from.b) * amount,
+        a: from.a + (to.a - from.a) * amount,
+    }
+    .into()
+}
+
+fn design_shimmer_label(progress: f32) -> StyledText {
+    const LABEL: &str = "Design";
+    const COLORS: [u32; 4] = [0xb9a7ff, 0x87c7d8, 0xe2a6bc, 0xb9a7ff];
+    StyledText::new(LABEL).with_highlights((0..LABEL.len()).map(|index| {
+        let position = (progress + index as f32 / LABEL.len() as f32 * 0.46).fract();
+        (
+            index..index + 1,
+            HighlightStyle {
+                color: Some(palette_color(&COLORS, position)),
+                ..HighlightStyle::default()
+            },
+        )
+    }))
+}
+
+fn fast_toggle_background(theme: Theme, fast: bool) -> Background {
+    if fast {
+        if theme.mode == ThemeMode::Dark {
+            mix_color(theme.surface_3.hsla(), theme.text.hsla(), 0.15).into()
+        } else {
+            gpui::rgb(0xf3f3f5).into()
+        }
+    } else if theme.mode == ThemeMode::Dark {
+        linear_gradient(
+            180.0,
+            linear_color_stop(
+                mix_color(theme.surface_2.hsla(), theme.surface_3.hsla(), 0.78),
+                0.0,
+            ),
+            linear_color_stop(
+                mix_color(theme.surface_2.hsla(), theme.surface.hsla(), 0.44),
+                1.0,
+            ),
+        )
+    } else {
+        linear_gradient(
+            180.0,
+            linear_color_stop(gpui::white(), 0.0),
+            linear_color_stop(theme.surface.hsla(), 1.0),
+        )
+    }
+}
+
+fn fast_toggle_border(theme: Theme, fast: bool) -> gpui::Hsla {
+    match (theme.mode, fast) {
+        (ThemeMode::Dark, true) => mix_color(theme.line_strong.hsla(), theme.text.hsla(), 0.28),
+        (ThemeMode::Dark, false) => theme.line_strong.hsla().opacity(0.8),
+        (ThemeMode::Light, true) => theme.line_strong.hsla(),
+        (ThemeMode::Light, false) => gpui::rgb(0xe3e3e6).into(),
+    }
+}
+
+fn fast_toggle_hover_background(theme: Theme) -> Background {
+    if theme.mode == ThemeMode::Dark {
+        theme.surface_3.hsla().into()
+    } else {
+        fast_toggle_background(theme, false)
+    }
+}
+
+fn fast_toggle_shadows(theme: Theme) -> Vec<BoxShadow> {
+    vec![BoxShadow {
+        color: gpui::black().opacity(if theme.mode == ThemeMode::Dark {
+            0.20
+        } else {
+            0.08
+        }),
+        offset: point(px(0.0), px(1.0)),
+        blur_radius: px(2.0),
+        spread_radius: px(0.0),
+    }]
+}
+
+fn fast_toggle_icon(fast: bool, theme: Theme) -> AnyElement {
+    let icon = div()
+        .size(px(15.0))
+        .flex()
+        .items_center()
+        .justify_center()
+        .child(svg_icon(
+            if fast {
+                "icons/zap-filled.svg"
+            } else {
+                "icons/zap.svg"
+            },
+            15.0,
+        ));
+    if fast {
+        icon.with_animation(
+            "model-fast-bolt-on",
+            Animation::new(theme.motion_duration(Duration::from_millis(320))),
+            move |icon, delta| {
+                let scale = fast_bolt_on_scale(delta);
+                let glow = (1.0 - ((delta - 0.48) / 0.48).abs()).clamp(0.0, 1.0);
+                icon.size(px(15.0 * scale)).shadow(vec![BoxShadow {
+                    color: theme.text.hsla().opacity(0.34 * glow),
+                    offset: point(px(0.0), px(0.0)),
+                    blur_radius: px(5.0 * glow),
+                    spread_radius: px(0.0),
+                }])
+            },
+        )
+        .into_any_element()
+    } else {
+        icon.with_animation(
+            "model-fast-bolt-off",
+            Animation::new(theme.motion_duration(Duration::from_millis(260))),
+            |icon, delta| {
+                let (scale, opacity) = fast_bolt_off_state(delta);
+                icon.size(px(15.0 * scale)).opacity(opacity)
+            },
+        )
+        .into_any_element()
+    }
+}
+
+fn fast_bolt_on_scale(progress: f32) -> f32 {
+    if progress <= 0.48 {
+        let local = cubic_bezier_timing(progress / 0.48, 0.2, 1.6, 0.4, 1.0);
+        0.7 + (1.25 - 0.7) * local
+    } else {
+        let local = cubic_bezier_timing((progress - 0.48) / 0.52, 0.2, 1.6, 0.4, 1.0);
+        1.25 + (1.0 - 1.25) * local
+    }
+}
+
+fn fast_bolt_off_state(progress: f32) -> (f32, f32) {
+    if progress <= 0.45 {
+        let local = crate::theme::web_ease_out(progress / 0.45);
+        (1.0 + (0.78 - 1.0) * local, 1.0 + (0.55 - 1.0) * local)
+    } else {
+        let local = crate::theme::web_ease_out((progress - 0.45) / 0.55);
+        (0.78 + (1.0 - 0.78) * local, 0.55 + (1.0 - 0.55) * local)
+    }
 }
 
 type UiAction = Rc<dyn Fn(&mut App)>;
@@ -5081,5 +5352,21 @@ mod tests {
             transcript_mode_for_bottom_gap(px(80.0)),
             TranscriptScrollMode::Free
         );
+    }
+
+    #[test]
+    fn composer_control_motion_matches_the_web_keyframes() {
+        assert_eq!(DESIGN_BEAM_DURATION, Duration::from_millis(2_400));
+        assert_eq!(SEND_BEAM_DURATION, Duration::from_millis(1_960));
+        assert!((fast_bolt_on_scale(0.0) - 0.7).abs() < 0.000_1);
+        assert!((fast_bolt_on_scale(0.48) - 1.25).abs() < 0.000_1);
+        assert!((fast_bolt_on_scale(1.0) - 1.0).abs() < 0.000_1);
+        assert_eq!(fast_bolt_off_state(0.0), (1.0, 1.0));
+        let off_midpoint = fast_bolt_off_state(0.45);
+        assert!((off_midpoint.0 - 0.78).abs() < 0.000_1);
+        assert!((off_midpoint.1 - 0.55).abs() < 0.000_1);
+        let off_end = fast_bolt_off_state(1.0);
+        assert!((off_end.0 - 1.0).abs() < 0.000_1);
+        assert!((off_end.1 - 1.0).abs() < 0.000_1);
     }
 }

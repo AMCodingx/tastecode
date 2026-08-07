@@ -30,6 +30,7 @@ impl AssetSource for HarnessAssets {
             "icons/lock-open.svg" => Some(include_bytes!("../assets/icons/lock-open.svg")),
             "icons/lock-keyhole.svg" => Some(include_bytes!("../assets/icons/lock-keyhole.svg")),
             "icons/zap.svg" => Some(include_bytes!("../assets/icons/zap.svg")),
+            "icons/zap-filled.svg" => Some(include_bytes!("../assets/icons/zap-filled.svg")),
             "icons/palette.svg" => Some(include_bytes!("../assets/icons/palette.svg")),
             "icons/mic.svg" => Some(include_bytes!("../assets/icons/mic.svg")),
             "icons/openai.svg" => Some(include_bytes!("../assets/icons/openai.svg")),
