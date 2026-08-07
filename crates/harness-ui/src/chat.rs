@@ -10,8 +10,9 @@ use crate::theme::{CHAT_WIDTH, Theme};
 use diff::DiffUiState;
 use gpui::{
     Animation, AnimationExt, AnyElement, App, ClipboardEntry, Context, Entity, EventEmitter,
-    Focusable, FontWeight, Image, ImageFormat, ListAlignment, ListState, ObjectFit, Render,
-    SharedString, StyledImage, Window, div, ease_out_quint, img, prelude::*, px, relative, svg,
+    Focusable, FontWeight, Image, ImageFormat, ListAlignment, ListOffset, ListState, ObjectFit,
+    Render, SharedString, StyledImage, Window, div, ease_out_quint, img, prelude::*, px, relative,
+    svg,
 };
 use gpui_component::RopeExt;
 use gpui_component::input::{Input, InputEvent, InputState};
@@ -23,6 +24,7 @@ use harness_protocol::{
 use harness_state::{ApplyOutcome, HistoryError, ThreadState};
 use presentation::TranscriptPresentation;
 use search::ThreadSearchState;
+use std::cell::Cell;
 use std::collections::{BTreeSet, HashMap, HashSet};
 use std::fs::OpenOptions;
 use std::io::Write as _;
@@ -37,6 +39,7 @@ const LIVE_FLUSH_INTERVAL: Duration = Duration::from_millis(16);
 const VOICE_LEVEL_INTERVAL: Duration = Duration::from_millis(45);
 const MAX_WAVEFORM_LEVELS: usize = 160;
 const MAX_PASTED_IMAGE_BYTES: usize = 25 * 1024 * 1024;
+const TRANSCRIPT_BOTTOM_SLACK: f32 = 80.0;
 
 #[derive(Clone)]
 pub(crate) struct SessionContext {
@@ -225,6 +228,16 @@ enum VoicePhase {
     Transcribing,
 }
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+enum TranscriptScrollMode {
+    #[default]
+    FollowEnd,
+    AnchorTurn {
+        start_row: usize,
+    },
+    Free,
+}
+
 struct PendingTranscript {
     text: String,
     cursor: usize,
@@ -258,6 +271,8 @@ pub(crate) struct ChatView {
     loading: bool,
     error: Option<String>,
     list_state: ListState,
+    transcript_scroll_mode: Rc<Cell<TranscriptScrollMode>>,
+    pending_anchor_turn: Option<String>,
     presentation: TranscriptPresentation,
     expanded_transcript_items: HashSet<String>,
     expanded_activities: HashSet<String>,
@@ -329,6 +344,33 @@ impl ChatView {
             InputEvent::Focus | InputEvent::Blur => cx.notify(),
         })
         .detach();
+        let transcript_scroll_mode = Rc::new(Cell::new(TranscriptScrollMode::FollowEnd));
+        let list_state = ListState::new(0, ListAlignment::Bottom, px(500.0));
+        let scroll_mode = transcript_scroll_mode.clone();
+        let scroll_list = list_state.clone();
+        list_state.set_scroll_handler(move |event, window, cx| {
+            scroll_mode.set(if event.is_scrolled {
+                TranscriptScrollMode::Free
+            } else {
+                TranscriptScrollMode::FollowEnd
+            });
+            let list = scroll_list.clone();
+            let mode = scroll_mode.clone();
+            window.defer(cx, move |_window, _cx| {
+                let maximum = list.max_offset_for_scrollbar().height;
+                let current = (-list.scroll_px_offset_for_scrollbar().y)
+                    .max(px(0.0))
+                    .min(maximum);
+                let next = transcript_mode_for_bottom_gap(maximum - current);
+                if next == TranscriptScrollMode::FollowEnd {
+                    list.scroll_to(ListOffset {
+                        item_ix: list.item_count(),
+                        offset_in_item: px(0.0),
+                    });
+                }
+                mode.set(next);
+            });
+        });
 
         Self {
             theme,
@@ -340,7 +382,9 @@ impl ChatView {
             },
             loading: false,
             error: None,
-            list_state: ListState::new(0, ListAlignment::Bottom, px(500.0)),
+            list_state,
+            transcript_scroll_mode,
+            pending_anchor_turn: None,
             presentation: TranscriptPresentation::default(),
             expanded_transcript_items: HashSet::new(),
             expanded_activities: HashSet::new(),
@@ -417,6 +461,9 @@ impl ChatView {
         self.loading = true;
         self.error = None;
         self.list_state.reset(0);
+        self.transcript_scroll_mode
+            .set(TranscriptScrollMode::FollowEnd);
+        self.pending_anchor_turn = None;
         self.presentation.clear();
         self.expanded_transcript_items.clear();
         self.expanded_activities.clear();
@@ -525,9 +572,20 @@ impl ChatView {
 
     pub(crate) fn reveal_turn(&mut self, turn_id: &str, cx: &mut Context<Self>) {
         if let Some(row) = self.state.first_row_for_turn(turn_id) {
+            self.transcript_scroll_mode.set(TranscriptScrollMode::Free);
             self.list_state.scroll_to_reveal_item(row);
             cx.notify();
         }
+    }
+
+    fn jump_to_latest(&mut self, cx: &mut Context<Self>) {
+        self.transcript_scroll_mode
+            .set(TranscriptScrollMode::FollowEnd);
+        self.list_state.scroll_to(ListOffset {
+            item_ix: self.list_state.item_count(),
+            offset_in_item: px(0.0),
+        });
+        cx.notify();
     }
 
     pub(crate) fn rename_session(
@@ -563,6 +621,9 @@ impl ChatView {
                         let presentation_rows = self.presentation.rebuild(&self.state);
                         if replace {
                             self.list_state.reset(new_len);
+                            self.transcript_scroll_mode
+                                .set(TranscriptScrollMode::FollowEnd);
+                            self.pending_anchor_turn = None;
                         } else if new_len > old_len {
                             self.list_state.splice(old_len..old_len, new_len - old_len);
                             for row in presentation_rows.into_iter().filter(|row| *row < old_len) {
@@ -776,6 +837,10 @@ impl ChatView {
         let mut events = events.into_iter();
         while let Some(push) = events.next() {
             let replay = push.clone();
+            let started_turn = match &push.event {
+                DomainEvent::TurnStarted { turn } => Some(turn.id.clone()),
+                _ => None,
+            };
             presentation_changed |= matches!(
                 &push.event,
                 DomainEvent::TurnStarted { .. }
@@ -802,6 +867,11 @@ impl ChatView {
                 ApplyOutcome::Applied(changes) => {
                     applied = true;
                     transcript_changed |= changes.transcript;
+                    if let Some(turn_id) = started_turn
+                        && self.transcript_scroll_mode.get() != TranscriptScrollMode::Free
+                    {
+                        self.pending_anchor_turn = Some(turn_id);
+                    }
                     if changes.transcript
                         && let Some(changed_item) = changed_item
                     {
@@ -842,6 +912,7 @@ impl ChatView {
             for row in changed_rows.iter().copied().filter(|row| *row < old_len) {
                 self.list_state.splice(row..row + 1, 1);
             }
+            self.anchor_pending_turn();
             let search_rows = changed_rows.into_iter().collect::<Vec<_>>();
             self.loading = false;
             self.error = None;
@@ -862,6 +933,60 @@ impl ChatView {
                 thread_id: thread_id.clone(),
                 after_seq: Some(after_seq),
             });
+        }
+    }
+
+    fn anchor_pending_turn(&mut self) {
+        let Some(turn_id) = self.pending_anchor_turn.clone() else {
+            return;
+        };
+        if self.transcript_scroll_mode.get() == TranscriptScrollMode::Free {
+            self.pending_anchor_turn = None;
+            return;
+        }
+        let Some(start_row) = self.state.first_row_for_turn(&turn_id) else {
+            return;
+        };
+        self.list_state.scroll_to(ListOffset {
+            item_ix: start_row,
+            offset_in_item: px(0.0),
+        });
+        self.transcript_scroll_mode
+            .set(TranscriptScrollMode::AnchorTurn { start_row });
+        self.pending_anchor_turn = None;
+    }
+
+    fn release_transcript_anchor_if_needed(&mut self, cx: &mut Context<Self>) {
+        let TranscriptScrollMode::AnchorTurn { start_row } = self.transcript_scroll_mode.get()
+        else {
+            return;
+        };
+        let viewport = self.list_state.viewport_bounds();
+        if viewport.size.height <= px(0.0) {
+            return;
+        }
+        let Some(start_item) = self.state.item_at_row(start_row) else {
+            return;
+        };
+        let turn_id = start_item.turn_id.as_str();
+        let Some(last_row) = (start_row..self.state.timeline_len()).rev().find(|row| {
+            self.state
+                .item_at_row(*row)
+                .is_some_and(|item| item.turn_id == turn_id)
+        }) else {
+            return;
+        };
+        let Some(start_bounds) = self.list_state.bounds_for_item(start_row) else {
+            return;
+        };
+        let outgrew_viewport = self
+            .list_state
+            .bounds_for_item(last_row)
+            .map_or(last_row > start_row, |last_bounds| {
+                last_bounds.bottom() - start_bounds.top() > viewport.size.height
+            });
+        if outgrew_viewport {
+            self.jump_to_latest(cx);
         }
     }
 
@@ -3639,6 +3764,14 @@ impl ChatView {
 impl Render for ChatView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         self.ensure_working_tick(cx);
+        if matches!(
+            self.transcript_scroll_mode.get(),
+            TranscriptScrollMode::AnchorTurn { .. }
+        ) {
+            cx.on_next_frame(window, |this, _window, cx| {
+                this.release_transcript_anchor_if_needed(cx);
+            });
+        }
         self.prepare_thread_search_input(window, cx);
         if let Some(text) = self.restore_composer.take() {
             self.composer.update(cx, |composer, cx| {
@@ -4107,6 +4240,14 @@ fn materialize_pasted_image(image: &Image) -> anyhow::Result<PathBuf> {
     Ok(destination)
 }
 
+fn transcript_mode_for_bottom_gap(gap: gpui::Pixels) -> TranscriptScrollMode {
+    if gap < px(TRANSCRIPT_BOTTOM_SLACK) {
+        TranscriptScrollMode::FollowEnd
+    } else {
+        TranscriptScrollMode::Free
+    }
+}
+
 fn format_voice_duration(duration: Duration) -> String {
     let seconds = duration.as_secs();
     format!("{}:{:02}", seconds / 60, seconds % 60)
@@ -4230,5 +4371,17 @@ mod tests {
         assert!(is_image_path("C:\\work\\REFERENCE.PNG"));
         assert!(is_image_path("/work/reference.webp"));
         assert!(!is_image_path("/work/notes.md"));
+    }
+
+    #[test]
+    fn transcript_bottom_slack_matches_the_web_scroll_contract() {
+        assert_eq!(
+            transcript_mode_for_bottom_gap(px(79.0)),
+            TranscriptScrollMode::FollowEnd
+        );
+        assert_eq!(
+            transcript_mode_for_bottom_gap(px(80.0)),
+            TranscriptScrollMode::Free
+        );
     }
 }

@@ -203,6 +203,8 @@ impl ChatView {
         self.thread_search.cursor = cursor;
         self.thread_search.jumped = true;
         let row = self.thread_search.hits[row];
+        self.transcript_scroll_mode
+            .set(super::TranscriptScrollMode::Free);
         self.list_state.scroll_to_reveal_item(row);
         cx.notify();
     }
@@ -253,6 +255,8 @@ impl ChatView {
             let backwards = event.keystroke.key.eq_ignore_ascii_case("up");
             if let Some(row) = neighbour_turn(&turns, current, backwards) {
                 cx.stop_propagation();
+                self.transcript_scroll_mode
+                    .set(super::TranscriptScrollMode::Free);
                 self.list_state.scroll_to_reveal_item(row);
                 cx.notify();
             }

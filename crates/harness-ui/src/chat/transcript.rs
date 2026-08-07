@@ -1,11 +1,11 @@
 use super::presentation::{RowPresentation, TurnPresentation, is_activity};
-use super::{ChatEvent, ChatView};
+use super::{ChatEvent, ChatView, TranscriptScrollMode};
 use crate::theme::{CHAT_WIDTH, Theme, ThemeMode};
 use chrono::{DateTime, Local};
 use gpui::{
-    Animation, AnimationExt, AnyElement, App, ClipboardItem, Entity, SharedString, StyleRefinement,
-    Styled, Transformation, Window, div, ease_out_quint, list, percentage, prelude::*, px,
-    relative, rems, svg,
+    Animation, AnimationExt, AnyElement, App, BoxShadow, ClipboardItem, Entity, SharedString,
+    StyleRefinement, Styled, Transformation, Window, div, ease_out_quint, list, percentage, point,
+    prelude::*, px, relative, rems, rgba, svg,
 };
 use gpui_component::scroll::ScrollableElement;
 use gpui_component::text::{TextView, TextViewStyle};
@@ -103,7 +103,9 @@ impl ChatView {
             return centered_transcript_label("Start a conversation in this project.", self.theme);
         }
 
+        let theme = self.theme;
         let orphan_rail = self.orphan_working_rail();
+        let show_jump = self.transcript_scroll_mode.get() == TranscriptScrollMode::Free;
         let view: Entity<Self> = cx.entity();
         let transcript = list(self.list_state.clone(), move |row, window, cx| {
             let snapshot = view.read(cx).transcript_row_snapshot(row);
@@ -120,6 +122,7 @@ impl ChatView {
         div()
             .size_full()
             .min_h(px(0.0))
+            .relative()
             .flex()
             .flex_col()
             .child(transcript)
@@ -131,12 +134,52 @@ impl ChatView {
                         .mx_auto()
                         .h(px(WORKING_RAIL_HEIGHT))
                         .px(px(18.0))
-                        .child(working_rail(rail, self.theme)),
+                        .child(working_rail(rail, theme)),
+                )
+            })
+            .when(show_jump, |container| {
+                container.child(
+                    div()
+                        .absolute()
+                        .left(px(0.0))
+                        .right(px(0.0))
+                        .bottom(px(14.0))
+                        .flex()
+                        .justify_center()
+                        .child(
+                            div()
+                                .id("jump-to-latest")
+                                .h(px(28.0))
+                                .flex()
+                                .items_center()
+                                .px(px(13.0))
+                                .rounded_full()
+                                .border_1()
+                                .border_color(theme.line_strong.hsla())
+                                .bg(theme.surface_2.hsla())
+                                .text_size(px(12.5))
+                                .text_color(theme.text.hsla())
+                                .shadow(jump_shadow(theme))
+                                .cursor_pointer()
+                                .hover(move |style| {
+                                    style
+                                        .bg(theme.surface_3.hsla())
+                                        .border_color(theme.text_3.hsla())
+                                })
+                                .on_click(cx.listener(|this, _event, _window, cx| {
+                                    this.jump_to_latest(cx);
+                                }))
+                                .child("Jump to latest")
+                                .with_animation(
+                                    "jump-to-latest-in",
+                                    Animation::new(theme.motion.fast).with_easing(ease_out_quint()),
+                                    |button, delta| button.opacity(delta),
+                                ),
+                        ),
                 )
             })
             .into_any_element()
     }
-
     fn transcript_row_snapshot(&self, row: usize) -> Option<TranscriptRowSnapshot> {
         let item = self.state.item_at_row(row)?.clone();
         let turn = self.presentation.turn(&item.turn_id).cloned();
@@ -252,6 +295,31 @@ impl ChatView {
             });
         })
         .detach();
+    }
+}
+
+fn jump_shadow(theme: Theme) -> Vec<BoxShadow> {
+    match theme.mode {
+        ThemeMode::Dark => vec![BoxShadow {
+            color: rgba(0x00000075).into(),
+            offset: point(px(0.0), px(8.0)),
+            blur_radius: px(24.0),
+            spread_radius: px(-14.0),
+        }],
+        ThemeMode::Light => vec![
+            BoxShadow {
+                color: rgba(0x18181b0d).into(),
+                offset: point(px(0.0), px(1.0)),
+                blur_radius: px(2.0),
+                spread_radius: px(0.0),
+            },
+            BoxShadow {
+                color: rgba(0x18181b2e).into(),
+                offset: point(px(0.0), px(10.0)),
+                blur_radius: px(28.0),
+                spread_radius: px(-18.0),
+            },
+        ],
     }
 }
 
