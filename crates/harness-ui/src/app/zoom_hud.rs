@@ -1,10 +1,9 @@
 use super::{HarnessApp, sync_component_theme};
-use crate::theme::{TITLEBAR_HEIGHT, Theme, ThemeMode};
+use crate::chrome;
+use crate::theme::{TITLEBAR_HEIGHT, Theme};
 use crate::zoom;
 use crate::zoom::px;
-use gpui::{
-    AnyElement, BoxShadow, Context, KeyDownEvent, Window, div, point, prelude::*, rgba, svg,
-};
+use gpui::{AnyElement, Context, KeyDownEvent, Window, div, prelude::*, svg};
 use std::time::Duration;
 
 const MIN_ZOOM: f32 = 0.5;
@@ -124,12 +123,12 @@ impl HarnessApp {
                 .items_center()
                 .gap(px(2.0))
                 .p(px(4.0))
-                .rounded(px(12.0))
+                .rounded(px(8.0))
                 .border_1()
                 .border_color(theme.line_strong.hsla())
                 .bg(theme.surface_2.hsla())
                 .text_color(theme.text_2.hsla())
-                .shadow(zoom_hud_shadow(theme))
+                .shadow(chrome::flyout_shadows(theme))
                 .on_hover(cx.listener(|this, hovered, _window, cx| {
                     this.zoom_hud_hover_changed(*hovered, cx);
                 }))
@@ -179,7 +178,7 @@ impl HarnessApp {
                         .justify_center()
                         .gap(px(6.0))
                         .px(px(9.0))
-                        .rounded(px(8.0))
+                        .rounded(px(5.0))
                         .text_size(px(12.5))
                         .opacity(if reset_disabled { 0.4 } else { 1.0 })
                         .when(!reset_disabled, |button| {
@@ -219,7 +218,7 @@ fn zoom_hud_icon_button(
         .items_center()
         .justify_center()
         .px(px(8.0))
-        .rounded(px(8.0))
+        .rounded(px(5.0))
         .opacity(if disabled { 0.4 } else { 1.0 })
         .when(!disabled, |button| {
             button
@@ -246,31 +245,6 @@ fn next_zoom_factor(current: f32, action: AppZoomAction) -> f32 {
         -ZOOM_STEP
     };
     (((current + delta) * 10.0).round() / 10.0).clamp(MIN_ZOOM, MAX_ZOOM)
-}
-
-fn zoom_hud_shadow(theme: Theme) -> Vec<BoxShadow> {
-    match theme.mode {
-        ThemeMode::Dark => vec![BoxShadow {
-            color: rgba(0x00000075).into(),
-            offset: point(px(0.0), px(8.0)),
-            blur_radius: px(24.0),
-            spread_radius: px(-14.0),
-        }],
-        ThemeMode::Light => vec![
-            BoxShadow {
-                color: rgba(0x18181b0d).into(),
-                offset: point(px(0.0), px(1.0)),
-                blur_radius: px(2.0),
-                spread_radius: px(0.0),
-            },
-            BoxShadow {
-                color: rgba(0x18181b2e).into(),
-                offset: point(px(0.0), px(10.0)),
-                blur_radius: px(28.0),
-                spread_radius: px(-18.0),
-            },
-        ],
-    }
 }
 
 #[cfg(test)]
