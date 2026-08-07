@@ -1,3 +1,4 @@
+use crate::shortcuts::{NEW_CHAT, NEW_PROJECT, SEARCH_SESSIONS, SETTINGS, label as shortcut_label};
 use crate::theme::{RAIL_WIDTH, Theme};
 use gpui::{
     AnyElement, App, FontWeight, Hsla, Pixels, Point, SharedString, div, prelude::*, px, svg,
@@ -170,7 +171,7 @@ fn sidebar_footer(
                 "settings",
                 "icons/settings.svg",
                 "Settings",
-                "Ctrl ,",
+                shortcut_label(SETTINGS),
                 theme,
                 Some(actions.open_settings.clone()),
             ))
@@ -346,7 +347,7 @@ fn classic_sidebar_actions(theme: Theme, actions: &SidebarActions) -> impl IntoE
             "new-chat",
             "icons/plus.svg",
             "New chat",
-            "Ctrl N",
+            shortcut_label(NEW_CHAT),
             theme,
             Some(actions.new_chat.clone()),
         ))
@@ -354,7 +355,7 @@ fn classic_sidebar_actions(theme: Theme, actions: &SidebarActions) -> impl IntoE
             "new-project",
             "icons/folder-pen.svg",
             "New project",
-            "Ctrl Shift O",
+            shortcut_label(NEW_PROJECT),
             theme,
             Some(actions.new_project.clone()),
         ))
@@ -408,7 +409,7 @@ fn sidebar_actions(
             "new-chat",
             "icons/plus.svg",
             "New chat",
-            "Ctrl N",
+            shortcut_label(NEW_CHAT),
             theme,
             Some(actions.new_chat.clone()),
         ))
@@ -416,7 +417,7 @@ fn sidebar_actions(
             "new-project",
             "icons/folder-pen.svg",
             "New project",
-            "Ctrl Shift O",
+            shortcut_label(NEW_PROJECT),
             theme,
             Some(actions.new_project.clone()),
         ))
@@ -450,7 +451,7 @@ fn sidebar_actions(
                     div()
                         .font_family("Geist Mono")
                         .text_size(px(10.5))
-                        .child("Ctrl Shift F"),
+                        .child(shortcut_label(SEARCH_SESSIONS)),
                 ),
         )
         .child(scope_control(
@@ -697,10 +698,11 @@ fn nav_item(
     id: &'static str,
     icon_path: &'static str,
     label: &'static str,
-    shortcut: &'static str,
+    shortcut: impl Into<SharedString>,
     theme: Theme,
     action: Option<SidebarAction>,
 ) -> impl IntoElement {
+    let shortcut = shortcut.into();
     div()
         .id(id)
         .h(px(32.0))

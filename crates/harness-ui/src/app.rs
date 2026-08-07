@@ -1,3 +1,4 @@
+mod command_palette;
 mod onboarding;
 mod provider_terminal;
 mod session_search;
@@ -16,6 +17,7 @@ use crate::preview_capture::PreviewCaptureRuntime;
 use crate::sidebar::{SidebarActions, SidebarMenuRequest, SidebarProps, sidebar};
 use crate::theme::{TITLEBAR_HEIGHT, Theme, ThemeMode};
 use anyhow::Result;
+use command_palette::{CommandPaletteState, CommandScope};
 use gpui::{
     Animation, AnimationExt, App, Application, Bounds, Context, Entity, FocusHandle, FontWeight,
     KeyDownEvent, MouseButton, PathPromptOptions, Render, TitlebarOptions, Window,
@@ -93,6 +95,8 @@ struct HarnessApp {
     settings_open_transition: u64,
     settings_focus: FocusHandle,
     settings_focus_pending: bool,
+    command_palette: CommandPaletteState,
+    focus_composer_pending: bool,
     session_search: SessionSearchState,
     pending_reveal_turn: Option<(String, String)>,
     sidebar_controls: SidebarControlsState,
@@ -177,6 +181,8 @@ impl HarnessApp {
         });
         let session_search_input =
             cx.new(|cx| InputState::new(window, cx).placeholder("Search every chat…"));
+        let command_palette_input = cx
+            .new(|cx| InputState::new(window, cx).placeholder("Search commands, projects, chats…"));
         let sidebar_editor_input = cx.new(|cx| InputState::new(window, cx).placeholder("Name"));
 
         for input in [
@@ -205,6 +211,15 @@ impl HarnessApp {
                 if matches!(event, InputEvent::Change) {
                     this.schedule_session_search(cx);
                 }
+            },
+        )
+        .detach();
+        cx.subscribe(
+            &command_palette_input,
+            |this, _input, event: &InputEvent, cx| match event {
+                InputEvent::PressEnter { .. } => this.run_selected_palette_command(cx),
+                InputEvent::Change => this.command_palette_query_changed(cx),
+                InputEvent::Focus | InputEvent::Blur => cx.notify(),
             },
         )
         .detach();
@@ -440,6 +455,8 @@ impl HarnessApp {
             settings_open_transition: 0,
             settings_focus: cx.focus_handle(),
             settings_focus_pending: false,
+            command_palette: CommandPaletteState::new(command_palette_input),
+            focus_composer_pending: false,
             session_search: SessionSearchState::new(session_search_input),
             pending_reveal_turn: None,
             sidebar_controls: SidebarControlsState::new(sidebar_editor_input),
@@ -898,9 +915,11 @@ impl HarnessApp {
             [] => self.pick_project(cx),
             [project] => self.begin_new_chat(project.path.clone(), cx),
             _ => {
-                self.new_thread_picker = true;
-                self.scope_open = true;
-                cx.notify();
+                self.open_command_palette(
+                    CommandScope::NewThread,
+                    self.active_project_path.clone(),
+                    cx,
+                );
             }
         }
     }
@@ -1313,9 +1332,7 @@ impl HarnessApp {
                         cx.stop_propagation();
                     })
                     .on_click(cx.listener(|this, _event, _window, cx| {
-                        this.sidebar_collapsed = !this.sidebar_collapsed;
-                        this.sidebar_transition = this.sidebar_transition.wrapping_add(1);
-                        cx.notify();
+                        this.toggle_sidebar(cx);
                     }))
                     .child(icon("icons/panel-left.svg", 15.0)),
             )
@@ -1364,8 +1381,14 @@ impl HarnessApp {
 
 impl Render for HarnessApp {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        self.prepare_command_palette_input(window, cx);
         self.prepare_session_search_input(window, cx);
         self.prepare_sidebar_controls_input(window, cx);
+        if self.focus_composer_pending {
+            self.chat
+                .update(cx, |chat, cx| chat.focus_composer(window, cx));
+            self.focus_composer_pending = false;
+        }
         if self.settings_open && self.settings_focus_pending {
             self.settings_focus.focus(window);
             self.settings_focus_pending = false;
@@ -1451,6 +1474,8 @@ impl Render for HarnessApp {
         let settings_open = self.settings_open;
         let search_open = self.session_search.open;
         let search_overlay = self.session_search_overlay(window, cx);
+        let command_palette_open = self.command_palette.is_open();
+        let command_palette_overlay = self.command_palette_overlay(window, cx);
         let sidebar_controls_open = self.sidebar_controls.is_open();
         let sidebar_controls_overlay = self.sidebar_controls_overlay(window, cx);
         let rollback_open = self.stage_controls.overlay_open();
@@ -1466,19 +1491,20 @@ impl Render for HarnessApp {
             .text_size(px(13.5))
             .text_color(self.theme.text.hsla())
             .bg(self.theme.background.hsla())
-            .on_key_down(cx.listener(|this, event: &KeyDownEvent, _window, cx| {
-                let keystroke = &event.keystroke;
-                if this.onboarding.is_none()
-                    && keystroke.modifiers.secondary()
-                    && keystroke.modifiers.shift
-                    && keystroke.key.eq_ignore_ascii_case("f")
-                {
-                    cx.stop_propagation();
-                    this.open_session_search(None, cx);
-                }
+            .on_key_down(cx.listener(|this, event: &KeyDownEvent, window, cx| {
+                this.handle_global_shortcut(event, window, cx);
             }))
+            .when(command_palette_open, |root| {
+                root.on_key_down(cx.listener(|this, event: &KeyDownEvent, _window, cx| {
+                    this.handle_command_palette_key(event, cx);
+                }))
+            })
             .when(
-                settings_open && !search_open && !sidebar_controls_open && !rollback_open,
+                settings_open
+                    && !search_open
+                    && !command_palette_open
+                    && !sidebar_controls_open
+                    && !rollback_open,
                 |root| {
                     root.track_focus(&self.settings_focus)
                         .on_key_down(cx.listener(|this, event: &KeyDownEvent, _window, cx| {
@@ -1490,7 +1516,7 @@ impl Render for HarnessApp {
                 },
             )
             .when(
-                search_open && !sidebar_controls_open && !rollback_open,
+                search_open && !command_palette_open && !sidebar_controls_open && !rollback_open,
                 |root| {
                     root.on_key_down(cx.listener(|this, event: &KeyDownEvent, _window, cx| {
                         if event.keystroke.key.eq_ignore_ascii_case("escape") {
@@ -1522,6 +1548,7 @@ impl Render for HarnessApp {
                 self.titlebar(cx).into_any_element()
             })
             .child(body)
+            .when_some(command_palette_overlay, |root, overlay| root.child(overlay))
             .when_some(search_overlay, |root, overlay| root.child(overlay))
             .when_some(sidebar_controls_overlay, |root, overlay| {
                 root.child(overlay)

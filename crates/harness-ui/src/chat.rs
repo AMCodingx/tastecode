@@ -6,7 +6,7 @@ use crate::client_state::{ChatUpdate, ModelChoice};
 use crate::theme::{CHAT_WIDTH, Theme};
 use diff::DiffUiState;
 use gpui::{
-    Animation, AnimationExt, AnyElement, App, Context, Entity, EventEmitter, FontWeight,
+    Animation, AnimationExt, AnyElement, App, Context, Entity, EventEmitter, Focusable, FontWeight,
     ListAlignment, ListState, Render, SharedString, Window, div, ease_out_quint, list, prelude::*,
     px, relative, svg,
 };
@@ -327,6 +327,21 @@ impl ChatView {
             voice_tick_scheduled: false,
             pending_transcript: None,
         }
+    }
+
+    pub(crate) fn focus_composer(&self, window: &mut Window, cx: &mut Context<Self>) {
+        self.composer
+            .update(cx, |composer, cx| composer.focus(window, cx));
+    }
+
+    pub(crate) fn text_input_focused(&self, window: &Window, cx: &App) -> bool {
+        self.composer.read(cx).focus_handle(cx).is_focused(window)
+            || self
+                .user_input_custom
+                .read(cx)
+                .focus_handle(cx)
+                .is_focused(window)
+            || self.terminal_ui.is_focused(window)
     }
 
     pub(crate) fn begin_session(&mut self, session: SessionContext, cx: &mut Context<Self>) {

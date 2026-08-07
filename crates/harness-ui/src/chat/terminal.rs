@@ -451,6 +451,10 @@ impl TerminalUiState {
         }
     }
 
+    pub(super) fn is_focused(&self, window: &Window) -> bool {
+        self.focus.is_focused(window)
+    }
+
     fn reset_engine(&mut self) {
         self.engine = TerminalEngine::new(self.engine.columns, self.engine.rows);
         self.pending_output.clear();

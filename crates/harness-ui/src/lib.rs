@@ -4,6 +4,7 @@ mod chat;
 mod client_state;
 mod preferences;
 mod preview_capture;
+mod shortcuts;
 mod sidebar;
 mod theme;
 
