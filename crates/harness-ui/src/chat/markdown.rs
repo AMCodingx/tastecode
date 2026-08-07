@@ -149,6 +149,7 @@ impl ChatView {
             footnote_numbers: &footnote_numbers,
             footnote_reference_offsets: &footnote_reference_offsets,
             theme: self.theme,
+            interface_font: self.interface_font.clone(),
             view: view.clone(),
             selection: selection.clone(),
             reveal_ordinals: RefCell::new(HashMap::new()),
@@ -245,7 +246,9 @@ pub(super) fn markdown_view(
     window: &mut Window,
     cx: &mut App,
 ) -> AnyElement {
-    let theme = view.read(cx).theme;
+    let view_state = view.read(cx);
+    let theme = view_state.theme;
+    let interface_font = view_state.interface_font.clone();
     let selection = window.use_keyed_state(
         SharedString::from(format!("{id}/selection")),
         cx,
@@ -254,7 +257,7 @@ pub(super) fn markdown_view(
     selection.update(cx, |selection, _| selection.set_source(&text));
     let parsed = selection.read(cx).document.root.clone();
     let Some(root) = parsed.as_deref() else {
-        return fallback_markdown(id, text, theme, window, cx);
+        return fallback_markdown(id, text, theme, interface_font, window, cx);
     };
     let definitions = collect_definitions(&root.children);
     let footnotes = collect_footnotes(&root.children);
@@ -267,6 +270,7 @@ pub(super) fn markdown_view(
         footnote_numbers: &footnotes.numbers,
         footnote_reference_offsets: &footnotes.reference_offsets,
         theme,
+        interface_font: interface_font.clone(),
         view,
         selection: selection.clone(),
         reveal_ordinals: RefCell::new(HashMap::new()),
@@ -303,7 +307,7 @@ pub(super) fn markdown_view(
             .id(SharedString::from(id))
             .w_full()
             .max_w(px(690.0))
-            .font_family("Geist")
+            .font_family(interface_font)
             .text_size(px(15.0))
             .line_height(relative(1.52))
             .text_color(theme.response_text.hsla())
@@ -541,6 +545,7 @@ struct RenderContext<'a> {
     footnote_numbers: &'a HashMap<String, usize>,
     footnote_reference_offsets: &'a HashMap<String, Vec<usize>>,
     theme: Theme,
+    interface_font: SharedString,
     view: Entity<ChatView>,
     selection: Entity<MarkdownSelectionState>,
     reveal_ordinals: RefCell<HashMap<u64, usize>>,
@@ -2213,9 +2218,23 @@ fn fallback_node(
     };
     let node_id = format!("{}:fallback:{}", context.id, position.start.offset);
     let content = if matches!(node, Node::Html(_)) {
-        fallback_html(node_id, raw, context.theme, window, cx)
+        fallback_html(
+            node_id,
+            raw,
+            context.theme,
+            context.interface_font.clone(),
+            window,
+            cx,
+        )
     } else {
-        fallback_markdown(node_id, raw.to_owned(), context.theme, window, cx)
+        fallback_markdown(
+            node_id,
+            raw.to_owned(),
+            context.theme,
+            context.interface_font.clone(),
+            window,
+            cx,
+        )
     };
     div()
         .w_full()
@@ -2234,6 +2253,7 @@ fn fallback_markdown(
     id: String,
     text: String,
     theme: Theme,
+    interface_font: SharedString,
     window: &mut Window,
     cx: &mut App,
 ) -> AnyElement {
@@ -2243,7 +2263,7 @@ fn fallback_markdown(
         .style(text_style)
         .selectable(true)
         .w_full()
-        .font_family("Geist")
+        .font_family(interface_font)
         .text_size(px(15.0))
         .line_height(relative(1.52))
         .text_color(theme.response_text.hsla())
@@ -2258,6 +2278,7 @@ fn fallback_html(
     id: String,
     html: &str,
     theme: Theme,
+    interface_font: SharedString,
     window: &mut Window,
     cx: &mut App,
 ) -> AnyElement {
@@ -2270,7 +2291,7 @@ fn fallback_html(
     .style(fallback_text_style(theme))
     .selectable(true)
     .w_full()
-    .font_family("Geist")
+    .font_family(interface_font)
     .text_size(px(15.0))
     .line_height(relative(1.52))
     .text_color(theme.response_text.hsla())
@@ -3401,6 +3422,7 @@ fn render_inline_unit(unit: InlineUnit, context: &RenderContext<'_>) -> AnyEleme
             &path,
             selectable(label, "file-reference").into_any_element(),
             context.theme,
+            context.interface_font.clone(),
         ),
         InlineUnitKind::FootnoteReference { identifier, number } => {
             let reference_key = footnote_reference_anchor_key(&identifier, start);
@@ -3510,7 +3532,12 @@ fn render_inline_unit(unit: InlineUnit, context: &RenderContext<'_>) -> AnyEleme
     }
 }
 
-fn render_file_reference(path: &str, label: AnyElement, theme: Theme) -> gpui::Div {
+fn render_file_reference(
+    path: &str,
+    label: AnyElement,
+    theme: Theme,
+    interface_font: SharedString,
+) -> gpui::Div {
     let spec = file_icon_spec(path);
     let icon = if let Some(path) = spec.icon {
         svg()
@@ -3527,7 +3554,7 @@ fn render_file_reference(path: &str, label: AnyElement, theme: Theme) -> gpui::D
             .rounded(px(2.0))
             .border_1()
             .border_color(theme.file_reference.hsla())
-            .font_family("Geist")
+            .font_family(interface_font)
             .font_weight(FontWeight(680.0))
             .text_size(px(7.2))
             .line_height(relative(1.0))

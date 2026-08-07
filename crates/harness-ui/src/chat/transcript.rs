@@ -45,6 +45,7 @@ struct TranscriptRowSnapshot {
     copied: bool,
     checkpoint_id: Option<u64>,
     theme: Theme,
+    interface_font: SharedString,
 }
 
 #[derive(Clone)]
@@ -350,6 +351,7 @@ impl ChatView {
             show_working_rail,
             checkpoint_id,
             theme: self.theme,
+            interface_font: self.interface_font.clone(),
         })
     }
 
@@ -950,6 +952,11 @@ fn auxiliary_item(snapshot: &TranscriptRowSnapshot, view: Entity<ChatView>) -> A
     let output = item.text.clone().unwrap_or_default();
     let icon = glyph(item);
     let failed = item.item_type == ItemType::Error;
+    let label_font = if live {
+        snapshot.interface_font.clone()
+    } else {
+        "Geist Mono".into()
+    };
 
     div()
         .w_full()
@@ -994,7 +1001,7 @@ fn auxiliary_item(snapshot: &TranscriptRowSnapshot, view: Entity<ChatView>) -> A
                         .min_w(px(0.0))
                         .flex_1()
                         .truncate()
-                        .font_family(if live { "Geist" } else { "Geist Mono" })
+                        .font_family(label_font)
                         .text_size(px(if live { 15.0 } else { 12.5 }))
                         .child(label),
                 )

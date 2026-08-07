@@ -286,6 +286,7 @@ impl ComposerAttachment {
 
 pub(crate) struct ChatView {
     theme: Theme,
+    interface_font: SharedString,
     session: Option<SessionContext>,
     state: ThreadState,
     queue: ThreadQueueResult,
@@ -364,7 +365,12 @@ pub(crate) struct ChatView {
 }
 
 impl ChatView {
-    pub(crate) fn new(theme: Theme, window: &mut Window, cx: &mut Context<Self>) -> Self {
+    pub(crate) fn new(
+        theme: Theme,
+        interface_font: SharedString,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Self {
         thinking_orb::initialize_clock();
         let composer = cx.new(|cx| {
             InputState::new(window, cx)
@@ -427,6 +433,7 @@ impl ChatView {
 
         Self {
             theme,
+            interface_font,
             session: None,
             state: ThreadState::default(),
             queue: ThreadQueueResult {
@@ -657,6 +664,17 @@ impl ChatView {
                 self.reset_transcript_motion();
             }
             self.theme = theme;
+            cx.notify();
+        }
+    }
+
+    pub(crate) fn update_interface_font(
+        &mut self,
+        interface_font: SharedString,
+        cx: &mut Context<Self>,
+    ) {
+        if self.interface_font != interface_font {
+            self.interface_font = interface_font;
             cx.notify();
         }
     }

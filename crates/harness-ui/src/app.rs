@@ -203,7 +203,7 @@ impl HarnessApp {
             .with_reduced_motion(reduced_motion);
         let interface_font = resolve_interface_font(preferences.font, &available_fonts);
         sync_component_theme(theme, interface_font, cx);
-        let chat = cx.new(|cx| ChatView::new(theme, window, cx));
+        let chat = cx.new(|cx| ChatView::new(theme, interface_font.into(), window, cx));
         let connection_name = cx.new(|cx| {
             InputState::new(window, cx)
                 .default_value("OpenAI API")

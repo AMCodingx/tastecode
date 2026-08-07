@@ -2812,7 +2812,11 @@ impl HarnessApp {
 
     fn set_font_preference(&mut self, preference: FontPreference, cx: &mut Context<Self>) {
         self.preferences.font = preference;
-        super::sync_component_theme(self.theme, self.interface_font(), cx);
+        let interface_font = self.interface_font();
+        super::sync_component_theme(self.theme, interface_font, cx);
+        self.chat.update(cx, |chat, cx| {
+            chat.update_interface_font(interface_font.into(), cx)
+        });
         self.persist_native_preferences();
         cx.notify();
     }
@@ -2841,10 +2845,13 @@ impl HarnessApp {
         };
         self.theme = Theme::new(mode, self.preferences.backdrop, self.preferences.accent)
             .with_reduced_motion(self.reduced_motion);
-        super::sync_component_theme(self.theme, self.interface_font(), cx);
+        let interface_font = self.interface_font();
+        super::sync_component_theme(self.theme, interface_font, cx);
         let theme = self.theme;
-        self.chat
-            .update(cx, |chat, cx| chat.update_theme(theme, cx));
+        self.chat.update(cx, |chat, cx| {
+            chat.update_theme(theme, cx);
+            chat.update_interface_font(interface_font.into(), cx);
+        });
         self.update_provider_terminal_themes(cx);
         self.persist_native_preferences();
         cx.notify();
