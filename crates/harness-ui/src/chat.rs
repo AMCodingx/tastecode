@@ -16,10 +16,10 @@ use crate::zoom::px;
 use diff::DiffUiState;
 use gpui::{
     Animation, AnimationExt, AnyElement, App, Background, Bounds, BoxShadow, ClipboardEntry,
-    Context, Entity, EventEmitter, FocusHandle, Focusable, FontWeight, HighlightStyle, Image,
-    ImageFormat, ListAlignment, ListOffset, ListState, ObjectFit, Pixels, Point, Render, Rgba,
-    ScrollWheelEvent, SharedString, StyledImage, StyledText, Window, canvas, div, fill, img,
-    linear_color_stop, linear_gradient, point, prelude::*, relative, size, svg,
+    Context, Entity, EventEmitter, ExternalPaths, FocusHandle, Focusable, FontWeight,
+    HighlightStyle, Image, ImageFormat, ListAlignment, ListOffset, ListState, ObjectFit, Pixels,
+    Point, Render, Rgba, ScrollWheelEvent, SharedString, StyledImage, StyledText, Window, canvas,
+    div, fill, img, linear_color_stop, linear_gradient, point, prelude::*, relative, size, svg,
 };
 use gpui_component::RopeExt;
 use gpui_component::input::{Input, InputEvent, InputState};
@@ -3309,6 +3309,22 @@ impl ChatView {
                                         theme.line.hsla()
                                     })
                                     .bg(theme.prompt.hsla())
+                                    .can_drop(|value, _window, _cx| value.is::<ExternalPaths>())
+                                    .drag_over::<ExternalPaths>(
+                                        move |style, _paths, _window, _cx| {
+                                            style
+                                                .border_color(theme.text_2.hsla())
+                                                .bg(theme.surface_2.hsla())
+                                        },
+                                    )
+                                    .on_drop(cx.listener(
+                                        |this, paths: &ExternalPaths, _window, cx| {
+                                            this.add_attachments(
+                                                attachment_paths(paths.paths()),
+                                                cx,
+                                            );
+                                        },
+                                    ))
                                     .shadow(vec![prompt_shadow])
                                     .overflow_hidden()
                                     .when(is_new_session, |prompt| {
@@ -5924,6 +5940,14 @@ fn merge_unique_attachments(current: &mut Vec<ComposerAttachment>, queued: Vec<S
     }
 }
 
+fn attachment_paths(paths: &[PathBuf]) -> Vec<String> {
+    paths
+        .iter()
+        .filter(|path| !path.as_os_str().is_empty())
+        .map(|path| path.to_string_lossy().into_owned())
+        .collect()
+}
+
 fn is_image_path(path: &str) -> bool {
     Path::new(path)
         .extension()
@@ -6118,6 +6142,20 @@ mod tests {
         assert!(is_image_path("C:\\work\\REFERENCE.PNG"));
         assert!(is_image_path("/work/reference.webp"));
         assert!(!is_image_path("/work/notes.md"));
+    }
+
+    #[test]
+    fn native_file_drops_preserve_every_nonempty_platform_path() {
+        let first = PathBuf::from("reference.png");
+        let second = PathBuf::from("notes.md");
+
+        assert_eq!(
+            attachment_paths(&[first.clone(), PathBuf::new(), second.clone()]),
+            [
+                first.to_string_lossy().into_owned(),
+                second.to_string_lossy().into_owned(),
+            ]
+        );
     }
 
     #[test]
