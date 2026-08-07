@@ -278,7 +278,7 @@ describe('ModelSelector', () => {
     expect(screen.getByRole('dialog', { name: 'Model and reasoning' })).toBeTruthy()
   })
 
-  it('renders one section per source instead of repeating it on every row', () => {
+  it('filters the model list through a provider logo rail', () => {
     const claudeModel: ModelChoice = {
       key: 'claude-code:sonnet',
       provider: 'claude-code',
@@ -299,15 +299,31 @@ describe('ModelSelector', () => {
       'Claude Code',
     ])
 
-    renderSelector({ models: [...MODELS, claudeModel] })
+    const { onModelChange } = renderSelector({ models: [...MODELS, claudeModel] })
     fireEvent.click(screen.getByRole('button', { name: 'Model and reasoning' }))
+
+    expect(screen.getByRole('group', { name: 'Providers' })).toBeTruthy()
+    expect(
+      screen.getByRole('button', { name: 'Show Codex models' }).getAttribute('aria-pressed'),
+    ).toBe('true')
+    expect(
+      screen.getByRole('button', { name: 'Show Claude Code models' }).getAttribute('title'),
+    ).toBe('Claude Code')
+    expect(screen.queryByRole('button', { name: 'Use Sonnet 5 through Claude Code' })).toBeNull()
 
     const titles = Array.from(document.querySelectorAll('.model-selector__group-title')).map(
       (title) => title.textContent,
     )
-    expect(titles).toEqual(['Codex', 'Claude Code'])
-    expect(document.querySelectorAll('.model-selector__model-source')).toHaveLength(0)
+    expect(titles).toEqual(['Codex'])
+
+    fireEvent.click(screen.getByRole('button', { name: 'Show Claude Code models' }))
+
+    expect(
+      screen.getByRole('button', { name: 'Show Claude Code models' }).getAttribute('aria-pressed'),
+    ).toBe('true')
+    expect(screen.queryByRole('button', { name: 'Use GPT-5.6 Sol through Codex' })).toBeNull()
     expect(screen.getByRole('button', { name: 'Use Sonnet 5 through Claude Code' })).toBeTruthy()
+    expect(onModelChange).not.toHaveBeenCalled()
   })
 
   it('maps pointer positions onto discrete effort stops', () => {

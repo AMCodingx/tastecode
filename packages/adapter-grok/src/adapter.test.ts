@@ -50,7 +50,7 @@ describe('Grok adapter', () => {
     adapter.on('event', (event) => events.push(event))
     const thread = await adapter.startThread('C:\\repo', {
       model: 'grok-4.5',
-      effort: 'xhigh',
+      effort: 'high',
       instructions: 'Answer plainly.',
     })
     const completed = new Promise<void>((resolve) => {
@@ -71,8 +71,8 @@ describe('Grok adapter', () => {
       'streaming-json',
       '--model',
       'grok-4.5',
-      '--effort',
-      'xhigh',
+      '--reasoning-effort',
+      'high',
     ])
 
     // Reasoning streams as its own item; the write becomes a file change.
@@ -100,9 +100,15 @@ describe('Grok adapter', () => {
     )
 
     // The end frame's session id resumes the CLI's own session next turn.
-    await adapter.sendTurn(thread.id, 'And now?')
+    await adapter.sendTurn(thread.id, 'And now?', [], {
+      model: 'grok-4.5',
+      effort: 'low',
+    })
     expect(args).toContain('-r')
     expect(args).toContain('019fd9b0-1c9b-7dd3-85a2-2b7b628382d3')
+    expect(
+      args.slice(args.indexOf('--reasoning-effort'), args.indexOf('--reasoning-effort') + 2),
+    ).toEqual(['--reasoning-effort', 'low'])
     adapter.dispose()
   })
 
@@ -132,9 +138,10 @@ describe('Grok adapter', () => {
     expect(parseGrokModels(MODELS_OUTPUT)).toEqual([
       {
         id: 'grok-4.5',
-        displayName: 'grok-4.5',
+        displayName: 'Grok 4.5',
         isDefault: true,
-        reasoningEfforts: ['low', 'medium', 'high', 'xhigh', 'max'],
+        reasoningEfforts: ['low', 'medium', 'high'],
+        defaultReasoningEffort: 'high',
         serviceTiers: [],
       },
     ])
@@ -142,6 +149,19 @@ describe('Grok adapter', () => {
     expect(parseGrokAccount('Default model: grok-4.5\nAvailable models:\n  * grok-4.5')).toEqual({
       signedIn: true,
     })
+  })
+
+  it('does not guess reasoning levels for models without model-specific metadata', () => {
+    const models = parseGrokModels('Available models:\n  * grok-future (default)')
+    expect(models).toEqual([
+      {
+        id: 'grok-future',
+        displayName: 'Grok Future',
+        isDefault: true,
+        reasoningEfforts: [],
+        serviceTiers: [],
+      },
+    ])
   })
 
   it('maps approval modes onto the documented permission modes', () => {

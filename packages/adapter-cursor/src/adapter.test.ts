@@ -200,7 +200,7 @@ describe('Cursor adapter', () => {
     )
   })
 
-  it('starts on the concrete variant id, warming the index when it is cold', async () => {
+  it('applies a per-turn effort and tier using the concrete variant id', async () => {
     const capture = readFileSync(
       new URL('./fixtures/cursor-models-2026-08-07.txt', import.meta.url),
       'utf8',
@@ -221,10 +221,14 @@ describe('Cursor adapter', () => {
     })
     const thread = await adapter.startThread('C:\\repo', {
       model: 'gpt-5.3-codex',
+      effort: 'low',
+      serviceTier: 'standard',
+    })
+    await adapter.sendTurn(thread.id, 'go', [], {
+      model: 'gpt-5.3-codex',
       effort: 'xhigh',
       serviceTier: 'fast',
     })
-    await adapter.sendTurn(thread.id, 'go')
 
     // A cold index costs exactly one listing run at session start.
     expect(listings).toBe(1)

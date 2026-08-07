@@ -200,7 +200,8 @@ function grokRuntime(onLog: (line: string) => void): ProviderRuntime {
         thread,
         session: {
           capabilities: adapter.capabilities,
-          sendTurn: (threadId, text, attachments) => adapter.sendTurn(threadId, text, attachments),
+          sendTurn: (threadId, text, attachments, turnOptions) =>
+            adapter.sendTurn(threadId, text, attachments, turnOptions),
           interrupt: () => adapter.interrupt(),
           // Print mode decides permissions from the launch switches; there is
           // no mid-turn callback to answer.
@@ -231,7 +232,8 @@ function antigravityRuntime(onLog: (line: string) => void): ProviderRuntime {
         thread,
         session: {
           capabilities: adapter.capabilities,
-          sendTurn: (threadId, text, attachments) => adapter.sendTurn(threadId, text, attachments),
+          sendTurn: (threadId, text, attachments, turnOptions) =>
+            adapter.sendTurn(threadId, text, attachments, turnOptions),
           interrupt: () => adapter.interrupt(),
           // Print mode decides permissions from the launch switches; there is
           // no mid-turn callback to answer.
@@ -291,6 +293,7 @@ function openCodeRuntime(onLog: (line: string) => void): ProviderRuntime {
         await adapter.start()
         const thread = await adapter.startThread(workspacePath, {
           ...(options.model ? { model: options.model } : {}),
+          ...(options.effort ? { effort: options.effort } : {}),
           ...(options.approval ? { approval: options.approval } : {}),
           ...(options.instructions ? { instructions: options.instructions } : {}),
         })
@@ -309,6 +312,9 @@ function openCodeRuntime(onLog: (line: string) => void): ProviderRuntime {
       try {
         await adapter.start()
         const thread = await adapter.resumeThread(threadId, workspacePath, {
+          ...(options.model ? { model: options.model } : {}),
+          ...(options.effort ? { effort: options.effort } : {}),
+          ...(options.approval ? { approval: options.approval } : {}),
           ...(options.instructions ? { instructions: options.instructions } : {}),
         })
         return { thread, session: adapter }
@@ -450,7 +456,8 @@ function claudeRuntime(onLog: (line: string) => void): ProviderRuntime {
         thread,
         session: {
           capabilities: adapter.capabilities,
-          sendTurn: (threadId, text) => adapter.sendTurn(threadId, text),
+          sendTurn: (threadId, text, attachments, turnOptions) =>
+            adapter.sendTurn(threadId, text, attachments, turnOptions),
           interrupt: () => adapter.interrupt(),
           // Claude Code decides permissions from the mode it was launched
           // with; there is no mid-turn callback to answer.
