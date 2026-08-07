@@ -1569,6 +1569,7 @@ impl HarnessApp {
             toggle_project: Rc::new(move |path, cx| {
                 let _ = toggle_project_view.update(cx, |this, cx| {
                     if !this.collapsed_projects.remove(&path) {
+                        this.expanded_project_sessions.remove(&path);
                         this.collapsed_projects.insert(path);
                     }
                     cx.notify();

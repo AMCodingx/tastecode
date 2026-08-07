@@ -1119,6 +1119,7 @@ fn classic_project(
     let path = project.path.clone();
     let toggle_path = path.clone();
     let menu_path = path.clone();
+    let menu_button_path = path.clone();
     let new_chat_path = path.clone();
     let show_path = path.clone();
     let sessions = project
@@ -1132,83 +1133,77 @@ fn classic_project(
     } else {
         &sessions[..sessions.len().min(COLLAPSED_SESSION_COUNT)]
     };
+    let drawer_height = classic_project_drawer_height(visible.len(), has_more);
+    let drawer_open = expanded && !sessions.is_empty();
     let header = div()
-        .id(SharedString::from(format!(
-            "classic-project:{}",
-            project.path
-        )))
         .group("classic-project")
-        .h(px(34.0))
         .w_full()
         .flex()
         .items_center()
-        .rounded(px(8.0))
-        .hover(move |style| style.bg(theme.surface.hsla()))
-        .on_click({
-            let toggle = actions.toggle_project.clone();
-            let open_menu = actions.open_menu.clone();
-            move |event, _window, cx| {
-                if event.is_right_click() {
-                    cx.stop_propagation();
-                    open_menu(
-                        SidebarMenuRequest::Project(menu_path.clone()),
-                        event.position(),
-                        cx,
-                    );
-                } else if event.standard_click() {
-                    toggle(toggle_path.clone(), cx);
-                }
-            }
-        })
+        .gap(px(1.0))
         .child(
             div()
-                .ml(px(7.0))
-                .text_color(theme.text_3.hsla())
-                .child(icon(
-                    if expanded {
-                        "icons/chevron-down.svg"
-                    } else {
-                        "icons/chevron-right.svg"
-                    },
-                    10.0,
-                )),
-        )
-        .child(
-            div()
-                .ml(px(6.0))
-                .size(px(14.0))
-                .flex()
-                .items_center()
-                .justify_center()
-                .text_color(theme.text_3.hsla())
-                .child(icon("icons/folder-pen.svg", 12.0)),
-        )
-        .child(
-            div()
-                .ml(px(7.0))
+                .id(SharedString::from(format!(
+                    "classic-project:{}",
+                    project.path
+                )))
                 .min_w(px(0.0))
                 .flex_1()
-                .truncate()
-                .text_size(px(12.5))
-                .font_weight(FontWeight::MEDIUM)
-                .text_color(theme.text_2.hsla())
-                .child(project.name.clone()),
+                .flex()
+                .items_center()
+                .gap(px(8.0))
+                .px(px(8.0))
+                .py(px(5.0))
+                .rounded(px(RADIUS_MD))
+                .text_size(px(13.5))
+                .text_color(theme.text.hsla())
+                .cursor_pointer()
+                .hover(move |style| style.bg(chrome_raised(theme)).shadow(chrome_shadows(theme)))
+                .on_click({
+                    let toggle = actions.toggle_project.clone();
+                    let open_menu = actions.open_menu.clone();
+                    move |event, _window, cx| {
+                        if event.is_right_click() {
+                            cx.stop_propagation();
+                            open_menu(
+                                SidebarMenuRequest::Project(menu_path.clone()),
+                                event.position(),
+                                cx,
+                            );
+                        } else if event.standard_click() {
+                            toggle(toggle_path.clone(), cx);
+                        }
+                    }
+                })
+                .child(
+                    div()
+                        .flex_none()
+                        .text_color(theme.text_3.hsla())
+                        .child(icon("icons/folder.svg", 12.0)),
+                )
+                .child(
+                    div()
+                        .min_w(px(0.0))
+                        .flex_1()
+                        .truncate()
+                        .child(project.name.clone()),
+                ),
         )
-        .child(sidebar_menu_button(
+        .child(classic_project_menu_button(
             format!("project-menu:{}", project.path).into(),
-            SidebarMenuRequest::Project(path),
+            SidebarMenuRequest::Project(menu_button_path),
             theme,
             actions.open_menu.clone(),
         ))
         .child(
             div()
                 .id(SharedString::from(format!("new-chat:{}", project.path)))
-                .mr(px(4.0))
-                .size(px(25.0))
+                .size(px(22.0))
+                .flex_none()
                 .flex()
                 .items_center()
                 .justify_center()
-                .rounded(px(6.0))
+                .rounded(px(RADIUS_SM))
                 .text_color(theme.text_3.hsla())
                 .opacity(0.0)
                 .group_hover("classic-project", |button| button.opacity(1.0))
@@ -1225,48 +1220,123 @@ fn classic_project(
                         new_chat(new_chat_path.clone(), cx);
                     }
                 })
-                .child(icon("icons/plus.svg", 12.0)),
+                .active(|style| style.inset(px(0.66)))
+                .child(icon("icons/plus.svg", 13.0)),
+        );
+
+    let mut drawer_rows = visible
+        .iter()
+        .map(|session| {
+            classic_session_row(
+                project,
+                session,
+                selected_thread_id == Some(session.id.as_str()),
+                false,
+                theme,
+                actions,
+            )
+        })
+        .collect::<Vec<_>>();
+    if has_more {
+        drawer_rows.push(
+            div()
+                .id(SharedString::from(format!("show-project:{}", project.path)))
+                .h(px(28.0))
+                .w_full()
+                .flex()
+                .items_center()
+                .pl(px(32.0))
+                .pr(px(8.0))
+                .rounded(px(RADIUS_MD))
+                .text_size(px(12.5))
+                .text_color(theme.text_3.hsla())
+                .cursor_pointer()
+                .hover(move |style| style.text_color(theme.text.hsla()))
+                .on_click({
+                    let toggle = actions.toggle_project_sessions.clone();
+                    move |_event, _window, cx| toggle(show_path.clone(), cx)
+                })
+                .child(if show_all { "Show less" } else { "Show more" })
+                .into_any_element(),
+        );
+    }
+    let drawer = div()
+        .w_full()
+        .overflow_hidden()
+        .h(px(if drawer_open { drawer_height } else { 0.0 }))
+        .opacity(if drawer_open { 1.0 } else { 0.0 })
+        .child(
+            div()
+                .min_h(px(0.0))
+                .mt(px(1.0))
+                .mb(px(4.0))
+                .children(drawer_rows),
+        )
+        .with_animation(
+            SharedString::from(format!(
+                "classic-project-drawer:{}:{drawer_open}",
+                project.path
+            )),
+            Animation::new(theme.motion_duration(std::time::Duration::from_millis(260)))
+                .with_easing(crate::theme::web_ease_out),
+            move |drawer, delta| {
+                let (height, opacity) =
+                    classic_project_drawer_state(drawer_open, drawer_height, delta);
+                drawer.h(px(height)).opacity(opacity)
+            },
         );
 
     div()
         .w_full()
         .flex()
         .flex_col()
+        .mb(px(1.0))
         .child(header)
-        .when(expanded, |group| {
-            group
-                .children(visible.iter().map(|session| {
-                    classic_session_row(
-                        project,
-                        session,
-                        selected_thread_id == Some(session.id.as_str()),
-                        false,
-                        theme,
-                        actions,
-                    )
-                }))
-                .when(has_more, |group| {
-                    group.child(
-                        div()
-                            .id(SharedString::from(format!("show-project:{}", project.path)))
-                            .ml(px(28.0))
-                            .h(px(27.0))
-                            .flex()
-                            .items_center()
-                            .px(px(8.0))
-                            .rounded(px(6.0))
-                            .text_size(px(10.5))
-                            .text_color(theme.text_3.hsla())
-                            .cursor_pointer()
-                            .hover(move |style| style.text_color(theme.text.hsla()))
-                            .on_click({
-                                let toggle = actions.toggle_project_sessions.clone();
-                                move |_event, _window, cx| toggle(show_path.clone(), cx)
-                            })
-                            .child(if show_all { "Show less" } else { "Show more" }),
-                    )
-                })
+        .child(drawer)
+        .into_any_element()
+}
+
+fn classic_project_drawer_height(visible_sessions: usize, has_more: bool) -> f32 {
+    5.0 + visible_sessions as f32 * 28.0 + if has_more { 28.0 } else { 0.0 }
+}
+
+fn classic_project_drawer_state(open: bool, height: f32, progress: f32) -> (f32, f32) {
+    let progress = progress.clamp(0.0, 1.0);
+    let height_progress = if open { progress } else { 1.0 - progress };
+    let opacity_progress = (progress * (260.0 / 180.0)).min(1.0);
+    let opacity = if open {
+        opacity_progress
+    } else {
+        1.0 - opacity_progress
+    };
+    (height * height_progress, opacity)
+}
+
+fn classic_project_menu_button(
+    id: SharedString,
+    request: SidebarMenuRequest,
+    theme: Theme,
+    open_menu: OpenSidebarMenu,
+) -> AnyElement {
+    div()
+        .id(id)
+        .size(px(26.0))
+        .flex_none()
+        .flex()
+        .items_center()
+        .justify_center()
+        .rounded(px(RADIUS_SM))
+        .text_color(theme.text_3.hsla())
+        .opacity(0.0)
+        .group_hover("classic-project", |button| button.opacity(1.0))
+        .cursor_pointer()
+        .hover(move |style| style.text_color(theme.text.hsla()))
+        .active(|style| style.inset(px(0.78)))
+        .on_click(move |event, _window, cx| {
+            cx.stop_propagation();
+            open_menu(request.clone(), event.position(), cx);
         })
+        .child(icon("icons/ellipsis.svg", 16.0))
         .into_any_element()
 }
 
@@ -2888,6 +2958,25 @@ mod tests {
         assert_eq!(braille_frame_index(1.0), 9);
         assert_eq!(BRAILLE_SPINNER_FRAMES[0], "⠋");
         assert_eq!(BRAILLE_SPINNER_FRAMES[9], "⠏");
+    }
+
+    #[test]
+    fn classic_project_drawer_uses_real_row_height_and_split_motion_durations() {
+        let height = classic_project_drawer_height(5, true);
+        assert_eq!(height, 173.0);
+        assert_eq!(classic_project_drawer_height(2, false), 61.0);
+
+        let opening = classic_project_drawer_state(true, height, 0.5);
+        assert!((opening.0 - 86.5).abs() < f32::EPSILON);
+        assert!((opening.1 - (0.5 * 260.0_f32 / 180.0)).abs() < f32::EPSILON);
+        let closing = classic_project_drawer_state(false, height, 0.5);
+        assert!((closing.0 - 86.5).abs() < f32::EPSILON);
+        assert!((closing.1 - (1.0 - 0.5 * 260.0_f32 / 180.0)).abs() < f32::EPSILON);
+        assert_eq!(
+            classic_project_drawer_state(true, height, 1.0),
+            (height, 1.0)
+        );
+        assert_eq!(classic_project_drawer_state(false, height, 1.0), (0.0, 0.0));
     }
 
     #[test]
