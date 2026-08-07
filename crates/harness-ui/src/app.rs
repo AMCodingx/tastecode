@@ -54,11 +54,18 @@ const DESIGN_BRIEF_ATTACHMENT: &str = "personal-harness://design-brief-v1";
 const MIN_RAIL_PREVIEW_WIDTH: f32 = 148.0;
 const COLLAPSE_RAIL_WIDTH: f32 = 176.0;
 const MAX_RAIL_WIDTH: f32 = 420.0;
+const MCP_TRANSPORT_MIN_HEIGHT: f32 = 130.0;
 
 #[derive(Clone, Copy)]
 struct SidebarResizeDrag {
     start_x: Pixels,
     start_width: f32,
+}
+
+#[derive(Clone, Copy)]
+struct McpTransportResizeDrag {
+    start_y: Pixels,
+    start_height: f32,
 }
 
 pub fn run() -> Result<()> {
@@ -162,6 +169,8 @@ struct HarnessApp {
     mcp_editor_id: Entity<InputState>,
     mcp_editor_name: Entity<InputState>,
     mcp_editor_transport: Entity<InputState>,
+    mcp_transport_height: f32,
+    mcp_transport_resize_drag: Option<McpTransportResizeDrag>,
     auto_settle_days_input: Entity<InputState>,
     provider_terminals: HashMap<ProviderTerminalKey, Entity<ProviderTerminalView>>,
     provider_terminal_ids: HashMap<String, ProviderTerminalKey>,
@@ -654,6 +663,8 @@ impl HarnessApp {
             mcp_editor_id,
             mcp_editor_name,
             mcp_editor_transport,
+            mcp_transport_height: MCP_TRANSPORT_MIN_HEIGHT,
+            mcp_transport_resize_drag: None,
             auto_settle_days_input,
             provider_terminals: HashMap::new(),
             provider_terminal_ids: HashMap::new(),
@@ -735,6 +746,7 @@ impl HarnessApp {
         if self.mcp_editor_submission_id.is_some() && self.state.mcp_busy.is_none() {
             if self.state.mcp_notice.is_some() || self.state.mcp_error.is_none() {
                 self.mcp_editor = None;
+                self.mcp_transport_resize_drag = None;
             }
             self.mcp_editor_submission_id = None;
         }
@@ -2253,12 +2265,14 @@ impl Render for HarnessApp {
             .bg(self.theme.background.hsla())
             .on_mouse_move(cx.listener(|this, event, _window, cx| {
                 this.update_sidebar_resize(event, cx);
+                this.update_mcp_transport_resize(event, cx);
             }))
             .on_mouse_up(
                 MouseButton::Left,
                 cx.listener(|this, _event, _window, cx| {
                     this.finish_sidebar_resize(cx);
                     this.finish_sidebar_session_drag(cx);
+                    this.finish_mcp_transport_resize(cx);
                 }),
             )
             .capture_key_down(cx.listener(|this, event: &KeyDownEvent, window, cx| {

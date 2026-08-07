@@ -1,7 +1,7 @@
-use super::HarnessApp;
 use super::provider_terminal::{
     ProviderTerminalKey, ProviderTerminalPhase, ProviderTerminalSnapshot,
 };
+use super::{HarnessApp, MCP_TRANSPORT_MIN_HEIGHT, McpTransportResizeDrag};
 use crate::chrome;
 use crate::client_state::{AuthTarget, ProviderTerminalKind};
 use crate::model_selection::filter_model_choices_by_query;
@@ -11,8 +11,9 @@ use crate::theme::{Accent, Backdrop, Theme, ThemeMode};
 use crate::zoom::px;
 use gpui::{
     Animation, AnimationExt, AnyElement, App, ClipboardItem, Context, Entity, Focusable,
-    FontWeight, Hsla, KeyDownEvent, PathPromptOptions, PromptButton, PromptLevel, Rgba,
-    SharedString, Window, div, linear_color_stop, linear_gradient, prelude::*, relative, svg,
+    FontWeight, Hsla, KeyDownEvent, MouseButton, MouseDownEvent, MouseMoveEvent, PathPromptOptions,
+    PromptButton, PromptLevel, Rgba, SharedString, Window, div, linear_color_stop, linear_gradient,
+    prelude::*, relative, svg,
 };
 use gpui_component::Sizable as _;
 use gpui_component::input::{Input, InputEvent, InputState};
@@ -152,6 +153,7 @@ impl HarnessApp {
         self.model_settings_searches.clear();
         self.mcp_editor = None;
         self.mcp_editor_submission_id = None;
+        self.mcp_transport_resize_drag = None;
         cx.notify();
     }
 
@@ -195,6 +197,7 @@ impl HarnessApp {
                         this.settings_switch_motion.borrow_mut().clear();
                         this.mcp_editor = None;
                         this.mcp_editor_submission_id = None;
+                        this.mcp_transport_resize_drag = None;
                         this.settings_transition = this.settings_transition.wrapping_add(1);
                         this.refresh_settings_inventory(cx);
                     }
@@ -1973,6 +1976,7 @@ impl HarnessApp {
             cx.listener(|this, _event, _window, cx| {
                 this.mcp_editor = None;
                 this.mcp_editor_submission_id = None;
+                this.mcp_transport_resize_drag = None;
                 this.state.mcp_error = None;
                 cx.notify();
             }),
@@ -2009,10 +2013,11 @@ impl HarnessApp {
                         McpEditorFieldSpec {
                             label: "Server ID",
                             disabled: editing,
-                            multiline: false,
+                            multiline_height: None,
                             help: None,
                         },
                         &self.mcp_editor_id,
+                        None,
                         theme,
                         window,
                         cx,
@@ -2021,10 +2026,11 @@ impl HarnessApp {
                         McpEditorFieldSpec {
                             label: "Display name",
                             disabled: false,
-                            multiline: false,
+                            multiline_height: None,
                             help: None,
                         },
                         &self.mcp_editor_name,
+                        None,
                         theme,
                         window,
                         cx,
@@ -2034,12 +2040,37 @@ impl HarnessApp {
                 McpEditorFieldSpec {
                     label: "Transport JSON",
                     disabled: false,
-                    multiline: true,
+                    multiline_height: Some(self.mcp_transport_height),
                     help: Some(
                         "Use stdio or HTTP transport fields. Reference secrets as { \"source\": \"credential\", \"credentialRef\": \"…\" }.",
                     ),
                 },
                 &self.mcp_editor_transport,
+                Some(
+                    div()
+                        .id("mcp-transport-resize")
+                        .absolute()
+                        .right(px(1.0))
+                        .bottom(px(1.0))
+                        .size(px(13.0))
+                        .cursor_nwse_resize()
+                        .on_mouse_down(
+                            MouseButton::Left,
+                            cx.listener(|this, event, _window, cx| {
+                                this.begin_mcp_transport_resize(event, cx);
+                            }),
+                        )
+                        .child(
+                            svg()
+                                .path("icons/resize-corner.svg")
+                                .absolute()
+                                .right(px(1.0))
+                                .bottom(px(1.0))
+                                .size(px(10.0))
+                                .text_color(theme.text_3.hsla().opacity(0.72)),
+                        )
+                        .into_any_element(),
+                ),
                 theme,
                 window,
                 cx,
@@ -2054,6 +2085,40 @@ impl HarnessApp {
                     .child(save),
             )
             .into_any_element()
+    }
+
+    fn begin_mcp_transport_resize(&mut self, event: &MouseDownEvent, cx: &mut Context<Self>) {
+        self.mcp_transport_resize_drag = Some(McpTransportResizeDrag {
+            start_y: event.position.y,
+            start_height: self.mcp_transport_height,
+        });
+        cx.stop_propagation();
+    }
+
+    pub(super) fn update_mcp_transport_resize(
+        &mut self,
+        event: &MouseMoveEvent,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(drag) = self.mcp_transport_resize_drag else {
+            return;
+        };
+        if !event.dragging() {
+            self.mcp_transport_resize_drag = None;
+            return;
+        }
+        let delta = f32::from(event.position.y - drag.start_y) / crate::zoom::factor();
+        let next = resized_mcp_transport_height(drag.start_height, delta);
+        if (self.mcp_transport_height - next).abs() >= f32::EPSILON {
+            self.mcp_transport_height = next;
+            cx.notify();
+        }
+    }
+
+    pub(super) fn finish_mcp_transport_resize(&mut self, cx: &mut Context<Self>) {
+        if self.mcp_transport_resize_drag.take().is_some() {
+            cx.notify();
+        }
     }
 
     fn confirm_remove_mcp_server(
@@ -2124,6 +2189,8 @@ impl HarnessApp {
             server_id,
         });
         self.mcp_editor_submission_id = None;
+        self.mcp_transport_height = MCP_TRANSPORT_MIN_HEIGHT;
+        self.mcp_transport_resize_drag = None;
         self.state.mcp_error = None;
         self.state.mcp_notice = None;
         self.mcp_editor_id
@@ -3999,13 +4066,14 @@ fn mcp_transport_label(transport: Option<&McpTransport>) -> String {
 struct McpEditorFieldSpec {
     label: &'static str,
     disabled: bool,
-    multiline: bool,
+    multiline_height: Option<f32>,
     help: Option<&'static str>,
 }
 
 fn mcp_editor_field(
     spec: McpEditorFieldSpec,
     state: &Entity<InputState>,
+    resize_handle: Option<AnyElement>,
     theme: Theme,
     window: &Window,
     cx: &App,
@@ -4016,23 +4084,30 @@ fn mcp_editor_field(
     } else {
         theme.line_strong.hsla()
     };
-    let input = if spec.multiline {
-        Input::new(state)
-            .appearance(false)
-            .bordered(false)
-            .focus_bordered(false)
-            .disabled(spec.disabled)
-            .h(px(130.0))
+    let input = if let Some(height) = spec.multiline_height {
+        div()
+            .relative()
+            .h(px(height))
             .w_full()
-            .px(px(9.0))
-            .py(px(8.0))
-            .line_height(relative(1.55))
-            .rounded(px(5.0))
-            .border_1()
-            .border_color(border)
-            .bg(theme.surface_2.hsla())
-            .text_size(px(13.5))
-            .text_color(theme.text.hsla())
+            .child(
+                Input::new(state)
+                    .appearance(false)
+                    .bordered(false)
+                    .focus_bordered(false)
+                    .disabled(spec.disabled)
+                    .h(px(height))
+                    .w_full()
+                    .px(px(9.0))
+                    .py(px(8.0))
+                    .line_height(relative(1.55))
+                    .rounded(px(5.0))
+                    .border_1()
+                    .border_color(border)
+                    .bg(theme.surface_2.hsla())
+                    .text_size(px(13.5))
+                    .text_color(theme.text.hsla()),
+            )
+            .when_some(resize_handle, |field, handle| field.child(handle))
             .into_any_element()
     } else {
         div()
@@ -4069,7 +4144,7 @@ fn mcp_editor_field(
         .flex()
         .flex_col()
         .gap(px(6.0))
-        .when(spec.multiline, |field| field.w_full())
+        .when(spec.multiline_height.is_some(), |field| field.w_full())
         .child(
             div()
                 .text_size(px(12.5))
@@ -4087,6 +4162,10 @@ fn mcp_editor_field(
             )
         })
         .into_any_element()
+}
+
+fn resized_mcp_transport_height(start_height: f32, delta: f32) -> f32 {
+    (start_height + delta).max(MCP_TRANSPORT_MIN_HEIGHT)
 }
 
 fn connection_field(
@@ -4790,6 +4869,13 @@ fn settings_icon(path: &'static str, size: f32) -> impl IntoElement {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn mcp_transport_resize_keeps_the_browser_minimum_height() {
+        assert_eq!(resized_mcp_transport_height(130.0, 42.0), 172.0);
+        assert_eq!(resized_mcp_transport_height(190.0, -30.0), 160.0);
+        assert_eq!(resized_mcp_transport_height(190.0, -90.0), 130.0);
+    }
 
     #[test]
     fn model_endpoints_require_https_or_literal_loopback_http() {
