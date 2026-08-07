@@ -32,14 +32,16 @@ use gpui::{
 };
 use gpui_component::Root;
 use gpui_component::input::{InputEvent, InputState};
-use harness_protocol::{ApprovalMode, Model, ModelConnectionPreset, ProviderId};
+use harness_protocol::{
+    ApprovalMode, Model, ModelConnectionPreset, ProviderId, SidebarMode, ThreadInboxStatus,
+};
 use provider_terminal::{ProviderTerminalKey, ProviderTerminalView};
 use session_search::SessionSearchState;
 use sidebar_controls::SidebarControlsState;
 use stage_controls::StageControlsState;
 use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
-use std::time::Duration;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 const APP_WIDTH: f32 = 1180.0;
 const APP_HEIGHT: f32 = 820.0;
@@ -112,6 +114,7 @@ struct HarnessApp {
     collapsed_projects: HashSet<String>,
     expanded_project_sessions: HashSet<String>,
     sidebar_search: Entity<InputState>,
+    sidebar_status_clocks: HashMap<String, (ThreadInboxStatus, f64)>,
     snoozed_expanded: bool,
     settled_expanded: bool,
     settled_limit: usize,
@@ -487,6 +490,35 @@ impl HarnessApp {
         })
         .detach();
 
+        cx.spawn(async move |view, cx| {
+            let mut delay = Duration::from_secs(1);
+            loop {
+                cx.background_executor().timer(delay).await;
+                let result = view.update(cx, |this, cx| {
+                    if this.state.sidebar_settings.mode == SidebarMode::Inbox {
+                        cx.notify();
+                    }
+                    delay = if this.state.projects.iter().any(|project| {
+                        project.sessions.iter().any(|session| {
+                            session.running
+                                || matches!(
+                                    session.status,
+                                    Some(ThreadInboxStatus::Starting | ThreadInboxStatus::Working)
+                                )
+                        })
+                    }) {
+                        Duration::from_secs(1)
+                    } else {
+                        Duration::from_secs(30)
+                    };
+                });
+                if result.is_err() {
+                    break;
+                }
+            }
+        })
+        .detach();
+
         Self {
             theme,
             sidebar_collapsed: false,
@@ -522,6 +554,7 @@ impl HarnessApp {
             collapsed_projects: HashSet::new(),
             expanded_project_sessions: HashSet::new(),
             sidebar_search: sidebar_search_input,
+            sidebar_status_clocks: HashMap::new(),
             snoozed_expanded: false,
             settled_expanded: true,
             settled_limit: 10,
@@ -1307,6 +1340,45 @@ impl HarnessApp {
         .detach();
     }
 
+    fn sync_sidebar_status_clocks(&mut self) {
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map_or(0.0, |duration| duration.as_secs_f64() * 1_000.0);
+        let mut live = HashSet::new();
+        for session in self
+            .state
+            .projects
+            .iter()
+            .flat_map(|project| project.sessions.iter())
+        {
+            live.insert(session.id.clone());
+            let status = session.status.unwrap_or(if session.running {
+                ThreadInboxStatus::Working
+            } else {
+                ThreadInboxStatus::Idle
+            });
+            self.sidebar_status_clocks
+                .entry(session.id.clone())
+                .and_modify(|clock| {
+                    if clock.0 != status {
+                        *clock = (status, now);
+                    }
+                })
+                .or_insert_with(|| {
+                    (
+                        status,
+                        if session.running {
+                            now
+                        } else {
+                            session.created_at
+                        },
+                    )
+                });
+        }
+        self.sidebar_status_clocks
+            .retain(|thread_id, _| live.contains(thread_id));
+    }
+
     fn sidebar_actions(&self, cx: &Context<Self>) -> SidebarActions {
         let select_view = cx.weak_entity();
         let new_chat_view = select_view.clone();
@@ -1517,6 +1589,7 @@ impl Render for HarnessApp {
         self.prepare_command_palette_input(window, cx);
         self.prepare_session_search_input(window, cx);
         self.prepare_sidebar_controls_input(window, cx);
+        self.sync_sidebar_status_clocks();
         if self.focus_composer_pending {
             self.chat
                 .update(cx, |chat, cx| chat.focus_composer(window, cx));
@@ -1554,6 +1627,7 @@ impl Render for HarnessApp {
                 new_thread_picker: self.new_thread_picker,
                 collapsed_projects: &self.collapsed_projects,
                 expanded_project_sessions: &self.expanded_project_sessions,
+                status_clocks: &self.sidebar_status_clocks,
                 snoozed_expanded: self.snoozed_expanded,
                 settled_expanded: self.settled_expanded,
                 settled_limit: self.settled_limit,

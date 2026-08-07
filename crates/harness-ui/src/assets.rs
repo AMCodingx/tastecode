@@ -10,6 +10,7 @@ impl AssetSource for HarnessAssets {
             "icons/panel-left.svg" => Some(include_bytes!("../assets/icons/panel-left.svg")),
             "icons/plus.svg" => Some(include_bytes!("../assets/icons/plus.svg")),
             "icons/folder-pen.svg" => Some(include_bytes!("../assets/icons/folder-pen.svg")),
+            "icons/folder-plus.svg" => Some(include_bytes!("../assets/icons/folder-plus.svg")),
             "icons/search.svg" => Some(include_bytes!("../assets/icons/search.svg")),
             "icons/settings.svg" => Some(include_bytes!("../assets/icons/settings.svg")),
             "icons/inbox.svg" => Some(include_bytes!("../assets/icons/inbox.svg")),
@@ -17,6 +18,9 @@ impl AssetSource for HarnessAssets {
             "icons/chevron-down.svg" => Some(include_bytes!("../assets/icons/chevron-down.svg")),
             "icons/chevron-up.svg" => Some(include_bytes!("../assets/icons/chevron-up.svg")),
             "icons/check.svg" => Some(include_bytes!("../assets/icons/check.svg")),
+            "icons/check-check.svg" => Some(include_bytes!("../assets/icons/check-check.svg")),
+            "icons/clock-3.svg" => Some(include_bytes!("../assets/icons/clock-3.svg")),
+            "icons/ellipsis.svg" => Some(include_bytes!("../assets/icons/ellipsis.svg")),
             "icons/shield-question.svg" => {
                 Some(include_bytes!("../assets/icons/shield-question.svg"))
             }
@@ -55,6 +59,7 @@ impl AssetSource for HarnessAssets {
                 Some(include_bytes!("../assets/icons/corner-down-right.svg"))
             }
             "icons/pencil.svg" => Some(include_bytes!("../assets/icons/pencil.svg")),
+            "icons/square-pen.svg" => Some(include_bytes!("../assets/icons/square-pen.svg")),
             "icons/trash-2.svg" => Some(include_bytes!("../assets/icons/trash-2.svg")),
             "icons/blocks.svg" => Some(include_bytes!("../assets/icons/blocks.svg")),
             "icons/boxes.svg" => Some(include_bytes!("../assets/icons/boxes.svg")),

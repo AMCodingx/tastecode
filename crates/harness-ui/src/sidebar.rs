@@ -3,8 +3,8 @@ use crate::theme::{RADIUS_MD, RAIL_WIDTH, Theme};
 use crate::zoom::px;
 use chrono::{DateTime, Datelike, Local};
 use gpui::{
-    AnyElement, App, Entity, FontWeight, Hsla, Pixels, Point, SharedString, div, prelude::*,
-    relative, svg,
+    AnyElement, App, Background, BoxShadow, Entity, FontWeight, Hsla, Pixels, Point, SharedString,
+    div, linear_color_stop, linear_gradient, point, prelude::*, relative, svg,
 };
 use gpui_component::input::{Input, InputState};
 use harness_client::ConnectionState;
@@ -12,6 +12,7 @@ use harness_protocol::{
     ProjectSummary, ProviderId, SessionSummary, SidebarMode, ThreadInboxStatus, ThreadLifecycle,
     UsageLimit,
 };
+use std::collections::HashMap;
 use std::rc::Rc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -64,6 +65,7 @@ pub(crate) struct SidebarProps<'a> {
     pub(crate) new_thread_picker: bool,
     pub(crate) collapsed_projects: &'a std::collections::HashSet<String>,
     pub(crate) expanded_project_sessions: &'a std::collections::HashSet<String>,
+    pub(crate) status_clocks: &'a HashMap<String, (ThreadInboxStatus, f64)>,
     pub(crate) snoozed_expanded: bool,
     pub(crate) settled_expanded: bool,
     pub(crate) settled_limit: usize,
@@ -90,6 +92,7 @@ pub fn sidebar(props: SidebarProps<'_>, actions: SidebarActions) -> impl IntoEle
         new_thread_picker,
         collapsed_projects,
         expanded_project_sessions,
+        status_clocks,
         snoozed_expanded,
         settled_expanded,
         settled_limit,
@@ -150,6 +153,7 @@ pub fn sidebar(props: SidebarProps<'_>, actions: SidebarActions) -> impl IntoEle
                 selected_thread_id,
                 selected_scope,
                 query,
+                status_clocks,
                 snoozed_expanded,
                 settled_expanded,
                 settled_limit,
@@ -739,6 +743,7 @@ fn sidebar_body(
     selected_thread_id: Option<&str>,
     selected_scope: Option<&str>,
     query: &str,
+    status_clocks: &HashMap<String, (ThreadInboxStatus, f64)>,
     snoozed_expanded: bool,
     settled_expanded: bool,
     settled_limit: usize,
@@ -771,6 +776,7 @@ fn sidebar_body(
             .partial_cmp(&settled_at(left).unwrap_or(left.created_at))
             .unwrap_or(std::cmp::Ordering::Equal)
     });
+    let now = current_time_ms();
 
     let query_active = !normalized_query.is_empty();
     let active_count = active.len();
@@ -816,27 +822,39 @@ fn sidebar_body(
     div()
         .id("sidebar-scroll")
         .flex_1()
+        .flex()
+        .flex_col()
+        .gap(px(4.0))
         .overflow_y_scroll()
         .px(px(8.0))
+        .pt(px(8.0))
         .pb(px(12.0))
         .when_some(status, |body, label| {
             body.child(empty_state(SharedString::from(label), theme))
         })
         .when(!query_active || !active_empty, |body| {
             body.child(section_heading("Active", active_count, theme))
-                .children(active.into_iter().map(|(project, session)| {
-                    inbox_row(
-                        session.id.clone().into(),
-                        session.title.clone().into(),
-                        session_meta(project, session).into(),
-                        status_for(session),
-                        theme,
-                        selected_thread_id == Some(session.id.as_str()),
-                        Some(actions.select_session.clone()),
-                        Some(actions.open_menu.clone()),
-                        Some(actions.settle_thread.clone()),
-                    )
-                }))
+                .child(
+                    div()
+                        .flex()
+                        .flex_col()
+                        .gap(px(3.0))
+                        .children(active.into_iter().map(|(project, session)| {
+                            active_inbox_row(
+                                project,
+                                session,
+                                status_clocks
+                                    .get(&session.id)
+                                    .map_or(session.created_at, |clock| clock.1),
+                                now,
+                                theme,
+                                selected_thread_id == Some(session.id.as_str()),
+                                Some(actions.select_session.clone()),
+                                Some(actions.open_menu.clone()),
+                                Some(actions.settle_thread.clone()),
+                            )
+                        })),
+                )
                 .when(show_empty_active, |body| {
                     body.child(empty_state(
                         "No active threads in this project.".into(),
@@ -1446,12 +1464,12 @@ fn section_label(label: SharedString, theme: Theme) -> impl IntoElement {
 
 fn section_heading(label: &'static str, count: usize, theme: Theme) -> impl IntoElement {
     div()
-        .h(px(31.0))
         .flex()
-        .items_end()
+        .items_center()
         .justify_between()
         .px(px(8.0))
-        .pb(px(7.0))
+        .pt(px(3.0))
+        .pb(px(5.0))
         .text_size(px(11.5))
         .font_weight(FontWeight::MEDIUM)
         .text_color(theme.text_3.hsla())
@@ -1493,6 +1511,448 @@ impl Status {
             Self::Ready => theme.success.hsla(),
             Self::Failed => theme.error.hsla(),
         }
+    }
+}
+
+#[derive(Clone, Copy)]
+enum StatusTone {
+    Quiet,
+    Working,
+    Attention,
+    Failed,
+    Done,
+    Woke,
+}
+
+struct StatusPresentation {
+    label: String,
+    tone: StatusTone,
+}
+
+#[allow(clippy::too_many_arguments)]
+fn active_inbox_row(
+    project: &ProjectSummary,
+    session: &SessionSummary,
+    status_since: f64,
+    now: f64,
+    theme: Theme,
+    current: bool,
+    on_select: Option<SelectSession>,
+    open_menu: Option<OpenSidebarMenu>,
+    settle: Option<ProjectAction>,
+) -> AnyElement {
+    let thread_id = session.id.clone();
+    let select_id = thread_id.clone();
+    let context_id = thread_id.clone();
+    let context_menu = open_menu.clone();
+    let status = status_presentation(session, status_since, now);
+    let eligible = can_hide_session(session);
+    let normalized_status = status_for(session);
+    let woke_after_activity = matches!(
+        session.lifecycle.as_ref(),
+        Some(ThreadLifecycle::Active {
+            woke_at: Some(_),
+            ..
+        })
+    ) && !matches!(normalized_status, Status::Idle);
+    let branch = session.worktree_branch.clone();
+    let provider = inbox_provider_name(session);
+    let pinned = session.pinned;
+    let chrome_border = chrome_border(theme);
+
+    div()
+        .id(SharedString::from(format!("inbox:{thread_id}")))
+        .group("inbox-card")
+        .relative()
+        .min_h(px(76.0))
+        .w_full()
+        .border_1()
+        .border_color(if current {
+            chrome_border
+        } else {
+            gpui::transparent_black()
+        })
+        .rounded(px(RADIUS_MD))
+        .when(current, |card| {
+            card.bg(chrome_raised(theme)).shadow(chrome_shadows(theme))
+        })
+        .hover(move |style| style.bg(chrome_raised(theme)).shadow(chrome_shadows(theme)))
+        .child(
+            div()
+                .absolute()
+                .top(px(0.0))
+                .left(px(1.0))
+                .right(px(1.0))
+                .h(px(1.0))
+                .rounded_t(px(RADIUS_MD))
+                .bg(chrome_highlight(theme))
+                .opacity(if current { 1.0 } else { 0.0 })
+                .group_hover("inbox-card", |line| line.opacity(1.0)),
+        )
+        .child(
+            div()
+                .id(SharedString::from(format!("inbox-main:{thread_id}")))
+                .w_full()
+                .min_w(px(0.0))
+                .flex()
+                .flex_col()
+                .gap(px(5.0))
+                .pt(px(8.0))
+                .px(px(9.0))
+                .pb(px(9.0))
+                .cursor_pointer()
+                .on_click(move |event, _window, cx| {
+                    if event.is_right_click() {
+                        if let Some(open_menu) = &context_menu {
+                            cx.stop_propagation();
+                            open_menu(
+                                SidebarMenuRequest::Thread(context_id.clone()),
+                                event.position(),
+                                cx,
+                            );
+                        }
+                    } else if event.standard_click()
+                        && let Some(handler) = &on_select
+                    {
+                        handler(select_id.clone(), cx);
+                    }
+                })
+                .child(
+                    div()
+                        .w_full()
+                        .min_w(px(0.0))
+                        .flex()
+                        .items_center()
+                        .justify_between()
+                        .gap(px(8.0))
+                        .child(
+                            div()
+                                .min_w(px(0.0))
+                                .truncate()
+                                .text_size(px(10.5))
+                                .font_weight(FontWeight(520.0))
+                                .text_color(theme.text_3.hsla())
+                                .child(project.name.clone()),
+                        )
+                        .child(
+                            status_badge(status, theme)
+                                .group_hover("inbox-card", |badge| badge.opacity(0.0)),
+                        ),
+                )
+                .child(
+                    div()
+                        .w_full()
+                        .truncate()
+                        .text_size(px(11.5))
+                        .font_weight(FontWeight(530.0))
+                        .line_height(relative(1.2))
+                        .text_color(theme.text.hsla())
+                        .child(session.title.clone()),
+                )
+                .child(
+                    div()
+                        .max_w(relative(0.99))
+                        .min_w(px(0.0))
+                        .flex()
+                        .items_center()
+                        .gap(px(5.0))
+                        .overflow_hidden()
+                        .text_size(px(11.5))
+                        .text_color(theme.text_3.hsla())
+                        .child(if let Some(branch) = branch {
+                            div()
+                                .max_w(relative(0.52))
+                                .min_w(px(0.0))
+                                .flex()
+                                .items_center()
+                                .gap(px(3.0))
+                                .truncate()
+                                .child(icon("icons/git-branch.svg", 10.0))
+                                .child(branch)
+                                .into_any_element()
+                        } else {
+                            div()
+                                .flex_none()
+                                .child("Default checkout")
+                                .into_any_element()
+                        })
+                        .child(div().flex_none().child("·"))
+                        .child(div().flex_none().child(provider))
+                        .when(pinned, |meta| {
+                            meta.child(div().flex_none().child("·"))
+                                .child(div().flex_none().child("Pinned"))
+                        })
+                        .when(woke_after_activity, |meta| {
+                            meta.child(
+                                div()
+                                    .ml_auto()
+                                    .flex_none()
+                                    .text_color(theme.attention.hsla())
+                                    .child("Woke"),
+                            )
+                        }),
+                ),
+        )
+        .child(
+            div()
+                .absolute()
+                .top(px(5.0))
+                .right(px(6.0))
+                .min_h(px(25.0))
+                .flex()
+                .items_center()
+                .gap(px(1.0))
+                .pl(px(8.0))
+                .bg(chrome_raised(theme))
+                .opacity(0.0)
+                .group_hover("inbox-card", |quick| quick.opacity(1.0))
+                .when(eligible, |quick| {
+                    quick
+                        .when_some(open_menu.clone(), |quick, open_menu| {
+                            let id = thread_id.clone();
+                            quick.child(inbox_quick_menu_button(
+                                format!("snooze-menu:{thread_id}").into(),
+                                "icons/clock-3.svg",
+                                SidebarMenuRequest::Snooze(id),
+                                theme,
+                                open_menu,
+                            ))
+                        })
+                        .when_some(settle, |quick, settle| {
+                            let id = thread_id.clone();
+                            quick.child(inbox_quick_action_button(
+                                format!("settle:{thread_id}").into(),
+                                "icons/check-check.svg",
+                                theme,
+                                Rc::new(move |cx| settle(id.clone(), cx)),
+                            ))
+                        })
+                })
+                .when_some(open_menu, |quick, open_menu| {
+                    quick.child(inbox_quick_menu_button(
+                        format!("inbox-menu:{thread_id}").into(),
+                        "icons/ellipsis.svg",
+                        SidebarMenuRequest::Thread(thread_id.clone()),
+                        theme,
+                        open_menu,
+                    ))
+                }),
+        )
+        .into_any_element()
+}
+
+fn status_badge(status: StatusPresentation, theme: Theme) -> gpui::Stateful<gpui::Div> {
+    let color = match status.tone {
+        StatusTone::Quiet => theme.text_3.hsla(),
+        StatusTone::Working => {
+            if theme.mode == crate::theme::ThemeMode::Dark {
+                gpui::rgb(0xd4d4d4).into()
+            } else {
+                gpui::rgb(0x52525b).into()
+            }
+        }
+        StatusTone::Attention | StatusTone::Woke => theme.attention.hsla(),
+        StatusTone::Failed => theme.error.hsla(),
+        StatusTone::Done => theme.success.hsla(),
+    };
+    div()
+        .id(SharedString::from(format!("inbox-status:{}", status.label)))
+        .flex_none()
+        .px(px(5.0))
+        .py(px(1.0))
+        .rounded(px(99.0))
+        .when(
+            matches!(
+                status.tone,
+                StatusTone::Attention | StatusTone::Failed | StatusTone::Done | StatusTone::Woke
+            ),
+            |badge| badge.bg(color.opacity(0.10)),
+        )
+        .text_size(px(10.5))
+        .font_weight(FontWeight(520.0))
+        .text_color(color)
+        .child(status.label)
+}
+
+fn status_presentation(
+    session: &SessionSummary,
+    status_since: f64,
+    now: f64,
+) -> StatusPresentation {
+    let status = status_for(session);
+    let woke = matches!(
+        session.lifecycle.as_ref(),
+        Some(ThreadLifecycle::Active {
+            woke_at: Some(_),
+            ..
+        })
+    );
+    match status {
+        Status::Approval => StatusPresentation {
+            label: "Approval".into(),
+            tone: StatusTone::Attention,
+        },
+        Status::Input => StatusPresentation {
+            label: "Needs input".into(),
+            tone: StatusTone::Attention,
+        },
+        Status::Failed => StatusPresentation {
+            label: "Failed".into(),
+            tone: StatusTone::Failed,
+        },
+        Status::Ready => StatusPresentation {
+            label: "Done".into(),
+            tone: StatusTone::Done,
+        },
+        Status::Queued => StatusPresentation {
+            label: "Queued".into(),
+            tone: StatusTone::Attention,
+        },
+        Status::Starting | Status::Working => StatusPresentation {
+            label: format!("Working · {}", elapsed_time(status_since, now)),
+            tone: StatusTone::Working,
+        },
+        Status::Idle if woke => StatusPresentation {
+            label: "Woke".into(),
+            tone: StatusTone::Woke,
+        },
+        Status::Idle => StatusPresentation {
+            label: relative_time_at(status_since, now),
+            tone: StatusTone::Quiet,
+        },
+    }
+}
+
+fn can_hide_session(session: &SessionSummary) -> bool {
+    !session.running
+        && !matches!(
+            status_for(session),
+            Status::Starting | Status::Working | Status::Queued | Status::Approval | Status::Input
+        )
+}
+
+fn inbox_provider_name(session: &SessionSummary) -> String {
+    match session.provider {
+        ProviderId::ClaudeCode => "Claude Code".into(),
+        ProviderId::Acp => session.agent.clone().unwrap_or_else(|| "Agent".into()),
+        ProviderId::Codex => "Codex".into(),
+        ProviderId::OpenCode => "OpenCode".into(),
+        ProviderId::Antigravity => "Antigravity".into(),
+        ProviderId::Grok => "grok".into(),
+        ProviderId::Cursor => "cursor".into(),
+        ProviderId::Api => "api".into(),
+    }
+}
+
+fn inbox_quick_action_button(
+    id: SharedString,
+    icon_path: &'static str,
+    theme: Theme,
+    action: SidebarAction,
+) -> AnyElement {
+    div()
+        .id(id)
+        .size(px(23.0))
+        .flex()
+        .items_center()
+        .justify_center()
+        .rounded(px(3.0))
+        .text_color(theme.text_3.hsla())
+        .cursor_pointer()
+        .hover(move |style| {
+            style
+                .bg(theme.surface_3.hsla())
+                .text_color(theme.text.hsla())
+        })
+        .on_click(move |_event, _window, cx| {
+            cx.stop_propagation();
+            action(cx);
+        })
+        .child(icon(icon_path, 13.0))
+        .into_any_element()
+}
+
+fn inbox_quick_menu_button(
+    id: SharedString,
+    icon_path: &'static str,
+    request: SidebarMenuRequest,
+    theme: Theme,
+    open_menu: OpenSidebarMenu,
+) -> AnyElement {
+    div()
+        .id(id)
+        .size(px(23.0))
+        .flex()
+        .items_center()
+        .justify_center()
+        .rounded(px(3.0))
+        .text_color(theme.text_3.hsla())
+        .cursor_pointer()
+        .hover(move |style| {
+            style
+                .bg(theme.surface_3.hsla())
+                .text_color(theme.text.hsla())
+        })
+        .on_click(move |event, _window, cx| {
+            cx.stop_propagation();
+            open_menu(request.clone(), event.position(), cx);
+        })
+        .child(icon(icon_path, 13.0))
+        .into_any_element()
+}
+
+fn chrome_raised(theme: Theme) -> Background {
+    let (from, to): (Hsla, Hsla) = if theme.mode == crate::theme::ThemeMode::Dark {
+        (gpui::rgb(0x242424).into(), gpui::rgb(0x1b1b1b).into())
+    } else {
+        (gpui::white(), gpui::rgb(0xfafafa).into())
+    };
+    linear_gradient(
+        180.0,
+        linear_color_stop(from, 0.0),
+        linear_color_stop(to, 1.0),
+    )
+}
+
+fn chrome_border(theme: Theme) -> Hsla {
+    if theme.mode == crate::theme::ThemeMode::Dark {
+        gpui::rgb(0x303030).into()
+    } else {
+        gpui::rgb(0xe3e3e6).into()
+    }
+}
+
+fn chrome_highlight(theme: Theme) -> Hsla {
+    if theme.mode == crate::theme::ThemeMode::Dark {
+        gpui::white().opacity(0.05)
+    } else {
+        gpui::white().opacity(0.96)
+    }
+}
+
+fn chrome_shadows(theme: Theme) -> Vec<BoxShadow> {
+    if theme.mode == crate::theme::ThemeMode::Dark {
+        vec![BoxShadow {
+            color: gpui::black().opacity(0.28),
+            offset: point(px(0.0), px(1.0)),
+            blur_radius: px(2.0),
+            spread_radius: px(0.0),
+        }]
+    } else {
+        vec![
+            BoxShadow {
+                color: gpui::rgba(0x18181b14).into(),
+                offset: point(px(0.0), px(1.0)),
+                blur_radius: px(2.0),
+                spread_radius: px(0.0),
+            },
+            BoxShadow {
+                color: gpui::rgba(0x18181b29).into(),
+                offset: point(px(0.0), px(4.0)),
+                blur_radius: px(10.0),
+                spread_radius: px(-8.0),
+            },
+        ]
     }
 }
 
@@ -1785,32 +2245,6 @@ fn status_for(session: &SessionSummary) -> Status {
     }
 }
 
-fn provider_label(provider: ProviderId) -> &'static str {
-    match provider {
-        ProviderId::Codex => "Codex",
-        ProviderId::ClaudeCode => "Claude Code",
-        ProviderId::Grok => "Grok",
-        ProviderId::Cursor => "Cursor",
-        ProviderId::OpenCode => "OpenCode",
-        ProviderId::Antigravity => "Antigravity",
-        ProviderId::Acp => "ACP",
-        ProviderId::Api => "API",
-    }
-}
-
-fn session_meta(project: &ProjectSummary, session: &SessionSummary) -> String {
-    let detail = session
-        .worktree_branch
-        .as_deref()
-        .map(str::to_owned)
-        .unwrap_or_else(|| relative_time(session.created_at));
-    format!(
-        "{} · {} · {detail}",
-        project.name,
-        provider_label(session.provider)
-    )
-}
-
 fn newest_first(left: &SessionSummary, right: &SessionSummary) -> std::cmp::Ordering {
     right
         .created_at
@@ -1851,17 +2285,42 @@ fn wake_label(session: &SessionSummary) -> Option<String> {
     })
 }
 
-fn relative_time(timestamp: f64) -> String {
-    let now = SystemTime::now()
+fn current_time_ms() -> f64 {
+    SystemTime::now()
         .duration_since(UNIX_EPOCH)
-        .map_or(0.0, |duration| duration.as_millis() as f64);
-    let elapsed = ((now - timestamp).max(0.0) / 1_000.0) as u64;
-    match elapsed {
-        0..=59 => "now".into(),
-        60..=3_599 => format!("{}m ago", elapsed / 60),
-        3_600..=86_399 => format!("{}h ago", elapsed / 3_600),
-        _ => format!("{}d ago", elapsed / 86_400),
+        .map_or(0.0, |duration| duration.as_secs_f64() * 1_000.0)
+}
+
+fn elapsed_time(from: f64, now: f64) -> String {
+    let seconds = ((now - from).max(0.0) / 1_000.0).floor() as u64;
+    if seconds < 60 {
+        return format!("{seconds}s");
     }
+    let minutes = seconds / 60;
+    if minutes < 60 {
+        return format!("{minutes}m");
+    }
+    format!("{}h {}m", minutes / 60, minutes % 60)
+}
+
+fn relative_time_at(timestamp: f64, now: f64) -> String {
+    let seconds = ((now - timestamp).max(0.0) / 1_000.0).round() as u64;
+    if seconds < 60 {
+        return "now".into();
+    }
+    let minutes = (seconds as f64 / 60.0).round() as u64;
+    if minutes < 60 {
+        return format!("{minutes}m ago");
+    }
+    let hours = (minutes as f64 / 60.0).round() as u64;
+    if hours < 24 {
+        return format!("{hours}h ago");
+    }
+    format!("{}d ago", (hours as f64 / 24.0).round() as u64)
+}
+
+fn relative_time(timestamp: f64) -> String {
+    relative_time_at(timestamp, current_time_ms())
 }
 
 #[cfg(test)]
