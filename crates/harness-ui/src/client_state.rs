@@ -8,9 +8,10 @@ use harness_protocol::{
     ModelsListResult, PROTOCOL_VERSION, ProjectAddedResult, ProjectSummary, ProjectsListResult,
     ProviderId, ProviderStatus, ProvidersListResult, Response, ReviewDiffResult, SendTurnResult,
     ServerWelcome, SessionDiff, SessionSummary, SidebarMode, SidebarSettings, SkillEnabledResult,
-    SkillInstalledResult, SkillsListResult, TerminalExitPush, TerminalOpenedResult,
+    SkillInstalledResult, SkillsListResult, SystemInfo, TerminalExitPush, TerminalOpenedResult,
     TerminalOutputPush, ThreadEventPush, ThreadHistoryResult, ThreadInboxStatus, ThreadLifecycle,
-    ThreadLifecyclePush, ThreadQueuePush, ThreadQueueResult, ThreadStartResult, channel, method,
+    ThreadLifecyclePush, ThreadQueuePush, ThreadQueueResult, ThreadStartResult, UpdateCheckResult,
+    channel, method,
 };
 use serde::Deserialize;
 use serde_json::{Value, json};
@@ -20,6 +21,9 @@ use std::time::{SystemTime, UNIX_EPOCH};
 pub(crate) struct ClientState {
     client: Option<ClientHandle>,
     pub(crate) connection: ConnectionState,
+    pub(crate) system_info: Option<SystemInfo>,
+    pub(crate) update_check: Option<UpdateCheckResult>,
+    pub(crate) update_checking: bool,
     pub(crate) projects: Vec<ProjectSummary>,
     pub(crate) projects_loaded: bool,
     pub(crate) sidebar_settings: SidebarSettings,
@@ -235,6 +239,8 @@ pub(crate) struct ReviewHunkRequest {
 
 enum PendingRequest {
     Capabilities,
+    SystemInfo,
+    UpdateCheck,
     Projects,
     SidebarSettings,
     UpdateSidebarSettings,
@@ -499,6 +505,9 @@ impl ClientState {
             } else {
                 ConnectionState::Connecting
             },
+            system_info: None,
+            update_check: None,
+            update_checking: false,
             projects: Vec::new(),
             projects_loaded: fixture,
             sidebar_settings: SidebarSettings {
@@ -604,6 +613,25 @@ impl ClientState {
                 thread_id: thread_id.into(),
             },
         );
+    }
+
+    pub(crate) fn request_update_check(&mut self) -> ClientUpdate {
+        if self.update_checking {
+            return ClientUpdate::default();
+        }
+        self.update_checking = true;
+        if !self.send_request(
+            method::SYSTEM_UPDATE_CHECK,
+            json!({}),
+            PendingRequest::UpdateCheck,
+        ) {
+            self.update_checking = false;
+            self.update_check =
+                Some(failed_update_check(self.notice.clone().unwrap_or_else(
+                    || "The update check could not be started.".into(),
+                )));
+        }
+        ClientUpdate::shell_changed()
     }
 
     pub(crate) fn update_sidebar_settings(&mut self, settings: SidebarSettings) -> ClientUpdate {
@@ -1350,6 +1378,7 @@ impl ClientState {
             json!({ "previewCapture": false }),
             PendingRequest::Capabilities,
         );
+        self.send_request(method::SYSTEM_INFO, json!({}), PendingRequest::SystemInfo);
         self.request_projects();
         self.send_request(
             method::SIDEBAR_SETTINGS,
@@ -1426,6 +1455,12 @@ impl ClientState {
                     None => error.message,
                 };
                 match pending {
+                    Some(PendingRequest::SystemInfo) => ClientUpdate::default(),
+                    Some(PendingRequest::UpdateCheck) => {
+                        self.update_checking = false;
+                        self.update_check = Some(failed_update_check(message));
+                        ClientUpdate::shell_changed()
+                    }
                     Some(PendingRequest::ProviderTerminal { target, kind }) => {
                         if self.provider_terminal_busy.as_ref() == Some(&target) {
                             self.provider_terminal_busy = None;
@@ -1618,6 +1653,25 @@ impl ClientState {
                 }
             }
             Response::Success { result, .. } => match pending {
+                Some(PendingRequest::SystemInfo) => {
+                    if let Ok(info) = serde_json::from_value::<SystemInfo>(result) {
+                        self.system_info = Some(info);
+                    }
+                    ClientUpdate::shell_changed()
+                }
+                Some(PendingRequest::UpdateCheck) => {
+                    self.update_checking = false;
+                    self.update_check = Some(
+                        serde_json::from_value::<UpdateCheckResult>(result).unwrap_or_else(
+                            |error| {
+                                failed_update_check(format!(
+                                    "system.updateCheck was invalid: {error}"
+                                ))
+                            },
+                        ),
+                    );
+                    ClientUpdate::shell_changed()
+                }
                 Some(PendingRequest::Projects) => self.handle_projects_response(result),
                 Some(PendingRequest::SidebarSettings)
                 | Some(PendingRequest::UpdateSidebarSettings) => {
@@ -1831,6 +1885,14 @@ impl ClientState {
             return ClientUpdate::shell_changed();
         }
         match pending {
+            PendingRequest::SystemInfo => ClientUpdate::default(),
+            PendingRequest::UpdateCheck => {
+                self.update_checking = false;
+                self.update_check = Some(failed_update_check(
+                    "The server connection was lost during the update check.".into(),
+                ));
+                ClientUpdate::shell_changed()
+            }
             PendingRequest::ProviderTerminal { target, kind } => {
                 if self.provider_terminal_busy.as_ref() == Some(&target) {
                     self.provider_terminal_busy = None;
@@ -3079,6 +3141,8 @@ impl PendingRequest {
             | Self::ReviewHunk { thread_id }
             | Self::TerminalOpen { thread_id } => Some(thread_id),
             Self::Capabilities
+            | Self::SystemInfo
+            | Self::UpdateCheck
             | Self::Projects
             | Self::SidebarSettings
             | Self::UpdateSidebarSettings
@@ -3108,6 +3172,15 @@ impl PendingRequest {
             | Self::TerminalResize { .. }
             | Self::TerminalClose { .. } => None,
         }
+    }
+}
+
+fn failed_update_check(message: String) -> UpdateCheckResult {
+    UpdateCheckResult {
+        local_commit: None,
+        remote: None,
+        up_to_date: None,
+        error: Some(message),
     }
 }
 
@@ -3223,6 +3296,44 @@ mod tests {
         assert!(update.shell_changed);
         assert!(state.projects_loaded);
         assert_eq!(state.projects[0].name, "Harness");
+    }
+
+    #[test]
+    fn system_metadata_and_update_checks_are_retained_for_about_settings() {
+        let mut state = ClientState::new(true);
+        state
+            .pending
+            .insert("native-info".into(), PendingRequest::SystemInfo);
+        state
+            .pending
+            .insert("native-update".into(), PendingRequest::UpdateCheck);
+        state.update_checking = true;
+
+        state.handle_response(Response::Success {
+            id: "native-info".into(),
+            result: json!({
+                "serverVersion": "0.0.0",
+                "protocolVersion": 2,
+                "platform": "darwin"
+            }),
+        });
+        let update = state.handle_response(Response::Success {
+            id: "native-update".into(),
+            result: json!({
+                "localCommit": "1111111",
+                "remote": {
+                    "sha": "2222222",
+                    "message": "Latest change",
+                    "date": "2026-08-06T12:00:00Z"
+                },
+                "upToDate": false
+            }),
+        });
+
+        assert!(update.shell_changed);
+        assert!(!state.update_checking);
+        assert_eq!(state.system_info.unwrap().protocol_version, 2);
+        assert_eq!(state.update_check.unwrap().remote.unwrap().sha, "2222222");
     }
 
     #[test]
