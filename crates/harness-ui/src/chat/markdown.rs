@@ -3,9 +3,12 @@ use super::code_extensions::code_file_extension;
 use crate::theme::{Theme, ThemeMode, web_ease_out};
 use crate::zoom::px;
 use ::markdown::{ParseOptions, mdast::Node};
+use base64::{Engine as _, engine::general_purpose::STANDARD};
+use futures::AsyncReadExt as _;
 use gpui::{
-    Animation, AnimationExt, AnyElement, App, ClipboardItem, Entity, FontWeight, SharedString,
-    StyleRefinement, Styled, StyledText, Window, div, prelude::*, relative, rems, svg,
+    Animation, AnimationExt, AnyElement, App, ClipboardItem, Entity, FontWeight, Image,
+    ImageFormat, ImageSource, ObjectFit, SharedString, StyleRefinement, Styled, StyledImage,
+    StyledText, Window, div, img, prelude::*, relative, rems, svg,
 };
 use gpui_component::highlighter::SyntaxHighlighter;
 use gpui_component::scroll::ScrollableElement;
@@ -13,7 +16,9 @@ use gpui_component::text::{TextView, TextViewStyle};
 use gpui_component::{ActiveTheme, Rope};
 use std::cell::RefCell;
 use std::collections::HashMap;
+use std::path::{Path, PathBuf};
 use std::rc::Rc;
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 const STREAM_WORD_DURATION_MS: u64 = 160;
@@ -281,6 +286,9 @@ fn render_block(
     cx: &mut App,
 ) -> AnyElement {
     match node {
+        Node::Paragraph(paragraph) if contains_media(&paragraph.children) => {
+            render_media_paragraph(paragraph, last, context, window, cx)
+        }
         Node::Paragraph(paragraph) if !contains_media(&paragraph.children) => div()
             .w_full()
             .when(!last, |paragraph| paragraph.mb(px(8.0)))
@@ -398,6 +406,457 @@ pub(super) struct MarkdownTableOverlay {
 }
 
 type TableAction = Rc<dyn Fn(&mut App)>;
+
+fn render_media_paragraph(
+    paragraph: &::markdown::mdast::Paragraph,
+    last: bool,
+    context: &RenderContext<'_>,
+    window: &mut Window,
+    cx: &mut App,
+) -> AnyElement {
+    let mut parts = Vec::new();
+    let mut inline = Vec::new();
+    for node in &paragraph.children {
+        if contains_media(std::slice::from_ref(node)) {
+            if !inline.is_empty() {
+                parts.push(render_inline_flow_sized(&inline, context, false));
+                inline.clear();
+            }
+            parts.push(render_media_node(node, None, context, window, cx));
+        } else {
+            inline.push(node.clone());
+        }
+    }
+    if !inline.is_empty() {
+        parts.push(render_inline_flow_sized(&inline, context, false));
+    }
+
+    div()
+        .w_full()
+        .flex()
+        .flex_wrap()
+        .items_center()
+        .when(!last, |paragraph| paragraph.mb(px(8.0)))
+        .children(parts)
+        .into_any_element()
+}
+
+fn render_media_node(
+    node: &Node,
+    link: Option<String>,
+    context: &RenderContext<'_>,
+    window: &mut Window,
+    cx: &mut App,
+) -> AnyElement {
+    match node {
+        Node::Image(image) => render_markdown_image(
+            &image.url,
+            &image.alt,
+            link,
+            node_start(node).unwrap_or_default(),
+            context,
+            cx,
+        ),
+        Node::ImageReference(image) => context.definitions.get(&image.identifier).map_or_else(
+            || image_fallback(context.theme),
+            |url| {
+                render_markdown_image(
+                    url,
+                    &image.alt,
+                    link,
+                    node_start(node).unwrap_or_default(),
+                    context,
+                    cx,
+                )
+            },
+        ),
+        Node::Link(node) => {
+            render_media_children(&node.children, Some(node.url.clone()), context, window, cx)
+        }
+        Node::LinkReference(node) => render_media_children(
+            &node.children,
+            context.definitions.get(&node.identifier).cloned(),
+            context,
+            window,
+            cx,
+        ),
+        Node::Strong(node) => render_media_children(&node.children, link, context, window, cx),
+        Node::Emphasis(node) => render_media_children(&node.children, link, context, window, cx),
+        Node::Delete(node) => render_media_children(&node.children, link, context, window, cx),
+        _ => render_inline_flow_sized(std::slice::from_ref(node), context, false),
+    }
+}
+
+fn render_media_children(
+    nodes: &[Node],
+    link: Option<String>,
+    context: &RenderContext<'_>,
+    window: &mut Window,
+    cx: &mut App,
+) -> AnyElement {
+    div()
+        .w_auto()
+        .max_w(relative(1.0))
+        .flex()
+        .flex_wrap()
+        .children(
+            nodes
+                .iter()
+                .map(|node| render_media_node(node, link.clone(), context, window, cx)),
+        )
+        .into_any_element()
+}
+
+fn render_markdown_image(
+    url: &str,
+    alt: &str,
+    link: Option<String>,
+    start: usize,
+    context: &RenderContext<'_>,
+    cx: &mut App,
+) -> AnyElement {
+    if url.is_empty() {
+        return div().into_any_element();
+    }
+    let project_path = context
+        .view
+        .read(cx)
+        .session
+        .as_ref()
+        .map(|session| session.project_path.clone());
+    let Some(source) = markdown_image_source(url, project_path.as_deref()) else {
+        return image_fallback(context.theme);
+    };
+    let id = format!("{}:image:{start}", context.id);
+    let group: SharedString = format!("markdown-image-group:{id}").into();
+    let fallback_theme = context.theme;
+    let image = img(source)
+        .id(SharedString::from(format!("{id}:content")))
+        .max_w(relative(1.0))
+        .rounded(px(8.0))
+        .object_fit(ObjectFit::Contain)
+        .with_fallback(move || image_fallback(fallback_theme));
+    let source_url = url.to_owned();
+    let source_alt = alt.to_owned();
+    let download_project_path = project_path.clone();
+    let download_view = context.view.clone();
+
+    div()
+        .id(SharedString::from(format!("{id}:wrapper")))
+        .group(group.clone())
+        .relative()
+        .w_auto()
+        .max_w(relative(1.0))
+        .flex()
+        .overflow_hidden()
+        .rounded(px(8.0))
+        .when_some(link, |wrapper, link| {
+            wrapper
+                .cursor_pointer()
+                .on_click(move |_event, _window, cx| cx.open_url(&link))
+        })
+        .child(image)
+        .child(
+            div()
+                .absolute()
+                .inset(px(0.0))
+                .rounded(px(8.0))
+                .bg(gpui::black().opacity(0.1))
+                .opacity(0.0)
+                .group_hover(group.clone(), |overlay| overlay.opacity(1.0)),
+        )
+        .child(
+            div()
+                .id(SharedString::from(format!("{id}:download")))
+                .absolute()
+                .right(px(8.0))
+                .bottom(px(8.0))
+                .size(px(32.0))
+                .flex()
+                .items_center()
+                .justify_center()
+                .rounded(px(6.0))
+                .border_1()
+                .border_color(context.theme.line.hsla())
+                .bg(context.theme.background.hsla().opacity(0.9))
+                .text_color(context.theme.text_2.hsla())
+                .shadow_md()
+                .opacity(0.0)
+                .group_hover(group, |button| button.opacity(1.0))
+                .cursor_pointer()
+                .hover(move |button| {
+                    button
+                        .bg(context.theme.background.hsla())
+                        .text_color(context.theme.text.hsla())
+                })
+                .on_click(move |_event, _window, cx| {
+                    cx.stop_propagation();
+                    download_markdown_image(
+                        source_url.clone(),
+                        source_alt.clone(),
+                        download_project_path.clone(),
+                        download_view.clone(),
+                        cx,
+                    );
+                })
+                .child(svg().path("icons/download.svg").size(px(14.0))),
+        )
+        .into_any_element()
+}
+
+fn image_fallback(theme: Theme) -> AnyElement {
+    div()
+        .text_size(px(11.0))
+        .italic()
+        .text_color(theme.text_3.hsla())
+        .child("Image not available")
+        .into_any_element()
+}
+
+fn markdown_image_source(url: &str, project_path: Option<&str>) -> Option<ImageSource> {
+    if url.starts_with("data:") {
+        let (format, bytes) = decode_data_image(url)?;
+        return Some(Arc::new(Image::from_bytes(format, bytes)).into());
+    }
+    if let Some(path) = markdown_image_path(url, project_path) {
+        return Some(path.into());
+    }
+    if url.starts_with("//") {
+        return Some(format!("https:{url}").into());
+    }
+    let parsed = url::Url::parse(url).ok()?;
+    matches!(parsed.scheme(), "http" | "https").then(|| url.to_owned().into())
+}
+
+fn markdown_image_path(url: &str, project_path: Option<&str>) -> Option<PathBuf> {
+    if url
+        .get(..7)
+        .is_some_and(|prefix| prefix.eq_ignore_ascii_case("file://"))
+    {
+        return url::Url::parse(url).ok()?.to_file_path().ok();
+    }
+    let decoded = percent_decode(url).unwrap_or_else(|| url.to_owned());
+    let path = decoded.split(['?', '#']).next().unwrap_or(decoded.as_str());
+    if Path::new(path).is_absolute() || path.starts_with("\\\\") || is_windows_absolute_path(path) {
+        return Some(PathBuf::from(path));
+    }
+    let external = url::Url::parse(url)
+        .ok()
+        .is_some_and(|url| !url.scheme().is_empty());
+    if external || path.is_empty() {
+        return None;
+    }
+    project_path.map(|project_path| Path::new(project_path).join(path))
+}
+
+fn decode_data_image(source: &str) -> Option<(ImageFormat, Vec<u8>)> {
+    let (metadata, payload) = source.strip_prefix("data:")?.split_once(',')?;
+    let mime = metadata.split(';').next().unwrap_or_default();
+    let format = ImageFormat::from_mime_type(mime)?;
+    let bytes = if metadata
+        .split(';')
+        .any(|part| part.eq_ignore_ascii_case("base64"))
+    {
+        STANDARD.decode(payload).ok()?
+    } else {
+        percent_decode_bytes(payload)?
+    };
+    Some((format, bytes))
+}
+
+fn download_markdown_image(
+    source: String,
+    alt: String,
+    project_path: Option<String>,
+    view: Entity<ChatView>,
+    cx: &mut App,
+) {
+    let client = cx.http_client();
+    let fallback_source = source.clone();
+    let load = cx.background_spawn(async move {
+        markdown_image_bytes(&source, project_path.as_deref(), client).await
+    });
+    cx.spawn(async move |cx| match load.await {
+        Ok(download) => {
+            let filename = image_download_filename(&fallback_source, &alt, download.extension);
+            let _ = view.update(cx, |_this, cx| {
+                prompt_download_bytes(filename, download.bytes, cx);
+            });
+        }
+        Err(_) if is_external_image_url(&fallback_source) => {
+            let _ = view.update(cx, |_this, cx| cx.open_url(&fallback_source));
+        }
+        Err(_) => {}
+    })
+    .detach();
+}
+
+struct DownloadedImage {
+    bytes: Vec<u8>,
+    extension: Option<&'static str>,
+}
+
+async fn markdown_image_bytes(
+    source: &str,
+    project_path: Option<&str>,
+    client: Arc<dyn gpui::http_client::HttpClient>,
+) -> anyhow::Result<DownloadedImage> {
+    if source.starts_with("data:") {
+        return decode_data_image(source)
+            .map(|(format, bytes)| DownloadedImage {
+                bytes,
+                extension: Some(image_format_extension(format)),
+            })
+            .ok_or_else(|| anyhow::anyhow!("invalid image data URL"));
+    }
+    if let Some(path) = markdown_image_path(source, project_path) {
+        let bytes = std::fs::read(path)?;
+        let extension = detect_image_extension(&bytes);
+        return Ok(DownloadedImage { bytes, extension });
+    }
+    let request_url = if source.starts_with("//") {
+        format!("https:{source}")
+    } else {
+        source.to_owned()
+    };
+    if !is_external_image_url(&request_url) {
+        anyhow::bail!("unsupported image URL");
+    }
+    let mut response = client.get(&request_url, ().into(), true).await?;
+    if !response.status().is_success() {
+        anyhow::bail!("image request failed with {}", response.status());
+    }
+    let extension = response
+        .headers()
+        .get(gpui::http_client::http::header::CONTENT_TYPE)
+        .and_then(|value| value.to_str().ok())
+        .and_then(image_mime_extension);
+    let mut bytes = Vec::new();
+    response.body_mut().read_to_end(&mut bytes).await?;
+    let extension = extension.or_else(|| detect_image_extension(&bytes));
+    Ok(DownloadedImage { bytes, extension })
+}
+
+fn is_external_image_url(source: &str) -> bool {
+    url::Url::parse(source)
+        .ok()
+        .is_some_and(|url| matches!(url.scheme(), "http" | "https"))
+}
+
+fn image_download_filename(source: &str, alt: &str, detected_extension: Option<&str>) -> String {
+    let source_path = if source.starts_with("data:") {
+        String::new()
+    } else {
+        url::Url::parse(source)
+            .ok()
+            .filter(|url| matches!(url.scheme(), "http" | "https" | "file"))
+            .map(|url| url.path().to_owned())
+            .unwrap_or_else(|| source.split(['?', '#']).next().unwrap_or(source).to_owned())
+    };
+    let segment = source_path
+        .rsplit(['/', '\\'])
+        .next()
+        .and_then(|segment| percent_decode(segment).or_else(|| Some(segment.to_owned())))
+        .unwrap_or_default();
+    if let Some((_, extension)) = segment.rsplit_once('.')
+        && !extension.is_empty()
+        && extension.len() <= 4
+    {
+        return sanitize_download_name(&segment);
+    }
+    let extension = detected_extension
+        .or_else(|| {
+            source
+                .strip_prefix("data:")
+                .and_then(|data| data.split([';', ',']).next())
+                .and_then(image_mime_extension)
+        })
+        .unwrap_or("png");
+    let base = if alt.trim().is_empty() {
+        if segment.is_empty() {
+            "image"
+        } else {
+            &segment
+        }
+    } else {
+        alt.trim()
+    };
+    let base = base
+        .rsplit_once('.')
+        .map_or(base, |(without_extension, _)| without_extension);
+    format!("{}.{}", sanitize_download_name(base), extension)
+}
+
+fn image_mime_extension(mime: &str) -> Option<&'static str> {
+    match mime.split(';').next()?.trim().to_ascii_lowercase().as_str() {
+        "image/png" => Some("png"),
+        "image/jpeg" | "image/jpg" => Some("jpg"),
+        "image/webp" => Some("webp"),
+        "image/gif" => Some("gif"),
+        "image/svg+xml" => Some("svg"),
+        "image/bmp" => Some("bmp"),
+        "image/tiff" | "image/tif" => Some("tiff"),
+        "image/avif" => Some("avif"),
+        "image/x-icon" | "image/vnd.microsoft.icon" => Some("ico"),
+        _ => None,
+    }
+}
+
+fn detect_image_extension(bytes: &[u8]) -> Option<&'static str> {
+    if bytes.starts_with(b"\x89PNG\r\n\x1a\n") {
+        Some("png")
+    } else if bytes.starts_with(&[0xff, 0xd8, 0xff]) {
+        Some("jpg")
+    } else if bytes.starts_with(b"GIF87a") || bytes.starts_with(b"GIF89a") {
+        Some("gif")
+    } else if bytes.starts_with(b"RIFF") && bytes.get(8..12) == Some(b"WEBP") {
+        Some("webp")
+    } else if bytes.starts_with(b"BM") {
+        Some("bmp")
+    } else if bytes.starts_with(b"II*\0") || bytes.starts_with(b"MM\0*") {
+        Some("tiff")
+    } else if bytes.get(4..12) == Some(b"ftypavif") {
+        Some("avif")
+    } else if std::str::from_utf8(bytes)
+        .ok()
+        .map(str::trim_start)
+        .is_some_and(|text| text.starts_with("<svg") || text.starts_with("<?xml"))
+    {
+        Some("svg")
+    } else {
+        None
+    }
+}
+
+fn image_format_extension(format: ImageFormat) -> &'static str {
+    match format {
+        ImageFormat::Png => "png",
+        ImageFormat::Jpeg => "jpg",
+        ImageFormat::Webp => "webp",
+        ImageFormat::Gif => "gif",
+        ImageFormat::Svg => "svg",
+        ImageFormat::Bmp => "bmp",
+        ImageFormat::Tiff => "tiff",
+    }
+}
+
+fn sanitize_download_name(value: &str) -> String {
+    let sanitized = value
+        .chars()
+        .map(|character| {
+            if character.is_control() || matches!(character, '/' | '\\' | ':') {
+                '_'
+            } else {
+                character
+            }
+        })
+        .collect::<String>();
+    if sanitized.trim().is_empty() {
+        "image".into()
+    } else {
+        sanitized
+    }
+}
 
 fn render_code_block(
     code: &::markdown::mdast::Code,
@@ -944,6 +1403,10 @@ fn download_control(
 }
 
 fn prompt_download(filename: String, value: String, cx: &mut App) {
+    prompt_download_bytes(filename, value.into_bytes(), cx);
+}
+
+fn prompt_download_bytes(filename: String, value: Vec<u8>, cx: &mut App) {
     let directory = dirs::download_dir().unwrap_or_else(std::env::temp_dir);
     let receiver = cx.prompt_for_new_path(&directory, Some(&filename));
     cx.spawn(async move |cx| {
@@ -1326,6 +1789,14 @@ impl InlineBuilder {
 }
 
 fn render_inline_flow(children: &[Node], context: &RenderContext<'_>) -> AnyElement {
+    render_inline_flow_sized(children, context, true)
+}
+
+fn render_inline_flow_sized(
+    children: &[Node],
+    context: &RenderContext<'_>,
+    full_width: bool,
+) -> AnyElement {
     let mut builder = InlineBuilder::default();
     let style = InlineStyle::default();
     collect_inline(children, &style, context, &mut builder);
@@ -1334,7 +1805,8 @@ fn render_inline_flow(children: &[Node], context: &RenderContext<'_>) -> AnyElem
         .into_iter()
         .map(|unit| render_inline_unit(unit, context));
     div()
-        .w_full()
+        .when(full_width, |flow| flow.w_full())
+        .when(!full_width, |flow| flow.w_auto())
         .flex()
         .flex_wrap()
         .items_baseline()
@@ -1690,6 +2162,10 @@ fn is_windows_absolute_path(value: &str) -> bool {
 }
 
 fn percent_decode(value: &str) -> Option<String> {
+    String::from_utf8(percent_decode_bytes(value)?).ok()
+}
+
+fn percent_decode_bytes(value: &str) -> Option<Vec<u8>> {
     let bytes = value.as_bytes();
     let mut output = Vec::with_capacity(bytes.len());
     let mut index = 0;
@@ -1704,7 +2180,7 @@ fn percent_decode(value: &str) -> Option<String> {
             index += 1;
         }
     }
-    String::from_utf8(output).ok()
+    Some(output)
 }
 
 fn hex_value(value: u8) -> Option<u8> {
@@ -1808,6 +2284,39 @@ mod tests {
         assert_eq!(
             local_file_reference_path("/tmp/bad%2G.rs"),
             Some("/tmp/bad%2G.rs".into())
+        );
+    }
+
+    #[test]
+    fn markdown_images_decode_data_and_resolve_project_paths() {
+        let (format, bytes) =
+            decode_data_image("data:image/png;base64,iVBORw0KGgo=").expect("valid data image");
+        assert_eq!(format, ImageFormat::Png);
+        assert_eq!(bytes, b"\x89PNG\r\n\x1a\n");
+        assert_eq!(
+            markdown_image_path("shots/result%201.png#preview", Some("/work/project")),
+            Some(PathBuf::from("/work/project/shots/result 1.png"))
+        );
+        assert_eq!(markdown_image_path("https://example.com/a.png", None), None);
+    }
+
+    #[test]
+    fn markdown_image_download_names_match_streamdown_rules() {
+        assert_eq!(
+            image_download_filename(
+                "https://example.com/shots/result.webp?raw=1",
+                "ignored",
+                Some("png")
+            ),
+            "result.webp"
+        );
+        assert_eq!(
+            image_download_filename("data:image/svg+xml,%3Csvg%2F%3E", "System diagram", None),
+            "System diagram.svg"
+        );
+        assert_eq!(
+            image_download_filename("https://example.com/render", "", Some("jpg")),
+            "render.jpg"
         );
     }
 
