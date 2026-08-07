@@ -599,8 +599,13 @@ pub struct AuthEventPush {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "source", rename_all = "snake_case")]
 pub enum McpConfigValue {
-    Literal { value: String },
-    Credential { credential_ref: String },
+    Literal {
+        value: String,
+    },
+    Credential {
+        #[serde(rename = "credentialRef")]
+        credential_ref: String,
+    },
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -1665,6 +1670,25 @@ mod tests {
             })
             .unwrap(),
             json!({ "isolated": true, "uncommitted": false })
+        );
+    }
+
+    #[test]
+    fn mcp_credential_references_use_the_camel_case_wire_field() {
+        let value = McpConfigValue::Credential {
+            credential_ref: "mcp/docs/token".into(),
+        };
+        assert_eq!(
+            serde_json::to_value(&value).unwrap(),
+            json!({ "source": "credential", "credentialRef": "mcp/docs/token" })
+        );
+        assert_eq!(
+            serde_json::from_value::<McpConfigValue>(json!({
+                "source": "credential",
+                "credentialRef": "mcp/docs/token"
+            }))
+            .unwrap(),
+            value
         );
     }
 }
