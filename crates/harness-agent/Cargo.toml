@@ -1,15 +1,10 @@
 [package]
-name = "harness-adapter-codex"
+name = "harness-agent"
 version = "0.1.0"
 edition.workspace = true
 rust-version.workspace = true
 publish.workspace = true
 
 [dependencies]
-base64.workspace = true
-harness-agent = { path = "../harness-agent" }
-harness-proc = { path = "../harness-proc" }
 harness-protocol = { path = "../harness-protocol" }
-serde_json.workspace = true
 thiserror.workspace = true
-uuid.workspace = true

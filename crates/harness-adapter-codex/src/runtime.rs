@@ -1,10 +1,14 @@
 use crate::map_domain_notification;
+use harness_agent::{
+    AgentError, AgentHandlers, AgentResult, AgentSession, StartOptions, TurnOptions,
+};
 use harness_proc::{
     JsonRpcError, ProcessError, RpcResponder, SpawnOptions, StdioJsonRpc, spawn_cli,
 };
 use harness_protocol::{
-    Account, ApprovalDecision, ApprovalKind, ApprovalMode, ApprovalRequest, DomainEvent, Model,
-    ProviderId, ServiceTier, Thread, UserInputOption, UserInputQuestion, UserInputRequest,
+    Account, ApprovalDecision, ApprovalKind, ApprovalMode, ApprovalRequest, Capabilities,
+    DomainEvent, Model, ProviderId, ServiceTier, Thread, UserInputOption, UserInputQuestion,
+    UserInputRequest,
 };
 use serde_json::{Map, Value, json};
 use std::collections::HashMap;
@@ -17,32 +21,18 @@ use uuid::Uuid;
 const CLIENT_NAME: &str = "personal-harness";
 const DEFAULT_REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 
-type EventHandler = dyn Fn(DomainEvent) + Send + Sync;
-type LogHandler = dyn Fn(String) + Send + Sync;
+pub const CODEX_CAPABILITIES: Capabilities = Capabilities {
+    steer: true,
+    fork: true,
+    interrupt: true,
+    reasoning_items: true,
+    approvals: true,
+    user_input: Some(true),
+    auto_review: Some(true),
+    images: true,
+};
 
-#[derive(Clone)]
-pub struct CodexHandlers {
-    event: Arc<EventHandler>,
-    log: Arc<LogHandler>,
-}
-
-impl CodexHandlers {
-    pub fn new(
-        event: impl Fn(DomainEvent) + Send + Sync + 'static,
-        log: impl Fn(String) + Send + Sync + 'static,
-    ) -> Self {
-        Self {
-            event: Arc::new(event),
-            log: Arc::new(log),
-        }
-    }
-}
-
-impl Default for CodexHandlers {
-    fn default() -> Self {
-        Self::new(|_| {}, |_| {})
-    }
-}
+pub type CodexHandlers = AgentHandlers;
 
 pub struct CodexLaunchOptions {
     /// Extra process environment, primarily isolated MCP credentials.
@@ -57,22 +47,6 @@ impl Default for CodexLaunchOptions {
             request_timeout: DEFAULT_REQUEST_TIMEOUT,
         }
     }
-}
-
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub struct StartOptions {
-    pub instructions: Option<String>,
-    pub model: Option<String>,
-    pub service_tier: Option<String>,
-    pub effort: Option<String>,
-    pub approval: Option<ApprovalMode>,
-}
-
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub struct TurnOptions {
-    pub model: Option<String>,
-    pub service_tier: Option<String>,
-    pub effort: Option<String>,
 }
 
 #[derive(Debug, Error)]
@@ -337,7 +311,7 @@ impl CodexAdapter {
         pending.responder.respond(json!({
             "decision": decision_value(pending.kind, decision)
         }))?;
-        (self.handlers.event)(DomainEvent::ApprovalResolved {
+        self.handlers.emit_event(DomainEvent::ApprovalResolved {
             id: approval_id.into(),
         });
         Ok(true)
@@ -357,7 +331,7 @@ impl CodexAdapter {
             .map(|(question, values)| (question.clone(), json!({ "answers": values })))
             .collect::<Map<_, _>>();
         responder.respond(json!({ "answers": answers }))?;
-        (self.handlers.event)(DomainEvent::UserInputResolved {
+        self.handlers.emit_event(DomainEvent::UserInputResolved {
             id: request_id.into(),
         });
         Ok(true)
@@ -380,16 +354,60 @@ impl Drop for CodexAdapter {
     }
 }
 
+impl AgentSession for CodexAdapter {
+    fn capabilities(&self) -> Capabilities {
+        CODEX_CAPABILITIES
+    }
+
+    fn send_turn(
+        &self,
+        thread_id: &str,
+        text: &str,
+        attachments: &[String],
+        options: &TurnOptions,
+    ) -> AgentResult<String> {
+        CodexAdapter::send_turn(self, thread_id, text, attachments, options).map_err(agent_error)
+    }
+
+    fn steer(&self, thread_id: &str, text: &str, attachments: &[String]) -> AgentResult<()> {
+        CodexAdapter::steer(self, thread_id, text, attachments).map_err(agent_error)
+    }
+
+    fn interrupt(&self, thread_id: &str) -> AgentResult<()> {
+        CodexAdapter::interrupt(self, thread_id).map_err(agent_error)
+    }
+
+    fn respond_to_approval(
+        &self,
+        approval_id: &str,
+        decision: ApprovalDecision,
+    ) -> AgentResult<bool> {
+        CodexAdapter::respond_to_approval(self, approval_id, decision).map_err(agent_error)
+    }
+
+    fn respond_to_user_input(
+        &self,
+        request_id: &str,
+        answers: &HashMap<String, Vec<String>>,
+    ) -> AgentResult<bool> {
+        CodexAdapter::respond_to_user_input(self, request_id, answers).map_err(agent_error)
+    }
+
+    fn dispose(&self) {
+        CodexAdapter::dispose(self);
+    }
+}
+
 fn configure_handlers(
     rpc: &StdioJsonRpc,
     pending: Arc<Mutex<PendingRequests>>,
     handlers: CodexHandlers,
 ) {
-    let log = Arc::clone(&handlers.log);
+    let stderr_handlers = handlers.clone();
     rpc.on_stderr(move |text| {
         let text = text.trim_end();
         if !text.is_empty() {
-            log(text.into());
+            stderr_handlers.emit_log(text);
         }
     });
 
@@ -400,9 +418,9 @@ fn configure_handlers(
             resolve_unanswered(&notification_pending, &notification_handlers);
         }
         match map_domain_notification(&method, &params, now_ms()) {
-            Ok(Some(event)) => (notification_handlers.event)(event),
-            Ok(None) => (notification_handlers.log)(format!("unmapped notification: {method}")),
-            Err(error) => (notification_handlers.log)(format!("invalid notification: {error}")),
+            Ok(Some(event)) => notification_handlers.emit_event(event),
+            Ok(None) => notification_handlers.emit_log(format!("unmapped notification: {method}")),
+            Err(error) => notification_handlers.emit_log(format!("invalid notification: {error}")),
         }
     });
 
@@ -426,14 +444,14 @@ fn handle_server_request(
                     .insert(request.id.clone(), responder);
                 if let Some(previous) = previous {
                     let _ = previous.respond(json!({ "answers": {} }));
-                    (handlers.event)(DomainEvent::UserInputResolved {
+                    handlers.emit_event(DomainEvent::UserInputResolved {
                         id: request.id.clone(),
                     });
                 }
-                (handlers.event)(DomainEvent::UserInputRequested { request });
+                handlers.emit_event(DomainEvent::UserInputRequested { request });
             }
             Err(error) => {
-                (handlers.log)(format!("declined invalid user input request: {error}"));
+                handlers.emit_log(format!("declined invalid user input request: {error}"));
                 let _ = responder.respond(json!({ "answers": {} }));
             }
         }
@@ -441,7 +459,7 @@ fn handle_server_request(
     }
 
     let Some(kind) = approval_kind(method) else {
-        (handlers.log)(format!("declined unhandled server request: {method}"));
+        handlers.emit_log(format!("declined unhandled server request: {method}"));
         let _ = responder.respond(json!({ "decision": "decline" }));
         return;
     };
@@ -458,9 +476,9 @@ fn handle_server_request(
         let _ = previous
             .responder
             .respond(json!({ "decision": decision_value(previous.kind, ApprovalDecision::Deny) }));
-        (handlers.event)(DomainEvent::ApprovalResolved { id: id.clone() });
+        handlers.emit_event(DomainEvent::ApprovalResolved { id: id.clone() });
     }
-    (handlers.event)(DomainEvent::ApprovalRequested {
+    handlers.emit_event(DomainEvent::ApprovalRequested {
         request: ApprovalRequest {
             id,
             kind,
@@ -485,11 +503,11 @@ fn resolve_unanswered(pending: &Mutex<PendingRequests>, handlers: &CodexHandlers
         let _ = pending
             .responder
             .respond(json!({ "decision": decision_value(pending.kind, ApprovalDecision::Deny) }));
-        (handlers.event)(DomainEvent::ApprovalResolved { id });
+        handlers.emit_event(DomainEvent::ApprovalResolved { id });
     }
     for (id, responder) in user_inputs {
         let _ = responder.respond(json!({ "answers": {} }));
-        (handlers.event)(DomainEvent::UserInputResolved { id });
+        handlers.emit_event(DomainEvent::UserInputResolved { id });
     }
 }
 
@@ -705,6 +723,10 @@ fn invalid(method: &'static str, message: &str) -> CodexAdapterError {
         method,
         message: message.into(),
     }
+}
+
+fn agent_error(error: CodexAdapterError) -> AgentError {
+    AgentError::Failed(error.to_string())
 }
 
 fn normalize_timestamp_ms(timestamp: f64) -> f64 {

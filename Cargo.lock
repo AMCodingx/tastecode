@@ -2719,11 +2719,20 @@ name = "harness-adapter-codex"
 version = "0.1.0"
 dependencies = [
  "base64",
+ "harness-agent",
  "harness-proc",
  "harness-protocol",
  "serde_json",
  "thiserror 2.0.19",
  "uuid",
+]
+
+[[package]]
+name = "harness-agent"
+version = "0.1.0"
+dependencies = [
+ "harness-protocol",
+ "thiserror 2.0.19",
 ]
 
 [[package]]
