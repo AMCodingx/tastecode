@@ -1,6 +1,8 @@
 mod diff;
+mod presentation;
 mod search;
 pub(crate) mod terminal;
+mod transcript;
 mod voice;
 
 use crate::client_state::{ChatUpdate, ModelChoice};
@@ -8,20 +10,20 @@ use crate::theme::{CHAT_WIDTH, Theme};
 use diff::DiffUiState;
 use gpui::{
     Animation, AnimationExt, AnyElement, App, Context, Entity, EventEmitter, Focusable, FontWeight,
-    ListAlignment, ListState, Render, SharedString, Window, div, ease_out_quint, list, prelude::*,
-    px, relative, svg,
+    ListAlignment, ListState, Render, SharedString, Window, div, ease_out_quint, prelude::*, px,
+    relative, svg,
 };
 use gpui_component::RopeExt;
 use gpui_component::input::{Input, InputEvent, InputState};
 use harness_protocol::{
     ApprovalDecision, ApprovalKind, ApprovalMode, ApprovalReview, ApprovalReviewStatus,
-    CheckpointSummary, DiffDecision, Item, ItemStatus, ItemType, MessageRole, ProviderId,
-    QueueDirection, RiskLevel, ThreadEventPush, ThreadQueueResult, UserInputQuestion,
-    VoiceMimeType, VoiceTranscribeParams,
+    CheckpointSummary, DiffDecision, DomainEvent, Item, ProviderId, QueueDirection, RiskLevel,
+    ThreadEventPush, ThreadQueueResult, UserInputQuestion, VoiceMimeType, VoiceTranscribeParams,
 };
 use harness_state::{ApplyOutcome, HistoryError, ThreadState};
+use presentation::TranscriptPresentation;
 use search::ThreadSearchState;
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeSet, HashMap, HashSet};
 use std::rc::Rc;
 use std::time::Duration;
 use terminal::TerminalUiState;
@@ -92,6 +94,9 @@ pub(crate) enum ChatEvent {
         branch: String,
     },
     OpenRollback,
+    OpenCheckpoint {
+        checkpoint_id: u64,
+    },
     PickAttachments,
     TranscribeVoice {
         params: VoiceTranscribeParams,
@@ -224,6 +229,14 @@ pub(crate) struct ChatView {
     loading: bool,
     error: Option<String>,
     list_state: ListState,
+    presentation: TranscriptPresentation,
+    expanded_transcript_items: HashSet<String>,
+    expanded_activities: HashSet<String>,
+    copied_transcript_item: Option<String>,
+    copy_generation: u64,
+    working_tick_scheduled: bool,
+    last_work_turn_id: Option<String>,
+    last_specific_work_label: Option<String>,
     thread_search: ThreadSearchState,
     composer: Entity<InputState>,
     user_input_custom: Entity<InputState>,
@@ -298,6 +311,14 @@ impl ChatView {
             loading: false,
             error: None,
             list_state: ListState::new(0, ListAlignment::Bottom, px(500.0)),
+            presentation: TranscriptPresentation::default(),
+            expanded_transcript_items: HashSet::new(),
+            expanded_activities: HashSet::new(),
+            copied_transcript_item: None,
+            copy_generation: 0,
+            working_tick_scheduled: false,
+            last_work_turn_id: None,
+            last_specific_work_label: None,
             thread_search,
             composer,
             user_input_custom,
@@ -365,6 +386,14 @@ impl ChatView {
         self.loading = true;
         self.error = None;
         self.list_state.reset(0);
+        self.presentation.clear();
+        self.expanded_transcript_items.clear();
+        self.expanded_activities.clear();
+        self.copied_transcript_item = None;
+        self.copy_generation = self.copy_generation.wrapping_add(1);
+        self.working_tick_scheduled = false;
+        self.last_work_turn_id = None;
+        self.last_specific_work_label = None;
         self.thread_search.close();
         self.clear_composer = true;
         self.restore_composer = None;
@@ -494,16 +523,25 @@ impl ChatView {
                 match result {
                     Ok(()) => {
                         let new_len = self.state.timeline_len();
+                        let presentation_rows = self.presentation.rebuild(&self.state);
                         if replace {
                             self.list_state.reset(new_len);
                         } else if new_len > old_len {
                             self.list_state.splice(old_len..old_len, new_len - old_len);
+                            for row in presentation_rows.into_iter().filter(|row| *row < old_len) {
+                                self.list_state.splice(row..row + 1, 1);
+                            }
+                        } else {
+                            for row in presentation_rows {
+                                self.list_state.splice(row..row + 1, 1);
+                            }
                         }
                         self.loading = false;
                         self.history_in_flight = false;
                         self.error = None;
                         self.sync_structured_requests();
                         self.sync_diff_summary();
+                        self.refresh_work_label();
                         self.refresh_thread_search_hits(cx);
                         self.flush_pending_live(cx);
                     }
@@ -688,17 +726,26 @@ impl ChatView {
         let old_len = self.state.timeline_len();
         let mut changed_items = HashSet::new();
         let mut transcript_changed = false;
+        let mut presentation_changed = false;
         let mut applied = false;
         let mut reconcile_after = None;
 
         let mut events = events.into_iter();
         while let Some(push) = events.next() {
             let replay = push.clone();
+            presentation_changed |= matches!(
+                &push.event,
+                DomainEvent::TurnStarted { .. }
+                    | DomainEvent::ItemStarted { .. }
+                    | DomainEvent::ItemCompleted { .. }
+                    | DomainEvent::TurnCompleted { .. }
+                    | DomainEvent::ThreadError { .. }
+            );
             let changed_item = match &push.event {
-                harness_protocol::DomainEvent::ItemDelta {
+                DomainEvent::ItemDelta {
                     turn_id, item_id, ..
                 }
-                | harness_protocol::DomainEvent::ItemCompleted {
+                | DomainEvent::ItemCompleted {
                     item:
                         Item {
                             turn_id,
@@ -731,26 +778,33 @@ impl ChatView {
 
         if applied {
             let new_len = self.state.timeline_len();
-            let mut search_rows = Vec::new();
+            let presentation_rows = if presentation_changed {
+                self.presentation.rebuild(&self.state)
+            } else {
+                Vec::new()
+            };
+            let mut changed_rows = BTreeSet::new();
             if new_len > old_len {
                 self.list_state.splice(old_len..old_len, new_len - old_len);
-                search_rows.extend(old_len..new_len);
-            } else if transcript_changed {
-                let mut changed_rows = changed_items
-                    .into_iter()
-                    .filter_map(|(turn_id, item_id)| self.state.row_for_item(&turn_id, &item_id))
-                    .collect::<Vec<_>>();
-                changed_rows.sort_unstable();
-                changed_rows.dedup();
-                for row in &changed_rows {
-                    self.list_state.splice(*row..*row + 1, 1);
-                }
-                search_rows = changed_rows;
+                changed_rows.extend(old_len..new_len);
             }
+            if transcript_changed {
+                changed_rows.extend(
+                    changed_items.into_iter().filter_map(|(turn_id, item_id)| {
+                        self.state.row_for_item(&turn_id, &item_id)
+                    }),
+                );
+            }
+            changed_rows.extend(presentation_rows);
+            for row in changed_rows.iter().copied().filter(|row| *row < old_len) {
+                self.list_state.splice(row..row + 1, 1);
+            }
+            let search_rows = changed_rows.into_iter().collect::<Vec<_>>();
             self.loading = false;
             self.error = None;
             self.sync_structured_requests();
             self.sync_diff_summary();
+            self.refresh_work_label();
             self.refresh_thread_search_rows(&search_rows, cx);
             cx.notify();
         }
@@ -1536,66 +1590,6 @@ impl ChatView {
                 "{count} checkpoint{}",
                 if count == 1 { "" } else { "s" }
             ))
-            .into_any_element()
-    }
-
-    fn timeline(&self, cx: &mut Context<Self>) -> AnyElement {
-        if self.loading && self.state.timeline_len() == 0 {
-            return centered_label("Loading conversation…", self.theme);
-        }
-        if let Some(error) = &self.error
-            && self.state.timeline_len() == 0
-        {
-            return centered_label(error.clone(), self.theme);
-        }
-        if self.state.timeline_len() == 0 {
-            return centered_label("Start a conversation in this project.", self.theme);
-        }
-
-        let view: Entity<Self> = cx.entity();
-        list(self.list_state.clone(), move |row, _window, cx| {
-            view.read(cx).render_item(row)
-        })
-        .size_full()
-        .px(px(18.0))
-        .into_any_element()
-    }
-
-    fn render_item(&self, row: usize) -> AnyElement {
-        let Some(item) = self.state.item_at_row(row) else {
-            return div().into_any_element();
-        };
-        let content: SharedString = item.text.clone().unwrap_or_default().into();
-        let body = match (item.item_type, item.role) {
-            (ItemType::Message, Some(MessageRole::User)) => user_message(content, self.theme),
-            (ItemType::Message, _) => assistant_message(content, item.status, self.theme),
-            (ItemType::Reasoning, _) => auxiliary_item("Reasoning", content, self.theme),
-            (ItemType::Command, _) => auxiliary_item(
-                item.command.clone().unwrap_or_else(|| "Command".into()),
-                content,
-                self.theme,
-            ),
-            (ItemType::FileChange, _) => auxiliary_item(
-                item.path.clone().unwrap_or_else(|| "File changed".into()),
-                content,
-                self.theme,
-            ),
-            (ItemType::ToolCall, _) => auxiliary_item(
-                design_phase_label(content.as_str()).unwrap_or("Tool call"),
-                content,
-                self.theme,
-            ),
-            (ItemType::Plan, _) => auxiliary_item("Plan", content, self.theme),
-            (ItemType::Error, _) => error_item(content, self.theme),
-            (ItemType::Unknown, _) => auxiliary_item("Provider event", content, self.theme),
-        };
-
-        div()
-            .w_full()
-            .max_w(px(CHAT_WIDTH + 48.0))
-            .mx_auto()
-            .pb(px(12.0))
-            .child(body)
             .into_any_element()
     }
 
@@ -3384,6 +3378,7 @@ impl ChatView {
 
 impl Render for ChatView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        self.ensure_working_tick(cx);
         self.prepare_thread_search_input(window, cx);
         if let Some(text) = self.restore_composer.take() {
             self.composer.update(cx, |composer, cx| {
@@ -3455,102 +3450,6 @@ impl Render for ChatView {
             .when_some(terminal_pane, |view, terminal| view.child(terminal))
             .child(self.composer(window, cx))
     }
-}
-
-fn centered_label(label: impl Into<SharedString>, theme: Theme) -> AnyElement {
-    div()
-        .size_full()
-        .flex()
-        .items_center()
-        .justify_center()
-        .text_size(px(12.5))
-        .text_color(theme.text_3.hsla())
-        .child(label.into())
-        .into_any_element()
-}
-
-fn user_message(text: SharedString, theme: Theme) -> AnyElement {
-    div()
-        .w_full()
-        .flex()
-        .justify_end()
-        .child(
-            div()
-                .max_w(relative(0.88))
-                .px(px(13.0))
-                .py(px(9.0))
-                .rounded(px(14.0))
-                .bg(theme.surface_2.hsla())
-                .text_size(px(14.0))
-                .line_height(relative(1.52))
-                .whitespace_normal()
-                .child(text),
-        )
-        .into_any_element()
-}
-
-fn assistant_message(text: SharedString, status: ItemStatus, theme: Theme) -> AnyElement {
-    div()
-        .w_full()
-        .pb(px(if status == ItemStatus::Completed {
-            32.0
-        } else {
-            0.0
-        }))
-        .text_size(px(14.0))
-        .line_height(relative(1.52))
-        .text_color(theme.response_text.hsla())
-        .whitespace_normal()
-        .child(text)
-        .into_any_element()
-}
-
-fn auxiliary_item(label: impl Into<SharedString>, text: SharedString, theme: Theme) -> AnyElement {
-    let text = text.as_str().trim().to_owned();
-    div()
-        .w_full()
-        .rounded(px(9.0))
-        .border_1()
-        .border_color(theme.line.hsla())
-        .bg(theme.surface.hsla())
-        .px(px(11.0))
-        .py(px(9.0))
-        .child(
-            div()
-                .text_size(px(11.5))
-                .font_weight(FontWeight::MEDIUM)
-                .text_color(theme.text_3.hsla())
-                .child(label.into()),
-        )
-        .when(!text.is_empty(), |element| {
-            element.child(
-                div()
-                    .mt(px(6.0))
-                    .font_family("Geist Mono")
-                    .text_size(px(11.5))
-                    .line_height(relative(1.45))
-                    .text_color(theme.text_2.hsla())
-                    .whitespace_normal()
-                    .child(text),
-            )
-        })
-        .into_any_element()
-}
-
-fn error_item(text: SharedString, theme: Theme) -> AnyElement {
-    div()
-        .w_full()
-        .rounded(px(9.0))
-        .border_1()
-        .border_color(theme.error.hsla().opacity(0.35))
-        .bg(theme.error.hsla().opacity(0.08))
-        .px(px(11.0))
-        .py(px(9.0))
-        .text_size(px(12.0))
-        .text_color(theme.error.hsla())
-        .whitespace_normal()
-        .child(text)
-        .into_any_element()
 }
 
 fn approval_title(kind: ApprovalKind) -> &'static str {

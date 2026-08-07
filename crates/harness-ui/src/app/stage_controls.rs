@@ -226,6 +226,20 @@ impl HarnessApp {
         cx.notify();
     }
 
+    pub(super) fn open_rollback_checkpoint(&mut self, checkpoint_id: u64, cx: &mut Context<Self>) {
+        let checkpoint = self
+            .stage_controls
+            .checkpoints
+            .iter()
+            .find(|checkpoint| checkpoint.id == checkpoint_id)
+            .cloned();
+        let Some(checkpoint) = checkpoint else {
+            return;
+        };
+        self.open_rollback(cx);
+        self.inspect_checkpoint(checkpoint, cx);
+    }
+
     pub(super) fn close_rollback(&mut self, cx: &mut Context<Self>) {
         if !self.stage_controls.rollback.open
             && self.stage_controls.rollback.thread_id.is_none()

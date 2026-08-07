@@ -59,6 +59,16 @@ impl AssetSource for HarnessAssets {
                 Some(include_bytes!("../assets/icons/panels-top-left.svg"))
             }
             "icons/loader-circle.svg" => Some(include_bytes!("../assets/icons/loader-circle.svg")),
+            "icons/brain.svg" => Some(include_bytes!("../assets/icons/brain.svg")),
+            "icons/file-pen-line.svg" => Some(include_bytes!("../assets/icons/file-pen-line.svg")),
+            "icons/wrench.svg" => Some(include_bytes!("../assets/icons/wrench.svg")),
+            "icons/book-open.svg" => Some(include_bytes!("../assets/icons/book-open.svg")),
+            "icons/images.svg" => Some(include_bytes!("../assets/icons/images.svg")),
+            "icons/list-checks.svg" => Some(include_bytes!("../assets/icons/list-checks.svg")),
+            "icons/circle-alert.svg" => Some(include_bytes!("../assets/icons/circle-alert.svg")),
+            "icons/circle-question-mark.svg" => {
+                Some(include_bytes!("../assets/icons/circle-question-mark.svg"))
+            }
             _ => None,
         };
         Ok(bytes.map(Cow::Borrowed))

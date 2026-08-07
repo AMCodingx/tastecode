@@ -149,6 +149,7 @@ impl HarnessApp {
             ThemePreference::Dark => ThemeMode::Dark,
         };
         let theme = Theme::new(mode, preferences.backdrop, preferences.accent);
+        sync_component_theme(theme, cx);
         let chat = cx.new(|cx| ChatView::new(theme, window, cx));
         let connection_name = cx.new(|cx| {
             InputState::new(window, cx)
@@ -326,6 +327,9 @@ impl HarnessApp {
                 this.select_workspace_branch(branch.clone(), cx);
             }
             ChatEvent::OpenRollback => this.open_rollback(cx),
+            ChatEvent::OpenCheckpoint { checkpoint_id } => {
+                this.open_rollback_checkpoint(*checkpoint_id, cx);
+            }
             ChatEvent::PickAttachments => this.pick_attachments(cx),
             ChatEvent::TranscribeVoice { params } => {
                 let update = this.state.transcribe_voice(params.clone());
@@ -1649,6 +1653,33 @@ fn title_from(text: &str) -> String {
     } else {
         title
     }
+}
+
+fn sync_component_theme(theme: Theme, cx: &mut App) {
+    let mode = match theme.mode {
+        ThemeMode::Dark => gpui_component::ThemeMode::Dark,
+        ThemeMode::Light => gpui_component::ThemeMode::Light,
+    };
+    gpui_component::Theme::change(mode, None, cx);
+    let component = gpui_component::Theme::global_mut(cx);
+    component.font_family = "Geist".into();
+    component.font_size = px(13.5);
+    component.mono_font_family = "Geist Mono".into();
+    component.mono_font_size = px(12.5);
+    component.radius = px(8.0);
+    component.radius_lg = px(12.0);
+    component.background = theme.background.hsla();
+    component.foreground = theme.response_text.hsla();
+    component.border = theme.line.hsla();
+    component.input = theme.line_strong.hsla();
+    component.muted = theme.surface.hsla();
+    component.muted_foreground = theme.text_3.hsla();
+    component.popover = theme.surface_2.hsla();
+    component.popover_foreground = theme.text.hsla();
+    component.link = theme.response_text.hsla();
+    component.link_hover = theme.text.hsla();
+    component.link_active = theme.text_2.hsla();
+    component.selection = theme.attention.hsla().opacity(0.3);
 }
 
 #[cfg(test)]

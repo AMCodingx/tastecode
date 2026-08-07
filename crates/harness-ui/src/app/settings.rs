@@ -2654,6 +2654,7 @@ impl HarnessApp {
             ThemePreference::Dark => ThemeMode::Dark,
         };
         self.theme = Theme::new(mode, self.preferences.backdrop, self.preferences.accent);
+        super::sync_component_theme(self.theme, cx);
         let theme = self.theme;
         self.chat
             .update(cx, |chat, cx| chat.update_theme(theme, cx));
