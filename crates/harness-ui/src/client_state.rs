@@ -5,17 +5,17 @@ use harness_protocol::{
     AuthStartLoginResult, CredentialConfiguredResult, DiffDecision, DomainEvent, ErrorCode,
     McpListResult, McpOAuthPush, McpOAuthStartResult, McpServer, McpServerConfig, Model,
     ModelConnection, ModelConnectionInput, ModelConnectionResult, ModelConnectionsResult,
-    ModelsListResult, PROTOCOL_VERSION, PanicStopSessionResult, PreviewCaptureRequest,
-    PreviewCaptureResult, ProjectAddedResult, ProjectSummary, ProjectsListResult, ProviderId,
-    ProviderStatus, ProvidersListResult, QueueDirection, Response, ReviewDiffResult,
-    SendTurnResult, ServerWelcome, SessionDiff, SessionSearchPage, SessionSummary, SidebarMode,
-    SidebarSettings, SkillEnabledResult, SkillInstalledResult, SkillsListResult, SystemInfo,
-    TerminalExitPush, TerminalOpenedResult, TerminalOutputPush, ThreadChangedSinceResult,
-    ThreadCheckpointsResult, ThreadEventPush, ThreadHistoryResult, ThreadInboxStatus,
-    ThreadLifecycle, ThreadLifecyclePush, ThreadLifecycleResult, ThreadQueuePush,
-    ThreadQueueResult, ThreadRestoreResult, ThreadStartResult, ThreadUnsavedWorkResult,
-    UpdateCheckResult, UsageSummaryResult, VoiceStatusResult, VoiceTranscribeParams,
-    VoiceTranscriptionResult, WorkspaceBranchesResult, WorkspaceInfo, channel, method,
+    ModelsListResult, PROTOCOL_VERSION, PreviewCaptureRequest, PreviewCaptureResult,
+    ProjectAddedResult, ProjectSummary, ProjectsListResult, ProviderId, ProviderStatus,
+    ProvidersListResult, QueueDirection, Response, ReviewDiffResult, SendTurnResult, ServerWelcome,
+    SessionDiff, SessionSearchPage, SessionSummary, SidebarMode, SidebarSettings,
+    SkillEnabledResult, SkillInstalledResult, SkillsListResult, SystemInfo, TerminalExitPush,
+    TerminalOpenedResult, TerminalOutputPush, ThreadChangedSinceResult, ThreadCheckpointsResult,
+    ThreadEventPush, ThreadHistoryResult, ThreadInboxStatus, ThreadLifecycle, ThreadLifecyclePush,
+    ThreadLifecycleResult, ThreadQueuePush, ThreadQueueResult, ThreadRestoreResult,
+    ThreadStartResult, ThreadUnsavedWorkResult, UpdateCheckResult, UsageSummaryResult,
+    VoiceStatusResult, VoiceTranscribeParams, VoiceTranscriptionResult, WorkspaceBranchesResult,
+    WorkspaceInfo, channel, method,
 };
 use serde::Deserialize;
 use serde_json::{Value, json};
@@ -285,7 +285,6 @@ enum PendingRequest {
     Capabilities,
     PreviewCaptureResult,
     SystemInfo,
-    PanicStop,
     UpdateCheck,
     VoiceStatus {
         provider: ProviderId,
@@ -603,12 +602,6 @@ pub(crate) enum ShellEvent {
     UsageError {
         scope: UsageScope,
         generation: u64,
-        message: String,
-    },
-    PanicStopped {
-        result: harness_protocol::PanicStopResult,
-    },
-    PanicStopError {
         message: String,
     },
 }
@@ -1610,20 +1603,6 @@ impl ClientState {
         }
     }
 
-    pub(crate) fn panic_stop(&mut self) -> ClientUpdate {
-        if self.send_request(
-            method::SYSTEM_PANIC_STOP,
-            json!({}),
-            PendingRequest::PanicStop,
-        ) {
-            ClientUpdate::default()
-        } else {
-            ClientUpdate::shell_event(ShellEvent::PanicStopError {
-                message: self.request_start_error("The emergency stop could not be started."),
-            })
-        }
-    }
-
     fn request_start_error(&self, fallback: &str) -> String {
         self.notice.clone().unwrap_or_else(|| fallback.into())
     }
@@ -2432,9 +2411,6 @@ impl ClientState {
                             message,
                         })
                     }
-                    Some(PendingRequest::PanicStop) => {
-                        ClientUpdate::shell_event(ShellEvent::PanicStopError { message })
-                    }
                     Some(
                         PendingRequest::ProjectMutation { .. }
                         | PendingRequest::ThreadSummaryMutation
@@ -2803,28 +2779,6 @@ impl ClientState {
                         }),
                     }
                 }
-                Some(PendingRequest::PanicStop) => {
-                    match serde_json::from_value::<harness_protocol::PanicStopResult>(result) {
-                        Ok(result) => {
-                            for session_result in &result.sessions {
-                                let PanicStopSessionResult::Interrupted { thread_id } =
-                                    session_result
-                                else {
-                                    continue;
-                                };
-                                if let Some(session) = self.session_mut(thread_id) {
-                                    session.running = false;
-                                    session.status = Some(ThreadInboxStatus::Ready);
-                                }
-                            }
-                            self.request_projects();
-                            ClientUpdate::shell_event(ShellEvent::PanicStopped { result })
-                        }
-                        Err(error) => ClientUpdate::shell_event(ShellEvent::PanicStopError {
-                            message: format!("system.panicStop was invalid: {error}"),
-                        }),
-                    }
-                }
                 Some(PendingRequest::StartThread { request }) => {
                     self.handle_start_thread_response(result, request)
                 }
@@ -3188,9 +3142,6 @@ impl ClientState {
                     message: "The server connection was lost while loading usage.".into(),
                 })
             }
-            PendingRequest::PanicStop => ClientUpdate::shell_event(ShellEvent::PanicStopError {
-                message: "The server connection was lost during the emergency stop.".into(),
-            }),
             PendingRequest::ProjectMutation { .. }
             | PendingRequest::ThreadSummaryMutation
             | PendingRequest::ThreadLifecycle { .. } => {
@@ -4419,7 +4370,6 @@ impl PendingRequest {
             Self::Capabilities
             | Self::PreviewCaptureResult
             | Self::SystemInfo
-            | Self::PanicStop
             | Self::UpdateCheck
             | Self::VoiceStatus { .. }
             | Self::VoiceTranscribe { .. }
@@ -4983,28 +4933,8 @@ mod tests {
     }
 
     #[test]
-    fn usage_and_panic_stop_responses_reach_the_native_shell() {
+    fn usage_responses_reach_the_native_shell() {
         let mut state = ClientState::new(true);
-        state.projects.push(ProjectSummary {
-            path: "/tmp/project".into(),
-            name: "project".into(),
-            pinned: false,
-            created_at: 0.0,
-            sessions: vec![SessionSummary {
-                id: "thread-1".into(),
-                title: "Running".into(),
-                provider: ProviderId::Codex,
-                agent: None,
-                created_at: 0.0,
-                running: true,
-                pinned: false,
-                status: Some(ThreadInboxStatus::Working),
-                unread: Some(false),
-                lifecycle: None,
-                closed_at: None,
-                worktree_branch: None,
-            }],
-        });
         state.pending.insert(
             "usage".into(),
             PendingRequest::Usage {
@@ -5012,10 +4942,6 @@ mod tests {
                 generation: 9,
             },
         );
-        state
-            .pending
-            .insert("panic".into(), PendingRequest::PanicStop);
-
         let usage = state.handle_response(Response::Success {
             id: "usage".into(),
             result: json!({
@@ -5038,16 +4964,6 @@ mod tests {
                 "limits": [{ "label": "Weekly", "usedPercent": 37.5 }]
             }),
         });
-        let panic = state.handle_response(Response::Success {
-            id: "panic".into(),
-            result: json!({
-                "sessions": [
-                    { "status": "interrupted", "threadId": "thread-1" },
-                    { "status": "failed", "threadId": "thread-2", "error": "gone" }
-                ]
-            }),
-        });
-
         assert!(matches!(
             usage.shell_events.as_slice(),
             [ShellEvent::UsageSummary {
@@ -5058,13 +4974,6 @@ mod tests {
                 && summary.limits[0].label == "Weekly"
                 && summary.limits[0].used_percent == 37.5
         ));
-        assert!(matches!(
-            panic.shell_events.as_slice(),
-            [ShellEvent::PanicStopped { result }] if result.sessions.len() == 2
-        ));
-        let session = state.session("thread-1").unwrap();
-        assert!(!session.running);
-        assert_eq!(session.status, Some(ThreadInboxStatus::Ready));
     }
 
     #[test]

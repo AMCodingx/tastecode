@@ -77,7 +77,6 @@ pub(crate) struct SidebarActions {
     pub(crate) toggle_settled: SidebarAction,
     pub(crate) show_more_settled: SidebarAction,
     pub(crate) toggle_account: SidebarAction,
-    pub(crate) panic_stop: SidebarAction,
 }
 
 pub(crate) struct SidebarProps<'a> {
@@ -107,8 +106,8 @@ pub(crate) struct SidebarProps<'a> {
     pub(crate) settled_limit: usize,
     pub(crate) account_menu_open: bool,
     pub(crate) provider_name: &'a str,
+    pub(crate) account_email: Option<&'a str>,
     pub(crate) usage_limits: &'a [UsageLimit],
-    pub(crate) panic_stopping: bool,
     pub(crate) glass: u8,
     pub(crate) width: f32,
 }
@@ -186,8 +185,8 @@ pub fn sidebar(props: SidebarProps<'_>, actions: SidebarActions) -> impl IntoEle
         settled_limit,
         account_menu_open,
         provider_name,
+        account_email,
         usage_limits,
-        panic_stopping,
         glass,
         width,
     } = props;
@@ -263,11 +262,10 @@ pub fn sidebar(props: SidebarProps<'_>, actions: SidebarActions) -> impl IntoEle
         })
         .child(sidebar_footer(
             theme,
-            mode,
             provider_name,
+            account_email,
             usage_limits,
             account_menu_open,
-            panic_stopping,
             &actions,
         ))
 }
@@ -278,34 +276,17 @@ fn rail_opacity(glass: u8) -> f32 {
 
 fn sidebar_footer(
     theme: Theme,
-    mode: SidebarMode,
     provider_name: &str,
+    account_email: Option<&str>,
     usage_limits: &[UsageLimit],
     account_menu_open: bool,
-    panic_stopping: bool,
     actions: &SidebarActions,
 ) -> AnyElement {
-    if mode == SidebarMode::Inbox {
-        return div()
-            .flex_none()
-            .border_t_1()
-            .border_color(theme.line.hsla())
-            .p(px(8.0))
-            .child(nav_item(
-                "settings",
-                "icons/settings.svg",
-                "Settings",
-                shortcut_label(SETTINGS),
-                theme,
-                Some(actions.open_settings.clone()),
-            ))
-            .into_any_element();
-    }
-
     let toggle = actions.toggle_account.clone();
-    let initial = provider_name
+    let initial = account_email
+        .unwrap_or(provider_name)
         .chars()
-        .find(|character| character.is_alphanumeric())
+        .next()
         .map(|character| character.to_uppercase().to_string())
         .unwrap_or_else(|| "H".into());
     div()
@@ -324,7 +305,7 @@ fn sidebar_footer(
                     .absolute()
                     .left(px(10.0))
                     .right(px(10.0))
-                    .bottom(px(53.0))
+                    .bottom(px(54.0))
                     .rounded(px(10.0))
                     .border_1()
                     .border_color(theme.line_strong.hsla())
@@ -333,27 +314,17 @@ fn sidebar_footer(
                     .p(px(5.0))
                     .child(account_limits(provider_name, usage_limits, theme))
                     .child(footer_menu_action(
-                        "account-stop-all",
-                        "icons/octagon-x.svg",
-                        if panic_stopping {
-                            "Stopping sessions…"
-                        } else {
-                            "Stop all sessions"
-                        },
-                        true,
-                        panic_stopping,
-                        theme,
-                        actions.panic_stop.clone(),
-                    ))
-                    .child(footer_menu_action(
                         "account-settings",
-                        "icons/settings.svg",
                         "Settings",
-                        false,
-                        false,
+                        shortcut_label(SETTINGS),
                         theme,
                         actions.open_settings.clone(),
-                    )),
+                    ))
+                    .with_animation(
+                        "account-menu",
+                        Animation::new(theme.motion.fast).with_easing(crate::theme::web_ease_out),
+                        |menu, delta| menu.bottom(px(51.0 + 3.0 * delta)).opacity(delta),
+                    ),
             )
         })
         .child(
@@ -403,8 +374,7 @@ fn sidebar_footer(
                         .flex_1()
                         .truncate()
                         .child(provider_name.to_owned()),
-                )
-                .child(icon("icons/chevron-down.svg", 11.0)),
+                ),
         )
         .into_any_element()
 }
@@ -506,39 +476,41 @@ fn reset_label(timestamp_ms: f64, now_ms: f64) -> String {
     )
 }
 
-#[allow(clippy::too_many_arguments)]
 fn footer_menu_action(
     id: &'static str,
-    icon_path: &'static str,
     label: &'static str,
-    destructive: bool,
-    disabled: bool,
+    shortcut: String,
     theme: Theme,
     action: SidebarAction,
 ) -> AnyElement {
     div()
         .id(id)
+        .group("account-menu-action")
         .h(px(31.0))
         .w_full()
         .flex()
         .items_center()
-        .gap(px(8.0))
-        .px(px(8.0))
+        .justify_between()
+        .gap(px(6.0))
+        .px(px(9.0))
         .rounded(px(7.0))
-        .text_size(px(11.5))
-        .text_color(if destructive {
-            theme.error.hsla()
-        } else {
-            theme.text_2.hsla()
-        })
-        .opacity(if disabled { 0.5 } else { 1.0 })
-        .when(!disabled, |row| {
-            row.cursor_pointer()
-                .hover(move |style| style.bg(theme.surface_3.hsla()))
-                .on_click(move |_event, _window, cx| action(cx))
-        })
-        .child(icon(icon_path, 14.0))
+        .text_size(px(12.0))
+        .text_color(theme.text.hsla())
+        .cursor_pointer()
+        .hover(move |style| style.bg(theme.surface_3.hsla()))
+        .on_click(move |_event, _window, cx| action(cx))
         .child(label)
+        .child(
+            div()
+                .ml_auto()
+                .opacity(0.0)
+                .font_family("Geist Mono")
+                .text_size(px(10.5))
+                .font_weight(FontWeight(450.0))
+                .text_color(theme.text_3.hsla())
+                .group_hover("account-menu-action", |hint| hint.opacity(1.0))
+                .child(shortcut),
+        )
         .into_any_element()
 }
 

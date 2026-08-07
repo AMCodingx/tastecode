@@ -10,8 +10,8 @@ mod zoom_hud;
 use crate::assets::{HarnessAssets, register_fonts};
 use crate::chat::{ChatEvent, ChatView, ComposerSettings, SessionContext};
 use crate::client_state::{
-    ChatUpdate, ClientState, ClientUpdate, NewThreadRequest, ReviewHunkRequest, SendTurnRequest,
-    ShellEvent,
+    AuthTarget, ChatUpdate, ClientState, ClientUpdate, NewThreadRequest, ReviewHunkRequest,
+    SendTurnRequest, ShellEvent,
 };
 use crate::model_selection::{
     fast_mode_off_value, fast_service_tier, is_fast_mode_enabled, next_service_tier, source_key,
@@ -958,10 +958,6 @@ impl HarnessApp {
                 generation,
                 message,
             } => self.apply_usage_error(scope, generation, message, cx),
-            ShellEvent::PanicStopped { result } => {
-                self.apply_panic_stopped(result.sessions, cx);
-            }
-            ShellEvent::PanicStopError { message } => self.apply_panic_stop_error(message, cx),
         }
     }
 
@@ -1608,7 +1604,6 @@ impl HarnessApp {
         let toggle_settled_view = select_view.clone();
         let show_more_settled_view = select_view.clone();
         let toggle_account_view = select_view.clone();
-        let panic_stop_view = select_view.clone();
         SidebarActions {
             select_session: Rc::new(move |thread_id, cx| {
                 let _ = select_view.update(cx, |this, cx| this.select_session(thread_id, cx));
@@ -1743,12 +1738,6 @@ impl HarnessApp {
                 let _ = toggle_account_view.update(cx, |this, cx| {
                     this.account_menu_open = !this.account_menu_open;
                     cx.notify();
-                });
-            }),
-            panic_stop: Rc::new(move |cx| {
-                let _ = panic_stop_view.update(cx, |this, cx| {
-                    this.account_menu_open = false;
-                    this.request_panic_stop(cx);
                 });
             }),
         }
@@ -2059,10 +2048,18 @@ impl Render for HarnessApp {
             self.stage().into_any_element()
         };
         let sidebar_actions = self.sidebar_actions(cx);
+        let account_target = self.selected_model_choice().map(|choice| AuthTarget {
+            provider: choice.provider,
+            agent: choice.agent_id.clone(),
+        });
         let provider_name = self
             .selected_model_choice()
             .map(|choice| choice.source_name.clone())
             .unwrap_or_else(|| "Personal Harness".into());
+        let account_email = account_target
+            .as_ref()
+            .and_then(|target| self.state.accounts.get(target))
+            .and_then(|account| account.email.as_deref());
         let usage_limits = self.stage_controls.usage_limits();
         let rail = sidebar(
             SidebarProps {
@@ -2092,8 +2089,8 @@ impl Render for HarnessApp {
                 settled_limit: self.settled_limit,
                 account_menu_open: self.account_menu_open,
                 provider_name: &provider_name,
+                account_email,
                 usage_limits,
-                panic_stopping: self.stage_controls.panic_stopping(),
                 glass: self.preferences.sidebar_glass,
                 width: self.sidebar_width,
             },

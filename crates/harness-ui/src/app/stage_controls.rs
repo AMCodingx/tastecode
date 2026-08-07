@@ -9,9 +9,7 @@ use gpui::{
     Animation, AnimationExt, AnyElement, Context, FontWeight, SharedString, div, prelude::*,
     relative, svg,
 };
-use harness_protocol::{
-    CheckpointSummary, PanicStopSessionResult, UsageLimit, UsageSummaryResult, WorkspaceInfo,
-};
+use harness_protocol::{CheckpointSummary, UsageLimit, UsageSummaryResult, WorkspaceInfo};
 use std::time::Duration;
 
 #[derive(Default)]
@@ -35,7 +33,6 @@ pub(super) struct StageControlsState {
     undo_restore: Option<UndoRestore>,
     undo_generation: u64,
     undo_busy: bool,
-    panic_stopping: bool,
 }
 
 #[derive(Default)]
@@ -74,10 +71,6 @@ impl StageControlsState {
         self.usage
             .as_ref()
             .map_or(&[], |summary| summary.limits.as_slice())
-    }
-
-    pub(super) fn panic_stopping(&self) -> bool {
-        self.panic_stopping
     }
 
     pub(super) fn checkpoint_count(&self) -> usize {
@@ -329,16 +322,6 @@ impl HarnessApp {
         self.state.notice = None;
         self.stage_controls.undo_restore = None;
         self.stage_controls.undo_busy = false;
-        cx.notify();
-    }
-
-    pub(super) fn request_panic_stop(&mut self, cx: &mut Context<Self>) {
-        if self.stage_controls.panic_stopping {
-            return;
-        }
-        self.stage_controls.panic_stopping = true;
-        let update = self.state.panic_stop();
-        self.apply_client_update(update, cx);
         cx.notify();
     }
 
@@ -624,35 +607,6 @@ impl HarnessApp {
         }
         self.stage_controls.usage_loading = false;
         self.stage_controls.usage = None;
-        cx.notify();
-    }
-
-    pub(super) fn apply_panic_stopped(
-        &mut self,
-        sessions: Vec<PanicStopSessionResult>,
-        cx: &mut Context<Self>,
-    ) {
-        self.stage_controls.panic_stopping = false;
-        let interrupted = sessions
-            .iter()
-            .filter(|result| matches!(result, PanicStopSessionResult::Interrupted { .. }))
-            .count();
-        let failed = sessions.len().saturating_sub(interrupted);
-        self.state.notice = Some(if failed == 0 {
-            format!(
-                "Stopped {interrupted} running session{} and cleared their queues.",
-                if interrupted == 1 { "" } else { "s" }
-            )
-        } else {
-            format!("Stopped {interrupted} sessions; {failed} could not be interrupted.")
-        });
-        self.refresh_stage_context(cx);
-        cx.notify();
-    }
-
-    pub(super) fn apply_panic_stop_error(&mut self, message: String, cx: &mut Context<Self>) {
-        self.stage_controls.panic_stopping = false;
-        self.state.notice = Some(message);
         cx.notify();
     }
 
