@@ -352,7 +352,7 @@ impl HarnessApp {
             let terminal =
                 terminal_key.and_then(|key| self.provider_terminal_snapshot(key, &idle_note, cx));
             let busy = self.state.auth_busy.as_ref() == Some(&target)
-                || self.state.provider_terminal_busy.is_some();
+                || self.state.provider_terminal_busy.as_ref() == Some(&target);
             let trailing = if busy {
                 status_pill("Working…", false, theme)
             } else if !provider.installed {
@@ -715,7 +715,7 @@ impl HarnessApp {
             };
             let terminal =
                 terminal_key.and_then(|key| self.provider_terminal_snapshot(key, &idle_note, cx));
-            let busy = self.state.provider_terminal_busy.is_some();
+            let busy = self.state.provider_terminal_busy.as_ref() == Some(&target);
             let action_index = 1_000 + index;
             let trailing = if busy {
                 status_pill("Working…", false, theme)
@@ -3671,17 +3671,18 @@ fn connection_remove_button(index: usize, theme: Theme, action: SettingsAction) 
 fn provider_action_button(
     index: usize,
     label: &'static str,
-    destructive: bool,
+    sign_out: bool,
     theme: Theme,
     action: SettingsAction,
 ) -> AnyElement {
     div()
         .id(("provider-action", index))
         .relative()
-        .h(px(28.0))
         .flex()
         .items_center()
+        .gap(px(6.0))
         .px(px(10.0))
+        .py(px(6.0))
         .rounded(px(5.0))
         .border_1()
         .border_color(chrome::border(theme))
@@ -3689,13 +3690,14 @@ fn provider_action_button(
         .shadow(chrome::shadows(theme))
         .child(chrome::top_highlight(theme))
         .text_size(px(12.5))
-        .text_color(if destructive {
-            theme.error.hsla()
-        } else {
-            theme.text_2.hsla()
-        })
+        .line_height(relative(1.55))
+        .text_color(theme.text_2.hsla())
         .cursor_pointer()
-        .hover(move |style| style.bg(theme.surface_3.hsla()))
+        .hover(move |style| {
+            style
+                .bg(theme.surface_3.hsla())
+                .text_color(theme.text.hsla())
+        })
         .active(move |style| {
             style
                 .top(px(1.0))
@@ -3703,6 +3705,9 @@ fn provider_action_button(
                 .shadow(Vec::new())
         })
         .on_click(move |_event, _window, cx| action(cx))
+        .when(sign_out, |button| {
+            button.child(settings_icon("icons/log-out.svg", 13.0))
+        })
         .child(label)
         .into_any_element()
 }
