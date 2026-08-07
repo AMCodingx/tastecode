@@ -1,11 +1,12 @@
 use super::HarnessApp;
 use crate::client_state::AuthTarget;
 use crate::provider_icon::provider_icon;
-use crate::theme::Theme;
+use crate::theme::{Theme, ThemeMode};
 use crate::zoom::px;
 use gpui::{
-    Animation, AnimationExt, AnyElement, App, Context, FontWeight, Transformation, Window, div,
-    percentage, prelude::*, svg,
+    Animation, AnimationExt, AnyElement, App, Background, BoxShadow, Context, FontWeight, Hsla,
+    Transformation, Window, div, linear_color_stop, linear_gradient, percentage, point, prelude::*,
+    relative, svg,
 };
 use gpui_component::input::Input;
 use gpui_component::scroll::ScrollableElement;
@@ -129,8 +130,10 @@ impl HarnessApp {
             .pb(px(36.0))
             .overflow_y_scrollbar()
             .bg(self.theme.background.hsla())
+            .child(onboarding_backdrop_glow(self.theme))
             .child(
                 div()
+                    .relative()
                     .w_full()
                     .max_w(px(ONBOARDING_WIDTH))
                     .child(panel)
@@ -211,22 +214,20 @@ impl HarnessApp {
             let is_selected = card.provider == selected;
             div()
                 .id(("onboarding-provider", index))
+                .relative()
                 .w(px(ONBOARDING_CARD_WIDTH))
                 .min_h(px(118.0))
-                .p(px(14.0))
-                .rounded(px(11.0))
+                .px(px(15.0))
+                .py(px(13.0))
+                .rounded(px(8.0))
                 .border_1()
                 .border_color(if is_selected {
                     theme.line_strong.hsla()
                 } else {
-                    theme.line.hsla()
+                    onboarding_chrome_border(theme)
                 })
-                .bg(if is_selected {
-                    theme.surface_2.hsla()
-                } else {
-                    theme.surface.hsla()
-                })
-                .shadow_lg()
+                .bg(onboarding_card_background(is_selected, theme))
+                .shadow(onboarding_card_shadows(is_selected, theme))
                 .cursor_pointer()
                 .hover(move |style| style.border_color(theme.line_strong.hsla()).mt(px(-1.0)))
                 .active(|style| style.mt(px(1.0)))
@@ -245,6 +246,9 @@ impl HarnessApp {
                         cx.notify();
                     });
                 })
+                .when(!is_selected, |card| {
+                    card.child(onboarding_top_highlight(theme, 0.05))
+                })
                 .child(
                     div()
                         .flex()
@@ -259,8 +263,8 @@ impl HarnessApp {
                                 .child(provider_icon(card.provider, theme, 18.0))
                                 .child(
                                     div()
-                                        .text_size(px(14.0))
-                                        .font_weight(FontWeight::MEDIUM)
+                                        .text_size(px(15.0))
+                                        .font_weight(FontWeight(540.0))
                                         .child(card.name),
                                 ),
                         )
@@ -268,19 +272,18 @@ impl HarnessApp {
                 )
                 .child(
                     div()
-                        .mt(px(5.0))
-                        .text_size(px(11.5))
-                        .line_height(px(17.0))
+                        .mt(px(3.0))
+                        .text_size(px(12.5))
+                        .line_height(relative(1.5))
                         .text_color(theme.text_2.hsla())
                         .child(card.blurb),
                 )
                 .child(
-                    div()
-                        .mt(px(9.0))
-                        .flex()
-                        .flex_wrap()
-                        .gap(px(5.0))
-                        .children(card.plans.iter().map(|plan| chiplet(plan, theme))),
+                    div().mt(px(9.0)).flex().flex_wrap().gap(px(5.0)).children(
+                        card.plans
+                            .iter()
+                            .map(|plan| chiplet(plan, is_selected, theme)),
+                    ),
                 )
                 .into_any_element()
         });
@@ -359,21 +362,20 @@ impl HarnessApp {
                 };
                 div()
                     .id(("onboarding-agent", index))
+                    .relative()
                     .w(px(ONBOARDING_CARD_WIDTH))
                     .min_h(px(88.0))
-                    .p(px(14.0))
-                    .rounded(px(11.0))
+                    .px(px(15.0))
+                    .py(px(13.0))
+                    .rounded(px(8.0))
                     .border_1()
                     .border_color(if is_selected {
                         theme.line_strong.hsla()
                     } else {
-                        theme.line.hsla()
+                        onboarding_chrome_border(theme)
                     })
-                    .bg(if is_selected {
-                        theme.surface_2.hsla()
-                    } else {
-                        theme.surface.hsla()
-                    })
+                    .bg(onboarding_card_background(is_selected, theme))
+                    .shadow(onboarding_card_shadows(is_selected, theme))
                     .opacity(if installed { 1.0 } else { 0.4 })
                     .when(installed, |card| {
                         card.cursor_pointer()
@@ -394,6 +396,9 @@ impl HarnessApp {
                                 });
                             })
                     })
+                    .when(!is_selected, |card| {
+                        card.child(onboarding_top_highlight(theme, 0.05))
+                    })
                     .child(
                         div()
                             .flex()
@@ -402,14 +407,14 @@ impl HarnessApp {
                             .gap(px(12.0))
                             .child(
                                 div()
-                                    .text_size(px(14.0))
-                                    .font_weight(FontWeight::MEDIUM)
+                                    .text_size(px(15.0))
+                                    .font_weight(FontWeight(540.0))
                                     .child(agent.name.clone()),
                             )
                             .when(!installed, |row| {
                                 row.child(
                                     div()
-                                        .text_size(px(11.0))
+                                        .text_size(px(12.5))
                                         .text_color(theme.text_2.hsla())
                                         .child("Not installed"),
                                 )
@@ -418,9 +423,9 @@ impl HarnessApp {
                     )
                     .child(
                         div()
-                            .mt(px(5.0))
-                            .text_size(px(11.5))
-                            .line_height(px(17.0))
+                            .mt(px(3.0))
+                            .text_size(px(12.5))
+                            .line_height(relative(1.5))
                             .text_color(theme.text_2.hsla())
                             .child(note),
                     )
@@ -554,22 +559,22 @@ impl HarnessApp {
                 .items_start()
                 .gap(px(12.0))
                 .p(px(14.0))
-                .rounded(px(11.0))
+                .rounded(px(8.0))
                 .border_1()
-                .border_color(theme.line.hsla())
-                .bg(theme.surface_2.hsla())
+                .border_color(onboarding_chrome_border(theme))
+                .bg(onboarding_chrome_recessed(theme))
                 .child(onboarding_spinner(theme))
                 .child(
                     div()
                         .child(
                             div()
-                                .font_weight(FontWeight::MEDIUM)
+                                .font_weight(FontWeight(540.0))
                                 .child("Waiting for your browser…"),
                         )
                         .child(
                             div()
                                 .mt(px(2.0))
-                                .text_size(px(11.5))
+                                .text_size(px(12.5))
                                 .text_color(theme.text_3.hsla())
                                 .child(
                                     "Finish signing in there and this window will continue on its own.",
@@ -614,8 +619,8 @@ impl HarnessApp {
                         div()
                             .mt(px(10.0))
                             .mb(px(10.0))
-                            .text_size(px(11.5))
-                            .line_height(px(18.0))
+                            .text_size(px(12.5))
+                            .line_height(relative(1.6))
                             .text_color(theme.text_3.hsla())
                             .child(
                                 "Billed per token by the vendor. Stored in your operating system’s credential store, never in a file we write.",
@@ -636,12 +641,12 @@ impl HarnessApp {
                                     .flex_1()
                                     .min_w(px(0.0))
                                     .px(px(10.0))
-                                    .rounded(px(8.0))
+                                    .rounded(px(5.0))
                                     .border_1()
-                                    .border_color(theme.line_strong.hsla())
+                                    .border_color(theme.line.hsla())
                                     .bg(theme.surface.hsla())
                                     .font_family("Geist Mono")
-                                    .text_size(px(11.5))
+                                    .text_size(px(12.5))
                                     .text_color(theme.text.hsla()),
                             )
                             .child(onboarding_button(
@@ -728,25 +733,24 @@ impl HarnessApp {
                 let visible = !self.preferences.hidden_models.contains(&choice.key);
                 div()
                     .id(("onboarding-model", index))
+                    .relative()
                     .w(px(ONBOARDING_CARD_WIDTH))
                     .min_h(px(68.0))
-                    .p(px(14.0))
+                    .px(px(15.0))
+                    .py(px(13.0))
                     .flex()
                     .items_center()
                     .justify_between()
                     .gap(px(12.0))
-                    .rounded(px(11.0))
+                    .rounded(px(8.0))
                     .border_1()
                     .border_color(if visible {
                         theme.line_strong.hsla()
                     } else {
-                        theme.line.hsla()
+                        onboarding_chrome_border(theme)
                     })
-                    .bg(if visible {
-                        theme.surface_2.hsla()
-                    } else {
-                        theme.surface.hsla()
-                    })
+                    .bg(onboarding_card_background(visible, theme))
+                    .shadow(onboarding_card_shadows(visible, theme))
                     .cursor_pointer()
                     .hover(move |style| style.border_color(theme.line_strong.hsla()).mt(px(-1.0)))
                     .active(|style| style.mt(px(1.0)))
@@ -755,6 +759,9 @@ impl HarnessApp {
                         let _ = weak.update(cx, |this, cx| {
                             this.toggle_onboarding_model(&key, cx);
                         });
+                    })
+                    .when(!visible, |card| {
+                        card.child(onboarding_top_highlight(theme, 0.05))
                     })
                     .child(
                         div()
@@ -769,15 +776,15 @@ impl HarnessApp {
                                     .child(
                                         div()
                                             .truncate()
-                                            .text_size(px(13.0))
-                                            .font_weight(FontWeight::MEDIUM)
+                                            .text_size(px(13.5))
+                                            .font_weight(FontWeight(540.0))
                                             .child(choice.model.display_name.clone()),
                                     )
                                     .child(
                                         div()
                                             .mt(px(1.0))
                                             .truncate()
-                                            .text_size(px(11.0))
+                                            .text_size(px(12.5))
                                             .text_color(theme.text_3.hsla())
                                             .child(choice.source_name.clone()),
                                     ),
@@ -874,27 +881,28 @@ impl HarnessApp {
             .items_center()
             .flex_wrap()
             .gap(px(8.0))
-            .p(px(13.0))
+            .px(px(14.0))
+            .py(px(12.0))
             .mb(px(20.0))
-            .rounded(px(11.0))
+            .rounded(px(8.0))
             .border_1()
-            .border_color(theme.line.hsla())
-            .bg(theme.surface_2.hsla())
+            .border_color(onboarding_chrome_border(theme))
+            .bg(onboarding_chrome_recessed(theme))
             .child(
                 div()
-                    .font_weight(FontWeight::MEDIUM)
+                    .font_weight(FontWeight(560.0))
                     .child(state.agent_name.as_deref().unwrap_or(card.name).to_owned()),
             )
             .when_some(
                 account.and_then(|account| account.plan.clone()),
-                |row, plan| row.child(chiplet(&plan, theme)),
+                |row, plan| row.child(chiplet(&plan, false, theme)),
             )
             .when_some(
                 account.and_then(|account| account.email.clone()),
                 |row, email| {
                     row.child(
                         div()
-                            .text_size(px(11.5))
+                            .text_size(px(12.5))
                             .text_color(theme.text_3.hsla())
                             .child(email),
                     )
@@ -1146,15 +1154,157 @@ fn provider_card(provider: ProviderId) -> ProviderCard {
         .unwrap_or(PROVIDERS[0])
 }
 
+fn onboarding_chrome_raised(theme: Theme) -> Background {
+    let (from, to): (Hsla, Hsla) = match theme.mode {
+        ThemeMode::Dark => (gpui::rgb(0x242424).into(), gpui::rgb(0x1b1b1b).into()),
+        ThemeMode::Light => (gpui::white(), gpui::rgb(0xfafafa).into()),
+    };
+    linear_gradient(
+        180.0,
+        linear_color_stop(from, 0.0),
+        linear_color_stop(to, 1.0),
+    )
+}
+
+fn onboarding_chrome_recessed(theme: Theme) -> Hsla {
+    match theme.mode {
+        ThemeMode::Dark => gpui::rgb(0x101010).into(),
+        ThemeMode::Light => gpui::rgb(0xf3f3f5).into(),
+    }
+}
+
+fn onboarding_chrome_border(theme: Theme) -> Hsla {
+    match theme.mode {
+        ThemeMode::Dark => gpui::rgb(0x303030).into(),
+        ThemeMode::Light => gpui::rgb(0xe3e3e6).into(),
+    }
+}
+
+fn onboarding_card_background(selected: bool, theme: Theme) -> Background {
+    if selected {
+        onboarding_chrome_recessed(theme).into()
+    } else {
+        onboarding_chrome_raised(theme)
+    }
+}
+
+fn onboarding_chrome_shadows(theme: Theme) -> Vec<BoxShadow> {
+    match theme.mode {
+        ThemeMode::Dark => vec![BoxShadow {
+            color: gpui::black().opacity(0.28),
+            offset: point(px(0.0), px(1.0)),
+            blur_radius: px(2.0),
+            spread_radius: px(0.0),
+        }],
+        ThemeMode::Light => vec![
+            BoxShadow {
+                color: gpui::rgba(0x18181b14).into(),
+                offset: point(px(0.0), px(1.0)),
+                blur_radius: px(2.0),
+                spread_radius: px(0.0),
+            },
+            BoxShadow {
+                color: gpui::rgba(0x18181b29).into(),
+                offset: point(px(0.0), px(4.0)),
+                blur_radius: px(10.0),
+                spread_radius: px(-8.0),
+            },
+        ],
+    }
+}
+
+fn onboarding_card_shadows(selected: bool, theme: Theme) -> Vec<BoxShadow> {
+    if selected {
+        Vec::new()
+    } else {
+        onboarding_chrome_shadows(theme)
+    }
+}
+
+fn onboarding_pane_shadows(theme: Theme) -> Vec<BoxShadow> {
+    let mut shadows = onboarding_chrome_shadows(theme);
+    shadows.push(BoxShadow {
+        color: gpui::black().opacity(0.18),
+        offset: point(px(0.0), px(18.0)),
+        blur_radius: px(46.0),
+        spread_radius: px(0.0),
+    });
+    shadows
+}
+
+fn onboarding_button_shadows(_theme: Theme) -> Vec<BoxShadow> {
+    vec![BoxShadow {
+        color: gpui::black().opacity(0.20),
+        offset: point(px(0.0), px(1.0)),
+        blur_radius: px(2.0),
+        spread_radius: px(0.0),
+    }]
+}
+
+fn onboarding_top_highlight(theme: Theme, opacity: f32) -> AnyElement {
+    div()
+        .absolute()
+        .top_0()
+        .left_0()
+        .right_0()
+        .h(px(1.0))
+        .bg(match theme.mode {
+            ThemeMode::Dark => gpui::white().opacity(opacity),
+            ThemeMode::Light => gpui::white().opacity(0.96),
+        })
+        .into_any_element()
+}
+
+fn onboarding_backdrop_glow(theme: Theme) -> AnyElement {
+    div()
+        .absolute()
+        .top(relative(0.18))
+        .left(relative(0.20))
+        .right(relative(0.20))
+        .h(px(210.0))
+        .rounded_full()
+        .shadow(vec![BoxShadow {
+            color: theme.surface_3.hsla().opacity(0.26),
+            offset: point(px(0.0), px(0.0)),
+            blur_radius: px(120.0),
+            spread_radius: px(12.0),
+        }])
+        .into_any_element()
+}
+
+fn selection_check_ease(progress: f32) -> f32 {
+    let progress = progress.clamp(0.0, 1.0);
+    let mut lower = 0.0;
+    let mut upper = 1.0;
+    for _ in 0..16 {
+        let parameter = (lower + upper) * 0.5;
+        if onboarding_bezier_component(parameter, 0.2, 0.4) < progress {
+            lower = parameter;
+        } else {
+            upper = parameter;
+        }
+    }
+    onboarding_bezier_component((lower + upper) * 0.5, 1.45, 1.0)
+}
+
+fn onboarding_bezier_component(parameter: f32, first: f32, second: f32) -> f32 {
+    let inverse = 1.0 - parameter;
+    3.0 * inverse * inverse * parameter * first
+        + 3.0 * inverse * parameter * parameter * second
+        + parameter * parameter * parameter
+}
+
 fn onboarding_pane(content: gpui::Div, footer: AnyElement, theme: Theme) -> AnyElement {
     div()
+        .relative()
         .w_full()
         .overflow_hidden()
-        .rounded(px(17.0))
+        .rounded(px(20.0))
         .border_1()
-        .border_color(theme.line_strong.hsla())
-        .bg(theme.surface.hsla())
-        .shadow_lg()
+        .border_color(onboarding_chrome_border(theme))
+        .bg(onboarding_chrome_raised(theme))
+        .shadow(onboarding_pane_shadows(theme))
+        .child(onboarding_top_highlight(theme, 0.11))
         .child(content)
         .child(footer)
         .into_any_element()
@@ -1200,8 +1350,8 @@ fn onboarding_footer(children: Vec<AnyElement>, theme: Theme) -> AnyElement {
         .px(px(18.0))
         .py(px(14.0))
         .border_t_1()
-        .border_color(theme.line.hsla())
-        .bg(theme.surface_2.hsla().opacity(0.55))
+        .border_color(onboarding_chrome_border(theme))
+        .bg(onboarding_chrome_recessed(theme).opacity(0.55))
         .children(children)
         .into_any_element()
 }
@@ -1217,26 +1367,34 @@ fn onboarding_button(
 ) -> AnyElement {
     div()
         .id(id)
-        .min_h(px(34.0))
-        .px(px(if primary { 14.0 } else { 10.0 }))
+        .h(px(if primary { 34.0 } else { 27.0 }))
+        .min_w(px(if id == "onboarding-continue" {
+            132.0
+        } else {
+            0.0
+        }))
+        .px(px(if primary { 15.0 } else { 8.0 }))
         .flex()
         .items_center()
         .justify_center()
         .gap(px(8.0))
-        .rounded(px(8.0))
-        .border_1()
-        .border_color(if primary {
-            theme.text.hsla().opacity(0.7)
-        } else {
-            theme.line_strong.hsla()
-        })
+        .rounded(px(if primary { 5.0 } else { 3.0 }))
         .bg(if primary {
             theme.text.hsla()
         } else {
-            theme.surface.hsla()
+            gpui::transparent_black()
         })
-        .text_size(px(11.5))
-        .font_weight(FontWeight::MEDIUM)
+        .shadow(if primary {
+            onboarding_button_shadows(theme)
+        } else {
+            Vec::new()
+        })
+        .text_size(px(if primary { 13.5 } else { 12.5 }))
+        .font_weight(if primary {
+            FontWeight(540.0)
+        } else {
+            FontWeight::NORMAL
+        })
         .text_color(if primary {
             theme.background.hsla()
         } else {
@@ -1246,13 +1404,27 @@ fn onboarding_button(
         .when(enabled, |button| {
             button
                 .cursor_pointer()
-                .hover(move |style| style.mt(px(-1.0)))
-                .active(|style| style.mt(px(1.0)).opacity(0.86))
+                .hover(move |style| {
+                    if primary {
+                        style.mt(px(-1.0))
+                    } else {
+                        style
+                            .bg(theme.surface_3.hsla())
+                            .text_color(theme.text.hsla())
+                    }
+                })
+                .active(move |style| {
+                    if primary {
+                        style.mt(px(1.0)).inset(px(0.25))
+                    } else {
+                        style.opacity(0.72)
+                    }
+                })
                 .on_click(move |_event, window, cx| action(window, cx))
         })
         .child(label)
         .when_some(icon, |button, icon| {
-            button.child(svg().path(icon).size(px(14.0)))
+            button.child(svg().path(icon).size(px(15.0)))
         })
         .into_any_element()
 }
@@ -1267,7 +1439,7 @@ fn onboarding_text_action(
         .id(id)
         .w_auto()
         .flex()
-        .text_size(px(11.5))
+        .text_size(px(12.5))
         .text_color(theme.text_2.hsla())
         .cursor_pointer()
         .hover(move |style| style.text_color(theme.text.hsla()))
@@ -1283,16 +1455,16 @@ fn onboarding_mark(icon: &'static str, success: bool, theme: Theme) -> AnyElemen
         .flex()
         .items_center()
         .justify_center()
-        .rounded(px(11.0))
+        .rounded(px(8.0))
         .border_1()
-        .border_color(theme.line_strong.hsla())
-        .bg(theme.surface_2.hsla())
+        .border_color(onboarding_chrome_border(theme))
+        .bg(onboarding_chrome_recessed(theme))
         .text_color(if success {
             theme.success.hsla()
         } else {
             theme.text.hsla()
         })
-        .child(svg().path(icon).size(px(21.0)))
+        .child(svg().path(icon).size(px(if success { 20.0 } else { 22.0 })))
         .into_any_element()
 }
 
@@ -1311,10 +1483,10 @@ fn fact_card(
         .flex()
         .items_start()
         .gap(px(10.0))
-        .rounded(px(11.0))
+        .rounded(px(8.0))
         .border_1()
-        .border_color(theme.line.hsla())
-        .bg(theme.surface_2.hsla())
+        .border_color(onboarding_chrome_border(theme))
+        .bg(onboarding_chrome_recessed(theme))
         .child(
             div()
                 .size(px(26.0))
@@ -1322,21 +1494,21 @@ fn fact_card(
                 .flex()
                 .items_center()
                 .justify_center()
-                .rounded(px(7.0))
-                .bg(theme.surface.hsla())
+                .rounded(px(5.0))
+                .bg(theme.surface_2.hsla())
                 .text_color(theme.text_2.hsla())
-                .child(svg().path(icon).size(px(15.0))),
+                .child(svg().path(icon).size(px(16.0))),
         )
         .child(
             div()
                 .min_w(px(0.0))
-                .text_size(px(11.0))
-                .line_height(px(16.0))
+                .text_size(px(12.5))
+                .line_height(relative(1.45))
                 .text_color(theme.text_2.hsla())
                 .child(
                     div()
                         .mb(px(3.0))
-                        .font_weight(FontWeight::MEDIUM)
+                        .font_weight(FontWeight(540.0))
                         .text_color(theme.text.hsla())
                         .child(title),
                 )
@@ -1345,13 +1517,17 @@ fn fact_card(
         .into_any_element()
 }
 
-fn chiplet(label: &str, theme: Theme) -> AnyElement {
+fn chiplet(label: &str, selected: bool, theme: Theme) -> AnyElement {
     div()
         .px(px(7.0))
         .py(px(2.0))
-        .rounded(px(5.0))
-        .bg(theme.surface_3.hsla())
-        .text_size(px(9.5))
+        .rounded(px(3.0))
+        .bg(if selected {
+            theme.surface_3.hsla()
+        } else {
+            theme.surface_2.hsla()
+        })
+        .text_size(px(11.5))
         .text_color(theme.text_2.hsla())
         .child(label.to_owned())
         .into_any_element()
@@ -1365,15 +1541,25 @@ fn selection_check(index: usize, theme: Theme) -> AnyElement {
         .flex()
         .items_center()
         .justify_center()
-        .rounded_full()
-        .bg(theme.text.hsla())
-        .text_color(theme.background.hsla())
-        .child(svg().path("icons/check.svg").size(px(12.0)))
-        .with_animation(
-            ("onboarding-check-in", index),
-            Animation::new(theme.motion_duration(Duration::from_millis(240)))
-                .with_easing(crate::theme::web_ease_out),
-            |check, delta| check.opacity(delta),
+        .child(
+            div()
+                .flex()
+                .items_center()
+                .justify_center()
+                .rounded_full()
+                .bg(theme.text.hsla())
+                .text_color(theme.background.hsla())
+                .child(svg().path("icons/check.svg").size(px(14.0)))
+                .with_animation(
+                    ("onboarding-check-in", index),
+                    Animation::new(theme.motion_duration(Duration::from_millis(240)))
+                        .with_easing(selection_check_ease),
+                    |check, delta| {
+                        check
+                            .size(px(22.0 * (0.65 + 0.35 * delta)))
+                            .opacity(delta.min(1.0))
+                    },
+                ),
         )
         .into_any_element()
 }
@@ -1395,12 +1581,12 @@ fn progress_dot(index: usize, selected: bool, theme: Theme) -> AnyElement {
 fn onboarding_spinner(theme: Theme) -> AnyElement {
     svg()
         .path("icons/loader-circle.svg")
-        .size(px(16.0))
+        .size(px(11.0))
         .mt(px(3.0))
         .text_color(theme.text_2.hsla())
         .with_animation(
             "onboarding-spinner",
-            theme.repeating_animation(Duration::from_millis(900)),
+            theme.repeating_animation(Duration::from_millis(700)),
             |spinner, delta| spinner.with_transformation(Transformation::rotate(percentage(delta))),
         )
         .into_any_element()
@@ -1410,8 +1596,8 @@ fn onboarding_status(message: &str, theme: Theme) -> AnyElement {
     div()
         .w_full()
         .py(px(14.0))
-        .text_size(px(11.5))
-        .line_height(px(18.0))
+        .text_size(px(12.5))
+        .line_height(relative(1.5))
         .text_color(theme.text_3.hsla())
         .child(message.to_owned())
         .into_any_element()
@@ -1421,8 +1607,8 @@ fn onboarding_error(message: &str, theme: Theme) -> AnyElement {
     div()
         .w_full()
         .mt(px(12.0))
-        .text_size(px(11.5))
-        .line_height(px(18.0))
+        .text_size(px(12.5))
+        .line_height(relative(1.5))
         .text_color(theme.error.hsla())
         .child(message.to_owned())
         .into_any_element()
