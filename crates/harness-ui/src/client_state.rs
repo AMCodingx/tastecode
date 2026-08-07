@@ -8,11 +8,12 @@ use harness_protocol::{
     ModelsListResult, PROTOCOL_VERSION, PreviewCaptureRequest, PreviewCaptureResult,
     ProjectAddedResult, ProjectSummary, ProjectsListResult, ProviderId, ProviderStatus,
     ProvidersListResult, QueueDirection, Response, ReviewDiffResult, SendTurnResult, ServerWelcome,
-    SessionDiff, SessionSummary, SidebarMode, SidebarSettings, SkillEnabledResult,
-    SkillInstalledResult, SkillsListResult, SystemInfo, TerminalExitPush, TerminalOpenedResult,
-    TerminalOutputPush, ThreadEventPush, ThreadHistoryResult, ThreadInboxStatus, ThreadLifecycle,
-    ThreadLifecyclePush, ThreadQueuePush, ThreadQueueResult, ThreadStartResult, UpdateCheckResult,
-    VoiceStatusResult, VoiceTranscribeParams, VoiceTranscriptionResult, channel, method,
+    SessionDiff, SessionSearchPage, SessionSummary, SidebarMode, SidebarSettings,
+    SkillEnabledResult, SkillInstalledResult, SkillsListResult, SystemInfo, TerminalExitPush,
+    TerminalOpenedResult, TerminalOutputPush, ThreadEventPush, ThreadHistoryResult,
+    ThreadInboxStatus, ThreadLifecycle, ThreadLifecyclePush, ThreadQueuePush, ThreadQueueResult,
+    ThreadStartResult, UpdateCheckResult, VoiceStatusResult, VoiceTranscribeParams,
+    VoiceTranscriptionResult, channel, method,
 };
 use serde::Deserialize;
 use serde_json::{Value, json};
@@ -241,6 +242,15 @@ pub(crate) struct ReviewHunkRequest {
     pub(crate) decision: DiffDecision,
 }
 
+pub(crate) struct SessionSearchRequest {
+    pub(crate) query: String,
+    pub(crate) project_path: Option<String>,
+    pub(crate) provider: Option<ProviderId>,
+    pub(crate) cursor: Option<String>,
+    pub(crate) revision: u64,
+    pub(crate) append: bool,
+}
+
 enum PendingRequest {
     Capabilities,
     PreviewCaptureResult,
@@ -327,6 +337,10 @@ enum PendingRequest {
     },
     AddProject {
         path: String,
+    },
+    SearchSessions {
+        revision: u64,
+        append: bool,
     },
     StartThread {
         request: NewThreadRequest,
@@ -421,6 +435,15 @@ pub(crate) enum ShellEvent {
         terminal_id: String,
     },
     PreviewCaptureRequested(PreviewCaptureRequest),
+    SessionSearchResults {
+        revision: u64,
+        append: bool,
+        page: SessionSearchPage,
+    },
+    SessionSearchError {
+        revision: u64,
+        message: String,
+    },
 }
 
 pub(crate) enum ChatUpdate {
@@ -1194,6 +1217,37 @@ impl ClientState {
         );
     }
 
+    pub(crate) fn search_sessions(&mut self, request: SessionSearchRequest) -> ClientUpdate {
+        let mut params = serde_json::Map::from_iter([
+            ("query".into(), json!(request.query)),
+            ("limit".into(), json!(20)),
+        ]);
+        if let Some(project_path) = request.project_path {
+            params.insert("projectPath".into(), json!(project_path));
+        }
+        if let Some(provider) = request.provider {
+            params.insert("provider".into(), json!(provider));
+        }
+        if let Some(cursor) = request.cursor {
+            params.insert("cursor".into(), json!(cursor));
+        }
+        let pending = PendingRequest::SearchSessions {
+            revision: request.revision,
+            append: request.append,
+        };
+        if self.send_request(method::SEARCH_SESSIONS, Value::Object(params), pending) {
+            ClientUpdate::default()
+        } else {
+            ClientUpdate::shell_event(ShellEvent::SessionSearchError {
+                revision: request.revision,
+                message: self
+                    .notice
+                    .clone()
+                    .unwrap_or_else(|| "Search could not be started.".into()),
+            })
+        }
+    }
+
     pub(crate) fn send_turn(&mut self, thread_id: &str, request: SendTurnRequest) {
         let steer = request.steer;
         let restore_text = request.text.clone();
@@ -1759,6 +1813,12 @@ impl ClientState {
                         self.skills_error = Some(message);
                         ClientUpdate::shell_changed()
                     }
+                    Some(PendingRequest::SearchSessions { revision, .. }) => {
+                        ClientUpdate::shell_event(ShellEvent::SessionSearchError {
+                            revision,
+                            message,
+                        })
+                    }
                     Some(PendingRequest::StartThread { request }) => {
                         ClientUpdate::chat(ChatUpdate::DraftError {
                             message,
@@ -1960,6 +2020,19 @@ impl ClientState {
                 }) => self.handle_skill_install_response(result, provider, project_path),
                 Some(PendingRequest::AddProject { path }) => {
                     self.handle_add_project_response(result, path)
+                }
+                Some(PendingRequest::SearchSessions { revision, append }) => {
+                    match serde_json::from_value::<SessionSearchPage>(result) {
+                        Ok(page) => ClientUpdate::shell_event(ShellEvent::SessionSearchResults {
+                            revision,
+                            append,
+                            page,
+                        }),
+                        Err(error) => ClientUpdate::shell_event(ShellEvent::SessionSearchError {
+                            revision,
+                            message: format!("search.sessions was invalid: {error}"),
+                        }),
+                    }
                 }
                 Some(PendingRequest::StartThread { request }) => {
                     self.handle_start_thread_response(result, request)
@@ -2190,6 +2263,12 @@ impl ClientState {
                 self.skills_error =
                     Some("The server connection was lost while updating Agent Skills.".into());
                 ClientUpdate::shell_changed()
+            }
+            PendingRequest::SearchSessions { revision, .. } => {
+                ClientUpdate::shell_event(ShellEvent::SessionSearchError {
+                    revision,
+                    message: "The server connection was lost during search.".into(),
+                })
             }
             PendingRequest::StartThread { request } => ClientUpdate::chat(ChatUpdate::DraftError {
                 message: "The server connection was lost before the session was created.".into(),
@@ -3403,6 +3482,7 @@ impl PendingRequest {
             | Self::SidebarSettings
             | Self::UpdateSidebarSettings
             | Self::AddProject { .. }
+            | Self::SearchSessions { .. }
             | Self::StartThread { .. }
             | Self::RenameThread
             | Self::Providers
@@ -3567,6 +3647,48 @@ mod tests {
         assert!(update.shell_changed);
         assert!(state.projects_loaded);
         assert_eq!(state.projects[0].name, "Harness");
+    }
+
+    #[test]
+    fn search_response_keeps_revision_pagination_and_highlights() {
+        let mut state = ClientState::new(true);
+        state.pending.insert(
+            "native-search".into(),
+            PendingRequest::SearchSessions {
+                revision: 7,
+                append: true,
+            },
+        );
+
+        let update = state.handle_response(Response::Success {
+            id: "native-search".into(),
+            result: json!({
+                "results": [{
+                    "projectPath": "/workspace",
+                    "projectName": "Harness",
+                    "threadId": "thread-1",
+                    "threadTitle": "Queue controls",
+                    "turnId": "turn-2",
+                    "provider": "codex",
+                    "createdAt": 1_000,
+                    "snippet": [
+                        {"text": "queue ", "highlighted": false},
+                        {"text": "controls", "highlighted": true}
+                    ]
+                }],
+                "nextCursor": "cursor-2"
+            }),
+        });
+
+        assert!(matches!(
+            update.shell_events.as_slice(),
+            [ShellEvent::SessionSearchResults {
+                revision: 7,
+                append: true,
+                page,
+            }] if page.next_cursor.as_deref() == Some("cursor-2")
+                && page.results[0].snippet[1].highlighted
+        ));
     }
 
     #[test]

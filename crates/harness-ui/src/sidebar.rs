@@ -16,6 +16,7 @@ pub(crate) struct SidebarActions {
     pub(crate) select_session: SelectSession,
     pub(crate) new_chat: SidebarAction,
     pub(crate) new_project: SidebarAction,
+    pub(crate) open_search: SidebarAction,
     pub(crate) open_settings: SidebarAction,
     pub(crate) toggle_scope: SidebarAction,
     pub(crate) select_scope: SelectScope,
@@ -143,6 +144,10 @@ fn sidebar_actions(
                 .text_color(theme.text_3.hsla())
                 .cursor_pointer()
                 .hover(move |style| style.bg(theme.surface_2.hsla()))
+                .on_click({
+                    let open_search = actions.open_search.clone();
+                    move |_event, _window, cx| open_search(cx)
+                })
                 .child(icon("icons/search.svg", 13.0))
                 .child(
                     div()

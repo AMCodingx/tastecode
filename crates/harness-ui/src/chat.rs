@@ -386,6 +386,13 @@ impl ChatView {
         cx.notify();
     }
 
+    pub(crate) fn reveal_turn(&mut self, turn_id: &str, cx: &mut Context<Self>) {
+        if let Some(row) = self.state.first_row_for_turn(turn_id) {
+            self.list_state.scroll_to_reveal_item(row);
+            cx.notify();
+        }
+    }
+
     pub(crate) fn apply_update(&mut self, update: ChatUpdate, cx: &mut Context<Self>) {
         match update {
             ChatUpdate::History {

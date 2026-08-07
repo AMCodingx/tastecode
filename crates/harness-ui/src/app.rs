@@ -1,10 +1,12 @@
 mod provider_terminal;
+mod session_search;
 mod settings;
 
 use crate::assets::{HarnessAssets, register_fonts};
 use crate::chat::{ChatEvent, ChatView, ComposerSettings, SessionContext};
 use crate::client_state::{
-    ClientState, ClientUpdate, NewThreadRequest, ReviewHunkRequest, SendTurnRequest, ShellEvent,
+    ChatUpdate, ClientState, ClientUpdate, NewThreadRequest, ReviewHunkRequest, SendTurnRequest,
+    ShellEvent,
 };
 use crate::preferences::{NativePreferences, ThemePreference};
 use crate::preview_capture::PreviewCaptureRuntime;
@@ -21,6 +23,7 @@ use gpui_component::Root;
 use gpui_component::input::{InputEvent, InputState};
 use harness_protocol::{ApprovalMode, Model, ModelConnectionPreset, ProviderId};
 use provider_terminal::{ProviderTerminalKey, ProviderTerminalView};
+use session_search::SessionSearchState;
 use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 
@@ -85,6 +88,8 @@ struct HarnessApp {
     settings_open_transition: u64,
     settings_focus: FocusHandle,
     settings_focus_pending: bool,
+    session_search: SessionSearchState,
+    pending_reveal_turn: Option<(String, String)>,
     system_theme_mode: ThemeMode,
     preferences: NativePreferences,
     connection_editor_open: bool,
@@ -154,6 +159,8 @@ impl HarnessApp {
                 .rows(8)
                 .placeholder("MCP transport JSON")
         });
+        let session_search_input =
+            cx.new(|cx| InputState::new(window, cx).placeholder("Search every chat…"));
 
         for input in [
             &connection_name,
@@ -174,6 +181,15 @@ impl HarnessApp {
             })
             .detach();
         }
+        cx.subscribe(
+            &session_search_input,
+            |this, _input, event: &InputEvent, cx| {
+                if matches!(event, InputEvent::Change) {
+                    this.schedule_session_search(cx);
+                }
+            },
+        )
+        .detach();
 
         cx.subscribe(&chat, |this, _chat, event, cx| match event {
             ChatEvent::NeedHistory {
@@ -389,6 +405,8 @@ impl HarnessApp {
             settings_open_transition: 0,
             settings_focus: cx.focus_handle(),
             settings_focus_pending: false,
+            session_search: SessionSearchState::new(session_search_input),
+            pending_reveal_turn: None,
             system_theme_mode,
             preferences,
             connection_editor_open: false,
@@ -414,9 +432,26 @@ impl HarnessApp {
     fn apply_client_update(&mut self, update: ClientUpdate, cx: &mut Context<Self>) {
         let shell_changed = update.shell_changed;
         for chat_update in update.chat {
+            let reveal_turn = match (&chat_update, self.pending_reveal_turn.as_ref()) {
+                (
+                    ChatUpdate::History {
+                        thread_id,
+                        replace: true,
+                        ..
+                    },
+                    Some((pending_thread_id, turn_id)),
+                ) if thread_id == pending_thread_id => Some(turn_id.clone()),
+                _ => None,
+            };
             self.chat.update(cx, |chat, cx| {
                 chat.apply_update(chat_update, cx);
+                if let Some(turn_id) = reveal_turn.as_deref() {
+                    chat.reveal_turn(turn_id, cx);
+                }
             });
+            if reveal_turn.is_some() {
+                self.pending_reveal_turn = None;
+            }
         }
         if shell_changed {
             self.sync_model_selection();
@@ -574,6 +609,30 @@ impl HarnessApp {
                     });
                 })
                 .detach();
+            }
+            ShellEvent::SessionSearchResults {
+                revision,
+                append,
+                page,
+            } => {
+                if self.session_search.open && self.session_search.revision == revision {
+                    self.session_search.loading = false;
+                    self.session_search.error = None;
+                    if append {
+                        self.session_search.results.extend(page.results);
+                    } else {
+                        self.session_search.results = page.results;
+                    }
+                    self.session_search.next_cursor = page.next_cursor;
+                    cx.notify();
+                }
+            }
+            ShellEvent::SessionSearchError { revision, message } => {
+                if self.session_search.open && self.session_search.revision == revision {
+                    self.session_search.loading = false;
+                    self.session_search.error = Some(message);
+                    cx.notify();
+                }
             }
         }
     }
@@ -894,6 +953,7 @@ impl HarnessApp {
         let select_view = cx.weak_entity();
         let new_chat_view = select_view.clone();
         let new_project_view = select_view.clone();
+        let search_view = select_view.clone();
         let settings_view = select_view.clone();
         let toggle_scope_view = select_view.clone();
         let select_scope_view = select_view.clone();
@@ -906,6 +966,11 @@ impl HarnessApp {
             }),
             new_project: Rc::new(move |cx| {
                 let _ = new_project_view.update(cx, |this, cx| this.pick_project(cx));
+            }),
+            open_search: Rc::new(move |cx| {
+                let _ = search_view.update(cx, |this, cx| {
+                    this.open_session_search(None, cx);
+                });
             }),
             open_settings: Rc::new(move |cx| {
                 let _ = settings_view.update(cx, |this, cx| {
@@ -1024,6 +1089,7 @@ impl HarnessApp {
 
 impl Render for HarnessApp {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        self.prepare_session_search_input(window, cx);
         if self.settings_open && self.settings_focus_pending {
             self.settings_focus.focus(window);
             self.settings_focus_pending = false;
@@ -1090,8 +1156,11 @@ impl Render for HarnessApp {
             normal_body
         };
         let settings_open = self.settings_open;
+        let search_open = self.session_search.open;
+        let search_overlay = self.session_search_overlay(window, cx);
         div()
             .size_full()
+            .relative()
             .flex()
             .flex_col()
             .overflow_hidden()
@@ -1099,7 +1168,17 @@ impl Render for HarnessApp {
             .text_size(px(13.5))
             .text_color(self.theme.text.hsla())
             .bg(self.theme.background.hsla())
-            .when(settings_open, |root| {
+            .on_key_down(cx.listener(|this, event: &KeyDownEvent, _window, cx| {
+                let keystroke = &event.keystroke;
+                if keystroke.modifiers.secondary()
+                    && keystroke.modifiers.shift
+                    && keystroke.key.eq_ignore_ascii_case("f")
+                {
+                    cx.stop_propagation();
+                    this.open_session_search(None, cx);
+                }
+            }))
+            .when(settings_open && !search_open, |root| {
                 root.track_focus(&self.settings_focus)
                     .on_key_down(cx.listener(|this, event: &KeyDownEvent, _window, cx| {
                         if event.keystroke.key.eq_ignore_ascii_case("escape") {
@@ -1108,12 +1187,21 @@ impl Render for HarnessApp {
                         }
                     }))
             })
+            .when(search_open, |root| {
+                root.on_key_down(cx.listener(|this, event: &KeyDownEvent, _window, cx| {
+                    if event.keystroke.key.eq_ignore_ascii_case("escape") {
+                        cx.stop_propagation();
+                        this.close_session_search(cx);
+                    }
+                }))
+            })
             .child(if settings_open {
                 self.settings_titlebar().into_any_element()
             } else {
                 self.titlebar(cx).into_any_element()
             })
             .child(body)
+            .when_some(search_overlay, |root, overlay| root.child(overlay))
     }
 }
 

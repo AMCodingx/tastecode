@@ -175,6 +175,13 @@ impl ThreadState {
         self.item_rows.get(turn_id)?.get(item_id).copied()
     }
 
+    pub fn first_row_for_turn(&self, turn_id: &str) -> Option<usize> {
+        let turn_index = self.turn_index.get(turn_id).copied()?;
+        self.timeline
+            .iter()
+            .position(|(candidate, _)| *candidate == turn_index)
+    }
+
     fn apply_event(&mut self, event: DomainEvent) -> Result<ChangeSet, HistoryError> {
         let changes = match event {
             DomainEvent::ThreadStarted { thread } => {
@@ -405,6 +412,76 @@ mod tests {
         assert_eq!(state.turns[0].items[0].text.as_deref(), Some("Hello"));
         assert_eq!(state.turns[0].items[0].item_type, ItemType::Message);
         assert_eq!(state.turns[0].items[0].role, Some(MessageRole::Assistant));
+    }
+
+    #[test]
+    fn turn_lookup_returns_the_first_rendered_row() {
+        let mut state = ThreadState::default();
+        state
+            .replace_history(ThreadHistoryResult {
+                running: false,
+                events: vec![
+                    SequencedDomainEvent {
+                        seq: 1,
+                        event: event(json!({
+                            "type": "turn.started",
+                            "turn": {
+                                "id": "turn-1",
+                                "threadId": "thread-1",
+                                "status": "running",
+                                "createdAt": 1
+                            }
+                        })),
+                    },
+                    SequencedDomainEvent {
+                        seq: 2,
+                        event: event(json!({
+                            "type": "item.started",
+                            "item": {
+                                "id": "item-1",
+                                "turnId": "turn-1",
+                                "type": "message",
+                                "status": "completed",
+                                "role": "user",
+                                "text": "First",
+                                "createdAt": 2
+                            }
+                        })),
+                    },
+                    SequencedDomainEvent {
+                        seq: 3,
+                        event: event(json!({
+                            "type": "turn.started",
+                            "turn": {
+                                "id": "turn-2",
+                                "threadId": "thread-1",
+                                "status": "running",
+                                "createdAt": 3
+                            }
+                        })),
+                    },
+                    SequencedDomainEvent {
+                        seq: 4,
+                        event: event(json!({
+                            "type": "item.started",
+                            "item": {
+                                "id": "item-2",
+                                "turnId": "turn-2",
+                                "type": "message",
+                                "status": "completed",
+                                "role": "assistant",
+                                "text": "Second",
+                                "createdAt": 4
+                            }
+                        })),
+                    },
+                ],
+            })
+            .unwrap();
+
+        assert_eq!(state.first_row_for_turn("turn-1"), Some(0));
+        assert_eq!(state.first_row_for_turn("turn-2"), Some(1));
+        assert_eq!(state.first_row_for_turn("missing"), None);
     }
 
     #[test]
