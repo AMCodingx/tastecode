@@ -129,7 +129,7 @@ impl HarnessApp {
             }
             return;
         }
-        if self.onboarding.is_some() || event.is_held {
+        if event.is_held {
             return;
         }
         if matches(event, SEARCH_SESSIONS) {

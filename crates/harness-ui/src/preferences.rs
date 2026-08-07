@@ -1,6 +1,5 @@
 use crate::theme::{Accent, Backdrop};
 use anyhow::{Context as _, Result};
-use harness_protocol::ProviderId;
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use std::fs;
@@ -44,9 +43,6 @@ pub(crate) struct NativePreferences {
     pub(crate) hidden_models: HashSet<String>,
     pub(crate) selected_model_key: Option<String>,
     pub(crate) model_by_source: HashMap<String, SourceSelection>,
-    pub(crate) setup_provider: Option<ProviderId>,
-    pub(crate) setup_agent: Option<String>,
-    pub(crate) setup_agent_name: Option<String>,
 }
 
 impl Default for NativePreferences {
@@ -63,9 +59,6 @@ impl Default for NativePreferences {
             hidden_models: HashSet::new(),
             selected_model_key: None,
             model_by_source: HashMap::new(),
-            setup_provider: None,
-            setup_agent: None,
-            setup_agent_name: None,
         }
     }
 }
@@ -149,7 +142,6 @@ mod tests {
         assert!(preferences.hidden_models.is_empty());
         assert_eq!(preferences.selected_model_key, None);
         assert!(preferences.model_by_source.is_empty());
-        assert_eq!(preferences.setup_provider, None);
     }
 
     #[test]
@@ -177,10 +169,6 @@ mod tests {
                 service_tier: Some("fast".into()),
             },
         );
-        preferences.setup_provider = Some(ProviderId::Acp);
-        preferences.setup_agent = Some("gemini".into());
-        preferences.setup_agent_name = Some("Gemini CLI".into());
-
         let json = serde_json::to_string(&preferences).unwrap();
         let decoded: NativePreferences = serde_json::from_str(&json).unwrap();
 
