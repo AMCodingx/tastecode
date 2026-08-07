@@ -1,3 +1,4 @@
+mod code_extensions;
 mod diff;
 mod markdown;
 mod presentation;

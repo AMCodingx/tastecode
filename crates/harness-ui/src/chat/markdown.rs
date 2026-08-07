@@ -1,4 +1,5 @@
 use super::ChatView;
+use super::code_extensions::code_file_extension;
 use crate::theme::{Theme, ThemeMode, web_ease_out};
 use crate::zoom::px;
 use ::markdown::{ParseOptions, mdast::Node};
@@ -286,8 +287,21 @@ fn render_code_block(
         code.value.clone(),
         group.clone(),
         context.theme,
+        !context.streaming,
         window,
         cx,
+    );
+    let filename = format!(
+        "file.{}",
+        code.lang.as_deref().map_or("txt", code_file_extension)
+    );
+    let download = download_control(
+        format!("{block_id}:download"),
+        filename,
+        code.value.clone(),
+        group.clone(),
+        context.theme,
+        !context.streaming,
     );
 
     div()
@@ -306,7 +320,14 @@ fn render_code_block(
                 .text_size(px(11.5))
                 .text_color(context.theme.text_3.hsla())
                 .child(code.lang.clone().unwrap_or_default())
-                .child(copy),
+                .child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .gap(px(4.0))
+                        .child(download)
+                        .child(copy),
+                ),
         )
         .child(
             div()
@@ -356,6 +377,7 @@ fn render_table(
         table_plain_text(table),
         group.clone(),
         context.theme,
+        !context.streaming,
         window,
         cx,
     );
@@ -420,6 +442,7 @@ fn copy_control(
     value: String,
     group: SharedString,
     theme: Theme,
+    enabled: bool,
     window: &mut Window,
     cx: &mut App,
 ) -> AnyElement {
@@ -438,30 +461,35 @@ fn copy_control(
         .border_color(theme.line.hsla())
         .bg(theme.surface_2.hsla())
         .text_color(theme.text_3.hsla())
-        .cursor_pointer()
         .opacity(0.0)
-        .group_hover(group, |control| control.opacity(1.0))
-        .hover(move |control| control.text_color(theme.text.hsla()))
-        .on_click(move |_event, _window, cx| {
-            cx.stop_propagation();
-            cx.write_to_clipboard(ClipboardItem::new_string(value.clone()));
-            state.update(cx, |state, cx| {
-                state.copied = true;
-                state.generation = state.generation.wrapping_add(1);
-                cx.notify();
-            });
-            let generation = state.read(cx).generation;
-            let state = state.clone();
-            cx.spawn(async move |cx| {
-                cx.background_executor().timer(Duration::from_secs(2)).await;
-                let _ = state.update(cx, |state, cx| {
-                    if state.generation == generation {
-                        state.copied = false;
+        .group_hover(group, move |control| {
+            control.opacity(if enabled { 1.0 } else { 0.5 })
+        })
+        .when(enabled, |control| {
+            control
+                .cursor_pointer()
+                .hover(move |control| control.text_color(theme.text.hsla()))
+                .on_click(move |_event, _window, cx| {
+                    cx.stop_propagation();
+                    cx.write_to_clipboard(ClipboardItem::new_string(value.clone()));
+                    state.update(cx, |state, cx| {
+                        state.copied = true;
+                        state.generation = state.generation.wrapping_add(1);
                         cx.notify();
-                    }
-                });
-            })
-            .detach();
+                    });
+                    let generation = state.read(cx).generation;
+                    let state = state.clone();
+                    cx.spawn(async move |cx| {
+                        cx.background_executor().timer(Duration::from_secs(2)).await;
+                        let _ = state.update(cx, |state, cx| {
+                            if state.generation == generation {
+                                state.copied = false;
+                                cx.notify();
+                            }
+                        });
+                    })
+                    .detach();
+                })
         })
         .child(
             svg()
@@ -472,6 +500,53 @@ fn copy_control(
                 })
                 .size(px(13.0)),
         )
+        .into_any_element()
+}
+
+fn download_control(
+    id: String,
+    filename: String,
+    value: String,
+    group: SharedString,
+    theme: Theme,
+    enabled: bool,
+) -> AnyElement {
+    div()
+        .id(SharedString::from(id))
+        .size(px(24.0))
+        .flex()
+        .items_center()
+        .justify_center()
+        .rounded(px(5.0))
+        .border_1()
+        .border_color(theme.line.hsla())
+        .bg(theme.surface_2.hsla())
+        .text_color(theme.text_3.hsla())
+        .opacity(0.0)
+        .group_hover(group, move |control| {
+            control.opacity(if enabled { 1.0 } else { 0.5 })
+        })
+        .when(enabled, |control| {
+            control
+                .cursor_pointer()
+                .hover(move |control| control.text_color(theme.text.hsla()))
+                .on_click(move |_event, _window, cx| {
+                    cx.stop_propagation();
+                    let directory = dirs::download_dir().unwrap_or_else(std::env::temp_dir);
+                    let receiver = cx.prompt_for_new_path(&directory, Some(&filename));
+                    let value = value.clone();
+                    cx.spawn(async move |cx| {
+                        let Ok(Ok(Some(destination))) = receiver.await else {
+                            return;
+                        };
+                        let write =
+                            cx.background_spawn(async move { std::fs::write(destination, value) });
+                        let _ = write.await;
+                    })
+                    .detach();
+                })
+        })
+        .child(svg().path("icons/download.svg").size(px(13.0)))
         .into_any_element()
 }
 
