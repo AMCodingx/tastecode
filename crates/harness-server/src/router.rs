@@ -87,6 +87,10 @@ pub(crate) fn route(
                 platform: current_platform(),
             })
         }
+        method::SYSTEM_UPDATE_CHECK => {
+            let _: EmptyParams = decode(method_name, params)?;
+            encoded(crate::update_check::check())
+        }
         method::SEARCH_SESSIONS => {
             let params: SearchParams = decode(method_name, params)?;
             let query = params.query.trim().to_owned();

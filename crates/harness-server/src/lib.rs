@@ -14,6 +14,7 @@ mod model_connections;
 mod push;
 mod router;
 mod skill_install;
+mod update_check;
 
 pub use access::{allowed_origin, assert_safe_bind, has_access};
 pub use router::SERVER_VERSION;
