@@ -66,8 +66,6 @@ pub struct ClaudeCodeSession {
 struct SessionInner {
     thread: Thread,
     workspace: PathBuf,
-    model: Option<String>,
-    effort: Option<String>,
     approval: Option<ApprovalMode>,
     instructions: Option<String>,
     instructions_dir: Mutex<Option<PathBuf>>,
@@ -80,6 +78,8 @@ struct SessionInner {
 }
 
 struct SessionState {
+    model: Option<String>,
+    effort: Option<String>,
     session_id: Option<String>,
     turn_counter: u64,
     active: Option<ActiveTurn>,
@@ -165,8 +165,6 @@ impl ClaudeCodeSession {
             inner: Arc::new(SessionInner {
                 thread: state.thread,
                 workspace,
-                model: state.model,
-                effort: state.effort,
                 approval: state.approval,
                 instructions: state.instructions,
                 instructions_dir: Mutex::new(instructions_dir),
@@ -174,6 +172,8 @@ impl ClaudeCodeSession {
                 command,
                 handlers,
                 state: Mutex::new(SessionState {
+                    model: state.model,
+                    effort: state.effort,
                     session_id: state.session_id,
                     turn_counter: state.turn_counter,
                     active: None,
@@ -189,8 +189,8 @@ impl ClaudeCodeSession {
         ClaudeSessionState {
             version: SESSION_STATE_VERSION,
             thread: self.inner.thread.clone(),
-            model: self.inner.model.clone(),
-            effort: self.inner.effort.clone(),
+            model: state.model.clone(),
+            effort: state.effort.clone(),
             approval: self.inner.approval,
             instructions: self.inner.instructions.clone(),
             session_id: state.session_id.clone(),
@@ -233,6 +233,7 @@ impl ClaudeCodeSession {
         thread_id: &str,
         text: &str,
         attachments: &[String],
+        options: &TurnOptions,
     ) -> AgentResult<String> {
         self.require_thread(thread_id)?;
         if !attachments.is_empty() {
@@ -250,11 +251,13 @@ impl ClaudeCodeSession {
                 "a Claude Code turn is already running".into(),
             ));
         }
+        let SessionState { model, effort, .. } = &mut *state;
+        apply_turn_options(model, effort, options);
         let next_counter = state.turn_counter.saturating_add(1);
         let turn_id = format!("{}-turn-{next_counter}", self.inner.thread.id);
         let turn_args = claude_turn_args(
-            self.inner.model.as_deref(),
-            self.inner.effort.as_deref(),
+            state.model.as_deref(),
+            state.effort.as_deref(),
             self.inner.approval,
             state.session_id.as_deref(),
             self.inner.instructions_file.as_deref(),
@@ -366,9 +369,9 @@ impl AgentSession for ClaudeCodeSession {
         thread_id: &str,
         text: &str,
         attachments: &[String],
-        _options: &TurnOptions,
+        options: &TurnOptions,
     ) -> AgentResult<String> {
-        self.send_turn_inner(thread_id, text, attachments)
+        self.send_turn_inner(thread_id, text, attachments, options)
     }
 
     fn interrupt(&self, thread_id: &str) -> AgentResult<()> {
@@ -644,6 +647,19 @@ pub(crate) fn claude_turn_args(
     Ok(args)
 }
 
+fn apply_turn_options(
+    model: &mut Option<String>,
+    effort: &mut Option<String>,
+    options: &TurnOptions,
+) {
+    if let Some(next_model) = &options.model {
+        *model = Some(next_model.clone());
+        *effort = options.effort.clone();
+    } else if options.effort.is_some() {
+        *effort = options.effort.clone();
+    }
+}
+
 fn prepare_instructions(
     instructions: Option<&str>,
     handlers: &AgentHandlers,
@@ -747,6 +763,27 @@ mod tests {
     }
 
     #[test]
+    fn per_turn_selection_persists_and_a_model_change_can_clear_effort() {
+        let mut model = Some("opus".into());
+        let mut effort = Some("xhigh".into());
+        apply_turn_options(&mut model, &mut effort, &TurnOptions::default());
+        assert_eq!(model.as_deref(), Some("opus"));
+        assert_eq!(effort.as_deref(), Some("xhigh"));
+
+        apply_turn_options(
+            &mut model,
+            &mut effort,
+            &TurnOptions {
+                model: Some("haiku".into()),
+                effort: None,
+                ..TurnOptions::default()
+            },
+        );
+        assert_eq!(model.as_deref(), Some("haiku"));
+        assert_eq!(effort, None);
+    }
+
+    #[test]
     fn drives_turns_resume_state_and_interrupt_over_real_stdio() {
         let workspace = tempfile::tempdir().unwrap();
         let (event_tx, event_rx) = mpsc::channel();
@@ -785,7 +822,11 @@ mod tests {
                 &thread.id,
                 "first line\nsecond line",
                 &[],
-                &TurnOptions::default(),
+                &TurnOptions {
+                    model: Some("sonnet".into()),
+                    effort: Some("xhigh".into()),
+                    ..TurnOptions::default()
+                },
             )
             .unwrap();
         let first_events = through_terminal(&event_rx, &first);
@@ -801,6 +842,8 @@ mod tests {
         let state: ClaudeSessionState = serde_json::from_value(saved.value().clone()).unwrap();
         assert_eq!(state.session_id.as_deref(), Some("claude-session-1"));
         assert_eq!(state.turn_counter, 1);
+        assert_eq!(state.model.as_deref(), Some("sonnet"));
+        assert_eq!(state.effort.as_deref(), Some("xhigh"));
 
         session.dispose();
         let (resumed_thread, resumed) = runtime

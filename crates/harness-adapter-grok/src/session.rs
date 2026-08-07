@@ -64,8 +64,6 @@ pub struct GrokSession {
 struct SessionInner {
     thread: Thread,
     workspace: PathBuf,
-    model: Option<String>,
-    effort: Option<String>,
     approval: Option<ApprovalMode>,
     instructions: Option<String>,
     command: GrokCommand,
@@ -76,6 +74,8 @@ struct SessionInner {
 }
 
 struct SessionState {
+    model: Option<String>,
+    effort: Option<String>,
     instructions_pending: bool,
     session_id: Option<String>,
     turn_counter: u64,
@@ -152,13 +152,13 @@ impl GrokSession {
             inner: Arc::new(SessionInner {
                 thread: state.thread,
                 workspace,
-                model: state.model,
-                effort: state.effort,
                 approval: state.approval,
                 instructions: state.instructions,
                 command,
                 handlers,
                 state: Mutex::new(SessionState {
+                    model: state.model,
+                    effort: state.effort,
                     instructions_pending: state.instructions_pending,
                     session_id: state.session_id,
                     turn_counter: state.turn_counter,
@@ -175,8 +175,8 @@ impl GrokSession {
         GrokSessionState {
             version: SESSION_STATE_VERSION,
             thread: self.inner.thread.clone(),
-            model: self.inner.model.clone(),
-            effort: self.inner.effort.clone(),
+            model: state.model.clone(),
+            effort: state.effort.clone(),
             approval: self.inner.approval,
             instructions: self.inner.instructions.clone(),
             instructions_pending: state.instructions_pending,
@@ -236,6 +236,8 @@ impl GrokSession {
         if state.active.is_some() {
             return Err(AgentError::Failed("a Grok turn is already running".into()));
         }
+        let SessionState { model, effort, .. } = &mut *state;
+        apply_turn_options(model, effort, options);
         let next_counter = state.turn_counter.saturating_add(1);
         let turn_id = format!("{}-turn-{next_counter}", self.inner.thread.id);
         let prompt = grok_prompt(
@@ -247,8 +249,8 @@ impl GrokSession {
         );
         let turn_args = grok_turn_args(
             &prompt,
-            options.model.as_deref().or(self.inner.model.as_deref()),
-            options.effort.as_deref().or(self.inner.effort.as_deref()),
+            state.model.as_deref(),
+            state.effort.as_deref(),
             self.inner.approval,
             state.session_id.as_deref(),
         )?;
@@ -542,7 +544,7 @@ pub(crate) fn grok_turn_args(
         args.extend([OsString::from("--model"), OsString::from(model)]);
     }
     if let Some(effort) = effort {
-        args.extend([OsString::from("--effort"), OsString::from(effort)]);
+        args.extend([OsString::from("--reasoning-effort"), OsString::from(effort)]);
     }
     match approval {
         Some(ApprovalMode::Auto) => args.extend([
@@ -559,6 +561,19 @@ pub(crate) fn grok_turn_args(
         args.extend([OsString::from("-r"), OsString::from(session_id)]);
     }
     Ok(args)
+}
+
+fn apply_turn_options(
+    model: &mut Option<String>,
+    effort: &mut Option<String>,
+    options: &TurnOptions,
+) {
+    if let Some(next_model) = &options.model {
+        *model = Some(next_model.clone());
+        *effort = options.effort.clone();
+    } else if options.effort.is_some() {
+        *effort = options.effort.clone();
+    }
 }
 
 fn validate_state(state: &GrokSessionState) -> AgentResult<()> {
@@ -631,6 +646,10 @@ mod tests {
         for expected in ["grok-4.5", "xhigh", "acceptEdits", "session-1"] {
             assert!(args.iter().any(|arg| arg == OsStr::new(expected)));
         }
+        assert!(args.windows(2).any(|pair| {
+            pair[0] == OsStr::new("--reasoning-effort") && pair[1] == OsStr::new("xhigh")
+        }));
+        assert!(args.iter().all(|arg| arg != OsStr::new("--effort")));
         assert!(
             grok_turn_args("x", None, None, Some(ApprovalMode::Full), None)
                 .unwrap()
@@ -643,6 +662,27 @@ mod tests {
                 .iter()
                 .all(|arg| arg != OsStr::new("--permission-mode"))
         );
+    }
+
+    #[test]
+    fn per_turn_selection_persists_and_a_model_change_can_clear_effort() {
+        let mut model = Some("grok-4.5".into());
+        let mut effort = Some("high".into());
+        apply_turn_options(&mut model, &mut effort, &TurnOptions::default());
+        assert_eq!(model.as_deref(), Some("grok-4.5"));
+        assert_eq!(effort.as_deref(), Some("high"));
+
+        apply_turn_options(
+            &mut model,
+            &mut effort,
+            &TurnOptions {
+                model: Some("grok-future".into()),
+                effort: None,
+                ..TurnOptions::default()
+            },
+        );
+        assert_eq!(model.as_deref(), Some("grok-future"));
+        assert_eq!(effort, None);
     }
 
     #[test]
@@ -668,7 +708,16 @@ mod tests {
             )
             .unwrap();
         let turn = session
-            .send_turn(&thread.id, "Create hello.txt", &[], &TurnOptions::default())
+            .send_turn(
+                &thread.id,
+                "Create hello.txt",
+                &[],
+                &TurnOptions {
+                    model: Some("grok-future".into()),
+                    effort: None,
+                    ..TurnOptions::default()
+                },
+            )
             .unwrap();
         let events = through_terminal(&event_rx, &turn);
         assert!(events.iter().any(|event| matches!(
@@ -688,6 +737,8 @@ mod tests {
             Some("019fd9b0-1c9b-7dd3-85a2-2b7b628382d3")
         );
         assert_eq!(state.turn_counter, 1);
+        assert_eq!(state.model.as_deref(), Some("grok-future"));
+        assert_eq!(state.effort, None);
         session.dispose();
 
         let (event_tx, event_rx) = mpsc::channel();
