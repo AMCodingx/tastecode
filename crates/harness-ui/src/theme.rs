@@ -240,40 +240,42 @@ impl Theme {
         let colors = match (self.mode, backdrop) {
             (_, Backdrop::Default) => return,
             (ThemeMode::Dark, Backdrop::Slate) => {
-                [0x0e1013, 0x12151a, 0x191d24, 0x20242c, 0x292e37]
+                [0x0e1013, 0x12151a, 0x191d24, 0x191d24, 0x20242c, 0x292e37]
             }
             (ThemeMode::Dark, Backdrop::Mocha) => {
-                [0x121010, 0x161312, 0x1c1817, 0x241f1d, 0x2d2725]
+                [0x121010, 0x161312, 0x1c1817, 0x1c1817, 0x241f1d, 0x2d2725]
             }
             (ThemeMode::Dark, Backdrop::Forest) => {
-                [0x0e120f, 0x121713, 0x181f1a, 0x202822, 0x29322b]
+                [0x0e120f, 0x121713, 0x181f1a, 0x181f1a, 0x202822, 0x29322b]
             }
             (ThemeMode::Dark, Backdrop::Midnight) => {
-                [0x0b0d14, 0x0e1119, 0x141828, 0x1b2030, 0x232939]
+                [0x0b0d14, 0x0e1119, 0x141828, 0x141828, 0x1b2030, 0x232939]
             }
-            (ThemeMode::Dark, Backdrop::Plum) => [0x120f13, 0x161217, 0x1d181e, 0x251f26, 0x2e2730],
+            (ThemeMode::Dark, Backdrop::Plum) => {
+                [0x120f13, 0x161217, 0x1d181e, 0x1d181e, 0x251f26, 0x2e2730]
+            }
             (ThemeMode::Light, Backdrop::Slate) => {
-                [0xf7f9fc, 0xf2f5f9, 0xeef2f7, 0xe3e9f1, 0xd7dfe9]
+                [0xf7f9fc, 0xf2f5f9, 0xfbfcfe, 0xeef2f7, 0xe3e9f1, 0xd7dfe9]
             }
             (ThemeMode::Light, Backdrop::Mocha) => {
-                [0xfcfaf8, 0xf7f4f0, 0xf4f0eb, 0xebe5de, 0xe0d9d0]
+                [0xfcfaf8, 0xf7f4f0, 0xfefdfb, 0xf4f0eb, 0xebe5de, 0xe0d9d0]
             }
             (ThemeMode::Light, Backdrop::Forest) => {
-                [0xf8fbf8, 0xf2f7f2, 0xeef4ee, 0xe3ece3, 0xd6e2d6]
+                [0xf8fbf8, 0xf2f7f2, 0xfcfefc, 0xeef4ee, 0xe3ece3, 0xd6e2d6]
             }
             (ThemeMode::Light, Backdrop::Midnight) => {
-                [0xf5f7fc, 0xeff2f9, 0xebeef7, 0xdfe4f0, 0xd2d9e8]
+                [0xf5f7fc, 0xeff2f9, 0xfafbfe, 0xebeef7, 0xdfe4f0, 0xd2d9e8]
             }
             (ThemeMode::Light, Backdrop::Plum) => {
-                [0xfbf8fc, 0xf6f2f7, 0xf3eef4, 0xeae2ec, 0xded4e0]
+                [0xfbf8fc, 0xf6f2f7, 0xfdfcfe, 0xf3eef4, 0xeae2ec, 0xded4e0]
             }
         };
         self.background = ColorToken(colors[0]);
         self.rail = ColorToken(colors[1]);
         self.prompt = ColorToken(colors[2]);
-        self.surface = ColorToken(colors[2]);
-        self.surface_2 = ColorToken(colors[3]);
-        self.surface_3 = ColorToken(colors[4]);
+        self.surface = ColorToken(colors[3]);
+        self.surface_2 = ColorToken(colors[4]);
+        self.surface_3 = ColorToken(colors[5]);
     }
 
     fn apply_accent(&mut self, accent: Accent) {
@@ -400,12 +402,32 @@ mod tests {
         let plum = Theme::new(ThemeMode::Light, Backdrop::Plum, Accent::Lavender);
 
         assert_eq!(slate.background, ColorToken(0x0e1013));
+        assert_eq!(slate.prompt, ColorToken(0x191d24));
+        assert_eq!(slate.surface, ColorToken(0x191d24));
         assert_eq!(slate.attention, ColorToken(0x65b8ff));
         assert_eq!(slate.file_reference, ColorToken(0x62abc7));
         assert_eq!(slate.effort, ColorToken(0x74b8cf));
         assert_eq!(plum.background, ColorToken(0xfbf8fc));
+        assert_eq!(plum.prompt, ColorToken(0xfdfcfe));
+        assert_eq!(plum.surface, ColorToken(0xf3eef4));
         assert_eq!(plum.attention, ColorToken(0x6653aa));
         assert_eq!(plum.file_reference, ColorToken(0x675896));
         assert_eq!(plum.effort, ColorToken(0x81548f));
+    }
+
+    #[test]
+    fn light_backdrops_keep_the_prompt_lighter_than_the_surface() {
+        let expected = [
+            (Backdrop::Slate, 0xfbfcfe, 0xeef2f7),
+            (Backdrop::Mocha, 0xfefdfb, 0xf4f0eb),
+            (Backdrop::Forest, 0xfcfefc, 0xeef4ee),
+            (Backdrop::Midnight, 0xfafbfe, 0xebeef7),
+            (Backdrop::Plum, 0xfdfcfe, 0xf3eef4),
+        ];
+        for (backdrop, prompt, surface) in expected {
+            let theme = Theme::new(ThemeMode::Light, backdrop, Accent::Neutral);
+            assert_eq!(theme.prompt, ColorToken(prompt));
+            assert_eq!(theme.surface, ColorToken(surface));
+        }
     }
 }
