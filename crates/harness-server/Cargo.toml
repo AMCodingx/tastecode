@@ -9,6 +9,7 @@ publish.workspace = true
 chrono.workspace = true
 dirs.workspace = true
 harness-protocol = { path = "../harness-protocol" }
+harness-providers = { path = "../harness-providers" }
 harness-store = { path = "../harness-store" }
 harness-terminal = { path = "../harness-terminal" }
 harness-workspace = { path = "../harness-workspace" }

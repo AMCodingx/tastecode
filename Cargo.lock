@@ -2771,6 +2771,7 @@ dependencies = [
  "chrono",
  "dirs 5.0.1",
  "harness-protocol",
+ "harness-providers",
  "harness-store",
  "harness-terminal",
  "harness-workspace",

@@ -2,11 +2,12 @@ use crate::ServerState;
 use chrono::{Datelike as _, Local, TimeZone as _};
 use harness_protocol::method;
 use harness_protocol::{
-    CheckpointSummary, ErrorCode, ProjectAddedResult, ProjectSummary, ProjectsListResult,
-    ProviderId, ServerWelcome, SessionSummary, SettleReason, SidebarMode, SystemInfo,
-    SystemPlatform, TerminalOpenedResult, ThreadCheckpointsResult, ThreadHistoryResult,
-    ThreadInboxStatus, ThreadLifecycle, ThreadLifecyclePush, ThreadLifecycleResult,
-    ThreadUnsavedWorkResult, Usage, UsageSummaryResult, WireError, channel,
+    AcpAgentsResult, CheckpointSummary, ErrorCode, ProjectAddedResult, ProjectSummary,
+    ProjectsListResult, ProviderId, ProvidersListResult, ServerWelcome, SessionSummary,
+    SettleReason, SidebarMode, SystemInfo, SystemPlatform, TerminalOpenedResult,
+    ThreadCheckpointsResult, ThreadHistoryResult, ThreadInboxStatus, ThreadLifecycle,
+    ThreadLifecyclePush, ThreadLifecycleResult, ThreadUnsavedWorkResult, Usage, UsageSummaryResult,
+    WireError, channel,
 };
 use harness_store::{SearchOptions, SidebarSettingsUpdate, Store, StoreError};
 use serde::Deserialize;
@@ -92,6 +93,34 @@ pub(crate) fn route(
                 cursor: params.cursor,
                 limit: params.limit,
             })?)
+        }
+        method::PROVIDERS_LIST => {
+            let _: EmptyParams = decode(method_name, params)?;
+            encoded(ProvidersListResult {
+                providers: harness_providers::detect_providers(),
+            })
+        }
+        method::PROVIDERS_INSTALL => {
+            let params: ProviderActionParams = decode(method_name, params)?;
+            validate_provider_action(method_name, &params)?;
+            let target =
+                harness_providers::install_command_for(params.provider, params.agent.as_deref())
+                    .map_err(RouteError::internal)?;
+            run_provider_terminal(state, "install", target, params.columns, params.rows)
+        }
+        method::PROVIDERS_LAUNCH => {
+            let params: ProviderActionParams = decode(method_name, params)?;
+            validate_provider_action(method_name, &params)?;
+            let target =
+                harness_providers::launch_command_for(params.provider, params.agent.as_deref())
+                    .map_err(RouteError::internal)?;
+            run_provider_terminal(state, "login", target, params.columns, params.rows)
+        }
+        method::ACP_AGENTS => {
+            let _: EmptyParams = decode(method_name, params)?;
+            encoded(AcpAgentsResult {
+                agents: harness_providers::detect_agents(),
+            })
         }
         method::WORKSPACE_INFO => {
             let params: WorkspacePathParams = decode(method_name, params)?;
@@ -599,6 +628,38 @@ fn validate_terminal_size(method: &str, columns: u16, rows: u16) -> Result<(), R
     Ok(())
 }
 
+fn validate_provider_action(method: &str, params: &ProviderActionParams) -> Result<(), RouteError> {
+    if params.agent.as_deref().is_some_and(str::is_empty) {
+        return Err(RouteError::bad_params(
+            method,
+            "agent must be a non-empty string when present",
+        ));
+    }
+    validate_terminal_size(method, params.columns, params.rows)
+}
+
+fn run_provider_terminal(
+    state: &ServerState,
+    action: &str,
+    target: harness_providers::ProviderCommand,
+    columns: u16,
+    rows: u16,
+) -> Result<Value, RouteError> {
+    let cwd = dirs::home_dir().ok_or_else(|| RouteError::internal("home directory unavailable"))?;
+    encoded(TerminalOpenedResult {
+        terminal_id: state
+            .terminals
+            .run(
+                &format!("{action}:{}", target.key),
+                target.command,
+                cwd,
+                columns,
+                rows,
+            )
+            .map_err(RouteError::internal)?,
+    })
+}
+
 fn exact_u64(value: f64) -> Option<u64> {
     (value.is_finite() && value >= 0.0 && value.fract() == 0.0 && value <= u64::MAX as f64)
         .then_some(value as u64)
@@ -787,6 +848,15 @@ struct ProjectPathParams {
 }
 
 #[derive(Deserialize)]
+struct ProviderActionParams {
+    provider: ProviderId,
+    #[serde(default, deserialize_with = "deserialize_present")]
+    agent: Option<String>,
+    columns: u16,
+    rows: u16,
+}
+
+#[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct TerminalOpenParams {
     thread_id: String,
@@ -958,6 +1028,15 @@ mod tests {
             serde_json::from_value::<ThreadDiscardWorktreeParams>(
                 json!({ "threadId": "thread", "force": null })
             )
+            .is_err()
+        );
+        assert!(
+            serde_json::from_value::<ProviderActionParams>(json!({
+                "provider": "acp",
+                "agent": null,
+                "columns": 80,
+                "rows": 24
+            }))
             .is_err()
         );
     }

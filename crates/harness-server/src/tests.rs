@@ -183,6 +183,93 @@ fn live_transport_sends_welcome_drops_malformed_frames_and_reports_typed_errors(
 }
 
 #[test]
+fn live_provider_routes_report_the_catalog_and_refuse_client_selected_commands() {
+    let (_directory, server) = start_test_server(None, |_| {});
+    let mut socket = connect_native(&server, "");
+    if let MaybeTlsStream::Plain(stream) = socket.get_mut() {
+        stream
+            .set_read_timeout(Some(Duration::from_secs(8)))
+            .unwrap();
+    }
+    assert_welcome(&mut socket);
+
+    send_request(&mut socket, "providers", "providers.list", json!({}));
+    let providers = read_value(&mut socket);
+    assert_eq!(providers["id"], "providers");
+    assert_eq!(
+        providers["result"]["providers"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|provider| provider["id"].as_str().unwrap())
+            .collect::<Vec<_>>(),
+        ["codex", "claude-code", "cursor", "opencode", "acp"]
+    );
+    assert!(
+        providers["result"]["providers"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|provider| provider["auth"] == "unknown")
+    );
+
+    send_request(&mut socket, "agents", "acp.agents", json!({}));
+    assert_eq!(
+        read_value(&mut socket)["result"]["agents"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|agent| agent["id"].as_str().unwrap())
+            .collect::<Vec<_>>(),
+        ["gemini", "kimi", "qwen"]
+    );
+
+    send_request(
+        &mut socket,
+        "no-script",
+        "providers.install",
+        json!({
+            "provider": "cursor",
+            "columns": 80,
+            "rows": 24,
+            "command": "touch should-never-run"
+        }),
+    );
+    let no_script = read_value(&mut socket);
+    assert_eq!(no_script["error"]["code"], "internal");
+    assert!(
+        no_script["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("no scripted install")
+    );
+
+    send_request(
+        &mut socket,
+        "app-login",
+        "providers.launch",
+        json!({ "provider": "codex", "columns": 80, "rows": 24 }),
+    );
+    let app_login = read_value(&mut socket);
+    assert!(
+        app_login["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("through the app")
+    );
+    send_request(
+        &mut socket,
+        "empty-agent",
+        "providers.launch",
+        json!({ "provider": "acp", "agent": "", "columns": 80, "rows": 24 }),
+    );
+    assert_eq!(read_value(&mut socket)["error"]["code"], "bad_request");
+
+    socket.close(None).unwrap();
+    server.close().unwrap();
+}
+
+#[test]
 fn live_terminal_routes_stream_the_thread_checkout_and_preserve_push_order() {
     let checkout = tempfile::tempdir().unwrap();
     let checkout_path = checkout.path().to_string_lossy().into_owned();
