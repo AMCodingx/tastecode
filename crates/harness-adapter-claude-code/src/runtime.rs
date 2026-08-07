@@ -1,6 +1,8 @@
+use crate::control::ClaudeControl;
 use crate::session::{ClaudeCodeSession, ClaudeCommand, ClaudeSessionState};
 use harness_agent::{
-    AgentError, AgentHandlers, AgentResult, AgentRuntime, AgentSession, StartOptions,
+    AgentError, AgentHandlers, AgentResult, AgentRuntime, AgentSession, ControlHandlers,
+    ProviderControl, StartOptions,
 };
 use harness_protocol::{Model, Thread};
 use std::ffi::OsString;
@@ -76,6 +78,10 @@ impl AgentRuntime for ClaudeCodeRuntime {
 
     fn list_models(&self) -> AgentResult<Vec<Model>> {
         Ok(claude_models())
+    }
+
+    fn open_control(&self, handlers: ControlHandlers) -> AgentResult<Arc<dyn ProviderControl>> {
+        Ok(Arc::new(ClaudeControl::new(self.command.clone(), handlers)))
     }
 }
 
