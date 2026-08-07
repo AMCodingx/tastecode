@@ -224,13 +224,16 @@ impl TerminalManager {
 
         let output_id = terminal_id.clone();
         let on_output = Arc::clone(&self.inner.on_output);
-        if let Err(error) = std::thread::Builder::new()
+        let output_worker = match std::thread::Builder::new()
             .name("harness-terminal-output".into())
             .spawn(move || read_output(reader, output_gate, &output_id, on_output))
         {
-            self.close(&terminal_id);
-            return Err(error.into());
-        }
+            Ok(worker) => worker,
+            Err(error) => {
+                self.close(&terminal_id);
+                return Err(error.into());
+            }
+        };
 
         let exit_id = terminal_id.clone();
         let exit_key = key.to_owned();
@@ -242,6 +245,7 @@ impl TerminalManager {
                     .wait()
                     .ok()
                     .and_then(|status| i32::try_from(status.exit_code()).ok());
+                let _ = output_worker.join();
                 handle_exit(inner, &exit_id, &exit_key, exit_code);
             })
         {

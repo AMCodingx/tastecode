@@ -12,8 +12,9 @@ mod router;
 pub use access::{allowed_origin, assert_safe_bind, has_access};
 pub use router::SERVER_VERSION;
 
-use harness_protocol::{Push, Request, Response, channel};
+use harness_protocol::{Push, Request, Response, TerminalExitPush, TerminalOutputPush, channel};
 use harness_store::Store;
+use harness_terminal::TerminalManager;
 use push::{PendingPush, PushBus};
 use serde_json::Value;
 use std::collections::BTreeSet;
@@ -107,6 +108,7 @@ impl ServerHandle {
     }
 
     fn stop(&mut self) -> Result<(), ServerError> {
+        self.state.terminals.close_all();
         self.state.shutdown.store(true, Ordering::Release);
         if let Some(join) = self.join.take() {
             join.join().map_err(|_| ServerError::ThreadPanicked)?;
@@ -129,10 +131,31 @@ pub fn start(config: ServerConfig) -> Result<ServerHandle, ServerError> {
     let address = listener.local_addr()?;
     let store = Store::open(&config.store_path)?;
     recover_worktree_metadata(&store);
+    let push = Arc::new(PushBus::new());
+    let output_push = Arc::clone(&push);
+    let exit_push = Arc::clone(&push);
+    let terminals = TerminalManager::new(
+        move |terminal_id, data| {
+            let _ = output_push.broadcast(
+                channel::TERMINAL_OUTPUT,
+                TerminalOutputPush { terminal_id, data },
+            );
+        },
+        move |terminal_id, exit_code| {
+            let _ = exit_push.broadcast(
+                channel::TERMINAL_EXIT,
+                TerminalExitPush {
+                    terminal_id,
+                    exit_code,
+                },
+            );
+        },
+    );
     let state = Arc::new(ServerState {
         store: Mutex::new(store),
         inbox: Mutex::new(inbox::InboxProjections::default()),
-        push: PushBus::new(),
+        push,
+        terminals,
         shutdown: AtomicBool::new(false),
         access_token: config.access_token,
     });
@@ -177,7 +200,8 @@ pub fn store_location() -> Result<PathBuf, ServerError> {
 pub(crate) struct ServerState {
     store: Mutex<Store>,
     inbox: Mutex<inbox::InboxProjections>,
-    push: PushBus,
+    push: Arc<PushBus>,
+    terminals: TerminalManager,
     shutdown: AtomicBool,
     access_token: Option<String>,
 }

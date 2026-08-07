@@ -105,6 +105,37 @@ fn assert_welcome(socket: &mut ClientSocket) {
     );
 }
 
+fn record_terminal_push(
+    frame: &Value,
+    next_sequence: &mut u64,
+    output: &mut String,
+    exit: &mut Option<Value>,
+) {
+    assert_eq!(frame["sequence"], *next_sequence);
+    *next_sequence += 1;
+    match frame["channel"].as_str() {
+        Some("terminal.output") => output.push_str(frame["data"]["data"].as_str().unwrap()),
+        Some("terminal.exit") => *exit = Some(frame["data"].clone()),
+        channel => panic!("unexpected push channel: {channel:?}"),
+    }
+}
+
+fn read_response_with_terminal_pushes(
+    socket: &mut ClientSocket,
+    response_id: &str,
+    next_sequence: &mut u64,
+    output: &mut String,
+    exit: &mut Option<Value>,
+) -> Value {
+    loop {
+        let frame = read_value(socket);
+        if frame["id"] == response_id {
+            return frame;
+        }
+        record_terminal_push(&frame, next_sequence, output, exit);
+    }
+}
+
 #[test]
 fn live_transport_sends_welcome_drops_malformed_frames_and_reports_typed_errors() {
     let (_directory, server) = start_test_server(None, |_| {});
@@ -146,6 +177,158 @@ fn live_transport_sends_welcome_drops_malformed_frames_and_reports_typed_errors(
         invalid["error"]["message"],
         "invalid params for search.sessions"
     );
+
+    socket.close(None).unwrap();
+    server.close().unwrap();
+}
+
+#[test]
+fn live_terminal_routes_stream_the_thread_checkout_and_preserve_push_order() {
+    let checkout = tempfile::tempdir().unwrap();
+    let checkout_path = checkout.path().to_string_lossy().into_owned();
+    let (_directory, server) = start_test_server(None, |store| {
+        store.add_project(&checkout_path, None).unwrap();
+        store
+            .add_thread(StoreNewThread {
+                id: "thread-terminal".into(),
+                project_path: checkout_path.clone(),
+                provider: ProviderId::Api,
+                agent: None,
+                title: "Terminal".into(),
+                created_at: Some(10),
+                worktree_path: None,
+                worktree_branch: None,
+            })
+            .unwrap();
+    });
+    let mut socket = connect_native(&server, "");
+    assert_welcome(&mut socket);
+    let mut next_sequence = 2;
+    let mut output = String::new();
+    let mut exit = None;
+
+    send_request(
+        &mut socket,
+        "open",
+        "terminal.open",
+        json!({ "threadId": "thread-terminal", "columns": 80, "rows": 24 }),
+    );
+    let opened = read_response_with_terminal_pushes(
+        &mut socket,
+        "open",
+        &mut next_sequence,
+        &mut output,
+        &mut exit,
+    );
+    let terminal_id = opened["result"]["terminalId"].as_str().unwrap().to_owned();
+
+    send_request(
+        &mut socket,
+        "reattach",
+        "terminal.open",
+        json!({ "threadId": "thread-terminal", "columns": 100, "rows": 30 }),
+    );
+    let reattached = read_response_with_terminal_pushes(
+        &mut socket,
+        "reattach",
+        &mut next_sequence,
+        &mut output,
+        &mut exit,
+    );
+    assert_eq!(reattached["result"]["terminalId"], terminal_id);
+
+    #[cfg(target_os = "windows")]
+    let cwd_command = "cd\r";
+    #[cfg(not(target_os = "windows"))]
+    let cwd_command = "pwd\r";
+    send_request(
+        &mut socket,
+        "cwd",
+        "terminal.input",
+        json!({ "terminalId": terminal_id, "data": cwd_command }),
+    );
+    let response = read_response_with_terminal_pushes(
+        &mut socket,
+        "cwd",
+        &mut next_sequence,
+        &mut output,
+        &mut exit,
+    );
+    assert_eq!(response["result"], json!({}));
+    while !output.contains(&checkout_path) {
+        let frame = read_value(&mut socket);
+        record_terminal_push(&frame, &mut next_sequence, &mut output, &mut exit);
+    }
+
+    send_request(
+        &mut socket,
+        "resize",
+        "terminal.resize",
+        json!({ "terminalId": terminal_id, "columns": 120, "rows": 40 }),
+    );
+    assert_eq!(
+        read_response_with_terminal_pushes(
+            &mut socket,
+            "resize",
+            &mut next_sequence,
+            &mut output,
+            &mut exit,
+        )["result"],
+        json!({})
+    );
+
+    send_request(
+        &mut socket,
+        "exit",
+        "terminal.input",
+        json!({ "terminalId": terminal_id, "data": "exit\r" }),
+    );
+    let _ = read_response_with_terminal_pushes(
+        &mut socket,
+        "exit",
+        &mut next_sequence,
+        &mut output,
+        &mut exit,
+    );
+    while exit.is_none() {
+        let frame = read_value(&mut socket);
+        record_terminal_push(&frame, &mut next_sequence, &mut output, &mut exit);
+    }
+    assert_eq!(
+        exit,
+        Some(json!({ "terminalId": terminal_id, "exitCode": 0 }))
+    );
+
+    send_request(
+        &mut socket,
+        "gone",
+        "terminal.input",
+        json!({ "terminalId": terminal_id, "data": "after exit" }),
+    );
+    let gone = read_value(&mut socket);
+    assert_eq!(gone["id"], "gone");
+    assert_eq!(gone["error"]["code"], "internal");
+    assert!(
+        gone["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("no such terminal")
+    );
+
+    send_request(
+        &mut socket,
+        "bad-size",
+        "terminal.open",
+        json!({ "threadId": "thread-terminal", "columns": 0, "rows": 24 }),
+    );
+    assert_eq!(read_value(&mut socket)["error"]["code"], "bad_request");
+    send_request(
+        &mut socket,
+        "bad-input",
+        "terminal.input",
+        json!({ "terminalId": "missing", "data": "😀".repeat(32_769) }),
+    );
+    assert_eq!(read_value(&mut socket)["error"]["code"], "bad_request");
 
     socket.close(None).unwrap();
     server.close().unwrap();
@@ -780,9 +963,42 @@ fn live_handshake_closes_untrusted_origins_and_missing_access_tokens() {
 
 #[test]
 fn shutdown_closes_open_clients_and_joins_connection_workers() {
-    let (_directory, server) = start_test_server(None, |_| {});
+    let checkout = tempfile::tempdir().unwrap();
+    let checkout_path = checkout.path().to_string_lossy().into_owned();
+    let (_directory, server) = start_test_server(None, |store| {
+        store.add_project(&checkout_path, None).unwrap();
+        store
+            .add_thread(StoreNewThread {
+                id: "shutdown-terminal".into(),
+                project_path: checkout_path,
+                provider: ProviderId::Api,
+                agent: None,
+                title: "Shutdown".into(),
+                created_at: Some(10),
+                worktree_path: None,
+                worktree_branch: None,
+            })
+            .unwrap();
+    });
     let mut socket = connect_native(&server, "");
     assert_welcome(&mut socket);
+    send_request(
+        &mut socket,
+        "open",
+        "terminal.open",
+        json!({ "threadId": "shutdown-terminal", "columns": 80, "rows": 24 }),
+    );
+    let mut next_sequence = 2;
+    let mut output = String::new();
+    let mut exit = None;
+    let opened = read_response_with_terminal_pushes(
+        &mut socket,
+        "open",
+        &mut next_sequence,
+        &mut output,
+        &mut exit,
+    );
+    assert!(opened["result"]["terminalId"].is_string());
 
     let started = Instant::now();
     server.close().unwrap();

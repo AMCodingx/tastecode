@@ -2753,6 +2753,7 @@ dependencies = [
  "dirs 5.0.1",
  "harness-protocol",
  "harness-store",
+ "harness-terminal",
  "harness-workspace",
  "serde",
  "serde_json",

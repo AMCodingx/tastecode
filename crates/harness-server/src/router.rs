@@ -4,9 +4,9 @@ use harness_protocol::method;
 use harness_protocol::{
     CheckpointSummary, ErrorCode, ProjectAddedResult, ProjectSummary, ProjectsListResult,
     ProviderId, ServerWelcome, SessionSummary, SettleReason, SidebarMode, SystemInfo,
-    SystemPlatform, ThreadCheckpointsResult, ThreadHistoryResult, ThreadInboxStatus,
-    ThreadLifecycle, ThreadLifecyclePush, ThreadLifecycleResult, ThreadUnsavedWorkResult, Usage,
-    UsageSummaryResult, WireError, channel,
+    SystemPlatform, TerminalOpenedResult, ThreadCheckpointsResult, ThreadHistoryResult,
+    ThreadInboxStatus, ThreadLifecycle, ThreadLifecyclePush, ThreadLifecycleResult,
+    ThreadUnsavedWorkResult, Usage, UsageSummaryResult, WireError, channel,
 };
 use harness_store::{SearchOptions, SidebarSettingsUpdate, Store, StoreError};
 use serde::Deserialize;
@@ -173,9 +173,9 @@ pub(crate) fn route(
         method::PROJECTS_REMOVE => {
             let params: ProjectPathParams = decode(method_name, params)?;
             let store = lock_store(state)?;
-            let isolated = store
-                .threads(Some(&params.path))?
-                .into_iter()
+            let threads = store.threads(Some(&params.path))?;
+            let isolated = threads
+                .iter()
                 .filter(|thread| thread.worktree_path.is_some())
                 .count();
             if isolated > 0 {
@@ -184,7 +184,59 @@ pub(crate) fn route(
                     if isolated == 1 { "" } else { "s" }
                 )));
             }
+            for thread in &threads {
+                state.terminals.close_thread(&thread.id);
+                store.close_thread(&thread.id)?;
+            }
             store.remove_project(&params.path)?;
+            empty_result()
+        }
+        method::TERMINAL_OPEN => {
+            let params: TerminalOpenParams = decode(method_name, params)?;
+            require_non_empty(method_name, "threadId", &params.thread_id)?;
+            validate_terminal_size(method_name, params.columns, params.rows)?;
+            let thread = lock_store(state)?
+                .thread(&params.thread_id)?
+                .ok_or_else(|| {
+                    RouteError::internal(format!("no such thread: {}", params.thread_id))
+                })?;
+            let cwd = thread.worktree_path.unwrap_or(thread.project_path);
+            encoded(TerminalOpenedResult {
+                terminal_id: state
+                    .terminals
+                    .open(&params.thread_id, cwd, params.columns, params.rows)
+                    .map_err(RouteError::internal)?,
+            })
+        }
+        method::TERMINAL_INPUT => {
+            let params: TerminalInputParams = decode(method_name, params)?;
+            require_non_empty(method_name, "terminalId", &params.terminal_id)?;
+            if params.data.encode_utf16().count() > 65_536 {
+                return Err(RouteError::bad_params(
+                    method_name,
+                    "data exceeds 65,536 UTF-16 code units",
+                ));
+            }
+            state
+                .terminals
+                .write(&params.terminal_id, &params.data)
+                .map_err(RouteError::internal)?;
+            empty_result()
+        }
+        method::TERMINAL_RESIZE => {
+            let params: TerminalResizeParams = decode(method_name, params)?;
+            require_non_empty(method_name, "terminalId", &params.terminal_id)?;
+            validate_terminal_size(method_name, params.columns, params.rows)?;
+            state
+                .terminals
+                .resize(&params.terminal_id, params.columns, params.rows)
+                .map_err(RouteError::internal)?;
+            empty_result()
+        }
+        method::TERMINAL_CLOSE => {
+            let params: TerminalIdParams = decode(method_name, params)?;
+            require_non_empty(method_name, "terminalId", &params.terminal_id)?;
+            state.terminals.close(&params.terminal_id);
             empty_result()
         }
         method::THREAD_RENAME => {
@@ -253,6 +305,15 @@ pub(crate) fn route(
         }
         method::THREAD_DELETE => {
             let params: ThreadIdParams = decode(method_name, params)?;
+            if lock_store(state)?
+                .thread(&params.thread_id)?
+                .is_some_and(|thread| thread.worktree_path.is_some())
+            {
+                return Err(RouteError::internal(
+                    "discard the isolated session checkout before deleting it",
+                ));
+            }
+            state.terminals.close_thread(&params.thread_id);
             lock_store(state)?.delete_thread(&params.thread_id)?;
             state
                 .inbox
@@ -274,6 +335,7 @@ pub(crate) fn route(
         }
         method::THREAD_CLOSE => {
             let params: ThreadIdParams = decode(method_name, params)?;
+            state.terminals.close_thread(&params.thread_id);
             lock_store(state)?.close_thread(&params.thread_id)?;
             empty_result()
         }
@@ -409,6 +471,7 @@ pub(crate) fn route(
             let (Some(path), Some(branch)) = (stored.worktree_path, stored.worktree_branch) else {
                 return empty_result();
             };
+            state.terminals.close_thread(&params.thread_id);
             harness_workspace::remove_worktree(
                 &harness_workspace::Worktree {
                     path: path.into(),
@@ -521,6 +584,16 @@ fn require_non_empty(method: &str, field: &str, value: &str) -> Result<(), Route
         return Err(RouteError::bad_params(
             method,
             format!("{field}: expected a non-empty string"),
+        ));
+    }
+    Ok(())
+}
+
+fn validate_terminal_size(method: &str, columns: u16, rows: u16) -> Result<(), RouteError> {
+    if !(1..=1_000).contains(&columns) || !(1..=1_000).contains(&rows) {
+        return Err(RouteError::bad_params(
+            method,
+            "columns and rows must be integers between 1 and 1000",
         ));
     }
     Ok(())
@@ -711,6 +784,35 @@ struct ProjectRenameParams {
 #[derive(Deserialize)]
 struct ProjectPathParams {
     path: String,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct TerminalOpenParams {
+    thread_id: String,
+    columns: u16,
+    rows: u16,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct TerminalInputParams {
+    terminal_id: String,
+    data: String,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct TerminalResizeParams {
+    terminal_id: String,
+    columns: u16,
+    rows: u16,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct TerminalIdParams {
+    terminal_id: String,
 }
 
 #[derive(Deserialize)]
