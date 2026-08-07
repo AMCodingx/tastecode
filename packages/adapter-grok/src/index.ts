@@ -5,6 +5,7 @@ export {
   GrokAdapter,
   grokAccount,
   grokCommand,
+  grokDisplayName,
   grokTurnArgs,
   parseGrokAccount,
   parseGrokModels,
