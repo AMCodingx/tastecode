@@ -1620,9 +1620,7 @@ impl HarnessApp {
                     && oauth.server_id == server.id
             });
             let mut actions = Vec::new();
-            if busy {
-                actions.push(status_pill("Saving…", false, theme));
-            } else if oauth_active {
+            if oauth_active {
                 let can_cancel = inventory.result.capabilities.cancel_o_auth;
                 actions.push(mcp_action_button(
                     format!("mcp-cancel-oauth-{}", server.id).into(),
@@ -1633,7 +1631,7 @@ impl HarnessApp {
                     }
                     .into(),
                     false,
-                    can_cancel,
+                    can_cancel && !busy,
                     theme,
                     cx.listener(|this, _event, _window, cx| {
                         let update = this.state.cancel_mcp_oauth();
@@ -1647,7 +1645,7 @@ impl HarnessApp {
                     format!("mcp-oauth-{server_id}").into(),
                     "Sign in".into(),
                     false,
-                    true,
+                    !busy,
                     theme,
                     cx.listener(move |this, _event, _window, cx| {
                         let update =
@@ -1657,7 +1655,7 @@ impl HarnessApp {
                     }),
                 ));
             }
-            if can_toggle && !busy {
+            if can_toggle {
                 let enabled = server.enabled;
                 let server = server.clone();
                 let path = project_path.clone();
@@ -1673,19 +1671,19 @@ impl HarnessApp {
                 actions.push(settings_switch(
                     920_000 + index,
                     enabled,
-                    true,
+                    !busy,
                     theme,
                     action,
                 ));
             }
-            if can_edit && !busy {
+            if can_edit {
                 let path = project_path.clone();
                 let server = server.clone();
                 actions.push(mcp_action_button(
                     format!("mcp-edit-{}", server.id).into(),
                     "Edit".into(),
                     false,
-                    true,
+                    !busy,
                     theme,
                     cx.listener(move |this, _event, window, cx| {
                         this.open_mcp_editor(
@@ -1699,7 +1697,7 @@ impl HarnessApp {
                     }),
                 ));
             }
-            if can_remove && !busy {
+            if can_remove {
                 let path = project_path.clone();
                 let server_id = server.id.clone();
                 let server_name = server
@@ -1710,7 +1708,7 @@ impl HarnessApp {
                     format!("mcp-remove-{server_id}").into(),
                     "Remove".into(),
                     true,
-                    true,
+                    !busy,
                     theme,
                     cx.listener(move |this, _event, window, cx| {
                         this.confirm_remove_mcp_server(
@@ -3629,7 +3627,7 @@ fn settings_button_enabled(
         .child(chrome::top_highlight(theme))
         .text_size(px(12.5))
         .text_color(text)
-        .opacity(if enabled { 1.0 } else { 0.48 })
+        .opacity(if enabled { 1.0 } else { 0.5 })
         .when(enabled, |button| {
             button
                 .cursor_pointer()
