@@ -74,7 +74,13 @@ impl AssetSource for HarnessAssets {
                 Some(include_bytes!("../assets/icons/corner-down-right.svg"))
             }
             "icons/pencil.svg" => Some(include_bytes!("../assets/icons/pencil.svg")),
+            "icons/pin.svg" => Some(include_bytes!("../assets/icons/pin.svg")),
+            "icons/pin-off.svg" => Some(include_bytes!("../assets/icons/pin-off.svg")),
             "icons/archive.svg" => Some(include_bytes!("../assets/icons/archive.svg")),
+            "icons/folder-open.svg" => Some(include_bytes!("../assets/icons/folder-open.svg")),
+            "icons/panel-left-close.svg" => {
+                Some(include_bytes!("../assets/icons/panel-left-close.svg"))
+            }
             "icons/log-out.svg" => Some(include_bytes!("../assets/icons/log-out.svg")),
             "icons/square-pen.svg" => Some(include_bytes!("../assets/icons/square-pen.svg")),
             "icons/trash-2.svg" => Some(include_bytes!("../assets/icons/trash-2.svg")),
@@ -91,6 +97,7 @@ impl AssetSource for HarnessAssets {
                 Some(include_bytes!("../assets/icons/square-terminal.svg"))
             }
             "icons/folder.svg" => Some(include_bytes!("../assets/icons/folder.svg")),
+            "icons/laptop.svg" => Some(include_bytes!("../assets/icons/laptop.svg")),
             "icons/gauge.svg" => Some(include_bytes!("../assets/icons/gauge.svg")),
             "icons/octagon-x.svg" => Some(include_bytes!("../assets/icons/octagon-x.svg")),
             "icons/panels-top-left.svg" => {

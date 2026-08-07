@@ -487,7 +487,11 @@ impl HarnessApp {
                     } else {
                         "Pin to top"
                     },
-                    None,
+                    Some(if project_pinned {
+                        "icons/pin-off.svg"
+                    } else {
+                        "icons/pin.svg"
+                    }),
                     false,
                     theme,
                     cx.listener(move |this, _event, _window, cx| {
@@ -499,7 +503,7 @@ impl HarnessApp {
                 items.push(sidebar_menu_item(
                     "sidebar-project-reveal",
                     "Open in Explorer",
-                    None,
+                    Some("icons/folder-open.svg"),
                     false,
                     theme,
                     cx.listener(move |this, _event, _window, cx| {
@@ -522,24 +526,11 @@ impl HarnessApp {
                         this.begin_rename_project(rename.clone(), cx);
                     }),
                 ));
-                let search = path.clone();
-                items.push(sidebar_menu_item(
-                    "sidebar-project-search",
-                    "Search chats",
-                    Some("icons/search.svg"),
-                    false,
-                    theme,
-                    cx.listener(move |this, _event, _window, cx| {
-                        this.sidebar_controls.menu = None;
-                        this.open_session_search(Some(search.clone()), cx);
-                    }),
-                ));
-                items.push(sidebar_menu_rule(theme));
                 let archive = path.clone();
                 items.push(sidebar_menu_item(
                     "sidebar-project-archive",
                     "Archive chats",
-                    Some("icons/check.svg"),
+                    Some("icons/archive.svg"),
                     false,
                     theme,
                     cx.listener(move |this, _event, _window, cx| {
@@ -549,7 +540,7 @@ impl HarnessApp {
                 items.push(sidebar_menu_item(
                     "sidebar-project-remove",
                     "Remove from sidebar",
-                    Some("icons/trash-2.svg"),
+                    Some("icons/panel-left-close.svg"),
                     true,
                     theme,
                     cx.listener(move |this, _event, _window, cx| {
@@ -565,181 +556,229 @@ impl HarnessApp {
                         .find(|session| session.id == thread_id)
                         .map(|session| (project.clone(), session.clone()))
                 })?;
-                match session.lifecycle.as_ref() {
-                    Some(ThreadLifecycle::Snoozed { .. }) => {
-                        let id = thread_id.clone();
-                        items.push(sidebar_menu_item(
-                            "sidebar-thread-wake",
-                            "Wake now",
-                            None,
-                            false,
-                            theme,
-                            cx.listener(move |this, _event, _window, cx| {
-                                let update = this.state.unsnooze_thread(id.clone());
-                                this.run_sidebar_update(update, cx);
-                            }),
-                        ));
-                    }
-                    Some(ThreadLifecycle::Settled { .. }) => {
-                        let id = thread_id.clone();
-                        items.push(sidebar_menu_item(
-                            "sidebar-thread-unsettle",
-                            "Un-settle",
-                            Some("icons/check.svg"),
-                            false,
-                            theme,
-                            cx.listener(move |this, _event, _window, cx| {
-                                let update = this.state.unsettle_thread(id.clone());
-                                this.run_sidebar_update(update, cx);
-                            }),
-                        ));
-                    }
-                    Some(ThreadLifecycle::Active { .. }) | None => {
-                        if can_hide(&session) {
-                            let settle_id = thread_id.clone();
-                            items.push(sidebar_menu_item(
-                                "sidebar-thread-settle",
-                                "Settle",
-                                Some("icons/check.svg"),
-                                false,
-                                theme,
-                                cx.listener(move |this, _event, _window, cx| {
-                                    let update = this.state.settle_thread(settle_id.clone());
-                                    this.run_sidebar_update(update, cx);
-                                }),
-                            ));
-                            for (index, (label, wake_at)) in
-                                snooze_presets().into_iter().enumerate()
-                            {
-                                let id = thread_id.clone();
-                                items.push(sidebar_menu_item(
-                                    SharedString::from(format!("sidebar-thread-snooze-{index}")),
-                                    label,
-                                    None,
-                                    false,
-                                    theme,
-                                    cx.listener(move |this, _event, _window, cx| {
-                                        let update = this.state.snooze_thread(id.clone(), wake_at);
-                                        this.run_sidebar_update(update, cx);
-                                    }),
-                                ));
+                if self.state.sidebar_settings.mode == harness_protocol::SidebarMode::Classic {
+                    let pin_id = thread_id.clone();
+                    let thread_pinned = session.pinned;
+                    items.push(sidebar_menu_item(
+                        "sidebar-thread-pin",
+                        if thread_pinned {
+                            "Unpin chat"
+                        } else {
+                            "Pin chat"
+                        },
+                        None,
+                        false,
+                        theme,
+                        cx.listener(move |this, _event, _window, cx| {
+                            let update = this.state.pin_thread(pin_id.clone(), !thread_pinned);
+                            this.run_sidebar_update(update, cx);
+                        }),
+                    ));
+                    let rename_id = thread_id.clone();
+                    items.push(sidebar_menu_item(
+                        "sidebar-thread-rename",
+                        "Rename chat",
+                        None,
+                        false,
+                        theme,
+                        cx.listener(move |this, _event, _window, cx| {
+                            this.begin_rename_thread(rename_id.clone(), cx);
+                        }),
+                    ));
+                    let archive_id = thread_id.clone();
+                    items.push(sidebar_menu_item(
+                        "sidebar-thread-archive",
+                        "Archive chat",
+                        None,
+                        false,
+                        theme,
+                        cx.listener(move |this, _event, _window, cx| {
+                            let update = this.state.archive_thread(archive_id.clone());
+                            this.run_sidebar_update(update, cx);
+                        }),
+                    ));
+                    let reveal = project.path;
+                    items.push(sidebar_menu_item(
+                        "sidebar-thread-reveal",
+                        "Open in Explorer",
+                        None,
+                        false,
+                        theme,
+                        cx.listener(move |this, _event, _window, cx| {
+                            this.sidebar_controls.menu = None;
+                            this.sidebar_controls.clear_selection();
+                            if let Err(error) = reveal_path(&reveal) {
+                                this.state.notice =
+                                    Some(format!("Could not open that folder: {error}"));
                             }
-                            let keep_id = thread_id.clone();
-                            let keep_active = match session.lifecycle.as_ref() {
-                                Some(ThreadLifecycle::Active { keep_active, .. }) => *keep_active,
-                                _ => false,
-                            };
+                            cx.notify();
+                        }),
+                    ));
+                } else {
+                    match session.lifecycle.as_ref() {
+                        Some(ThreadLifecycle::Snoozed { .. }) => {
+                            let id = thread_id.clone();
                             items.push(sidebar_menu_item(
-                                "sidebar-thread-keep-active",
-                                if keep_active {
-                                    "Allow auto-settle"
-                                } else {
-                                    "Keep active"
-                                },
-                                None,
+                                "sidebar-thread-wake",
+                                "Wake now",
+                                Some("icons/bell.svg"),
                                 false,
                                 theme,
                                 cx.listener(move |this, _event, _window, cx| {
-                                    let update = this
-                                        .state
-                                        .set_thread_keep_active(keep_id.clone(), !keep_active);
+                                    let update = this.state.unsnooze_thread(id.clone());
                                     this.run_sidebar_update(update, cx);
                                 }),
                             ));
                         }
+                        Some(ThreadLifecycle::Settled { .. }) => {
+                            let id = thread_id.clone();
+                            items.push(sidebar_menu_item(
+                                "sidebar-thread-unsettle",
+                                "Un-settle",
+                                Some("icons/check-check.svg"),
+                                false,
+                                theme,
+                                cx.listener(move |this, _event, _window, cx| {
+                                    let update = this.state.unsettle_thread(id.clone());
+                                    this.run_sidebar_update(update, cx);
+                                }),
+                            ));
+                        }
+                        Some(ThreadLifecycle::Active { .. }) | None => {
+                            if can_hide(&session) {
+                                let settle_id = thread_id.clone();
+                                items.push(sidebar_menu_item(
+                                    "sidebar-thread-settle",
+                                    "Settle",
+                                    Some("icons/check-check.svg"),
+                                    false,
+                                    theme,
+                                    cx.listener(move |this, _event, _window, cx| {
+                                        let update = this.state.settle_thread(settle_id.clone());
+                                        this.run_sidebar_update(update, cx);
+                                    }),
+                                ));
+                                for (index, (label, wake_at)) in
+                                    snooze_presets().into_iter().enumerate()
+                                {
+                                    let id = thread_id.clone();
+                                    items.push(sidebar_menu_item(
+                                        SharedString::from(format!(
+                                            "sidebar-thread-snooze-{index}"
+                                        )),
+                                        label,
+                                        Some("icons/clock-3.svg"),
+                                        false,
+                                        theme,
+                                        cx.listener(move |this, _event, _window, cx| {
+                                            let update =
+                                                this.state.snooze_thread(id.clone(), wake_at);
+                                            this.run_sidebar_update(update, cx);
+                                        }),
+                                    ));
+                                }
+                                let keep_id = thread_id.clone();
+                                let keep_active = match session.lifecycle.as_ref() {
+                                    Some(ThreadLifecycle::Active { keep_active, .. }) => {
+                                        *keep_active
+                                    }
+                                    _ => false,
+                                };
+                                items.push(sidebar_menu_item(
+                                    "sidebar-thread-keep-active",
+                                    if keep_active {
+                                        "Allow auto-settle"
+                                    } else {
+                                        "Keep active"
+                                    },
+                                    None,
+                                    false,
+                                    theme,
+                                    cx.listener(move |this, _event, _window, cx| {
+                                        let update = this
+                                            .state
+                                            .set_thread_keep_active(keep_id.clone(), !keep_active);
+                                        this.run_sidebar_update(update, cx);
+                                    }),
+                                ));
+                            }
+                        }
                     }
-                }
-                items.push(sidebar_menu_rule(theme));
-                let rename_id = thread_id.clone();
-                items.push(sidebar_menu_item(
-                    "sidebar-thread-rename",
-                    "Rename",
-                    Some("icons/pencil.svg"),
-                    false,
-                    theme,
-                    cx.listener(move |this, _event, _window, cx| {
-                        this.begin_rename_thread(rename_id.clone(), cx);
-                    }),
-                ));
-                let pin_id = thread_id.clone();
-                let thread_pinned = session.pinned;
-                items.push(sidebar_menu_item(
-                    "sidebar-thread-pin",
-                    if thread_pinned {
-                        "Unpin thread"
-                    } else {
-                        "Pin thread"
-                    },
-                    None,
-                    false,
-                    theme,
-                    cx.listener(move |this, _event, _window, cx| {
-                        let update = this.state.pin_thread(pin_id.clone(), !thread_pinned);
-                        this.run_sidebar_update(update, cx);
-                    }),
-                ));
-                let project_path = project.path.clone();
-                items.push(sidebar_menu_item(
-                    "sidebar-thread-copy-project",
-                    "Copy project path",
-                    Some("icons/copy.svg"),
-                    false,
-                    theme,
-                    cx.listener(move |this, _event, _window, cx| {
-                        this.sidebar_controls.menu = None;
-                        this.sidebar_controls.clear_selection();
-                        cx.write_to_clipboard(ClipboardItem::new_string(project_path.clone()));
-                        cx.notify();
-                    }),
-                ));
-                if let Some(branch) = session.worktree_branch.clone() {
+                    items.push(sidebar_menu_rule(theme));
+                    let rename_id = thread_id.clone();
                     items.push(sidebar_menu_item(
-                        "sidebar-thread-copy-branch",
-                        "Copy branch",
+                        "sidebar-thread-rename",
+                        "Rename",
+                        None,
+                        false,
+                        theme,
+                        cx.listener(move |this, _event, _window, cx| {
+                            this.begin_rename_thread(rename_id.clone(), cx);
+                        }),
+                    ));
+                    let pin_id = thread_id.clone();
+                    let thread_pinned = session.pinned;
+                    items.push(sidebar_menu_item(
+                        "sidebar-thread-pin",
+                        if thread_pinned {
+                            "Unpin thread"
+                        } else {
+                            "Pin thread"
+                        },
+                        Some(if thread_pinned {
+                            "icons/pin-off.svg"
+                        } else {
+                            "icons/pin.svg"
+                        }),
+                        false,
+                        theme,
+                        cx.listener(move |this, _event, _window, cx| {
+                            let update = this.state.pin_thread(pin_id.clone(), !thread_pinned);
+                            this.run_sidebar_update(update, cx);
+                        }),
+                    ));
+                    let project_path = project.path.clone();
+                    items.push(sidebar_menu_item(
+                        "sidebar-thread-copy-project",
+                        "Copy project path",
                         Some("icons/copy.svg"),
                         false,
                         theme,
                         cx.listener(move |this, _event, _window, cx| {
                             this.sidebar_controls.menu = None;
                             this.sidebar_controls.clear_selection();
-                            cx.write_to_clipboard(ClipboardItem::new_string(branch.clone()));
+                            cx.write_to_clipboard(ClipboardItem::new_string(project_path.clone()));
                             cx.notify();
                         }),
                     ));
+                    if let Some(branch) = session.worktree_branch.clone() {
+                        items.push(sidebar_menu_item(
+                            "sidebar-thread-copy-branch",
+                            "Copy branch",
+                            Some("icons/git-branch.svg"),
+                            false,
+                            theme,
+                            cx.listener(move |this, _event, _window, cx| {
+                                this.sidebar_controls.menu = None;
+                                this.sidebar_controls.clear_selection();
+                                cx.write_to_clipboard(ClipboardItem::new_string(branch.clone()));
+                                cx.notify();
+                            }),
+                        ));
+                    }
+                    items.push(sidebar_menu_rule(theme));
+                    items.push(sidebar_menu_item(
+                        "sidebar-thread-archive",
+                        "Delete thread",
+                        Some("icons/trash-2.svg"),
+                        true,
+                        theme,
+                        cx.listener(move |this, _event, _window, cx| {
+                            let update = this.state.archive_thread(thread_id.clone());
+                            this.run_sidebar_update(update, cx);
+                        }),
+                    ));
                 }
-                let reveal = project.path;
-                items.push(sidebar_menu_item(
-                    "sidebar-thread-reveal",
-                    "Open in Explorer",
-                    None,
-                    false,
-                    theme,
-                    cx.listener(move |this, _event, _window, cx| {
-                        this.sidebar_controls.menu = None;
-                        this.sidebar_controls.clear_selection();
-                        if let Err(error) = reveal_path(&reveal) {
-                            this.state.notice =
-                                Some(format!("Could not open that folder: {error}"));
-                        }
-                        cx.notify();
-                    }),
-                ));
-                items.push(sidebar_menu_rule(theme));
-                items.push(sidebar_menu_item(
-                    "sidebar-thread-archive",
-                    if self.state.sidebar_settings.mode == harness_protocol::SidebarMode::Inbox {
-                        "Delete thread"
-                    } else {
-                        "Archive chat"
-                    },
-                    Some("icons/trash-2.svg"),
-                    true,
-                    theme,
-                    cx.listener(move |this, _event, _window, cx| {
-                        let update = this.state.archive_thread(thread_id.clone());
-                        this.run_sidebar_update(update, cx);
-                    }),
-                ));
             }
             SidebarMenuRequest::ThreadSelection {
                 target: _,
