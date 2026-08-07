@@ -1,7 +1,8 @@
 use harness_agent::{AgentError, AgentResult};
-use harness_protocol::Model;
+use harness_protocol::{Account, Model};
 use serde::Deserialize;
 use serde_json::Value;
+use std::path::{Path, PathBuf};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct AcpAgentSpec {
@@ -13,6 +14,8 @@ pub struct AcpAgentSpec {
     pub supported_version: Option<&'static str>,
     pub model_arg: Option<&'static str>,
     pub model_config_id: Option<&'static str>,
+    pub retired: bool,
+    pub credential_probe: Option<&'static [&'static str]>,
 }
 
 const ACP_AGENTS: &[AcpAgentSpec] = &[
@@ -25,6 +28,8 @@ const ACP_AGENTS: &[AcpAgentSpec] = &[
         supported_version: None,
         model_arg: Some("--model"),
         model_config_id: None,
+        retired: true,
+        credential_probe: None,
     },
     AcpAgentSpec {
         id: "kimi",
@@ -35,6 +40,8 @@ const ACP_AGENTS: &[AcpAgentSpec] = &[
         supported_version: Some("0.29"),
         model_arg: None,
         model_config_id: Some("model"),
+        retired: false,
+        credential_probe: Some(&[".kimi-code", "credentials", "kimi-code.json"]),
     },
     AcpAgentSpec {
         id: "qwen",
@@ -45,11 +52,49 @@ const ACP_AGENTS: &[AcpAgentSpec] = &[
         supported_version: None,
         model_arg: Some("--model"),
         model_config_id: None,
+        retired: true,
+        credential_probe: None,
     },
 ];
 
 pub fn find_agent_spec(id: &str) -> Option<&'static AcpAgentSpec> {
     ACP_AGENTS.iter().find(|agent| agent.id == id)
+}
+
+pub fn listed_agent_specs() -> impl Iterator<Item = &'static AcpAgentSpec> {
+    ACP_AGENTS.iter().filter(|agent| !agent.retired)
+}
+
+pub fn acp_account(agent_id: &str, home: &Path) -> Account {
+    let signed_in = find_agent_spec(agent_id)
+        .and_then(|spec| spec.credential_probe)
+        .is_some_and(|probe| credential_path(home, probe).is_file());
+    Account {
+        signed_in,
+        email: None,
+        plan: None,
+    }
+}
+
+pub fn acp_sign_out(agent_id: &str, home: &Path) -> AgentResult<()> {
+    let spec = find_agent_spec(agent_id);
+    let probe = spec
+        .and_then(|spec| spec.credential_probe)
+        .ok_or(AgentError::Unsupported("signing out from this ACP agent"))?;
+    match std::fs::remove_file(credential_path(home, probe)) {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(_) => Err(AgentError::Failed(format!(
+            "{} could not sign out",
+            spec.map_or(agent_id, |spec| spec.name)
+        ))),
+    }
+}
+
+fn credential_path(home: &Path, components: &[&str]) -> PathBuf {
+    components
+        .iter()
+        .fold(home.to_path_buf(), |path, component| path.join(component))
 }
 
 pub fn gemini_models() -> Vec<Model> {
@@ -184,7 +229,34 @@ mod tests {
         assert_eq!(kimi.args, ["acp"]);
         assert!(kimi.verified);
         assert_eq!(kimi.supported_version, Some("0.29"));
+        assert!(!kimi.retired);
+        assert_eq!(
+            listed_agent_specs()
+                .map(|agent| agent.id)
+                .collect::<Vec<_>>(),
+            ["kimi"]
+        );
+        assert!(find_agent_spec("gemini").unwrap().retired);
+        assert!(find_agent_spec("qwen").unwrap().retired);
         assert!(find_agent_spec("missing").is_none());
+    }
+
+    #[test]
+    fn probes_and_removes_only_kimis_credential_file() {
+        let home = tempfile::tempdir().unwrap();
+        assert!(!acp_account("kimi", home.path()).signed_in);
+        let credentials = home.path().join(".kimi-code").join("credentials");
+        std::fs::create_dir_all(&credentials).unwrap();
+        let credential = credentials.join("kimi-code.json");
+        std::fs::write(&credential, b"{}").unwrap();
+        let sibling = credentials.join("keep.json");
+        std::fs::write(&sibling, b"{}").unwrap();
+        assert!(acp_account("kimi", home.path()).signed_in);
+        acp_sign_out("kimi", home.path()).unwrap();
+        assert!(!credential.exists());
+        assert!(sibling.exists());
+        assert!(!acp_account("qwen", home.path()).signed_in);
+        assert!(acp_sign_out("qwen", home.path()).is_err());
     }
 
     #[test]

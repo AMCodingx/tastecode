@@ -2767,6 +2767,7 @@ dependencies = [
 name = "harness-adapter-acp"
 version = "0.1.0"
 dependencies = [
+ "dirs 5.0.1",
  "harness-agent",
  "harness-proc",
  "harness-protocol",

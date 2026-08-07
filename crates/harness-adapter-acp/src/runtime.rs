@@ -1,4 +1,6 @@
-use crate::agents::{AcpAgentSpec, find_agent_spec, gemini_models, parse_kimi_models};
+use crate::agents::{
+    AcpAgentSpec, acp_account, acp_sign_out, find_agent_spec, gemini_models, parse_kimi_models,
+};
 use crate::session::{AcpCommand, AcpSession, AcpSessionState};
 use harness_agent::{
     AgentError, AgentHandlers, AgentResult, AgentRuntime, AgentSession, ControlHandlers,
@@ -114,11 +116,9 @@ struct AcpControl {
 
 impl ProviderControl for AcpControl {
     fn account(&self) -> AgentResult<Account> {
-        Ok(Account {
-            signed_in: false,
-            email: None,
-            plan: None,
-        })
+        let home = dirs::home_dir()
+            .ok_or_else(|| AgentError::Failed("home directory is unavailable".into()))?;
+        Ok(acp_account(self.spec.id, &home))
     }
 
     fn start_login(&self) -> AgentResult<AuthStartLoginResult> {
@@ -134,7 +134,9 @@ impl ProviderControl for AcpControl {
     }
 
     fn sign_out(&self) -> AgentResult<()> {
-        Err(AgentError::Unsupported("in-app sign-out"))
+        let home = dirs::home_dir()
+            .ok_or_else(|| AgentError::Failed("home directory is unavailable".into()))?;
+        acp_sign_out(self.spec.id, &home)
     }
 
     fn list_models(&self) -> AgentResult<Vec<Model>> {
