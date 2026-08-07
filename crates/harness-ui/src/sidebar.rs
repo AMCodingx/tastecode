@@ -102,6 +102,13 @@ pub(crate) struct SidebarProps<'a> {
     pub(crate) width: f32,
 }
 
+#[derive(Clone, Copy)]
+struct SidebarRename<'a> {
+    project: Option<&'a str>,
+    thread: Option<&'a str>,
+    input: &'a Entity<InputState>,
+}
+
 pub fn sidebar(props: SidebarProps<'_>, actions: SidebarActions) -> impl IntoElement {
     let SidebarProps {
         theme,
@@ -134,6 +141,11 @@ pub fn sidebar(props: SidebarProps<'_>, actions: SidebarActions) -> impl IntoEle
         glass,
         width,
     } = props;
+    let rename = SidebarRename {
+        project: renaming_project,
+        thread: renaming_thread,
+        input: &rename_input,
+    };
     div()
         .relative()
         .w(px(width))
@@ -173,9 +185,7 @@ pub fn sidebar(props: SidebarProps<'_>, actions: SidebarActions) -> impl IntoEle
                 selected_thread_id,
                 collapsed_projects,
                 expanded_project_sessions,
-                renaming_project,
-                renaming_thread,
-                &rename_input,
+                rename,
                 actions.clone(),
             )
             .into_any_element()
@@ -194,6 +204,7 @@ pub fn sidebar(props: SidebarProps<'_>, actions: SidebarActions) -> impl IntoEle
                 snoozed_expanded,
                 settled_expanded,
                 settled_limit,
+                rename,
                 actions.clone(),
             )
             .into_any_element()
@@ -786,6 +797,7 @@ fn sidebar_body(
     snoozed_expanded: bool,
     settled_expanded: bool,
     settled_limit: usize,
+    rename: SidebarRename<'_>,
     actions: SidebarActions,
 ) -> impl IntoElement {
     let normalized_query = query.trim().to_lowercase();
@@ -904,6 +916,7 @@ fn sidebar_body(
                                 selected_ids.contains(&session.id),
                                 thread_menu_request(&session.id, selected_ids, &ordered_ids),
                                 row_navigation(&session.id, &ordered_ids, row_focus),
+                                rename,
                                 &actions,
                             )
                         })),
@@ -939,6 +952,7 @@ fn sidebar_body(
                                 thread_menu_request(&session.id, selected_ids, &ordered_ids),
                                 row_navigation(&session.id, &ordered_ids, row_focus),
                                 actions.wake_thread.clone(),
+                                rename,
                                 &actions,
                             )
                         }))
@@ -977,6 +991,7 @@ fn sidebar_body(
                                     thread_menu_request(&session.id, selected_ids, &ordered_ids),
                                     row_navigation(&session.id, &ordered_ids, row_focus),
                                     actions.unsettle_thread.clone(),
+                                    rename,
                                     &actions,
                                 )
                             }))
@@ -1057,16 +1072,9 @@ fn classic_sidebar_body(
     selected_thread_id: Option<&str>,
     collapsed_projects: &std::collections::HashSet<String>,
     expanded_project_sessions: &std::collections::HashSet<String>,
-    renaming_project: Option<&str>,
-    renaming_thread: Option<&str>,
-    rename_input: &Entity<InputState>,
+    rename: SidebarRename<'_>,
     actions: SidebarActions,
 ) -> impl IntoElement {
-    let rename = ClassicRename {
-        project: renaming_project,
-        thread: renaming_thread,
-        input: rename_input,
-    };
     let mut pinned_sessions = projects
         .iter()
         .flat_map(|project| project.sessions.iter().filter(|session| session.pinned))
@@ -1120,19 +1128,12 @@ fn classic_sidebar_body(
         }))
 }
 
-#[derive(Clone, Copy)]
-struct ClassicRename<'a> {
-    project: Option<&'a str>,
-    thread: Option<&'a str>,
-    input: &'a Entity<InputState>,
-}
-
 fn classic_project(
     project: &ProjectSummary,
     selected_thread_id: Option<&str>,
     expanded: bool,
     show_all: bool,
-    rename: ClassicRename<'_>,
+    rename: SidebarRename<'_>,
     theme: Theme,
     actions: &SidebarActions,
 ) -> AnyElement {
@@ -1161,7 +1162,7 @@ fn classic_project(
             .w_full()
             .flex()
             .items_center()
-            .child(classic_inline_rename(rename.input, theme))
+            .child(sidebar_inline_rename(rename.input, theme, false))
             .into_any_element()
     } else {
         div()
@@ -1345,10 +1346,11 @@ fn classic_project_drawer_state(open: bool, height: f32, progress: f32) -> (f32,
     (height * height_progress, opacity)
 }
 
-fn classic_inline_rename(input: &Entity<InputState>, theme: Theme) -> AnyElement {
+fn sidebar_inline_rename(input: &Entity<InputState>, theme: Theme, shelf: bool) -> AnyElement {
     div()
         .h(px(26.0))
         .w_full()
+        .when(shelf, |rename| rename.flex_1().mx(px(4.0)).my(px(2.0)))
         .flex()
         .items_center()
         .px(px(4.0))
@@ -1402,7 +1404,7 @@ fn classic_session_row(
     session: &SessionSummary,
     active: bool,
     standalone: bool,
-    rename: ClassicRename<'_>,
+    rename: SidebarRename<'_>,
     theme: Theme,
     actions: &SidebarActions,
 ) -> AnyElement {
@@ -1412,7 +1414,7 @@ fn classic_session_row(
             .w_full()
             .flex()
             .items_center()
-            .child(classic_inline_rename(rename.input, theme))
+            .child(sidebar_inline_rename(rename.input, theme, false))
             .into_any_element();
     }
     let thread_id = session.id.clone();
@@ -2003,15 +2005,28 @@ fn active_inbox_row(
     multi_selected: bool,
     menu_request: SidebarMenuRequest,
     navigation: Option<RowNavigation>,
+    rename: SidebarRename<'_>,
     actions: &SidebarActions,
 ) -> AnyElement {
+    if rename.thread == Some(session.id.as_str()) {
+        return div()
+            .min_h(px(76.0))
+            .w_full()
+            .border_1()
+            .border_color(gpui::transparent_black())
+            .rounded(px(RADIUS_MD))
+            .bg(chrome_raised(theme))
+            .shadow(chrome_shadows(theme))
+            .child(sidebar_inline_rename(rename.input, theme, false))
+            .into_any_element();
+    }
     let thread_id = session.id.clone();
     let select_id = thread_id.clone();
     let context_id = thread_id.clone();
     let context_request = menu_request.clone();
     let context_menu = actions.open_menu.clone();
     let choose = actions.choose_session.clone();
-    let rename = actions.rename_thread.clone();
+    let begin_rename = actions.rename_thread.clone();
     let settle = actions.settle_thread.clone();
     let status = status_presentation(session, status_since, now);
     let eligible = can_hide_session(session);
@@ -2083,7 +2098,7 @@ fn active_inbox_row(
                     } else if event.standard_click() {
                         if event.click_count() == 2 {
                             cx.stop_propagation();
-                            rename(context_id.clone(), cx);
+                            begin_rename(context_id.clone(), cx);
                             return;
                         }
                         let modifiers = event.modifiers();
@@ -2656,6 +2671,7 @@ fn inbox_shelf_row(
     menu_request: SidebarMenuRequest,
     navigation: Option<RowNavigation>,
     direct_action: ProjectAction,
+    rename: SidebarRename<'_>,
     actions: &SidebarActions,
 ) -> AnyElement {
     let thread_id = session.id.clone();
@@ -2663,7 +2679,7 @@ fn inbox_shelf_row(
     let rename_id = thread_id.clone();
     let context_request = menu_request.clone();
     let choose = actions.choose_session.clone();
-    let rename = actions.rename_thread.clone();
+    let begin_rename = actions.rename_thread.clone();
     let open_context_menu = actions.open_menu.clone();
     let action_id = thread_id.clone();
     let row_background = if multi_selected {
@@ -2674,6 +2690,7 @@ fn inbox_shelf_row(
     } else {
         theme.surface.hsla()
     };
+    let renaming = rename.thread == Some(session.id.as_str());
 
     div()
         .id(SharedString::from(format!("shelf:{thread_id}")))
@@ -2693,7 +2710,9 @@ fn inbox_shelf_row(
         .rounded(px(RADIUS_MD))
         .when(current || multi_selected, |row| row.bg(row_background))
         .hover(move |style| style.bg(row_background))
-        .child(
+        .child(if renaming {
+            sidebar_inline_rename(rename.input, theme, true)
+        } else {
             div()
                 .id(SharedString::from(format!("shelf-main:{thread_id}")))
                 .min_w(px(0.0))
@@ -2713,7 +2732,7 @@ fn inbox_shelf_row(
                     } else if event.standard_click() {
                         if event.click_count() == 2 {
                             cx.stop_propagation();
-                            rename(rename_id.clone(), cx);
+                            begin_rename(rename_id.clone(), cx);
                             return;
                         }
                         let modifiers = event.modifiers();
@@ -2751,26 +2770,29 @@ fn inbox_shelf_row(
                         .text_size(px(10.5))
                         .text_color(theme.text_3.hsla())
                         .child(detail),
-                ),
-        )
+                )
+                .into_any_element()
+        })
         .child(inbox_quick_action_button(
             format!("shelf-action:{thread_id}").into(),
             action_icon,
             theme,
             Rc::new(move |cx| direct_action(action_id.clone(), cx)),
         ))
-        .child(
-            div()
-                .opacity(0.0)
-                .group_hover("inbox-shelf-row", |menu| menu.opacity(1.0))
-                .child(inbox_quick_menu_button(
-                    format!("shelf-menu:{thread_id}").into(),
-                    "icons/ellipsis.svg",
-                    menu_request,
-                    theme,
-                    actions.open_menu.clone(),
-                )),
-        )
+        .when(!renaming, |row| {
+            row.child(
+                div()
+                    .opacity(0.0)
+                    .group_hover("inbox-shelf-row", |menu| menu.opacity(1.0))
+                    .child(inbox_quick_menu_button(
+                        format!("shelf-menu:{thread_id}").into(),
+                        "icons/ellipsis.svg",
+                        menu_request,
+                        theme,
+                        actions.open_menu.clone(),
+                    )),
+            )
+        })
         .into_any_element()
 }
 

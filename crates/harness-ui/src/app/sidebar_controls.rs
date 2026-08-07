@@ -456,12 +456,10 @@ impl HarnessApp {
         cx: &Context<Self>,
     ) -> Option<AnyElement> {
         if let Some(dialog) = self.sidebar_controls.dialog.clone() {
-            if self.state.sidebar_settings.mode == harness_protocol::SidebarMode::Classic
-                && matches!(
-                    dialog,
-                    SidebarDialog::RenameProject { .. } | SidebarDialog::RenameThread { .. }
-                )
-            {
+            let inline_rename = matches!(dialog, SidebarDialog::RenameThread { .. })
+                || (self.state.sidebar_settings.mode == harness_protocol::SidebarMode::Classic
+                    && matches!(dialog, SidebarDialog::RenameProject { .. }));
+            if inline_rename {
                 return None;
             }
             return Some(self.sidebar_dialog_overlay(dialog, cx));

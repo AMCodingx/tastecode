@@ -301,8 +301,9 @@ impl HarnessApp {
             |this, _input, event: &InputEvent, cx| match event {
                 InputEvent::PressEnter { .. } => this.commit_sidebar_dialog(cx),
                 InputEvent::Blur
-                    if this.state.sidebar_settings.mode == SidebarMode::Classic
-                        && this.sidebar_controls.is_renaming() =>
+                    if this.sidebar_controls.renaming_thread().is_some()
+                        || (this.state.sidebar_settings.mode == SidebarMode::Classic
+                            && this.sidebar_controls.renaming_project().is_some()) =>
                 {
                     this.commit_sidebar_dialog(cx);
                 }
