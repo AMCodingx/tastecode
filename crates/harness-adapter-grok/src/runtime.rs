@@ -13,7 +13,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 pub const GROK_SUPPORTED_VERSION: &str = "0.1";
-pub const GROK_EFFORTS: &[&str] = &["low", "medium", "high", "xhigh", "max"];
+pub const GROK_EFFORTS: &[&str] = &["low", "medium", "high"];
 const CAPTURE_TIMEOUT: Duration = Duration::from_secs(15);
 const CAPTURE_MAX_OUTPUT: usize = 1024 * 1024;
 
@@ -176,18 +176,36 @@ pub fn parse_grok_models(output: &str) -> Vec<Model> {
         else {
             continue;
         };
+        let known_efforts = (id == "grok-4.5")
+            .then(|| GROK_EFFORTS.iter().map(|effort| (*effort).into()).collect());
         models.push(Model {
             id: id.into(),
-            display_name: id.into(),
+            display_name: grok_display_name(id),
             description: None,
             is_default: details[id.len()..].trim_start().starts_with("(default)"),
-            reasoning_efforts: GROK_EFFORTS.iter().map(|effort| (*effort).into()).collect(),
-            default_reasoning_effort: None,
+            reasoning_efforts: known_efforts.unwrap_or_default(),
+            default_reasoning_effort: (id == "grok-4.5").then(|| "high".into()),
             service_tiers: Vec::new(),
             default_service_tier: None,
         });
     }
     models
+}
+
+pub fn grok_display_name(id: &str) -> String {
+    id.split('-')
+        .filter(|token| !token.is_empty())
+        .map(|token| {
+            if token.eq_ignore_ascii_case("grok") {
+                return "Grok".into();
+            }
+            let mut characters = token.chars();
+            characters.next().map_or_else(String::new, |first| {
+                first.to_uppercase().chain(characters).collect::<String>()
+            })
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 pub fn parse_grok_account(output: &str) -> Account {
@@ -251,12 +269,20 @@ mod tests {
         assert_eq!(models.len(), 1);
         assert_eq!(models[0].id, "grok-4.5");
         assert!(models[0].is_default);
-        assert_eq!(
-            models[0].reasoning_efforts,
-            ["low", "medium", "high", "xhigh", "max"]
-        );
+        assert_eq!(models[0].display_name, "Grok 4.5");
+        assert_eq!(models[0].reasoning_efforts, ["low", "medium", "high"]);
+        assert_eq!(models[0].default_reasoning_effort.as_deref(), Some("high"));
         assert!(!parse_grok_account(MODELS_OUTPUT).signed_in);
         assert!(parse_grok_account("Default model: grok-4.5").signed_in);
+    }
+
+    #[test]
+    fn unknown_models_do_not_inherit_grok_4_5_reasoning_levels() {
+        let models = parse_grok_models("Available models:\n  * grok-future (default)");
+
+        assert_eq!(models[0].display_name, "Grok Future");
+        assert!(models[0].reasoning_efforts.is_empty());
+        assert_eq!(models[0].default_reasoning_effort, None);
     }
 
     #[test]
