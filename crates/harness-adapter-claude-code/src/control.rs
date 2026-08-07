@@ -1,4 +1,4 @@
-use crate::claude_models;
+use crate::runtime::claude_models_for_command;
 use crate::session::ClaudeCommand;
 use harness_agent::{AgentError, AgentResult, ControlHandlers, LoginEvent, ProviderControl};
 use harness_proc::{SpawnOptions, SpawnedChild, run_cli, spawn_cli};
@@ -203,7 +203,7 @@ impl ProviderControl for ClaudeControl {
     }
 
     fn list_models(&self) -> AgentResult<Vec<Model>> {
-        Ok(claude_models())
+        Ok(claude_models_for_command(&self.inner.command))
     }
 
     fn dispose(&self) {
@@ -247,7 +247,7 @@ fn signed_out() -> Account {
     }
 }
 
-fn run_command(
+pub(crate) fn run_command(
     command: &ClaudeCommand,
     provider_args: &[&str],
 ) -> AgentResult<harness_proc::CliOutput> {
@@ -329,6 +329,18 @@ mod tests {
     }
 
     #[test]
+    fn model_list_uses_efforts_published_by_the_installed_cli() {
+        let control = ClaudeControl::new(test_command("models"), ControlHandlers::default());
+        let models = control.list_models().unwrap();
+        assert_eq!(
+            models[0].reasoning_efforts,
+            ["low", "medium", "high", "max"]
+        );
+        assert_eq!(models[5].default_reasoning_effort.as_deref(), Some("high"));
+        control.dispose();
+    }
+
+    #[test]
     fn login_completion_is_correlated_and_cancellation_is_quiet() {
         let (login_tx, login_rx) = mpsc::channel();
         let control = ClaudeControl::new(
@@ -382,6 +394,7 @@ mod tests {
                 })
             ),
             "login" | "logout" => {}
+            "models" => println!("--effort <level> (low, medium, high, max)"),
             "block" => {
                 std::io::stdout().flush().unwrap();
                 thread::sleep(Duration::from_secs(30));
