@@ -103,6 +103,8 @@ pub mod method {
     pub const WORKSPACE_SWITCH_BRANCH: &str = "workspace.switchBranch";
     pub const AUTH_STATUS: &str = "auth.status";
     pub const AUTH_START_LOGIN: &str = "auth.startLogin";
+    pub const AUTH_CANCEL_LOGIN: &str = "auth.cancelLogin";
+    pub const AUTH_USE_API_KEY: &str = "auth.useApiKey";
     pub const AUTH_SIGN_OUT: &str = "auth.signOut";
     pub const PROJECTS_LIST: &str = "projects.list";
     pub const PROJECTS_ADD: &str = "projects.add";
@@ -300,6 +302,8 @@ mod tests {
     fn authentication_keeps_the_existing_method_and_push_names() {
         assert_eq!(method::AUTH_STATUS, "auth.status");
         assert_eq!(method::AUTH_START_LOGIN, "auth.startLogin");
+        assert_eq!(method::AUTH_CANCEL_LOGIN, "auth.cancelLogin");
+        assert_eq!(method::AUTH_USE_API_KEY, "auth.useApiKey");
         assert_eq!(method::AUTH_SIGN_OUT, "auth.signOut");
         assert_eq!(channel::AUTH_EVENT, "auth.event");
     }

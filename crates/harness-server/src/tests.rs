@@ -1,10 +1,11 @@
 use super::*;
 use harness_agent::{
-    AgentError, AgentHandlers, AgentResult, AgentRuntime, AgentSession, StartOptions, TurnOptions,
+    AgentError, AgentHandlers, AgentResult, AgentRuntime, AgentSession, ControlHandlers,
+    LoginEvent, ProviderControl, StartOptions, TurnOptions,
 };
 use harness_protocol::{
-    ApprovalDecision, Capabilities, DomainEvent, Item, ItemStatus, ItemType, MessageRole, Model,
-    ProviderId, ServiceTier, Thread, Turn, TurnStatus,
+    Account, ApprovalDecision, AuthStartLoginResult, Capabilities, DomainEvent, Item, ItemStatus,
+    ItemType, MessageRole, Model, ProviderId, ServiceTier, Thread, Turn, TurnStatus,
 };
 use harness_store::{NewCheckpoint, NewThread as StoreNewThread};
 use serde_json::{Value, json};
@@ -470,6 +471,153 @@ fn concurrent_requests_resume_one_provider_session() {
     );
     assert_eq!(runtime.resume_count.load(Ordering::Acquire), 1);
     assert_eq!(runtime.sessions.lock().unwrap().len(), 1);
+}
+
+#[test]
+fn live_auth_routes_reuse_control_and_preserve_login_event_order() {
+    let runtime = Arc::new(FakeRuntime::default());
+    runtime
+        .complete_login_during_start
+        .store(true, Ordering::Release);
+    let registry = Arc::new(FakeRuntimes {
+        runtime: Arc::clone(&runtime),
+    });
+    let (_directory, server) = start_test_server_with_runtimes(registry);
+    let mut socket = connect_native(&server, "");
+    assert_welcome(&mut socket);
+
+    send_request(
+        &mut socket,
+        "status",
+        "auth.status",
+        json!({ "provider": "codex" }),
+    );
+    assert_eq!(
+        read_value(&mut socket),
+        json!({ "id": "status", "result": { "signedIn": false } })
+    );
+
+    send_request(
+        &mut socket,
+        "start",
+        "auth.startLogin",
+        json!({ "provider": "codex" }),
+    );
+    let (pushes, started) = read_until_response(&mut socket, "start");
+    assert_eq!(pushes.len(), 1);
+    assert_eq!(pushes[0]["channel"], "auth.event");
+    assert_eq!(pushes[0]["data"]["provider"], "codex");
+    assert_eq!(pushes[0]["data"]["loginId"], "login-1");
+    assert_eq!(pushes[0]["data"]["success"], true);
+    assert_eq!(started["result"]["loginId"], "login-1");
+    assert_eq!(started["result"]["authUrl"], "https://auth.example/login-1");
+
+    runtime
+        .complete_login_during_start
+        .store(false, Ordering::Release);
+    send_request(
+        &mut socket,
+        "start-later",
+        "auth.startLogin",
+        json!({ "provider": "codex" }),
+    );
+    let (_, started_later) = read_until_response(&mut socket, "start-later");
+    assert_eq!(started_later["result"]["loginId"], "login-2");
+    runtime
+        .control()
+        .complete_login("login-2", false, Some("Login cancelled"));
+    let later_push = read_value(&mut socket);
+    assert_eq!(later_push["channel"], "auth.event");
+    assert_eq!(later_push["data"]["loginId"], "login-2");
+    assert_eq!(later_push["data"]["success"], false);
+    assert_eq!(later_push["data"]["error"], "Login cancelled");
+
+    send_request(
+        &mut socket,
+        "cancel",
+        "auth.cancelLogin",
+        json!({ "provider": "codex", "loginId": "login-2" }),
+    );
+    assert_eq!(
+        read_value(&mut socket),
+        json!({ "id": "cancel", "result": {} })
+    );
+    let test_key = "test-only-api-key";
+    send_request(
+        &mut socket,
+        "api-key",
+        "auth.useApiKey",
+        json!({ "provider": "codex", "apiKey": test_key }),
+    );
+    assert_eq!(
+        read_value(&mut socket)["result"],
+        json!({ "signedIn": true, "plan": "API key" })
+    );
+    let control = runtime.control();
+    assert_eq!(control.cancelled.lock().unwrap().as_slice(), ["login-2"]);
+    assert_eq!(control.api_keys.lock().unwrap().as_slice(), [test_key]);
+
+    send_request(
+        &mut socket,
+        "sign-out",
+        "auth.signOut",
+        json!({ "provider": "codex" }),
+    );
+    assert_eq!(
+        read_value(&mut socket),
+        json!({ "id": "sign-out", "result": {} })
+    );
+    assert_eq!(runtime.control_open_count.load(Ordering::Acquire), 1);
+
+    send_request(
+        &mut socket,
+        "bad-agent",
+        "auth.status",
+        json!({ "provider": "codex", "agent": "" }),
+    );
+    assert_eq!(read_value(&mut socket)["error"]["code"], "bad_request");
+    send_request(
+        &mut socket,
+        "bad-key",
+        "auth.useApiKey",
+        json!({ "provider": "codex", "apiKey": "" }),
+    );
+    assert_eq!(read_value(&mut socket)["error"]["code"], "bad_request");
+
+    socket.close(None).unwrap();
+    server.close().unwrap();
+    assert!(control.disposed.load(Ordering::Acquire));
+}
+
+#[test]
+fn concurrent_auth_requests_open_one_provider_control() {
+    let runtime = Arc::new(FakeRuntime::default());
+    runtime.control_delay_ms.store(100, Ordering::Release);
+    let registry = Arc::new(FakeRuntimes {
+        runtime: Arc::clone(&runtime),
+    });
+    let (_directory, server) = start_test_server_with_runtimes(registry);
+    let mut first = connect_native(&server, "");
+    let mut second = connect_native(&server, "");
+    assert_welcome(&mut first);
+    assert_welcome(&mut second);
+
+    send_request(
+        &mut first,
+        "first",
+        "auth.status",
+        json!({ "provider": "codex" }),
+    );
+    send_request(
+        &mut second,
+        "second",
+        "auth.status",
+        json!({ "provider": "codex" }),
+    );
+    assert_eq!(read_value(&mut first)["result"]["signedIn"], false);
+    assert_eq!(read_value(&mut second)["result"]["signedIn"], false);
+    assert_eq!(runtime.control_open_count.load(Ordering::Acquire), 1);
+    assert_eq!(runtime.controls.lock().unwrap().len(), 1);
 }
 
 #[test]
@@ -1372,9 +1520,13 @@ impl crate::agents::RuntimeRegistry for FakeRuntimes {
 struct FakeRuntime {
     start_options: Mutex<Option<StartOptions>>,
     sessions: Mutex<Vec<Arc<FakeSession>>>,
+    controls: Mutex<Vec<Arc<FakeControl>>>,
     complete_during_send: Arc<AtomicBool>,
+    complete_login_during_start: Arc<AtomicBool>,
     resume_count: AtomicU64,
     resume_delay_ms: AtomicU64,
+    control_open_count: AtomicU64,
+    control_delay_ms: AtomicU64,
 }
 
 impl FakeRuntime {
@@ -1385,6 +1537,15 @@ impl FakeRuntime {
             .last()
             .cloned()
             .expect("fake session was not started")
+    }
+
+    fn control(&self) -> Arc<FakeControl> {
+        self.controls
+            .lock()
+            .unwrap()
+            .last()
+            .cloned()
+            .expect("fake control was not opened")
     }
 }
 
@@ -1472,6 +1633,107 @@ impl AgentRuntime for FakeRuntime {
             }],
             default_service_tier: Some("priority".into()),
         }])
+    }
+
+    fn open_control(&self, handlers: ControlHandlers) -> AgentResult<Arc<dyn ProviderControl>> {
+        self.control_open_count.fetch_add(1, Ordering::AcqRel);
+        let delay = self.control_delay_ms.load(Ordering::Acquire);
+        if delay > 0 {
+            std::thread::sleep(Duration::from_millis(delay));
+        }
+        let control = Arc::new(FakeControl {
+            handlers,
+            account: Mutex::new(Account {
+                signed_in: false,
+                email: None,
+                plan: None,
+            }),
+            next_login: AtomicU64::new(1),
+            complete_during_start: Arc::clone(&self.complete_login_during_start),
+            cancelled: Mutex::new(Vec::new()),
+            api_keys: Mutex::new(Vec::new()),
+            disposed: AtomicBool::new(false),
+        });
+        self.controls.lock().unwrap().push(Arc::clone(&control));
+        Ok(control)
+    }
+}
+
+struct FakeControl {
+    handlers: ControlHandlers,
+    account: Mutex<Account>,
+    next_login: AtomicU64,
+    complete_during_start: Arc<AtomicBool>,
+    cancelled: Mutex<Vec<String>>,
+    api_keys: Mutex<Vec<String>>,
+    disposed: AtomicBool,
+}
+
+impl FakeControl {
+    fn complete_login(&self, login_id: &str, success: bool, error: Option<&str>) {
+        if success {
+            *self.account.lock().unwrap() = Account {
+                signed_in: true,
+                email: Some("developer@example.com".into()),
+                plan: Some("Pro".into()),
+            };
+        }
+        self.handlers.emit_login(LoginEvent {
+            login_id: Some(login_id.into()),
+            success,
+            error: error.map(str::to_owned),
+        });
+    }
+}
+
+impl ProviderControl for FakeControl {
+    fn account(&self) -> AgentResult<Account> {
+        Ok(self.account.lock().unwrap().clone())
+    }
+
+    fn start_login(&self) -> AgentResult<AuthStartLoginResult> {
+        let index = self.next_login.fetch_add(1, Ordering::AcqRel);
+        let login_id = format!("login-{index}");
+        if self.complete_during_start.load(Ordering::Acquire) {
+            self.complete_login(&login_id, true, None);
+        }
+        Ok(AuthStartLoginResult {
+            auth_url: Some(format!("https://auth.example/{login_id}")),
+            login_id,
+        })
+    }
+
+    fn cancel_login(&self, login_id: &str) -> AgentResult<()> {
+        self.cancelled.lock().unwrap().push(login_id.into());
+        Ok(())
+    }
+
+    fn use_api_key(&self, api_key: &str) -> AgentResult<Account> {
+        self.api_keys.lock().unwrap().push(api_key.into());
+        let account = Account {
+            signed_in: true,
+            email: None,
+            plan: Some("API key".into()),
+        };
+        *self.account.lock().unwrap() = account.clone();
+        Ok(account)
+    }
+
+    fn sign_out(&self) -> AgentResult<()> {
+        *self.account.lock().unwrap() = Account {
+            signed_in: false,
+            email: None,
+            plan: None,
+        };
+        Ok(())
+    }
+
+    fn list_models(&self) -> AgentResult<Vec<Model>> {
+        Ok(Vec::new())
+    }
+
+    fn dispose(&self) {
+        self.disposed.store(true, Ordering::Release);
     }
 }
 

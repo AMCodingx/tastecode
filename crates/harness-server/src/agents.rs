@@ -1,12 +1,13 @@
 use crate::ServerState;
 use harness_adapter_codex::CodexRuntime;
 use harness_agent::{
-    AgentError, AgentHandlers, AgentRuntime, AgentSession, StartOptions, TurnOptions,
+    AgentError, AgentHandlers, AgentRuntime, AgentSession, ControlHandlers, ProviderControl,
+    StartOptions, TurnOptions,
 };
 use harness_protocol::{
-    ApprovalDecision, DomainEvent, Model, ProviderId, QueuedTurn, SendTurnResult, Thread,
-    ThreadEventPush, ThreadInboxStatus, ThreadLifecyclePush, ThreadQueuePush, ThreadQueueResult,
-    channel,
+    Account, ApprovalDecision, AuthEventPush, AuthStartLoginResult, DomainEvent, Model, ProviderId,
+    QueuedTurn, SendTurnResult, Thread, ThreadEventPush, ThreadInboxStatus, ThreadLifecyclePush,
+    ThreadQueuePush, ThreadQueueResult, channel,
 };
 use harness_store::{NewCheckpoint, NewThread};
 use harness_workspace::Worktree;
@@ -110,10 +111,32 @@ impl ResumeSlot {
     }
 }
 
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+struct ControlKey {
+    provider: ProviderId,
+    agent: Option<String>,
+}
+
+struct ControlSlot {
+    result: Mutex<Option<Result<Arc<dyn ProviderControl>, String>>>,
+    ready: Condvar,
+}
+
+impl ControlSlot {
+    fn new() -> Self {
+        Self {
+            result: Mutex::new(None),
+            ready: Condvar::new(),
+        }
+    }
+}
+
 pub(crate) struct AgentManager {
     runtimes: Arc<dyn RuntimeRegistry>,
     live: Mutex<LiveState>,
     resumes: Mutex<HashMap<String, Arc<ResumeSlot>>>,
+    controls: Mutex<HashMap<ControlKey, Arc<dyn ProviderControl>>>,
+    control_starts: Mutex<HashMap<ControlKey, Arc<ControlSlot>>>,
     worktree_root: PathBuf,
 }
 
@@ -123,8 +146,67 @@ impl AgentManager {
             runtimes,
             live: Mutex::new(LiveState::default()),
             resumes: Mutex::new(HashMap::new()),
+            controls: Mutex::new(HashMap::new()),
+            control_starts: Mutex::new(HashMap::new()),
             worktree_root: std::env::temp_dir().join("personal-harness-trees"),
         }
+    }
+
+    pub(crate) fn account(
+        &self,
+        state: &Arc<ServerState>,
+        provider: ProviderId,
+        agent: Option<&str>,
+    ) -> Result<Account, String> {
+        self.control(state, provider, agent)?
+            .account()
+            .map_err(|error| error.to_string())
+    }
+
+    pub(crate) fn start_login(
+        &self,
+        state: &Arc<ServerState>,
+        provider: ProviderId,
+        agent: Option<&str>,
+    ) -> Result<AuthStartLoginResult, String> {
+        self.control(state, provider, agent)?
+            .start_login()
+            .map_err(|error| error.to_string())
+    }
+
+    pub(crate) fn cancel_login(
+        &self,
+        state: &Arc<ServerState>,
+        provider: ProviderId,
+        agent: Option<&str>,
+        login_id: &str,
+    ) -> Result<(), String> {
+        self.control(state, provider, agent)?
+            .cancel_login(login_id)
+            .map_err(|error| error.to_string())
+    }
+
+    pub(crate) fn use_api_key(
+        &self,
+        state: &Arc<ServerState>,
+        provider: ProviderId,
+        agent: Option<&str>,
+        api_key: &str,
+    ) -> Result<Account, String> {
+        self.control(state, provider, agent)?
+            .use_api_key(api_key)
+            .map_err(|error| error.to_string())
+    }
+
+    pub(crate) fn sign_out(
+        &self,
+        state: &Arc<ServerState>,
+        provider: ProviderId,
+        agent: Option<&str>,
+    ) -> Result<(), String> {
+        self.control(state, provider, agent)?
+            .sign_out()
+            .map_err(|error| error.to_string())
     }
 
     pub(crate) fn list_models(
@@ -391,6 +473,13 @@ impl AgentManager {
         for session in sessions {
             session.dispose();
         }
+        let controls = lock(&self.controls)
+            .drain()
+            .map(|(_, control)| control)
+            .collect::<Vec<_>>();
+        for control in controls {
+            control.dispose();
+        }
     }
 
     pub(crate) fn is_running(&self, thread_id: &str) -> bool {
@@ -504,6 +593,84 @@ impl AgentManager {
             }
             result.clone().expect("resume result disappeared")
         }
+    }
+
+    fn control(
+        &self,
+        state: &Arc<ServerState>,
+        provider: ProviderId,
+        agent: Option<&str>,
+    ) -> Result<Arc<dyn ProviderControl>, String> {
+        let key = ControlKey {
+            provider,
+            agent: agent.map(str::to_owned),
+        };
+        if let Some(control) = lock(&self.controls).get(&key).cloned() {
+            return Ok(control);
+        }
+        let (slot, leader) = {
+            let mut starts = lock(&self.control_starts);
+            match starts.get(&key) {
+                Some(slot) => (Arc::clone(slot), false),
+                None => {
+                    let slot = Arc::new(ControlSlot::new());
+                    starts.insert(key.clone(), Arc::clone(&slot));
+                    (slot, true)
+                }
+            }
+        };
+        if leader {
+            let result = self.open_control(state, &key);
+            if let Ok(control) = &result {
+                lock(&self.controls).insert(key.clone(), Arc::clone(control));
+            }
+            *lock(&slot.result) = Some(result.clone());
+            slot.ready.notify_all();
+            lock(&self.control_starts).remove(&key);
+            result
+        } else {
+            let mut result = lock(&slot.result);
+            while result.is_none() {
+                result = slot
+                    .ready
+                    .wait(result)
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+            }
+            result.clone().expect("control result disappeared")
+        }
+    }
+
+    fn open_control(
+        &self,
+        state: &Arc<ServerState>,
+        key: &ControlKey,
+    ) -> Result<Arc<dyn ProviderControl>, String> {
+        let runtime = self
+            .runtimes
+            .runtime(key.provider, key.agent.as_deref(), None)
+            .map_err(|error| error.to_string())?;
+        let state = Arc::downgrade(state);
+        let provider = key.provider;
+        let agent = key.agent.clone();
+        runtime
+            .open_control(ControlHandlers::new(
+                move |event| {
+                    if let Some(state) = state.upgrade() {
+                        let _ = state.push.broadcast(
+                            channel::AUTH_EVENT,
+                            AuthEventPush {
+                                provider,
+                                agent: agent.clone(),
+                                login_id: event.login_id,
+                                success: event.success,
+                                error: event.error,
+                            },
+                        );
+                    }
+                },
+                |line| eprintln!("[agent control] {line}"),
+            ))
+            .map_err(|error| error.to_string())
     }
 
     fn resume_session(

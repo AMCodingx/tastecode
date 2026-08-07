@@ -123,6 +123,66 @@ pub(crate) fn route(
                 agents: harness_providers::detect_agents(),
             })
         }
+        method::AUTH_STATUS => {
+            let params: AuthParams = decode(method_name, params)?;
+            validate_auth_target(method_name, &params)?;
+            encoded(
+                state
+                    .agents
+                    .account(state, params.provider, params.agent.as_deref())
+                    .map_err(RouteError::internal)?,
+            )
+        }
+        method::AUTH_START_LOGIN => {
+            let params: AuthParams = decode(method_name, params)?;
+            validate_auth_target(method_name, &params)?;
+            encoded(
+                state
+                    .agents
+                    .start_login(state, params.provider, params.agent.as_deref())
+                    .map_err(RouteError::internal)?,
+            )
+        }
+        method::AUTH_CANCEL_LOGIN => {
+            let params: AuthCancelLoginParams = decode(method_name, params)?;
+            validate_auth_target(method_name, &params.target)?;
+            require_non_empty(method_name, "loginId", &params.login_id)?;
+            state
+                .agents
+                .cancel_login(
+                    state,
+                    params.target.provider,
+                    params.target.agent.as_deref(),
+                    &params.login_id,
+                )
+                .map_err(RouteError::internal)?;
+            empty_result()
+        }
+        method::AUTH_USE_API_KEY => {
+            let params: AuthUseApiKeyParams = decode(method_name, params)?;
+            validate_auth_target(method_name, &params.target)?;
+            require_non_empty(method_name, "apiKey", &params.api_key)?;
+            encoded(
+                state
+                    .agents
+                    .use_api_key(
+                        state,
+                        params.target.provider,
+                        params.target.agent.as_deref(),
+                        &params.api_key,
+                    )
+                    .map_err(RouteError::internal)?,
+            )
+        }
+        method::AUTH_SIGN_OUT => {
+            let params: AuthParams = decode(method_name, params)?;
+            validate_auth_target(method_name, &params)?;
+            state
+                .agents
+                .sign_out(state, params.provider, params.agent.as_deref())
+                .map_err(RouteError::internal)?;
+            empty_result()
+        }
         method::MODELS_LIST => {
             let params: ModelsListParams = decode(method_name, params)?;
             if params.agent.as_deref().is_some_and(str::is_empty) {
@@ -767,6 +827,13 @@ fn validate_provider_action(method: &str, params: &ProviderActionParams) -> Resu
     validate_terminal_size(method, params.columns, params.rows)
 }
 
+fn validate_auth_target(method: &str, params: &AuthParams) -> Result<(), RouteError> {
+    if let Some(agent) = params.agent.as_deref() {
+        require_non_empty(method, "agent", agent)?;
+    }
+    Ok(())
+}
+
 fn run_provider_terminal(
     state: &ServerState,
     action: &str,
@@ -990,6 +1057,29 @@ struct ModelsListParams {
     provider: ProviderId,
     #[serde(default, deserialize_with = "deserialize_present")]
     agent: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct AuthParams {
+    provider: ProviderId,
+    #[serde(default, deserialize_with = "deserialize_present")]
+    agent: Option<String>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct AuthCancelLoginParams {
+    #[serde(flatten)]
+    target: AuthParams,
+    login_id: String,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct AuthUseApiKeyParams {
+    #[serde(flatten)]
+    target: AuthParams,
+    api_key: String,
 }
 
 #[derive(Deserialize)]
