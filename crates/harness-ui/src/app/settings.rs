@@ -9,9 +9,9 @@ use crate::provider_icon::{ProviderMark, agent_mark, connection_mark, mark_icon,
 use crate::theme::{Accent, Backdrop, Theme, ThemeMode};
 use crate::zoom::px;
 use gpui::{
-    Animation, AnimationExt, AnyElement, App, ClipboardItem, Context, Entity, FontWeight,
-    PathPromptOptions, PromptButton, PromptLevel, SharedString, Window, div, linear_color_stop,
-    linear_gradient, prelude::*, relative, svg,
+    Animation, AnimationExt, AnyElement, App, ClipboardItem, Context, Entity, Focusable,
+    FontWeight, PathPromptOptions, PromptButton, PromptLevel, SharedString, Window, div,
+    linear_color_stop, linear_gradient, prelude::*, relative, svg,
 };
 use gpui_component::input::{Input, InputState};
 use gpui_component::tooltip::Tooltip;
@@ -2223,19 +2223,6 @@ impl HarnessApp {
             .into_any_element();
 
         let auto_settle = self.state.sidebar_settings.auto_settle_days.is_some();
-        let days = self.state.sidebar_settings.auto_settle_days.unwrap_or(3);
-        let minus_view = cx.weak_entity();
-        let minus: SettingsAction = Rc::new(move |cx| {
-            let _ = minus_view.update(cx, |this, cx| {
-                this.set_auto_settle_days(Some(days.saturating_sub(1).max(1)), cx)
-            });
-        });
-        let plus_view = cx.weak_entity();
-        let plus: SettingsAction = Rc::new(move |cx| {
-            let _ = plus_view.update(cx, |this, cx| {
-                this.set_auto_settle_days(Some(days.saturating_add(1).min(90)), cx)
-            });
-        });
         let toggle_view = cx.weak_entity();
         let toggle: SettingsAction = Rc::new(move |cx| {
             let _ = toggle_view.update(cx, |this, cx| {
@@ -2245,33 +2232,38 @@ impl HarnessApp {
         let settle_control = div()
             .flex()
             .items_center()
-            .gap(px(8.0))
-            .child(stepper_button(
-                "settle-minus",
-                "−",
-                theme,
-                minus,
-                !auto_settle,
-            ))
+            .gap(px(10.0))
             .child(
                 div()
-                    .min_w(px(52.0))
-                    .text_center()
-                    .text_size(px(11.5))
-                    .text_color(if auto_settle {
-                        theme.text_2.hsla()
-                    } else {
-                        theme.text_3.hsla()
-                    })
-                    .child(format!("{days}d")),
+                    .relative()
+                    .w(px(64.0))
+                    .h(px(28.0))
+                    .flex_none()
+                    .overflow_hidden()
+                    .rounded(px(5.0))
+                    .border_1()
+                    .border_color(chrome::border(theme))
+                    .bg(chrome::recessed(theme))
+                    .opacity(if auto_settle { 1.0 } else { 0.6 })
+                    .child(chrome::inset_top_shade(theme))
+                    .child(
+                        Input::new(&self.auto_settle_days_input)
+                            .appearance(false)
+                            .bordered(false)
+                            .focus_bordered(false)
+                            .disabled(!auto_settle)
+                            .w_full()
+                            .h_full()
+                            .px(px(7.0))
+                            .py(px(5.0))
+                            .text_size(px(12.5))
+                            .text_color(if auto_settle {
+                                theme.text.hsla()
+                            } else {
+                                theme.text_3.hsla()
+                            }),
+                    ),
             )
-            .child(stepper_button(
-                "settle-plus",
-                "+",
-                theme,
-                plus,
-                !auto_settle,
-            ))
             .child(settings_switch(900_000, auto_settle, theme, toggle))
             .into_any_element();
 
@@ -2696,6 +2688,33 @@ impl HarnessApp {
         cx.notify();
     }
 
+    pub(super) fn prepare_auto_settle_days_input(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let (focused, current) = {
+            let input = self.auto_settle_days_input.read(cx);
+            (
+                input.focus_handle(cx).is_focused(window),
+                input.value().to_string(),
+            )
+        };
+        if focused {
+            return;
+        }
+        let desired = self
+            .state
+            .sidebar_settings
+            .auto_settle_days
+            .unwrap_or(3)
+            .to_string();
+        if current != desired {
+            self.auto_settle_days_input
+                .update(cx, |input, cx| input.set_value(desired, window, cx));
+        }
+    }
+
     fn set_sidebar_mode(&mut self, mode: SidebarMode, cx: &mut Context<Self>) {
         if self.state.sidebar_settings.mode == mode {
             return;
@@ -2708,7 +2727,7 @@ impl HarnessApp {
         self.apply_client_update(update, cx);
     }
 
-    fn set_auto_settle_days(&mut self, days: Option<u8>, cx: &mut Context<Self>) {
+    pub(super) fn set_auto_settle_days(&mut self, days: Option<u8>, cx: &mut Context<Self>) {
         let days = days.map(|days| days.clamp(1, 90));
         if self.state.sidebar_settings.auto_settle_days == days {
             return;
@@ -3325,48 +3344,6 @@ fn segmented_button(
         .cursor_pointer()
         .hover(move |style| style.text_color(theme.text.hsla()))
         .on_click(move |_event, _window, cx| action(cx))
-        .child(label)
-        .into_any_element()
-}
-
-fn stepper_button(
-    id: &'static str,
-    label: &'static str,
-    theme: Theme,
-    action: SettingsAction,
-    disabled: bool,
-) -> AnyElement {
-    div()
-        .id(id)
-        .relative()
-        .size(px(26.0))
-        .flex()
-        .items_center()
-        .justify_center()
-        .rounded(px(5.0))
-        .border_1()
-        .border_color(chrome::border(theme))
-        .bg(chrome::raised(theme))
-        .shadow(chrome::shadows(theme))
-        .child(chrome::top_highlight(theme))
-        .text_size(px(13.0))
-        .text_color(if disabled {
-            theme.text_3.hsla().opacity(0.5)
-        } else {
-            theme.text_2.hsla()
-        })
-        .when(!disabled, |button| {
-            button
-                .cursor_pointer()
-                .hover(move |style| style.bg(theme.surface_3.hsla()))
-                .active(move |style| {
-                    style
-                        .top(px(1.0))
-                        .bg(chrome::recessed(theme))
-                        .shadow(Vec::new())
-                })
-                .on_click(move |_event, _window, cx| action(cx))
-        })
         .child(label)
         .into_any_element()
 }

@@ -152,6 +152,7 @@ struct HarnessApp {
     mcp_editor_id: Entity<InputState>,
     mcp_editor_name: Entity<InputState>,
     mcp_editor_transport: Entity<InputState>,
+    auto_settle_days_input: Entity<InputState>,
     provider_terminals: HashMap<ProviderTerminalKey, Entity<ProviderTerminalView>>,
     provider_terminal_ids: HashMap<String, ProviderTerminalKey>,
     copied_provider_code: Option<String>,
@@ -214,6 +215,20 @@ impl HarnessApp {
                 .line_number(false)
                 .rows(8)
                 .placeholder("MCP transport JSON")
+        });
+        let initial_auto_settle_days = state
+            .sidebar_settings
+            .auto_settle_days
+            .unwrap_or(3)
+            .to_string();
+        let auto_settle_days_input = cx.new(|cx| {
+            InputState::new(window, cx)
+                .default_value(initial_auto_settle_days.clone())
+                .validate(|value, _cx| {
+                    value
+                        .parse::<u8>()
+                        .is_ok_and(|days| (1..=90).contains(&days))
+                })
         });
         let session_search_input =
             cx.new(|cx| InputState::new(window, cx).placeholder("Search every chat…"));
@@ -281,6 +296,19 @@ impl HarnessApp {
             |this, _input, event: &InputEvent, cx| match event {
                 InputEvent::PressEnter { .. } => this.commit_sidebar_dialog(cx),
                 InputEvent::Change | InputEvent::Focus | InputEvent::Blur => cx.notify(),
+            },
+        )
+        .detach();
+        cx.subscribe(
+            &auto_settle_days_input,
+            |this, input, event: &InputEvent, cx| {
+                if matches!(event, InputEvent::Change)
+                    && this.state.sidebar_settings.auto_settle_days.is_some()
+                    && let Ok(days) = input.read(cx).value().parse::<u8>()
+                {
+                    this.set_auto_settle_days(Some(days), cx);
+                }
+                cx.notify();
             },
         )
         .detach();
@@ -597,6 +625,7 @@ impl HarnessApp {
             mcp_editor_id,
             mcp_editor_name,
             mcp_editor_transport,
+            auto_settle_days_input,
             provider_terminals: HashMap::new(),
             provider_terminal_ids: HashMap::new(),
             copied_provider_code: None,
@@ -1756,6 +1785,7 @@ impl Render for HarnessApp {
         self.prepare_command_palette_input(window, cx);
         self.prepare_session_search_input(window, cx);
         self.prepare_sidebar_controls_input(window, cx);
+        self.prepare_auto_settle_days_input(window, cx);
         self.sync_sidebar_status_clocks();
         let sidebar_query = self.sidebar_search.read(cx).value().to_string();
         let ordered_sidebar_ids = if self.state.sidebar_settings.mode == SidebarMode::Inbox {
