@@ -3,6 +3,7 @@ mod assets;
 mod chat;
 mod client_state;
 mod preferences;
+mod preview_capture;
 mod sidebar;
 mod theme;
 

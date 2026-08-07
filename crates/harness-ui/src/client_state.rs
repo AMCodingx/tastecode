@@ -5,13 +5,14 @@ use harness_protocol::{
     AuthStartLoginResult, CredentialConfiguredResult, DiffDecision, DomainEvent, ErrorCode,
     McpListResult, McpOAuthPush, McpOAuthStartResult, McpServer, McpServerConfig, Model,
     ModelConnection, ModelConnectionInput, ModelConnectionResult, ModelConnectionsResult,
-    ModelsListResult, PROTOCOL_VERSION, ProjectAddedResult, ProjectSummary, ProjectsListResult,
-    ProviderId, ProviderStatus, ProvidersListResult, Response, ReviewDiffResult, SendTurnResult,
-    ServerWelcome, SessionDiff, SessionSummary, SidebarMode, SidebarSettings, SkillEnabledResult,
-    SkillInstalledResult, SkillsListResult, SystemInfo, TerminalExitPush, TerminalOpenedResult,
-    TerminalOutputPush, ThreadEventPush, ThreadHistoryResult, ThreadInboxStatus, ThreadLifecycle,
-    ThreadLifecyclePush, ThreadQueuePush, ThreadQueueResult, ThreadStartResult, UpdateCheckResult,
-    VoiceStatusResult, VoiceTranscribeParams, VoiceTranscriptionResult, channel, method,
+    ModelsListResult, PROTOCOL_VERSION, PreviewCaptureRequest, PreviewCaptureResult,
+    ProjectAddedResult, ProjectSummary, ProjectsListResult, ProviderId, ProviderStatus,
+    ProvidersListResult, Response, ReviewDiffResult, SendTurnResult, ServerWelcome, SessionDiff,
+    SessionSummary, SidebarMode, SidebarSettings, SkillEnabledResult, SkillInstalledResult,
+    SkillsListResult, SystemInfo, TerminalExitPush, TerminalOpenedResult, TerminalOutputPush,
+    ThreadEventPush, ThreadHistoryResult, ThreadInboxStatus, ThreadLifecycle, ThreadLifecyclePush,
+    ThreadQueuePush, ThreadQueueResult, ThreadStartResult, UpdateCheckResult, VoiceStatusResult,
+    VoiceTranscribeParams, VoiceTranscriptionResult, channel, method,
 };
 use serde::Deserialize;
 use serde_json::{Value, json};
@@ -26,6 +27,7 @@ pub(crate) struct ClientState {
     pub(crate) update_checking: bool,
     pub(crate) voice_statuses: HashMap<ProviderId, VoiceStatusResult>,
     voice_status_pending: HashSet<ProviderId>,
+    preview_capture_available: bool,
     pub(crate) projects: Vec<ProjectSummary>,
     pub(crate) projects_loaded: bool,
     pub(crate) sidebar_settings: SidebarSettings,
@@ -241,6 +243,7 @@ pub(crate) struct ReviewHunkRequest {
 
 enum PendingRequest {
     Capabilities,
+    PreviewCaptureResult,
     SystemInfo,
     UpdateCheck,
     VoiceStatus {
@@ -414,6 +417,7 @@ pub(crate) enum ShellEvent {
     ProviderTerminalClosed {
         terminal_id: String,
     },
+    PreviewCaptureRequested(PreviewCaptureRequest),
 }
 
 pub(crate) enum ChatUpdate {
@@ -527,6 +531,7 @@ impl ClientState {
             update_checking: false,
             voice_statuses: HashMap::new(),
             voice_status_pending: HashSet::new(),
+            preview_capture_available: false,
             projects: Vec::new(),
             projects_loaded: fixture,
             sidebar_settings: SidebarSettings {
@@ -580,6 +585,20 @@ impl ClientState {
                 self.notice = Some(error.to_string());
                 None
             }
+        }
+    }
+
+    pub(crate) fn set_preview_capture_available(&mut self, available: bool) {
+        self.preview_capture_available = available;
+    }
+
+    pub(crate) fn submit_preview_capture_result(&mut self, result: PreviewCaptureResult) {
+        if let Ok(params) = serde_json::to_value(result) {
+            self.send_request(
+                method::PREVIEW_CAPTURE_RESULT,
+                params,
+                PendingRequest::PreviewCaptureResult,
+            );
         }
     }
 
@@ -1457,7 +1476,7 @@ impl ClientState {
         self.voice_status_pending.clear();
         self.send_request(
             method::CLIENT_CAPABILITIES,
-            json!({ "previewCapture": false }),
+            json!({ "previewCapture": self.preview_capture_available }),
             PendingRequest::Capabilities,
         );
         self.send_request(method::SYSTEM_INFO, json!({}), PendingRequest::SystemInfo);
@@ -1560,7 +1579,9 @@ impl ClientState {
                             message,
                         })
                     }
-                    Some(PendingRequest::VoiceCancel) => ClientUpdate::default(),
+                    Some(PendingRequest::VoiceCancel | PendingRequest::PreviewCaptureResult) => {
+                        ClientUpdate::default()
+                    }
                     Some(PendingRequest::ProviderTerminal { target, kind }) => {
                         if self.provider_terminal_busy.as_ref() == Some(&target) {
                             self.provider_terminal_busy = None;
@@ -1994,6 +2015,7 @@ impl ClientState {
                 | Some(PendingRequest::TerminalResize { .. })
                 | Some(PendingRequest::RenameThread)
                 | Some(PendingRequest::Capabilities)
+                | Some(PendingRequest::PreviewCaptureResult)
                 | Some(PendingRequest::VoiceCancel)
                 | None => ClientUpdate::default(),
             },
@@ -2034,7 +2056,9 @@ impl ClientState {
                     message: "The server connection was lost during voice transcription.".into(),
                 })
             }
-            PendingRequest::VoiceCancel => ClientUpdate::default(),
+            PendingRequest::VoiceCancel | PendingRequest::PreviewCaptureResult => {
+                ClientUpdate::default()
+            }
             PendingRequest::ProviderTerminal { target, kind } => {
                 if self.provider_terminal_busy.as_ref() == Some(&target) {
                     self.provider_terminal_busy = None;
@@ -3019,6 +3043,21 @@ impl ClientState {
     fn handle_push(&mut self, channel_name: &str, data: Value) -> ClientUpdate {
         match channel_name {
             channel::SERVER_WELCOME => self.handle_welcome(data),
+            channel::PREVIEW_CAPTURE_REQUESTED => {
+                match serde_json::from_value::<PreviewCaptureRequest>(data) {
+                    Ok(request)
+                        if self.preview_capture_available
+                            && crate::preview_capture::validate_request(&request).is_ok() =>
+                    {
+                        ClientUpdate {
+                            shell_changed: false,
+                            chat: Vec::new(),
+                            shell_events: vec![ShellEvent::PreviewCaptureRequested(request)],
+                        }
+                    }
+                    Ok(_) | Err(_) => ClientUpdate::default(),
+                }
+            }
             channel::AUTH_EVENT => match serde_json::from_value::<AuthEventPush>(data) {
                 Ok(push) => {
                     let target = AuthTarget {
@@ -3285,6 +3324,7 @@ impl PendingRequest {
             | Self::ReviewHunk { thread_id }
             | Self::TerminalOpen { thread_id } => Some(thread_id),
             Self::Capabilities
+            | Self::PreviewCaptureResult
             | Self::SystemInfo
             | Self::UpdateCheck
             | Self::VoiceStatus { .. }
@@ -3395,7 +3435,7 @@ fn is_http_url(value: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use harness_protocol::Push;
+    use harness_protocol::{PreviewViewport, Push};
     use serde_json::json;
 
     #[test]
@@ -4022,6 +4062,62 @@ mod tests {
         assert!(response.shell_events.is_empty());
         assert!(state.mcp_oauth.is_none());
         assert_eq!(state.mcp_notice.as_deref(), Some("MCP sign-in completed."));
+    }
+
+    #[test]
+    fn preview_capture_pushes_only_reach_a_capable_native_runtime() {
+        let data = json!({
+            "requestId": "019fd8e9-c08d-78a0-b208-c0063be8769d",
+            "url": "http://127.0.0.1:5183/",
+            "viewports": [{ "width": 1440, "height": 900 }]
+        });
+        let mut state = ClientState::new(true);
+        assert!(
+            state
+                .handle_push(channel::PREVIEW_CAPTURE_REQUESTED, data.clone())
+                .shell_events
+                .is_empty()
+        );
+
+        state.set_preview_capture_available(true);
+        let update = state.handle_push(channel::PREVIEW_CAPTURE_REQUESTED, data);
+        assert!(!update.shell_changed);
+        assert!(matches!(
+            update.shell_events.as_slice(),
+            [ShellEvent::PreviewCaptureRequested(request)]
+                if request.request_id == "019fd8e9-c08d-78a0-b208-c0063be8769d"
+                    && request.viewports == vec![PreviewViewport { width: 1_440, height: 900 }]
+        ));
+    }
+
+    #[test]
+    fn preview_capture_pushes_are_validated_before_browser_work() {
+        let mut state = ClientState::new(true);
+        state.set_preview_capture_available(true);
+        for data in [
+            json!({
+                "requestId": "not-a-uuid",
+                "url": "http://127.0.0.1:5183/",
+                "viewports": [{ "width": 1440, "height": 900 }]
+            }),
+            json!({
+                "requestId": "019fd8e9-c08d-78a0-b208-c0063be8769d",
+                "url": "https://example.com/",
+                "viewports": [{ "width": 1440, "height": 900 }]
+            }),
+            json!({
+                "requestId": "019fd8e9-c08d-78a0-b208-c0063be8769d",
+                "url": "http://127.0.0.1:5183/",
+                "viewports": [{ "width": 200, "height": 900 }]
+            }),
+        ] {
+            assert!(
+                state
+                    .handle_push(channel::PREVIEW_CAPTURE_REQUESTED, data)
+                    .shell_events
+                    .is_empty()
+            );
+        }
     }
 
     #[test]

@@ -7,6 +7,7 @@ use crate::client_state::{
     ClientState, ClientUpdate, NewThreadRequest, ReviewHunkRequest, SendTurnRequest, ShellEvent,
 };
 use crate::preferences::{NativePreferences, ThemePreference};
+use crate::preview_capture::PreviewCaptureRuntime;
 use crate::sidebar::{SidebarActions, SidebarProps, sidebar};
 use crate::theme::{TITLEBAR_HEIGHT, Theme, ThemeMode};
 use anyhow::Result;
@@ -101,6 +102,7 @@ struct HarnessApp {
     mcp_editor_transport: Entity<InputState>,
     provider_terminals: HashMap<ProviderTerminalKey, Entity<ProviderTerminalView>>,
     provider_terminal_ids: HashMap<String, ProviderTerminalKey>,
+    preview_capture: Option<PreviewCaptureRuntime>,
     fixture: bool,
 }
 
@@ -108,6 +110,8 @@ impl HarnessApp {
     fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
         let fixture = std::env::var_os("HARNESS_NATIVE_FIXTURE").is_some();
         let mut state = ClientState::new(fixture);
+        let preview_capture = PreviewCaptureRuntime::discover();
+        state.set_preview_capture_available(preview_capture.is_some());
         let preferences = match NativePreferences::load() {
             Ok(preferences) => preferences,
             Err(error) => {
@@ -378,6 +382,7 @@ impl HarnessApp {
             mcp_editor_transport,
             provider_terminals: HashMap::new(),
             provider_terminal_ids: HashMap::new(),
+            preview_capture,
             fixture,
         }
     }
@@ -524,6 +529,27 @@ impl HarnessApp {
             } => self.apply_provider_terminal_error(target, kind, terminal_id, message, cx),
             ShellEvent::ProviderTerminalClosed { terminal_id } => {
                 self.apply_provider_terminal_closed(terminal_id, cx);
+            }
+            ShellEvent::PreviewCaptureRequested(request) => {
+                let Some(runtime) = self.preview_capture.clone() else {
+                    self.state.submit_preview_capture_result(
+                        harness_protocol::PreviewCaptureResult::Failed {
+                            request_id: request.request_id,
+                            error: "Preview capture is unavailable.".into(),
+                        },
+                    );
+                    return;
+                };
+                let capture = cx
+                    .background_executor()
+                    .spawn(async move { runtime.capture(request) });
+                cx.spawn(async move |view, cx| {
+                    let result = capture.await;
+                    let _ = view.update(cx, |this, _cx| {
+                        this.state.submit_preview_capture_result(result);
+                    });
+                })
+                .detach();
             }
         }
     }
