@@ -194,7 +194,7 @@ impl HarnessApp {
         let term_empty = self.session_search.input.read(cx).value().trim().is_empty();
         let panel_top = (window.viewport_size().height * 0.13).min(px(104.0));
         let results_height = (window.viewport_size().height - px(230.0))
-            .max(px(120.0))
+            .max(px(0.0))
             .min(px(460.0));
         let project_label = self
             .session_search
@@ -219,7 +219,7 @@ impl HarnessApp {
 
         let search_row = div()
             .relative()
-            .h(px(47.0))
+            .h(px(44.0))
             .flex()
             .items_center()
             .gap(px(9.0))
@@ -234,9 +234,11 @@ impl HarnessApp {
                     .appearance(false)
                     .bordered(false)
                     .focus_bordered(false)
-                    .h(px(30.0))
                     .min_w(px(0.0))
                     .flex_1()
+                    .px(px(0.0))
+                    .py(px(0.0))
+                    .line_height(relative(1.55))
                     .text_size(px(13.5))
                     .text_color(theme.text.hsla()),
             )
@@ -742,13 +744,11 @@ fn search_result_row(
         .into_any_element()
 }
 
-fn search_providers() -> [(ProviderId, &'static str); 5] {
+fn search_providers() -> [(ProviderId, &'static str); 3] {
     [
         (ProviderId::Codex, "Codex"),
         (ProviderId::ClaudeCode, "Claude Code"),
-        (ProviderId::Cursor, "Cursor"),
-        (ProviderId::OpenCode, "OpenCode"),
-        (ProviderId::Acp, "Gemini, Kimi & Qwen"),
+        (ProviderId::Grok, "Grok"),
     ]
 }
 
@@ -756,7 +756,7 @@ fn search_provider_label(provider: ProviderId) -> &'static str {
     match provider {
         ProviderId::Codex => "Codex",
         ProviderId::ClaudeCode => "Claude Code",
-        ProviderId::Grok => "grok",
+        ProviderId::Grok => "Grok",
         ProviderId::Cursor => "Cursor",
         ProviderId::OpenCode => "OpenCode",
         ProviderId::Antigravity => "antigravity",
@@ -769,4 +769,21 @@ fn search_date(created_at: f64) -> String {
     DateTime::from_timestamp_millis(created_at.max(0.0) as i64)
         .map(|date| date.with_timezone(&Local).format("%x").to_string())
         .unwrap_or_default()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn provider_filter_matches_the_public_beta_roster() {
+        assert_eq!(
+            search_providers(),
+            [
+                (ProviderId::Codex, "Codex"),
+                (ProviderId::ClaudeCode, "Claude Code"),
+                (ProviderId::Grok, "Grok"),
+            ]
+        );
+    }
 }
