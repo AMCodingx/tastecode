@@ -110,6 +110,13 @@ impl ChatView {
         }
     }
 
+    fn scroll_markdown_anchor(&mut self, distance: Pixels, cx: &mut gpui::Context<Self>) {
+        self.transcript_scroll_mode
+            .set(super::TranscriptScrollMode::Free);
+        self.list_state.scroll_by(distance);
+        cx.notify();
+    }
+
     pub(super) fn markdown_table_overlay(
         &self,
         window: &mut Window,
@@ -117,6 +124,8 @@ impl ChatView {
     ) -> Option<AnyElement> {
         let overlay = self.markdown_table_overlay.as_ref()?;
         let definitions = HashMap::new();
+        let footnote_numbers = HashMap::new();
+        let footnote_reference_offsets = HashMap::new();
         let view = cx.entity();
         let selection = window.use_keyed_state(
             SharedString::from(format!(
@@ -135,6 +144,8 @@ impl ChatView {
             streaming: false,
             reveals: &[],
             definitions: &definitions,
+            footnote_numbers: &footnote_numbers,
+            footnote_reference_offsets: &footnote_reference_offsets,
             theme: self.theme,
             view: view.clone(),
             selection: selection.clone(),
@@ -244,12 +255,15 @@ pub(super) fn markdown_view(
         return fallback_markdown(id, text, theme, window, cx);
     };
     let definitions = collect_definitions(&root.children);
+    let footnotes = collect_footnotes(&root.children);
     let context = RenderContext {
         id: &id,
         raw: &text,
         streaming,
         reveals,
         definitions: &definitions,
+        footnote_numbers: &footnotes.numbers,
+        footnote_reference_offsets: &footnotes.reference_offsets,
         theme,
         view,
         selection: selection.clone(),
@@ -259,23 +273,27 @@ pub(super) fn markdown_view(
     let visible_count = root
         .children
         .iter()
-        .filter(|node| !matches!(node, Node::Definition(_)))
+        .filter(|node| !matches!(node, Node::Definition(_) | Node::FootnoteDefinition(_)))
         .count();
+    let has_footnotes = footnotes.has_visible_definitions();
     let mut visible_index = 0;
     for node in &root.children {
-        if matches!(node, Node::Definition(_)) {
+        if matches!(node, Node::Definition(_) | Node::FootnoteDefinition(_)) {
             continue;
         }
         blocks.push(render_block(
             node,
             visible_index == 0,
-            visible_index + 1 == visible_count,
+            visible_index + 1 == visible_count && !has_footnotes,
             0,
             &context,
             window,
             cx,
         ));
         visible_index += 1;
+    }
+    if has_footnotes {
+        blocks.push(render_footnotes(&footnotes, &context, window, cx));
     }
 
     selectable_markdown_region(
@@ -310,6 +328,7 @@ struct MarkdownSelectionState {
     end: Option<Point<Pixels>>,
     is_selecting: bool,
     segments: BTreeMap<String, MarkdownSelectionSegment>,
+    anchors: HashMap<String, Bounds<Pixels>>,
 }
 
 impl MarkdownSelectionState {
@@ -321,6 +340,7 @@ impl MarkdownSelectionState {
             end: None,
             is_selecting: false,
             segments: BTreeMap::new(),
+            anchors: HashMap::new(),
         }
     }
 
@@ -329,6 +349,7 @@ impl MarkdownSelectionState {
             self.source = source;
             self.clear();
             self.segments.clear();
+            self.anchors.clear();
         }
     }
 
@@ -402,6 +423,16 @@ impl MarkdownSelectionState {
             return None;
         }
         selected_markdown_text(&self.source, self.segments.values())
+    }
+
+    fn update_anchor(&mut self, key: String, bounds: Bounds<Pixels>) {
+        self.anchors.insert(key, bounds);
+    }
+
+    fn anchor_distance(&self, from: &str, to: &str) -> Option<Pixels> {
+        let from = self.anchors.get(from)?;
+        let to = self.anchors.get(to)?;
+        Some(to.top() - from.top())
     }
 }
 
@@ -477,10 +508,292 @@ struct RenderContext<'a> {
     streaming: bool,
     reveals: &'a [StreamRevealBatch],
     definitions: &'a HashMap<String, String>,
+    footnote_numbers: &'a HashMap<String, usize>,
+    footnote_reference_offsets: &'a HashMap<String, Vec<usize>>,
     theme: Theme,
     view: Entity<ChatView>,
     selection: Entity<MarkdownSelectionState>,
     reveal_ordinals: RefCell<HashMap<u64, usize>>,
+}
+
+struct FootnoteData<'a> {
+    definitions: HashMap<String, &'a ::markdown::mdast::FootnoteDefinition>,
+    order: Vec<String>,
+    numbers: HashMap<String, usize>,
+    reference_counts: HashMap<String, usize>,
+    reference_offsets: HashMap<String, Vec<usize>>,
+}
+
+impl FootnoteData<'_> {
+    fn has_visible_definitions(&self) -> bool {
+        self.order
+            .iter()
+            .any(|identifier| self.definitions.contains_key(identifier))
+    }
+}
+
+fn render_footnotes(
+    footnotes: &FootnoteData<'_>,
+    context: &RenderContext<'_>,
+    window: &mut Window,
+    cx: &mut App,
+) -> AnyElement {
+    let first_definition_start = footnotes
+        .order
+        .iter()
+        .filter_map(|identifier| footnotes.definitions.get(identifier))
+        .filter_map(|definition| definition.position.as_ref())
+        .map(|position| position.start.offset)
+        .min()
+        .unwrap_or(context.raw.len());
+    let heading_key = format!("{}:footnotes-heading", context.id);
+    let heading = SelectableText::plain(
+        "Footnotes",
+        SelectableTextSpec {
+            key: heading_key,
+            source_start: first_definition_start,
+            source_end: first_definition_start,
+            space_after: false,
+        },
+        context.selection.clone(),
+        context.theme,
+    );
+    let rows = footnotes
+        .order
+        .iter()
+        .filter_map(|identifier| {
+            let definition = *footnotes.definitions.get(identifier)?;
+            let number = *footnotes.numbers.get(identifier)?;
+            let reference_count = *footnotes.reference_counts.get(identifier).unwrap_or(&1);
+            Some(render_footnote_definition(
+                definition,
+                identifier,
+                number,
+                reference_count,
+                context,
+                window,
+                cx,
+            ))
+        })
+        .collect::<Vec<_>>();
+
+    div()
+        .w_full()
+        .child(
+            div()
+                .mt(px(18.0))
+                .mb(px(6.0))
+                .font_weight(FontWeight(580.0))
+                .text_size(px(15.0))
+                .line_height(relative(1.3))
+                .child(heading),
+        )
+        .child(div().w_full().children(rows))
+        .into_any_element()
+}
+
+fn render_footnote_definition(
+    definition: &::markdown::mdast::FootnoteDefinition,
+    identifier: &str,
+    number: usize,
+    reference_count: usize,
+    context: &RenderContext<'_>,
+    window: &mut Window,
+    cx: &mut App,
+) -> AnyElement {
+    let mut contents = Vec::with_capacity(definition.children.len().max(1));
+    let mut backlinks_rendered = false;
+    for (index, child) in definition.children.iter().enumerate() {
+        let last = index + 1 == definition.children.len();
+        if last
+            && let Node::Paragraph(paragraph) = child
+            && !contains_media(&paragraph.children)
+        {
+            contents.push(render_footnote_paragraph(
+                &paragraph.children,
+                definition,
+                identifier,
+                reference_count,
+                context,
+            ));
+            backlinks_rendered = true;
+        } else {
+            contents.push(render_block(
+                child,
+                index == 0,
+                last,
+                1,
+                context,
+                window,
+                cx,
+            ));
+        }
+    }
+    if !backlinks_rendered {
+        contents.push(
+            div()
+                .w_full()
+                .flex()
+                .flex_wrap()
+                .items_baseline()
+                .children(render_footnote_backlinks(
+                    definition,
+                    identifier,
+                    reference_count,
+                    context,
+                ))
+                .into_any_element(),
+        );
+    }
+
+    let row = div()
+        .w_full()
+        .flex()
+        .items_start()
+        .child(
+            div()
+                .w(px(20.0))
+                .flex_none()
+                .text_color(context.theme.text_3.hsla())
+                .child(format!("{number}.")),
+        )
+        .child(div().min_w(px(0.0)).flex_1().children(contents));
+    let anchor_key = footnote_definition_anchor_key(identifier);
+    MarkdownAnchor::new(
+        SharedString::from(format!("{}:{anchor_key}", context.id)),
+        anchor_key,
+        row,
+        context.selection.clone(),
+    )
+    .into_any_element()
+}
+
+fn render_footnote_paragraph(
+    children: &[Node],
+    definition: &::markdown::mdast::FootnoteDefinition,
+    identifier: &str,
+    reference_count: usize,
+    context: &RenderContext<'_>,
+) -> AnyElement {
+    let mut builder = InlineBuilder::default();
+    collect_inline(children, &InlineStyle::default(), context, &mut builder);
+    div()
+        .w_full()
+        .flex()
+        .flex_wrap()
+        .items_baseline()
+        .children(
+            builder
+                .units
+                .into_iter()
+                .map(|unit| render_inline_unit(unit, context)),
+        )
+        .children(render_footnote_backlinks(
+            definition,
+            identifier,
+            reference_count,
+            context,
+        ))
+        .into_any_element()
+}
+
+fn render_footnote_backlinks(
+    definition: &::markdown::mdast::FootnoteDefinition,
+    identifier: &str,
+    count: usize,
+    context: &RenderContext<'_>,
+) -> Vec<AnyElement> {
+    let source_end = definition
+        .position
+        .as_ref()
+        .map_or(context.raw.len(), |position| position.end.offset);
+    (1..=count)
+        .map(|occurrence| {
+            let key = format!("{}:footnote-backlink:{identifier}:{occurrence}", context.id);
+            let arrow = SelectableText::plain(
+                "↩",
+                SelectableTextSpec {
+                    key,
+                    source_start: source_end,
+                    source_end,
+                    space_after: occurrence < count,
+                },
+                context.selection.clone(),
+                context.theme,
+            );
+            let reference_start = context
+                .footnote_reference_offsets
+                .get(identifier)
+                .and_then(|offsets| offsets.get(occurrence - 1))
+                .copied();
+            let from = footnote_definition_anchor_key(identifier);
+            let to =
+                reference_start.map(|offset| footnote_reference_anchor_key(identifier, offset));
+            let selection = context.selection.clone();
+            let view = context.view.clone();
+            div()
+                .id(SharedString::from(format!(
+                    "{}:footnote-backlink-click:{identifier}:{occurrence}",
+                    context.id
+                )))
+                .flex_none()
+                .ml(px(SPACE_WIDTH))
+                .underline()
+                .cursor_pointer()
+                .on_click(move |_event, _window, cx| {
+                    if let Some(to) = to.as_deref() {
+                        jump_to_markdown_anchor(&selection, &view, &from, to, cx);
+                    }
+                })
+                .child(arrow)
+                .when(occurrence > 1, |backlink| {
+                    let key = format!(
+                        "{}:footnote-backlink-number:{identifier}:{occurrence}",
+                        context.id
+                    );
+                    backlink.child(div().relative().top(px(-4.0)).text_size(px(9.0)).child(
+                        SelectableText::plain(
+                            occurrence.to_string(),
+                            SelectableTextSpec {
+                                key,
+                                source_start: source_end,
+                                source_end,
+                                space_after: false,
+                            },
+                            context.selection.clone(),
+                            context.theme,
+                        ),
+                    ))
+                })
+                .into_any_element()
+        })
+        .collect()
+}
+
+fn footnote_definition_anchor_key(identifier: &str) -> String {
+    format!("footnote-definition:{identifier}")
+}
+
+fn footnote_reference_anchor_key(identifier: &str, source_start: usize) -> String {
+    format!("footnote-reference:{identifier}:{source_start}")
+}
+
+fn jump_to_markdown_anchor(
+    selection: &Entity<MarkdownSelectionState>,
+    view: &Entity<ChatView>,
+    from: &str,
+    to: &str,
+    cx: &mut App,
+) {
+    if selection.read(cx).has_selection() {
+        return;
+    }
+    let Some(distance) = selection.read(cx).anchor_distance(from, to) else {
+        return;
+    };
+    view.update(cx, |this, cx| {
+        this.scroll_markdown_anchor(distance, cx);
+    });
 }
 
 fn render_block(
@@ -2125,6 +2438,93 @@ impl IntoElement for SelectableText {
     }
 }
 
+struct MarkdownAnchor<E> {
+    id: ElementId,
+    key: String,
+    element: Option<E>,
+    state: Entity<MarkdownSelectionState>,
+}
+
+impl<E> MarkdownAnchor<E> {
+    fn new(
+        id: impl Into<ElementId>,
+        key: String,
+        element: E,
+        state: Entity<MarkdownSelectionState>,
+    ) -> Self {
+        Self {
+            id: id.into(),
+            key,
+            element: Some(element),
+            state,
+        }
+    }
+}
+
+impl<E: IntoElement + 'static> Element for MarkdownAnchor<E> {
+    type RequestLayoutState = AnyElement;
+    type PrepaintState = ();
+
+    fn id(&self) -> Option<ElementId> {
+        Some(self.id.clone())
+    }
+
+    fn source_location(&self) -> Option<&'static core::panic::Location<'static>> {
+        None
+    }
+
+    fn request_layout(
+        &mut self,
+        _global_id: Option<&GlobalElementId>,
+        _inspector_id: Option<&InspectorElementId>,
+        window: &mut Window,
+        cx: &mut App,
+    ) -> (LayoutId, Self::RequestLayoutState) {
+        let mut element = self
+            .element
+            .take()
+            .expect("markdown anchor should only request layout once")
+            .into_any_element();
+        (element.request_layout(window, cx), element)
+    }
+
+    fn prepaint(
+        &mut self,
+        _global_id: Option<&GlobalElementId>,
+        _inspector_id: Option<&InspectorElementId>,
+        bounds: Bounds<Pixels>,
+        element: &mut Self::RequestLayoutState,
+        window: &mut Window,
+        cx: &mut App,
+    ) -> Self::PrepaintState {
+        element.prepaint(window, cx);
+        self.state.update(cx, |state, _| {
+            state.update_anchor(self.key.clone(), bounds);
+        });
+    }
+
+    fn paint(
+        &mut self,
+        _global_id: Option<&GlobalElementId>,
+        _inspector_id: Option<&InspectorElementId>,
+        _bounds: Bounds<Pixels>,
+        element: &mut Self::RequestLayoutState,
+        _prepaint: &mut Self::PrepaintState,
+        window: &mut Window,
+        cx: &mut App,
+    ) {
+        element.paint(window, cx);
+    }
+}
+
+impl<E: IntoElement + 'static> IntoElement for MarkdownAnchor<E> {
+    type Element = Self;
+
+    fn into_element(self) -> Self::Element {
+        self
+    }
+}
+
 fn selection_for_text_layout(
     text: &str,
     layout: &TextLayout,
@@ -2234,6 +2634,7 @@ enum InlineUnitKind {
     Text(String),
     Code(String),
     FileReference { path: String, label: String },
+    FootnoteReference { identifier: String, number: usize },
     Break,
 }
 
@@ -2405,11 +2806,22 @@ fn collect_inline(
             Node::Html(html) => {
                 builder.push_text(&html.value, node_start(node).unwrap_or_default(), style)
             }
-            Node::FootnoteReference(reference) => builder.push_text(
-                &format!("[^{}]", reference.identifier),
-                node_start(node).unwrap_or_default(),
-                style,
-            ),
+            Node::FootnoteReference(reference) => {
+                let (start, end) = node_range(node);
+                if let Some(number) = context.footnote_numbers.get(&reference.identifier) {
+                    builder.push_atomic(
+                        InlineUnitKind::FootnoteReference {
+                            identifier: reference.identifier.clone(),
+                            number: *number,
+                        },
+                        start,
+                        end,
+                        style,
+                    );
+                } else {
+                    builder.push_text(&format!("[^{}]", reference.identifier), start, style);
+                }
+            }
             _ => {}
         }
     }
@@ -2471,6 +2883,37 @@ fn render_inline_unit(unit: InlineUnit, context: &RenderContext<'_>) -> AnyEleme
             selectable(label, "file-reference").into_any_element(),
             context.theme,
         ),
+        InlineUnitKind::FootnoteReference { identifier, number } => {
+            let reference_key = footnote_reference_anchor_key(&identifier, start);
+            let click_from = reference_key.clone();
+            let click_to = footnote_definition_anchor_key(&identifier);
+            let selection = context.selection.clone();
+            let view = context.view.clone();
+            let reference = div()
+                .id(SharedString::from(format!(
+                    "{}:footnote-reference-click:{identifier}:{start}",
+                    context.id
+                )))
+                .flex_none()
+                .relative()
+                .top(px(-4.0))
+                .text_size(px(10.5))
+                .underline()
+                .cursor_pointer()
+                .on_click(move |_event, _window, cx| {
+                    jump_to_markdown_anchor(&selection, &view, &click_from, &click_to, cx);
+                })
+                .child(selectable(
+                    number.to_string(),
+                    &format!("footnote-{identifier}"),
+                ));
+            div().flex_none().child(MarkdownAnchor::new(
+                SharedString::from(format!("{}:{reference_key}", context.id)),
+                reference_key,
+                reference,
+                context.selection.clone(),
+            ))
+        }
         InlineUnitKind::Break => unreachable!(),
     };
     let mut element = element.id(SharedString::from(token_id));
@@ -2780,6 +3223,80 @@ fn collect_definitions(nodes: &[Node]) -> HashMap<String, String> {
         .collect()
 }
 
+fn collect_footnotes(nodes: &[Node]) -> FootnoteData<'_> {
+    let definitions = nodes
+        .iter()
+        .filter_map(|node| match node {
+            Node::FootnoteDefinition(definition) => {
+                Some((definition.identifier.clone(), definition))
+            }
+            _ => None,
+        })
+        .collect::<HashMap<_, _>>();
+    let mut order = Vec::new();
+    let mut numbers = HashMap::new();
+    let mut reference_counts = HashMap::new();
+    let mut reference_offsets = HashMap::<String, Vec<usize>>::new();
+
+    fn visit(
+        node: &Node,
+        definitions: &HashMap<String, &::markdown::mdast::FootnoteDefinition>,
+        order: &mut Vec<String>,
+        numbers: &mut HashMap<String, usize>,
+        reference_counts: &mut HashMap<String, usize>,
+        reference_offsets: &mut HashMap<String, Vec<usize>>,
+    ) {
+        if let Node::FootnoteReference(reference) = node
+            && definitions.contains_key(&reference.identifier)
+        {
+            if !numbers.contains_key(&reference.identifier) {
+                let number = order.len() + 1;
+                numbers.insert(reference.identifier.clone(), number);
+                order.push(reference.identifier.clone());
+            }
+            *reference_counts
+                .entry(reference.identifier.clone())
+                .or_default() += 1;
+            if let Some(position) = reference.position.as_ref() {
+                reference_offsets
+                    .entry(reference.identifier.clone())
+                    .or_default()
+                    .push(position.start.offset);
+            }
+        }
+        if let Some(children) = node.children() {
+            for child in children {
+                visit(
+                    child,
+                    definitions,
+                    order,
+                    numbers,
+                    reference_counts,
+                    reference_offsets,
+                );
+            }
+        }
+    }
+
+    for node in nodes {
+        visit(
+            node,
+            &definitions,
+            &mut order,
+            &mut numbers,
+            &mut reference_counts,
+            &mut reference_offsets,
+        );
+    }
+    FootnoteData {
+        definitions,
+        order,
+        numbers,
+        reference_counts,
+        reference_offsets,
+    }
+}
+
 fn node_start(node: &Node) -> Option<usize> {
     node.position().map(|position| position.start.offset)
 }
@@ -2954,6 +3471,27 @@ mod tests {
             &ParseOptions::gfm(),
         );
         assert!(matches!(parsed, Ok(Node::Root(_))));
+    }
+
+    #[test]
+    fn footnotes_follow_first_reference_order_and_track_backlinks() {
+        let parsed = ::markdown::to_mdast(
+            "First[^b], second[^a], and first again[^b].\n\n[^a]: Alpha\n[^b]: Beta",
+            &ParseOptions::gfm(),
+        )
+        .expect("GFM footnotes should parse");
+        let Node::Root(root) = parsed else {
+            panic!("expected a Markdown root");
+        };
+        let footnotes = collect_footnotes(&root.children);
+
+        assert_eq!(footnotes.order, ["b", "a"]);
+        assert_eq!(footnotes.numbers.get("b"), Some(&1));
+        assert_eq!(footnotes.numbers.get("a"), Some(&2));
+        assert_eq!(footnotes.reference_counts.get("b"), Some(&2));
+        assert_eq!(footnotes.reference_counts.get("a"), Some(&1));
+        assert_eq!(footnotes.reference_offsets.get("b"), Some(&vec![5, 38]));
+        assert!(footnotes.has_visible_definitions());
     }
 
     #[test]
