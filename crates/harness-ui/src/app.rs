@@ -1513,6 +1513,7 @@ impl HarnessApp {
         let wake_thread_view = select_view.clone();
         let unsettle_thread_view = select_view.clone();
         let rename_thread_view = select_view.clone();
+        let archive_thread_view = select_view.clone();
         let open_menu_view = select_view.clone();
         let toggle_snoozed_view = select_view.clone();
         let toggle_settled_view = select_view.clone();
@@ -1607,6 +1608,12 @@ impl HarnessApp {
             rename_thread: Rc::new(move |thread_id, cx| {
                 let _ = rename_thread_view.update(cx, |this, cx| {
                     this.begin_rename_thread(thread_id, cx);
+                });
+            }),
+            archive_thread: Rc::new(move |thread_id, cx| {
+                let _ = archive_thread_view.update(cx, |this, cx| {
+                    let update = this.state.archive_thread(thread_id);
+                    this.apply_client_update(update, cx);
                 });
             }),
             open_menu: Rc::new(move |request: SidebarMenuRequest, position, cx| {

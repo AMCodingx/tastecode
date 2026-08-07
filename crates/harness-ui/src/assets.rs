@@ -74,6 +74,7 @@ impl AssetSource for HarnessAssets {
                 Some(include_bytes!("../assets/icons/corner-down-right.svg"))
             }
             "icons/pencil.svg" => Some(include_bytes!("../assets/icons/pencil.svg")),
+            "icons/archive.svg" => Some(include_bytes!("../assets/icons/archive.svg")),
             "icons/square-pen.svg" => Some(include_bytes!("../assets/icons/square-pen.svg")),
             "icons/trash-2.svg" => Some(include_bytes!("../assets/icons/trash-2.svg")),
             "icons/blocks.svg" => Some(include_bytes!("../assets/icons/blocks.svg")),

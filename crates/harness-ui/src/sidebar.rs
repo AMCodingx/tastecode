@@ -1,5 +1,5 @@
 use crate::shortcuts::{NEW_CHAT, NEW_PROJECT, SETTINGS, label as shortcut_label};
-use crate::theme::{RADIUS_MD, Theme};
+use crate::theme::{RADIUS_MD, RADIUS_SM, Theme};
 use crate::zoom::px;
 use chrono::{DateTime, Datelike, Local};
 use gpui::{
@@ -16,6 +16,8 @@ use harness_protocol::{
 use std::collections::HashMap;
 use std::rc::Rc;
 use std::time::{SystemTime, UNIX_EPOCH};
+
+const BRAILLE_SPINNER_FRAMES: [&str; 10] = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
 
 pub(crate) type SelectSession = Rc<dyn Fn(String, &mut App)>;
 pub(crate) type ChooseSession = Rc<dyn Fn(String, SelectionModifiers, &mut App)>;
@@ -58,6 +60,7 @@ pub(crate) struct SidebarActions {
     pub(crate) wake_thread: ProjectAction,
     pub(crate) unsettle_thread: ProjectAction,
     pub(crate) rename_thread: ProjectAction,
+    pub(crate) archive_thread: ProjectAction,
     pub(crate) open_menu: OpenSidebarMenu,
     pub(crate) toggle_snoozed: SidebarAction,
     pub(crate) toggle_settled: SidebarAction,
@@ -1268,7 +1271,7 @@ fn classic_project(
 }
 
 fn classic_session_row(
-    project: &ProjectSummary,
+    _project: &ProjectSummary,
     session: &SessionSummary,
     active: bool,
     standalone: bool,
@@ -1278,25 +1281,33 @@ fn classic_session_row(
     let thread_id = session.id.clone();
     let select_id = thread_id.clone();
     let menu_id = thread_id.clone();
-    let left = if standalone { 5.0 } else { 28.0 };
+    let rename_id = thread_id.clone();
+    let archive_id = thread_id.clone();
+    let status = status_for(session);
+    let status_element = classic_session_status(status, &thread_id, theme);
+    let action_background = classic_session_action_background(theme, active);
     div()
         .id(SharedString::from(format!(
             "classic-session:{}",
             session.id
         )))
         .group("classic-session")
-        .ml(px(left))
-        .h(px(34.0))
+        .relative()
+        .h(px(28.0))
+        .w_full()
         .flex()
         .items_center()
-        .px(px(7.0))
-        .rounded(px(7.0))
-        .when(active, |row| row.bg(theme.surface_2.hsla()))
-        .hover(move |style| style.bg(theme.surface.hsla()))
+        .rounded(px(RADIUS_MD))
+        .when(active, |row| {
+            row.bg(classic_session_active_background(theme))
+                .shadow(classic_session_active_shadows(theme))
+        })
+        .hover(move |style| style.bg(classic_session_hover_background(theme, active)))
         .cursor_pointer()
         .on_click({
             let select = actions.select_session.clone();
             let open_menu = actions.open_menu.clone();
+            let rename = actions.rename_thread.clone();
             move |event, _window, cx| {
                 if event.is_right_click() {
                     cx.stop_propagation();
@@ -1306,36 +1317,232 @@ fn classic_session_row(
                         cx,
                     );
                 } else if event.standard_click() {
-                    select(select_id.clone(), cx);
+                    if event.click_count() == 2 {
+                        rename(rename_id.clone(), cx);
+                    } else {
+                        select(select_id.clone(), cx);
+                    }
                 }
             }
         })
+        .when(active, |row| {
+            row.child(
+                div()
+                    .absolute()
+                    .top(px(7.0))
+                    .bottom(px(7.0))
+                    .left_0()
+                    .w(px(2.0))
+                    .rounded(px(2.0))
+                    .bg(theme.attention.hsla().opacity(0.85)),
+            )
+            .child(
+                div()
+                    .absolute()
+                    .top_0()
+                    .left(px(1.0))
+                    .right(px(1.0))
+                    .h(px(1.0))
+                    .rounded_t(px(RADIUS_MD))
+                    .bg(chrome_highlight(theme)),
+            )
+        })
         .child(
             div()
+                .h_full()
+                .w_full()
                 .min_w(px(0.0))
-                .flex_1()
-                .truncate()
-                .text_size(px(11.5))
+                .flex()
+                .items_center()
+                .gap(px(7.0))
+                .pl(px(if standalone { 8.0 } else { 32.0 }))
+                .pr(px(61.0))
+                .text_size(px(12.5))
                 .text_color(if active {
                     theme.text.hsla()
                 } else {
                     theme.text_2.hsla()
                 })
-                .child(session.title.clone()),
+                .child(
+                    div()
+                        .min_w(px(0.0))
+                        .flex_1()
+                        .truncate()
+                        .child(session.title.clone()),
+                )
+                .when_some(status_element, |row, status| row.child(status)),
+        )
+        .when(
+            matches!(status, Status::Starting | Status::Working),
+            |row| row.child(classic_session_spinner(&thread_id, theme)),
         )
         .child(
             div()
-                .ml(px(5.0))
-                .text_size(px(9.5))
-                .text_color(status_for(session).color(theme))
-                .child(status_for(session).label()),
+                .absolute()
+                .top(px(3.0))
+                .right(px(4.0))
+                .h(px(22.0))
+                .flex()
+                .items_center()
+                .gap(px(1.0))
+                .pl(px(12.0))
+                .opacity(0.0)
+                .group_hover("classic-session", |actions| actions.opacity(1.0))
+                .child(div().absolute().top_0().bottom_0().left_0().w(px(12.0)).bg(
+                    linear_gradient(
+                        90.0,
+                        linear_color_stop(gpui::transparent_black(), 0.0),
+                        linear_color_stop(action_background, 1.0),
+                    ),
+                ))
+                .child(
+                    div()
+                        .absolute()
+                        .top_0()
+                        .right_0()
+                        .bottom_0()
+                        .left(px(12.0))
+                        .bg(action_background),
+                )
+                .child(classic_session_action_button(
+                    format!("rename-session:{thread_id}").into(),
+                    "icons/pencil.svg",
+                    13.0,
+                    thread_id.clone(),
+                    actions.rename_thread.clone(),
+                    theme,
+                ))
+                .child(classic_session_action_button(
+                    format!("archive-session:{thread_id}").into(),
+                    "icons/archive.svg",
+                    14.0,
+                    archive_id,
+                    actions.archive_thread.clone(),
+                    theme,
+                )),
         )
-        .child(sidebar_menu_button(
-            format!("thread-menu:{}:{}", project.path, session.id).into(),
-            SidebarMenuRequest::Thread(thread_id),
-            theme,
-            actions.open_menu.clone(),
-        ))
+        .into_any_element()
+}
+
+fn classic_session_active_background(theme: Theme) -> Background {
+    if theme.mode == crate::theme::ThemeMode::Light {
+        chrome_raised(theme)
+    } else {
+        theme.surface_2.hsla().into()
+    }
+}
+
+fn classic_session_hover_background(theme: Theme, active: bool) -> Background {
+    if active {
+        classic_session_active_background(theme)
+    } else {
+        theme.surface.hsla().into()
+    }
+}
+
+fn classic_session_active_shadows(theme: Theme) -> Vec<BoxShadow> {
+    if theme.mode == crate::theme::ThemeMode::Light {
+        chrome_shadows(theme)
+    } else {
+        Vec::new()
+    }
+}
+
+fn classic_session_action_background(theme: Theme, active: bool) -> Hsla {
+    match (theme.mode, active) {
+        (crate::theme::ThemeMode::Light, true) => gpui::rgb(0xfafafa).into(),
+        (_, true) => theme.surface_2.hsla(),
+        (_, false) => theme.surface.hsla(),
+    }
+}
+
+fn classic_session_status(status: Status, thread_id: &str, theme: Theme) -> Option<AnyElement> {
+    let (color, id) = match status {
+        Status::Queued | Status::Approval | Status::Input => (
+            theme.attention.hsla(),
+            format!("session-attention:{thread_id}"),
+        ),
+        Status::Failed => (theme.error.hsla(), format!("session-failed:{thread_id}")),
+        Status::Starting | Status::Working | Status::Ready | Status::Idle => return None,
+    };
+    Some(
+        div()
+            .id(SharedString::from(id))
+            .mx(px(3.0))
+            .size(px(6.0))
+            .flex_none()
+            .rounded_full()
+            .bg(color)
+            .into_any_element(),
+    )
+}
+
+fn classic_session_spinner(thread_id: &str, theme: Theme) -> AnyElement {
+    let color = if theme.mode == crate::theme::ThemeMode::Dark {
+        gpui::rgb(0xd4d4d4)
+    } else {
+        gpui::rgb(0x52525b)
+    };
+    let spinner = div()
+        .absolute()
+        .top(relative(0.5))
+        .left(px(8.0))
+        .mt(px(-7.0))
+        .w(px(12.0))
+        .h(px(14.0))
+        .flex()
+        .items_center()
+        .justify_center()
+        .font_family("Geist Mono")
+        .text_size(px(14.0))
+        .line_height(relative(1.0))
+        .text_color(color);
+    if theme.reduced_motion {
+        return spinner.child(BRAILLE_SPINNER_FRAMES[0]).into_any_element();
+    }
+    spinner
+        .with_animation(
+            SharedString::from(format!("session-spinner:{thread_id}")),
+            theme.repeating_animation(std::time::Duration::from_millis(800)),
+            |spinner, delta| spinner.child(BRAILLE_SPINNER_FRAMES[braille_frame_index(delta)]),
+        )
+        .into_any_element()
+}
+
+fn braille_frame_index(progress: f32) -> usize {
+    ((progress.clamp(0.0, 0.999_999) * BRAILLE_SPINNER_FRAMES.len() as f32).floor() as usize)
+        .min(BRAILLE_SPINNER_FRAMES.len() - 1)
+}
+
+fn classic_session_action_button(
+    id: SharedString,
+    icon_path: &'static str,
+    icon_size: f32,
+    thread_id: String,
+    action: ProjectAction,
+    theme: Theme,
+) -> AnyElement {
+    div()
+        .id(id)
+        .relative()
+        .size(px(22.0))
+        .flex()
+        .items_center()
+        .justify_center()
+        .rounded(px(RADIUS_SM))
+        .text_color(theme.text_3.hsla())
+        .cursor_pointer()
+        .hover(move |style| {
+            style
+                .bg(theme.surface_3.hsla())
+                .text_color(theme.text.hsla())
+        })
+        .active(|style| style.inset(px(0.66)))
+        .on_click(move |_event, _window, cx| {
+            cx.stop_propagation();
+            action(thread_id.clone(), cx);
+        })
+        .child(icon(icon_path, icon_size))
         .into_any_element()
 }
 
@@ -2670,6 +2877,18 @@ fn relative_time_at(timestamp: f64, now: f64) -> String {
 mod tests {
     use super::*;
     use harness_protocol::SettleReason;
+
+    #[test]
+    fn classic_sidebar_spinner_uses_the_web_ten_frame_cadence() {
+        assert_eq!(braille_frame_index(0.0), 0);
+        assert_eq!(braille_frame_index(0.099), 0);
+        assert_eq!(braille_frame_index(0.1), 1);
+        assert_eq!(braille_frame_index(0.5), 5);
+        assert_eq!(braille_frame_index(0.999), 9);
+        assert_eq!(braille_frame_index(1.0), 9);
+        assert_eq!(BRAILLE_SPINNER_FRAMES[0], "⠋");
+        assert_eq!(BRAILLE_SPINNER_FRAMES[9], "⠏");
+    }
 
     #[test]
     fn inbox_query_matches_titles_case_insensitively() {
