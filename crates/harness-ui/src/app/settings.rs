@@ -1283,6 +1283,12 @@ impl HarnessApp {
 
     fn model_settings(&self, cx: &mut Context<Self>) -> gpui::Div {
         let theme = self.theme;
+        let visible_model_count = self
+            .state
+            .model_catalog
+            .iter()
+            .filter(|choice| !self.preferences.hidden_models.contains(&choice.key))
+            .count();
         let mut sources: Vec<(String, Vec<crate::client_state::ModelChoice>)> = Vec::new();
         for choice in &self.state.model_catalog {
             if let Some((_, choices)) = sources
@@ -1295,7 +1301,7 @@ impl HarnessApp {
             }
         }
 
-        let mut blocks = Vec::new();
+        let mut source_cards = Vec::new();
         for (source_index, (source, choices)) in sources.into_iter().enumerate() {
             let any_visible = choices
                 .iter()
@@ -1378,23 +1384,47 @@ impl HarnessApp {
                     theme,
                 ));
             }
-            blocks.push(settings_group("", rows, theme));
+            source_cards.push(settings_group("", rows, theme));
         }
 
-        if blocks.is_empty() {
-            blocks.push(settings_group(
-                "Model visibility",
-                vec![settings_empty_row(
-                    if self.state.model_catalog_loaded {
-                        "No models are available from connected providers yet."
-                    } else {
-                        "Model discovery is still in progress."
-                    },
-                    theme,
-                )],
+        let blocks = if source_cards.is_empty() {
+            vec![model_settings_empty(
+                if self.state.model_catalog_loaded {
+                    "No models are available from your connected providers yet."
+                } else {
+                    "Model discovery is still in progress."
+                },
                 theme,
-            ));
-        }
+            )]
+        } else {
+            vec![
+                div()
+                    .w_full()
+                    .flex()
+                    .flex_col()
+                    .gap(px(14.0))
+                    .child(
+                        div()
+                            .px(px(2.0))
+                            .pb(px(2.0))
+                            .text_size(px(11.0))
+                            .text_color(theme.text_2.hsla())
+                            .child(format!(
+                                "{visible_model_count} of {} visible",
+                                self.state.model_catalog.len()
+                            )),
+                    )
+                    .child(
+                        div()
+                            .w_full()
+                            .flex()
+                            .flex_col()
+                            .gap(px(12.0))
+                            .children(source_cards),
+                    )
+                    .into_any_element(),
+            ]
+        };
         settings_panel("Models", blocks, theme)
     }
 
@@ -2328,7 +2358,7 @@ impl HarnessApp {
         settings_panel(
             "Workflows",
             vec![settings_group(
-                "Sidebar",
+                "",
                 vec![
                     settings_row(0, "Sidebar version", "", version_picker, theme),
                     settings_row(1, "Settle inactive threads", "", settle_control, theme),
@@ -2367,7 +2397,7 @@ impl HarnessApp {
             theme_cards.push(theme_card(index, label, preview, selected, theme, action));
         }
         blocks.push(settings_plain_group(
-            "Theme",
+            "",
             div()
                 .w_full()
                 .flex()
@@ -2521,7 +2551,7 @@ impl HarnessApp {
             vec![settings_row(
                 0,
                 "Font smoothing",
-                "GPUI uses native macOS antialiasing and subpixel positioning.",
+                "",
                 status_pill("On", true, theme),
                 theme,
             )],
@@ -2541,7 +2571,7 @@ impl HarnessApp {
         settings_panel(
             "Data",
             vec![settings_group(
-                "Local data",
+                "",
                 vec![settings_row(
                     0,
                     format!(
@@ -2552,7 +2582,7 @@ impl HarnessApp {
                             "projects"
                         }
                     ),
-                    "Reset clears GPUI appearance and model-visibility choices. Projects, sessions, and credentials stay untouched.",
+                    "",
                     settings_button(
                         "reset-native-settings",
                         "Reset app",
@@ -2580,7 +2610,12 @@ impl HarnessApp {
                 || "Desktop · pre-release".to_owned(),
                 |commit| format!("Desktop · pre-release · {}", short_commit(commit)),
             );
-        let update_note = update_check_note(self.state.update_check.as_ref());
+        let update_status = update_check_note(self.state.update_check.as_ref());
+        let update_error = self
+            .state
+            .update_check
+            .as_ref()
+            .and_then(|result| result.error.clone());
         let checking = self.state.update_checking;
         let check_view = cx.weak_entity();
         let check: SettingsAction = Rc::new(move |cx| {
@@ -2592,41 +2627,51 @@ impl HarnessApp {
         let source: SettingsAction = Rc::new(|cx| {
             cx.open_url("https://github.com/Leonxlnx/personalharness");
         });
+        let update_controls = div()
+            .flex()
+            .items_center()
+            .gap(px(10.0))
+            .when_some(update_error, |controls, error| {
+                controls.child(row_issue(
+                    error,
+                    Some("Check your network or GitHub access, then retry.".into()),
+                    theme,
+                ))
+            })
+            .when_some(update_status, |controls, status| {
+                controls.child(settings_status(status, false, theme))
+            })
+            .child(settings_button_enabled(
+                "check-for-updates",
+                if checking {
+                    "Checking…"
+                } else {
+                    "Check for updates"
+                },
+                "icons/rotate-ccw.svg",
+                theme,
+                check,
+                false,
+                !checking,
+            ))
+            .into_any_element();
         settings_panel(
             "About",
             vec![settings_group(
-                "Personal Harness",
+                "",
                 vec![
                     settings_row(
                         0,
                         "Personal Harness",
-                        product_note,
-                        div().into_any_element(),
+                        "",
+                        settings_status(product_note, false, theme),
                         theme,
                     ),
-                    settings_row(
-                        1,
-                        "Updates",
-                        update_note,
-                        settings_button_enabled(
-                            "check-for-updates",
-                            if checking {
-                                "Checking…"
-                            } else {
-                                "Check for updates"
-                            },
-                            "icons/rotate-ccw.svg",
-                            theme,
-                            check,
-                            false,
-                            !checking,
-                        ),
-                        theme,
-                    ),
+                    settings_row(1, "Updates", "", update_controls, theme),
                     settings_row(
                         2,
                         "Source",
-                        "Open source, and built to be forked.",
+                        "",
                         provider_action_button(0, "GitHub", false, theme, source),
                         theme,
                     ),
@@ -2884,15 +2929,37 @@ fn settings_group(title: &str, rows: Vec<AnyElement>, theme: Theme) -> AnyElemen
 fn settings_plain_group(title: &str, child: AnyElement, theme: Theme) -> AnyElement {
     div()
         .w_full()
-        .child(
-            div()
-                .mb(px(12.0))
-                .text_size(px(12.5))
-                .font_weight(FontWeight::MEDIUM)
-                .text_color(theme.text_2.hsla())
-                .child(title.to_owned()),
-        )
+        .when(!title.is_empty(), |group| {
+            group.child(
+                div()
+                    .mb(px(12.0))
+                    .text_size(px(12.5))
+                    .font_weight(FontWeight::MEDIUM)
+                    .text_color(theme.text_2.hsla())
+                    .child(title.to_owned()),
+            )
+        })
         .child(child)
+        .into_any_element()
+}
+
+fn model_settings_empty(message: &'static str, theme: Theme) -> AnyElement {
+    div()
+        .min_h(px(72.0))
+        .w_full()
+        .flex()
+        .items_center()
+        .gap(px(10.0))
+        .px(px(18.0))
+        .rounded(px(crate::RADIUS_LG))
+        .border_1()
+        .border_color(theme.line_strong.hsla())
+        .bg(theme.rail.hsla())
+        .shadow_sm()
+        .text_size(px(11.0))
+        .text_color(theme.text_3.hsla())
+        .child(settings_icon("icons/boxes.svg", 18.0))
+        .child(message)
         .into_any_element()
 }
 
@@ -4016,32 +4083,25 @@ fn short_commit(commit: &str) -> String {
     commit.chars().take(7).collect()
 }
 
-fn update_check_note(result: Option<&UpdateCheckResult>) -> String {
-    let Some(result) = result else {
-        return "Compare this build with the latest commit on GitHub.".into();
-    };
-    if let Some(error) = &result.error {
-        return error.clone();
+fn update_check_note(result: Option<&UpdateCheckResult>) -> Option<String> {
+    let result = result?;
+    if result.error.is_some() {
+        return None;
     }
     if result.up_to_date == Some(true) {
         let remote = result
             .remote
             .as_ref()
             .map_or_else(String::new, |remote| short_commit(&remote.sha));
-        return format!("Up to date · {remote} is the newest commit.");
+        return Some(format!("Up to date · {remote}"));
     }
     if let Some(remote) = &result.remote {
-        let message = if remote.message.is_empty() {
-            String::new()
-        } else {
-            format!(": \"{}\"", remote.message)
-        };
-        return format!(
-            "Newer commit on GitHub{message} ({}). Pull and restart to update.",
+        return Some(format!(
+            "Newer: {} — pull and restart",
             short_commit(&remote.sha)
-        );
+        ));
     }
-    "Could not determine a verdict.".into()
+    Some("No verdict".into())
 }
 
 fn settings_icon(path: &'static str, size: f32) -> impl IntoElement {
@@ -4122,10 +4182,7 @@ mod tests {
 
     #[test]
     fn about_update_copy_matches_the_web_surface() {
-        assert_eq!(
-            update_check_note(None),
-            "Compare this build with the latest commit on GitHub."
-        );
+        assert_eq!(update_check_note(None), None);
         assert_eq!(
             update_check_note(Some(&UpdateCheckResult {
                 local_commit: Some("111111111".into()),
@@ -4137,7 +4194,7 @@ mod tests {
                 up_to_date: Some(false),
                 error: None,
             })),
-            "Newer commit on GitHub: \"Latest change\" (2222222). Pull and restart to update."
+            Some("Newer: 2222222 — pull and restart".into())
         );
     }
 }
