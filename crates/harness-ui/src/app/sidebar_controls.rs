@@ -969,24 +969,14 @@ impl HarnessApp {
             SidebarDialog::RenameThread { .. } => {
                 ("Rename chat".into(), "".into(), "Save".into(), false, true)
             }
-            SidebarDialog::RemoveProject { path } => {
-                let name = self
-                    .state
-                    .projects
-                    .iter()
-                    .find(|project| project.path == *path)
-                    .map_or(path.as_str(), |project| project.name.as_str());
-                (
-                    "Remove project?".into(),
-                    format!(
-                        "This only removes {name} from the sidebar. Its folder and chats stay untouched."
-                    )
+            SidebarDialog::RemoveProject { .. } => (
+                "Remove project?".into(),
+                "This only removes the project from the sidebar. Its folder and chats stay untouched."
                     .into(),
-                    "Remove project".into(),
-                    true,
-                    false,
-                )
-            }
+                "Remove project".into(),
+                true,
+                false,
+            ),
             SidebarDialog::ArchiveProject { path, .. } => {
                 let name = self
                     .state
@@ -1048,7 +1038,7 @@ impl HarnessApp {
             .flex()
             .items_center()
             .justify_center()
-            .px(px(18.0))
+            .p(px(32.0))
             .child(
                 div()
                     .id("sidebar-dialog-scrim")
@@ -1057,37 +1047,80 @@ impl HarnessApp {
                     .bg(gpui::black().opacity(0.55))
                     .on_click(cx.listener(|this, _event, _window, cx| {
                         this.close_sidebar_controls(cx);
-                    })),
+                    }))
+                    .with_animation(
+                        "sidebar-dialog-scrim-in",
+                        Animation::new(theme.motion.fast).with_easing(crate::theme::web_ease_out),
+                        |scrim, delta| scrim.opacity(delta),
+                    ),
             )
             .child(
                 div()
                     .id("sidebar-dialog-panel")
                     .w_full()
-                    .max_w(px(430.0))
+                    .max_w(px(210.0))
+                    .min_h(px(174.0))
+                    .max_h(relative(1.0))
+                    .flex()
+                    .flex_col()
+                    .overflow_y_scroll()
                     .occlude()
-                    .rounded(px(12.0))
+                    .rounded(px(10.0))
                     .border_1()
                     .border_color(theme.line_strong.hsla())
                     .bg(theme.rail.hsla())
-                    .shadow_lg()
+                    .shadow(chrome::modal_shadows(theme))
                     .child(
                         div()
-                            .h(px(48.0))
                             .flex()
                             .items_center()
-                            .px(px(15.0))
-                            .border_b_1()
-                            .border_color(theme.line.hsla())
-                            .text_size(px(14.0))
-                            .font_weight(gpui::FontWeight::SEMIBOLD)
-                            .child(title),
+                            .justify_between()
+                            .gap(px(8.0))
+                            .px(px(12.0))
+                            .pt(px(12.0))
+                            .pb(px(9.0))
+                            .child(
+                                div()
+                                    .min_w(px(0.0))
+                                    .flex_1()
+                                    .text_size(px(15.0))
+                                    .line_height(relative(1.55))
+                                    .font_weight(FontWeight(560.0))
+                                    .child(title),
+                            )
+                            .child(
+                                div()
+                                    .id("sidebar-dialog-close")
+                                    .size(px(22.0))
+                                    .flex_none()
+                                    .flex()
+                                    .items_center()
+                                    .justify_center()
+                                    .rounded(px(3.0))
+                                    .text_color(theme.text_3.hsla())
+                                    .cursor_pointer()
+                                    .hover(move |style| {
+                                        style
+                                            .bg(theme.surface_2.hsla())
+                                            .text_color(theme.text.hsla())
+                                    })
+                                    .on_click(cx.listener(|this, _event, _window, cx| {
+                                        this.close_sidebar_controls(cx);
+                                    }))
+                                    .child(super::icon("icons/x.svg", 13.0)),
+                            ),
                     )
                     .child(
                         div()
-                            .p(px(15.0))
+                            .min_h(px(0.0))
+                            .flex_1()
                             .flex()
                             .flex_col()
-                            .gap(px(14.0))
+                            .border_t_1()
+                            .border_color(theme.line.hsla())
+                            .px(px(12.0))
+                            .pt(px(10.0))
+                            .pb(px(12.0))
                             .when(!body.is_empty(), |content| {
                                 content.child(
                                     div()
@@ -1100,12 +1133,15 @@ impl HarnessApp {
                             .when_some(input, |content, input| content.child(input))
                             .child(
                                 div()
+                                    .mt_auto()
+                                    .pt(px(16.0))
                                     .flex()
-                                    .justify_end()
+                                    .justify_between()
                                     .gap(px(8.0))
                                     .child(dialog_button(
                                         "sidebar-dialog-cancel",
                                         "Cancel",
+                                        false,
                                         false,
                                         theme,
                                         cx.listener(|this, _event, _window, cx| {
@@ -1115,6 +1151,7 @@ impl HarnessApp {
                                     .child(dialog_button(
                                         "sidebar-dialog-confirm",
                                         action,
+                                        true,
                                         destructive,
                                         theme,
                                         cx.listener(|this, _event, _window, cx| {
@@ -1122,6 +1159,14 @@ impl HarnessApp {
                                         }),
                                     )),
                             ),
+                    )
+                    .with_animation(
+                        "sidebar-dialog-panel-in",
+                        Animation::new(
+                            theme.motion_duration(std::time::Duration::from_millis(220)),
+                        )
+                        .with_easing(crate::theme::web_ease_out),
+                        |panel, delta| panel.top(px(8.0 * (1.0 - delta))).opacity(delta),
                     ),
             )
             .into_any_element()
@@ -1378,41 +1423,50 @@ fn sidebar_menu_rule(theme: crate::Theme) -> AnyElement {
 fn dialog_button(
     id: &'static str,
     label: impl Into<SharedString>,
+    primary: bool,
     destructive: bool,
     theme: crate::Theme,
     listener: impl Fn(&gpui::ClickEvent, &mut Window, &mut gpui::App) + 'static,
 ) -> AnyElement {
+    let foreground = if destructive {
+        gpui::rgb(0xfefefe).into()
+    } else if primary {
+        match theme.mode {
+            crate::theme::ThemeMode::Dark => gpui::rgb(0x101010).into(),
+            crate::theme::ThemeMode::Light => gpui::rgb(0xfefefe).into(),
+        }
+    } else {
+        theme.text_2.hsla()
+    };
     div()
         .id(id)
-        .h(px(31.0))
-        .px(px(11.0))
         .flex()
         .items_center()
-        .rounded(px(7.0))
-        .border_1()
-        .border_color(if destructive {
-            theme.error.hsla().opacity(0.4)
-        } else {
-            theme.line_strong.hsla()
-        })
+        .justify_center()
+        .px(px(if primary { 15.0 } else { 8.0 }))
+        .py(px(if primary { 7.0 } else { 4.0 }))
+        .rounded(px(if primary { 5.0 } else { 3.0 }))
         .bg(if destructive {
-            theme.error.hsla().opacity(0.1)
-        } else {
-            theme.surface.hsla()
-        })
-        .text_size(px(11.5))
-        .font_weight(gpui::FontWeight::MEDIUM)
-        .text_color(if destructive {
             theme.error.hsla()
+        } else if primary {
+            theme.text.hsla()
         } else {
-            theme.text_2.hsla()
+            gpui::transparent_black()
         })
+        .text_size(px(if primary { 13.5 } else { 12.5 }))
+        .line_height(relative(1.55))
+        .font_weight(if primary {
+            FontWeight(540.0)
+        } else {
+            FontWeight::NORMAL
+        })
+        .text_color(foreground)
         .cursor_pointer()
-        .hover(move |style| {
-            style.bg(if destructive {
-                theme.error.hsla().opacity(0.17)
-            } else {
-                theme.surface_2.hsla()
+        .when(!primary, |button| {
+            button.hover(move |style| {
+                style
+                    .bg(theme.surface_3.hsla())
+                    .text_color(theme.text.hsla())
             })
         })
         .on_click(listener)
