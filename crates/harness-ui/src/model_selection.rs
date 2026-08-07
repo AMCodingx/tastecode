@@ -11,6 +11,41 @@ pub(crate) fn source_key(choice: &ModelChoice) -> String {
     provider_key(choice.provider).into()
 }
 
+pub(crate) fn filter_model_choices_by_query(
+    choices: &[ModelChoice],
+    query: &str,
+) -> Vec<ModelChoice> {
+    let terms = query
+        .split_whitespace()
+        .map(str::to_lowercase)
+        .collect::<Vec<_>>();
+    if terms.is_empty() {
+        return choices.to_vec();
+    }
+    choices
+        .iter()
+        .filter(|choice| {
+            model_search_fields_match(
+                &choice.source_name,
+                &choice.model.display_name,
+                &choice.model.id,
+                &terms,
+            )
+        })
+        .cloned()
+        .collect()
+}
+
+fn model_search_fields_match(
+    source_name: &str,
+    display_name: &str,
+    model_id: &str,
+    terms: &[String],
+) -> bool {
+    let searchable = format!("{source_name} {display_name} {model_id}").to_lowercase();
+    terms.iter().all(|term| searchable.contains(term))
+}
+
 pub(crate) fn fast_service_tier(model: &Model) -> Option<&ServiceTier> {
     model.service_tiers.iter().find(|tier| {
         let id = tier.id.trim().to_ascii_lowercase();
@@ -108,5 +143,25 @@ mod tests {
         let model = model(Some("priority"), &[("priority", "Fast")]);
 
         assert_eq!(fast_mode_off_value(&model), None);
+    }
+
+    #[test]
+    fn model_search_matches_every_case_insensitive_visible_term() {
+        let terms = ["opus", "openrouter"]
+            .into_iter()
+            .map(str::to_owned)
+            .collect::<Vec<_>>();
+        assert!(model_search_fields_match(
+            "OpenCode",
+            "OpenRouter · Claude Opus 5",
+            "openrouter/claude-opus-5",
+            &terms,
+        ));
+        assert!(!model_search_fields_match(
+            "OpenCode",
+            "OpenCode Go · Qwen3.8 Max",
+            "qwen/qwen3.8-max",
+            &terms,
+        ));
     }
 }
