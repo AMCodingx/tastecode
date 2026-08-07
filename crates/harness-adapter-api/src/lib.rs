@@ -5,6 +5,13 @@ use std::time::Duration;
 use thiserror::Error;
 use url::Url;
 
+mod transport;
+
+pub use transport::{
+    ApiMessage, ApiRequest, ApiStreamEvent, ApiTool, ApiToolCall, ApiTransport, FinishReason,
+    create_transport,
+};
+
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 
 #[derive(Debug, Error)]
@@ -19,6 +26,10 @@ pub enum ApiAdapterError {
     Pagination(&'static str),
     #[error("{0} model listing failed")]
     Request(&'static str),
+    #[error("{0}")]
+    Provider(String),
+    #[error("direct API request was interrupted")]
+    Interrupted,
 }
 
 pub fn list_models(
