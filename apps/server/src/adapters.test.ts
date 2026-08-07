@@ -9,6 +9,71 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 
 const constructed: FakeOpenCodeAdapter[] = []
 let release: (() => void) | undefined
+const turnAdapters: FakeTurnAdapter[] = []
+
+class FakeTurnAdapter {
+  readonly capabilities = {
+    steer: false,
+    fork: false,
+    interrupt: true,
+    reasoningItems: true,
+    approvals: false,
+    images: false,
+  }
+  readonly provider: 'grok' | 'antigravity' | 'claude-code'
+  startOptions: Record<string, unknown> | undefined
+  turnOptions: Record<string, unknown> | undefined
+
+  constructor(provider: FakeTurnAdapter['provider']) {
+    this.provider = provider
+    turnAdapters.push(this)
+  }
+
+  on(): this {
+    return this
+  }
+
+  async startThread(workspacePath: string, options: Record<string, unknown>) {
+    this.startOptions = options
+    return {
+      id: `${this.provider}-thread`,
+      provider: this.provider,
+      workspacePath,
+      createdAt: 1,
+    }
+  }
+
+  async sendTurn(
+    _threadId: string,
+    _text: string,
+    _attachments: string[] | undefined,
+    options: Record<string, unknown> | undefined,
+  ) {
+    this.turnOptions = options
+    return `${this.provider}-turn`
+  }
+
+  async interrupt(): Promise<void> {}
+  dispose(): void {}
+}
+
+class FakeGrokAdapter extends FakeTurnAdapter {
+  constructor() {
+    super('grok')
+  }
+}
+
+class FakeAntigravityAdapter extends FakeTurnAdapter {
+  constructor() {
+    super('antigravity')
+  }
+}
+
+class FakeClaudeCodeAdapter extends FakeTurnAdapter {
+  constructor() {
+    super('claude-code')
+  }
+}
 
 class FakeOpenCodeAdapter {
   disposed = false
@@ -38,11 +103,41 @@ vi.mock('@harness/adapter-opencode', () => ({
   },
 }))
 
+vi.mock('@harness/adapter-grok', () => ({ GrokAdapter: FakeGrokAdapter }))
+vi.mock('@harness/adapter-antigravity', () => ({
+  AntigravityAdapter: FakeAntigravityAdapter,
+}))
+vi.mock('@harness/adapter-claude-code', () => ({
+  ClaudeCodeAdapter: FakeClaudeCodeAdapter,
+}))
+
 const { providerRuntime } = await import('./adapters.js')
 
 afterEach(() => {
   constructed.length = 0
+  turnAdapters.length = 0
   release = undefined
+})
+
+describe('one-shot provider turn options', () => {
+  it.each(['grok', 'antigravity', 'claude-code'] as const)(
+    'forwards model and effort changes to %s on every turn',
+    async (provider) => {
+      const runtime = providerRuntime(provider, () => {})
+      const { thread, session } = await runtime.start('C:\\repo', {
+        model: 'model-a',
+        effort: 'low',
+      })
+
+      await session.sendTurn(thread.id, 'Think harder', [], {
+        model: 'model-b',
+        effort: 'high',
+      })
+
+      expect(turnAdapters[0]?.startOptions).toMatchObject({ model: 'model-a', effort: 'low' })
+      expect(turnAdapters[0]?.turnOptions).toEqual({ model: 'model-b', effort: 'high' })
+    },
+  )
 })
 
 describe('openCodeRuntime.listModels', () => {
