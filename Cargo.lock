@@ -2909,6 +2909,7 @@ dependencies = [
  "harness-adapter-claude-code",
  "harness-adapter-codex",
  "harness-adapter-cursor",
+ "harness-adapter-opencode",
  "harness-agent",
  "harness-credentials",
  "harness-proc",

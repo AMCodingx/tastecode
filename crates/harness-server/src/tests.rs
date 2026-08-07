@@ -440,6 +440,46 @@ fn native_cursor_runtime_starts_and_persists_a_provider_thread() {
 }
 
 #[test]
+fn native_opencode_runtime_is_registered_without_acp_or_api_routing() {
+    let directory = tempfile::tempdir().unwrap();
+    let credentials: Arc<dyn CredentialStore> = Arc::new(MemoryCredentials::default());
+    let model_connections = Arc::new(Mutex::new(
+        crate::model_connections::ModelConnectionStore::new(
+            directory.path().join("providers.json"),
+            Arc::clone(&credentials),
+        ),
+    ));
+    let runtimes = crate::agents::NativeRuntimes::new(model_connections, credentials);
+    let runtime =
+        crate::agents::RuntimeRegistry::runtime(&runtimes, ProviderId::OpenCode, None, None)
+            .unwrap();
+    let control = runtime.open_control(ControlHandlers::default()).unwrap();
+    let mcp = control.list_mcp_servers().unwrap();
+    assert!(!mcp.capabilities.inventory);
+    assert!(mcp.capabilities.add);
+    assert!(mcp.capabilities.update);
+    assert!(mcp.capabilities.remove);
+    assert!(
+        crate::agents::RuntimeRegistry::runtime(
+            &runtimes,
+            ProviderId::OpenCode,
+            Some("agent"),
+            None,
+        )
+        .is_err()
+    );
+    assert!(
+        crate::agents::RuntimeRegistry::runtime(
+            &runtimes,
+            ProviderId::OpenCode,
+            None,
+            Some("connection"),
+        )
+        .is_err()
+    );
+}
+
+#[test]
 fn live_agent_routes_persist_stream_queue_and_resume_draining() {
     let runtime = Arc::new(FakeRuntime::default());
     let registry = Arc::new(FakeRuntimes {
