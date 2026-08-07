@@ -72,6 +72,17 @@ impl ColorToken {
     pub fn hsla(self) -> Hsla {
         rgb(self.0).into()
     }
+
+    pub fn mix_srgb(self, other: Self, weight: f32) -> Self {
+        let weight = weight.clamp(0.0, 1.0);
+        let other_weight = 1.0 - weight;
+        let channel = |shift: u32| {
+            let first = ((self.0 >> shift) & 0xff_u32) as f32;
+            let second = ((other.0 >> shift) & 0xff_u32) as f32;
+            (first * weight + second * other_weight).round() as u32
+        };
+        Self((channel(16) << 16) | (channel(8) << 8) | channel(0))
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -429,6 +440,21 @@ mod tests {
         assert_eq!(light.running, ColorToken(0x52525b));
         assert_eq!(light.file_reference, ColorToken(0x4a53a8));
         assert_eq!(light.effort, ColorToken(0xc2413d));
+    }
+
+    #[test]
+    fn srgb_mix_matches_css_color_mix_channel_weighting() {
+        let dark = Theme::dark();
+        let light = Theme::light();
+
+        assert_eq!(
+            dark.attention.mix_srgb(dark.line_strong, 0.55),
+            ColorToken(0x416da3)
+        );
+        assert_eq!(
+            light.attention.mix_srgb(light.line_strong, 0.55),
+            ColorToken(0x789ae7)
+        );
     }
 
     #[test]

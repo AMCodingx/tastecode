@@ -916,51 +916,106 @@ impl HarnessApp {
             div()
                 .absolute()
                 .bottom(px(18.0))
-                .left(px(18.0))
-                .right(px(18.0))
-                .mx_auto()
+                .left_0()
                 .w_full()
-                .max_w(px(620.0))
-                .min_h(px(39.0))
                 .flex()
-                .items_center()
-                .gap(px(8.0))
-                .px(px(10.0))
-                .py(px(9.0))
-                .rounded(px(8.0))
-                .border_1()
-                .border_color(theme.line_strong.hsla())
-                .bg(theme.surface_2.hsla())
-                .shadow_lg()
-                .text_size(px(12.0))
-                .text_color(theme.text_2.hsla())
-                .child(div().min_w(px(0.0)).flex_1().child(message))
-                .when(can_undo, |notice| {
-                    notice.child(toast_button(
-                        "notice-undo-restore",
-                        if self.stage_controls.undo_busy {
-                            "Undoing…"
-                        } else {
-                            "Undo restore"
-                        },
-                        self.stage_controls.undo_busy,
-                        theme,
-                        cx.listener(|this, _event, _window, cx| this.reverse_restore(cx)),
-                    ))
-                })
-                .child(toast_button(
-                    "notice-dismiss",
-                    "Dismiss",
-                    false,
-                    theme,
-                    cx.listener(|this, _event, _window, cx| {
-                        this.dismiss_global_notice(cx);
-                    }),
-                ))
-                .with_animation(
-                    "global-notice",
-                    Animation::new(theme.motion.fast).with_easing(crate::theme::web_ease_out),
-                    |notice, delta| notice.opacity(delta),
+                .justify_center()
+                .px(px(18.0))
+                .child(
+                    div()
+                        .w_auto()
+                        .max_w(px(620.0))
+                        .min_h(px(39.0))
+                        .flex()
+                        .items_center()
+                        .gap(px(8.0))
+                        .px(px(10.0))
+                        .py(px(9.0))
+                        .rounded(px(5.0))
+                        .border_1()
+                        .border_color(theme.line_strong.hsla())
+                        .bg(theme.surface_2.hsla())
+                        .text_size(px(12.5))
+                        .line_height(relative(1.55))
+                        .text_color(theme.text.hsla())
+                        .child(
+                            div()
+                                .min_w(px(0.0))
+                                .max_h(px(58.2))
+                                .overflow_hidden()
+                                .flex_1()
+                                .child(message),
+                        )
+                        .when(can_undo, |notice| {
+                            notice.child(toast_button(
+                                "notice-undo-restore",
+                                "Undo restore",
+                                self.stage_controls.undo_busy,
+                                theme,
+                                cx.listener(|this, _event, _window, cx| this.reverse_restore(cx)),
+                            ))
+                        })
+                        .child(toast_button(
+                            "notice-dismiss",
+                            "Dismiss",
+                            false,
+                            theme,
+                            cx.listener(|this, _event, _window, cx| {
+                                this.dismiss_global_notice(cx);
+                            }),
+                        )),
+                )
+                .into_any_element(),
+        )
+    }
+
+    pub(super) fn offline_notice(&self) -> Option<AnyElement> {
+        if !self.reconnect_notice_visible {
+            return None;
+        }
+        let theme = self.theme;
+        Some(
+            div()
+                .absolute()
+                .bottom(px(62.0))
+                .left_0()
+                .w_full()
+                .flex()
+                .justify_center()
+                .px(px(18.0))
+                .child(
+                    div()
+                        .w_auto()
+                        .max_w(px(620.0))
+                        .min_h(px(39.0))
+                        .flex()
+                        .items_center()
+                        .gap(px(8.0))
+                        .px(px(10.0))
+                        .py(px(9.0))
+                        .rounded(px(5.0))
+                        .border_1()
+                        .border_color(theme.attention.mix_srgb(theme.line_strong, 0.55).hsla())
+                        .bg(theme.surface_2.hsla())
+                        .text_size(px(12.5))
+                        .line_height(relative(1.55))
+                        .text_color(theme.text_2.hsla())
+                        .child(
+                            svg()
+                                .path("icons/loader-circle.svg")
+                                .size(px(11.0))
+                                .flex_none()
+                                .with_animation(
+                                    "offline-notice-spinner",
+                                    theme.repeating_animation(Duration::from_millis(700)),
+                                    |spinner, delta| {
+                                        spinner.with_transformation(gpui::Transformation::rotate(
+                                            gpui::percentage(delta),
+                                        ))
+                                    },
+                                ),
+                        )
+                        .child("Reconnecting to the server…"),
                 )
                 .into_any_element(),
         )
@@ -1057,17 +1112,15 @@ fn toast_button(
 ) -> AnyElement {
     div()
         .id(id)
-        .h(px(25.0))
         .flex_none()
         .flex()
         .items_center()
         .px(px(8.0))
-        .rounded(px(7.0))
-        .border_1()
-        .border_color(theme.line_strong.hsla())
-        .text_size(px(11.0))
+        .py(px(4.0))
+        .rounded(px(3.0))
+        .text_size(px(12.5))
+        .line_height(relative(1.55))
         .text_color(theme.text_2.hsla())
-        .opacity(if disabled { 0.5 } else { 1.0 })
         .when(!disabled, |button| {
             button
                 .cursor_pointer()

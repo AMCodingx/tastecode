@@ -34,7 +34,7 @@ use gpui::{
 };
 use gpui_component::Root;
 use gpui_component::input::{InputEvent, InputState};
-use harness_client::Endpoint;
+use harness_client::{ConnectionState, Endpoint};
 use harness_protocol::{
     ApprovalMode, Model, ModelConnectionPreset, ProviderId, SessionSummary, SidebarMode,
     ThreadInboxStatus,
@@ -140,6 +140,8 @@ struct HarnessApp {
     settled_expanded: bool,
     settled_limit: usize,
     account_menu_open: bool,
+    reconnect_notice_generation: u64,
+    reconnect_notice_visible: bool,
     system_theme_mode: ThemeMode,
     reduced_motion: bool,
     preferences: NativePreferences,
@@ -630,6 +632,8 @@ impl HarnessApp {
             settled_expanded: true,
             settled_limit: 10,
             account_menu_open: false,
+            reconnect_notice_generation: 0,
+            reconnect_notice_visible: false,
             system_theme_mode,
             reduced_motion,
             preferences,
@@ -669,6 +673,9 @@ impl HarnessApp {
         let shell_changed = update.shell_changed;
         let mut refresh_stage = false;
         for chat_update in update.chat {
+            if let ChatUpdate::Connection(connection) = &chat_update {
+                self.update_reconnect_notice(*connection, cx);
+            }
             refresh_stage |= match &chat_update {
                 ChatUpdate::Refresh => true,
                 ChatUpdate::Event(push) => {
@@ -737,6 +744,30 @@ impl HarnessApp {
         if let Some(catalog) = completed_model_catalog {
             let _ = NativePreferences::save_model_catalog_cache(&catalog);
         }
+    }
+
+    fn update_reconnect_notice(&mut self, connection: ConnectionState, cx: &mut Context<Self>) {
+        self.reconnect_notice_generation = self.reconnect_notice_generation.wrapping_add(1);
+        let generation = self.reconnect_notice_generation;
+        if connection != ConnectionState::Reconnecting {
+            self.reconnect_notice_visible = false;
+            return;
+        }
+
+        cx.spawn(async move |view, cx| {
+            cx.background_executor()
+                .timer(Duration::from_millis(1_200))
+                .await;
+            let _ = view.update(cx, |this, cx| {
+                if this.reconnect_notice_generation == generation
+                    && this.state.connection == ConnectionState::Reconnecting
+                {
+                    this.reconnect_notice_visible = true;
+                    cx.notify();
+                }
+            });
+        })
+        .detach();
     }
 
     fn sync_model_selection(&mut self, cx: &mut Context<Self>) {
@@ -2199,6 +2230,7 @@ impl Render for HarnessApp {
         let sidebar_controls_overlay = self.sidebar_controls_overlay(window, cx);
         let rollback_open = self.stage_controls.overlay_open();
         let rollback_overlay = self.rollback_overlay(cx);
+        let offline_notice = self.offline_notice();
         let global_notice = self.global_notice(cx);
         let image_viewer_overlay = self.image_viewer_overlay(cx);
         let zoom_hud = self.zoom_hud(cx);
@@ -2290,6 +2322,7 @@ impl Render for HarnessApp {
             })
             .when_some(rollback_overlay, |root, overlay| root.child(overlay))
             .when_some(image_viewer_overlay, |root, viewer| root.child(viewer))
+            .when_some(offline_notice, |root, notice| root.child(notice))
             .when_some(global_notice, |root, notice| root.child(notice))
     }
 }
