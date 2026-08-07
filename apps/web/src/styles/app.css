@@ -41,13 +41,12 @@
   display: flex;
   align-items: center;
   gap: 8px;
-  /* Stay inside the strip Windows leaves for us, so content never slides under
-     the caption buttons at any DPI scale. */
+  /* Keep the chrome itself edge-to-edge while native controls only offset the
+     interactive content inside it. */
   padding-left: max(12px, env(titlebar-area-x, 12px));
   padding-right: 12px;
-  width: env(titlebar-area-width, 100%);
+  width: 100%;
   background: var(--titlebar-bg);
-  border-bottom: 1px solid var(--line);
   box-shadow: inset 0 1px var(--chrome-highlight);
   -webkit-app-region: drag;
   user-select: none;
@@ -7491,8 +7490,7 @@
 
 /* ---------------------------------------------------------------------------
    Translucent sidebar. The strength comes from --rail-glass (0..0.6, set by
-   Appearance). A soft accent glow sits behind the shell whenever glass or a
-   background palette is active, so the translucency has something to show.
+   Appearance).
    --------------------------------------------------------------------------- */
 
 :root[data-glass='on'] .rail {
@@ -7510,39 +7508,6 @@
     color-mix(in srgb, #fff calc(4% + var(--rail-glass, 0) * 10%), transparent);
   box-shadow: inset 0 1px 0
     color-mix(in srgb, #fff calc(3% + var(--rail-glass, 0) * 8%), transparent);
-}
-
-:root[data-backdrop]:not([data-backdrop='default']) .shell {
-  background-image:
-    radial-gradient(
-      60% 42% at 8% 0%,
-      color-mix(in srgb, var(--attention) 6%, transparent),
-      transparent 70%
-    ),
-    radial-gradient(
-      50% 38% at 100% 100%,
-      color-mix(in srgb, var(--effort) 5%, transparent),
-      transparent 70%
-    );
-  background-attachment: fixed;
-}
-
-/* With glass on, the glow scales with the chosen strength — a fixed 6% glow
-   behind a barely-transparent rail was invisible on Graphite, which read as
-   "the slider does nothing". At Strong (0.5) this reaches ~15%/12%. */
-:root[data-glass='on'] .shell {
-  background-image:
-    radial-gradient(
-      60% 42% at 8% 0%,
-      color-mix(in srgb, var(--attention) calc(4% + var(--rail-glass, 0) * 22%), transparent),
-      transparent 70%
-    ),
-    radial-gradient(
-      50% 38% at 100% 100%,
-      color-mix(in srgb, var(--effort) calc(3% + var(--rail-glass, 0) * 18%), transparent),
-      transparent 70%
-    );
-  background-attachment: fixed;
 }
 
 /* Glass previews: an accent glow behind a rail-colored pane whose opacity
