@@ -4133,7 +4133,7 @@ fn mask_email(email: &str) -> String {
 }
 
 fn row_issue(message: String, tip: Option<String>, theme: Theme) -> AnyElement {
-    let tooltip = tip.map_or_else(|| message.clone(), |tip| format!("{message}\n{tip}"));
+    let tooltip_message = message.clone();
     div()
         .id(SharedString::from(format!("row-issue:{message}")))
         .size(px(22.0))
@@ -4143,9 +4143,33 @@ fn row_issue(message: String, tip: Option<String>, theme: Theme) -> AnyElement {
         .rounded_full()
         .bg(theme.error.hsla().opacity(0.14))
         .text_color(theme.error.hsla())
-        .cursor_pointer()
-        .hover(move |style| style.bg(theme.error.hsla().opacity(0.18)))
-        .tooltip(move |window, cx| Tooltip::new(tooltip.clone()).build(window, cx))
+        .tooltip(move |window, cx| {
+            let tooltip_message = tooltip_message.clone();
+            let tip = tip.clone();
+            Tooltip::element(move |_window, _cx| {
+                div()
+                    .max_w(px(300.0))
+                    .text_color(theme.text.hsla())
+                    .child(tooltip_message.clone())
+                    .when_some(tip.clone(), |content, tip| {
+                        content.child(div().mt(px(4.0)).text_color(theme.text_3.hsla()).child(tip))
+                    })
+            })
+            .m(px(8.0))
+            .max_w(px(300.0))
+            .px(px(10.0))
+            .py(px(8.0))
+            .gap(px(0.0))
+            .rounded(px(5.0))
+            .border_1()
+            .border_color(chrome::menu_border(theme))
+            .bg(chrome::menu_background(theme))
+            .shadow(chrome::flyout_shadows(theme))
+            .text_size(px(12.5))
+            .line_height(relative(1.45))
+            .font_weight(FontWeight(400.0))
+            .build(window, cx)
+        })
         .child(settings_icon("icons/circle-alert.svg", 14.0))
         .into_any_element()
 }
