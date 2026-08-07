@@ -5,6 +5,7 @@ members = [
   "crates/harness-client",
   "crates/harness-proc",
   "crates/harness-protocol",
+  "crates/harness-providers",
   "crates/harness-server",
   "crates/harness-state",
   "crates/harness-store",

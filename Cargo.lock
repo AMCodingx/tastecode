@@ -2756,6 +2756,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "harness-providers"
+version = "0.1.0"
+dependencies = [
+ "harness-proc",
+ "harness-protocol",
+ "thiserror 2.0.19",
+]
+
+[[package]]
 name = "harness-server"
 version = "0.1.0"
 dependencies = [
