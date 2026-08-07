@@ -635,7 +635,9 @@ impl HarnessApp {
                 theme,
             ));
         }
-        if let Some(error) = &self.state.connection_error {
+        if parked_provider_surfaces_visible()
+            && let Some(error) = &self.state.connection_error
+        {
             blocks.push(settings_error_group(
                 "Connection error",
                 error.clone(),
@@ -908,10 +910,12 @@ impl HarnessApp {
                 agents.push(terminal);
             }
         }
-        providers.extend(agents);
-        providers.push(settings_inside_title("API connections", theme));
-        providers.extend(connections);
-        providers.push(connection_control);
+        if parked_provider_surfaces_visible() {
+            providers.extend(agents);
+            providers.push(settings_inside_title("API connections", theme));
+            providers.extend(connections);
+            providers.push(connection_control);
+        }
         blocks.push(settings_group("", providers, theme));
         settings_panel("Providers", blocks, theme)
     }
@@ -4501,6 +4505,12 @@ fn update_check_note(result: Option<&UpdateCheckResult>) -> Option<String> {
     Some("No verdict".into())
 }
 
+fn parked_provider_surfaces_visible() -> bool {
+    // Keep the ACP and direct-API implementations compiled while the public beta
+    // matches the web surface: Codex, Claude Code and Grok only.
+    false
+}
+
 fn settings_icon(path: &'static str, size: f32) -> impl IntoElement {
     svg().path(path).size(px(size))
 }
@@ -4531,6 +4541,11 @@ mod tests {
             connection_preset(ModelConnectionPreset::Custom).base_url,
             "http://127.0.0.1:11434/v1"
         );
+    }
+
+    #[test]
+    fn public_beta_keeps_parked_provider_surfaces_hidden() {
+        assert!(!parked_provider_surfaces_visible());
     }
 
     #[test]
