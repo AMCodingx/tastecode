@@ -14,7 +14,7 @@ use crate::model_selection::{
     fast_service_tier, filter_model_choices_by_query, is_fast_mode_enabled, source_key,
 };
 use crate::motion_icon::{IconTransformation, motion_icon};
-use crate::provider_icon::{provider_icon, provider_icon_color};
+use crate::provider_icon::{provider_mark, provider_mark_path};
 use crate::theme::{CHAT_WIDTH, RADIUS_XL, Theme, ThemeMode, cubic_bezier_timing};
 use crate::zoom::px;
 use diff::DiffUiState;
@@ -4205,7 +4205,16 @@ impl ChatView {
                                 .items_center()
                                 .gap(px(6.0))
                                 .truncate()
-                                .child(provider_icon(selected.provider, theme, 13.0))
+                                .child(
+                                    motion_icon(
+                                        "composer-model-provider-icon",
+                                        provider_mark_path(provider_mark(selected.provider)),
+                                        13.0,
+                                        "composer-model-hover",
+                                        theme,
+                                    )
+                                    .text_color(theme.text_2.hsla()),
+                                )
                                 .child(model_name),
                         )
                         .child(
@@ -4271,8 +4280,11 @@ impl ChatView {
                     .map(|(index, project)| {
                         let selected = active_path.as_deref() == Some(project.path.as_str());
                         let path = project.path.clone();
+                        let hover_group: SharedString =
+                            format!("composer-project-option-{index}").into();
                         div()
                             .id(("composer-project-option", index))
+                            .group(hover_group.clone())
                             .w_full()
                             .flex()
                             .flex_col()
@@ -4302,7 +4314,13 @@ impl ChatView {
                                             .child(project.name),
                                     )
                                     .when(selected, |name| {
-                                        name.child(svg_icon("icons/check.svg", 13.0))
+                                        name.child(motion_icon(
+                                            ("composer-project-option-check", index),
+                                            "icons/check.svg",
+                                            13.0,
+                                            hover_group,
+                                            theme,
+                                        ))
                                     }),
                             )
                             .child(
@@ -4350,8 +4368,11 @@ impl ChatView {
                     .map(|(index, branch)| {
                         let active = selected.as_deref() == Some(branch.as_str());
                         let value = branch.clone();
+                        let hover_group: SharedString =
+                            format!("composer-branch-option-{index}").into();
                         div()
                             .id(("composer-branch-option", index))
+                            .group(hover_group.clone())
                             .w_full()
                             .flex()
                             .items_center()
@@ -4371,7 +4392,15 @@ impl ChatView {
                                 this.choose_branch(value.clone(), cx);
                             }))
                             .child(div().min_w(px(0.0)).flex_1().truncate().child(branch))
-                            .when(active, |row| row.child(svg_icon("icons/check.svg", 13.0)))
+                            .when(active, |row| {
+                                row.child(motion_icon(
+                                    ("composer-branch-option-check", index),
+                                    "icons/check.svg",
+                                    13.0,
+                                    hover_group,
+                                    theme,
+                                ))
+                            })
                     }),
             )
             .with_animation(
@@ -4433,8 +4462,10 @@ impl ChatView {
                         let semantic_color = approval_semantic_color(mode, theme);
                         let title_color = semantic_color.unwrap_or_else(|| theme.text.hsla());
                         let icon_color = semantic_color.unwrap_or_else(|| theme.text_3.hsla());
+                        let hover_group: SharedString = format!("permission-option-{index}").into();
                         div()
                             .id(("permission-option", index))
+                            .group(hover_group.clone())
                             .w_full()
                             .flex()
                             .flex_col()
@@ -4460,12 +4491,15 @@ impl ChatView {
                                             .flex()
                                             .items_center()
                                             .gap(px(8.0))
-                                            .child(
-                                                div()
-                                                    .flex_none()
-                                                    .text_color(icon_color)
-                                                    .child(svg_icon(icon_path, 14.0)),
-                                            )
+                                            .child(div().flex_none().text_color(icon_color).child(
+                                                motion_icon(
+                                                    ("permission-option-icon", index),
+                                                    icon_path,
+                                                    14.0,
+                                                    hover_group.clone(),
+                                                    theme,
+                                                ),
+                                            ))
                                             .child(
                                                 div()
                                                     .min_w(px(0.0))
@@ -4476,7 +4510,13 @@ impl ChatView {
                                             ),
                                     )
                                     .when(active, |name| {
-                                        name.child(svg_icon("icons/check.svg", 13.0))
+                                        name.child(motion_icon(
+                                            ("permission-option-check", index),
+                                            "icons/check.svg",
+                                            13.0,
+                                            hover_group,
+                                            theme,
+                                        ))
                                     }),
                             )
                             .child(
@@ -4544,8 +4584,10 @@ impl ChatView {
             .children(groups.into_iter().enumerate().map(|(index, group)| {
                 let active = active_group_key.as_deref() == Some(group.key.as_str());
                 let key = group.key;
+                let hover_group: SharedString = format!("model-provider-{index}").into();
                 div()
                     .id(("model-provider", index))
+                    .group(hover_group.clone())
                     .size(px(34.0))
                     .flex_none()
                     .flex()
@@ -4571,15 +4613,20 @@ impl ChatView {
                     .on_click(cx.listener(move |this, _event, _window, cx| {
                         this.select_model_source(key.clone(), cx);
                     }))
-                    .child(provider_icon_color(
-                        group.provider,
-                        18.0,
-                        if active {
+                    .child(
+                        motion_icon(
+                            ("model-provider-icon", index),
+                            provider_mark_path(provider_mark(group.provider)),
+                            18.0,
+                            hover_group,
+                            theme,
+                        )
+                        .text_color(if active {
                             theme.text.hsla()
                         } else {
                             theme.text_3.hsla()
-                        },
-                    ))
+                        }),
+                    )
             }));
 
         let models = if let Some(group) = active_group {
@@ -4589,8 +4636,10 @@ impl ChatView {
                 .map(|(index, choice)| {
                     let active = selected_key.as_deref() == Some(choice.key.as_str());
                     let key = choice.key.clone();
+                    let hover_group: SharedString = format!("model-option-{index}").into();
                     div()
                         .id(("model-option", index))
+                        .group(hover_group.clone())
                         .min_h(px(32.0))
                         .w_full()
                         .flex()
@@ -4621,12 +4670,15 @@ impl ChatView {
                                 .child(choice.model.display_name),
                         )
                         .when(active, |row| {
-                            row.child(
-                                div()
-                                    .flex_none()
-                                    .text_color(theme.text_2.hsla())
-                                    .child(svg_icon("icons/check.svg", 14.0)),
-                            )
+                            row.child(div().flex_none().text_color(theme.text_2.hsla()).child(
+                                motion_icon(
+                                    ("model-option-check", index),
+                                    "icons/check.svg",
+                                    14.0,
+                                    hover_group,
+                                    theme,
+                                ),
+                            ))
                         })
                         .into_any_element()
                 })
@@ -4766,7 +4818,13 @@ impl ChatView {
                 }
             }))
             .child(chrome::inset_top_shade(theme))
-            .child(svg_icon("icons/search.svg", 13.0))
+            .child(motion_icon(
+                "model-search-icon",
+                "icons/search.svg",
+                13.0,
+                "model-search-icon-direct-hover",
+                theme,
+            ))
             .child(
                 Input::new(&self.model_search)
                     .xsmall()
@@ -4786,6 +4844,7 @@ impl ChatView {
                 field.child(
                     div()
                         .id("clear-model-search")
+                        .group("clear-model-search-hover")
                         .size(px(18.0))
                         .flex_none()
                         .flex()
@@ -4804,7 +4863,13 @@ impl ChatView {
                                 input.focus(window, cx);
                             });
                         })
-                        .child(svg_icon("icons/x.svg", 12.0)),
+                        .child(motion_icon(
+                            "clear-model-search-icon",
+                            "icons/x.svg",
+                            12.0,
+                            "clear-model-search-hover",
+                            theme,
+                        )),
                 )
             })
             .into_any_element()

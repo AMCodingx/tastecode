@@ -24,10 +24,6 @@ pub(crate) fn provider_icon(provider: ProviderId, theme: Theme, size: f32) -> An
     mark_icon(provider_mark(provider), theme, size)
 }
 
-pub(crate) fn provider_icon_color(provider: ProviderId, size: f32, color: Hsla) -> AnyElement {
-    mark_icon_color(provider_mark(provider), size, color)
-}
-
 pub(crate) fn provider_mark(provider: ProviderId) -> ProviderMark {
     match provider {
         ProviderId::Codex => ProviderMark::OpenAi,
