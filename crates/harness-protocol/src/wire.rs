@@ -98,6 +98,9 @@ pub mod method {
     pub const SKILLS_SET_ENABLED: &str = "skills.setEnabled";
     pub const SKILLS_INSTALL_FROM_FOLDER: &str = "skills.installFromFolder";
     pub const ACP_AGENTS: &str = "acp.agents";
+    pub const WORKSPACE_INFO: &str = "workspace.info";
+    pub const WORKSPACE_BRANCHES: &str = "workspace.branches";
+    pub const WORKSPACE_SWITCH_BRANCH: &str = "workspace.switchBranch";
     pub const AUTH_STATUS: &str = "auth.status";
     pub const AUTH_START_LOGIN: &str = "auth.startLogin";
     pub const AUTH_SIGN_OUT: &str = "auth.signOut";
@@ -226,6 +229,9 @@ mod tests {
         assert_eq!(method::THREAD_CLOSE, "thread.close");
         assert_eq!(method::THREAD_CHECKPOINTS, "thread.checkpoints");
         assert_eq!(method::USAGE_SUMMARY, "usage.summary");
+        assert_eq!(method::WORKSPACE_INFO, "workspace.info");
+        assert_eq!(method::WORKSPACE_BRANCHES, "workspace.branches");
+        assert_eq!(method::WORKSPACE_SWITCH_BRANCH, "workspace.switchBranch");
     }
 
     #[test]

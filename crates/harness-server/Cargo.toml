@@ -10,6 +10,7 @@ chrono.workspace = true
 dirs.workspace = true
 harness-protocol = { path = "../harness-protocol" }
 harness-store = { path = "../harness-store" }
+harness-workspace = { path = "../harness-workspace" }
 serde.workspace = true
 serde_json.workspace = true
 subtle.workspace = true

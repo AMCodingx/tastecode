@@ -93,6 +93,24 @@ pub(crate) fn route(
                 limit: params.limit,
             })?)
         }
+        method::WORKSPACE_INFO => {
+            let params: WorkspacePathParams = decode(method_name, params)?;
+            encoded(harness_workspace::read_workspace(params.path))
+        }
+        method::WORKSPACE_BRANCHES => {
+            let params: WorkspacePathParams = decode(method_name, params)?;
+            Ok(json!({
+                "branches": harness_workspace::list_workspace_branches(params.path)
+            }))
+        }
+        method::WORKSPACE_SWITCH_BRANCH => {
+            let params: WorkspaceSwitchParams = decode(method_name, params)?;
+            require_non_empty(method_name, "branch", &params.branch)?;
+            encoded(
+                harness_workspace::switch_workspace_branch(params.path, &params.branch)
+                    .map_err(RouteError::internal)?,
+            )
+        }
         method::PROJECTS_LIST => {
             let _: EmptyParams = decode(method_name, params)?;
             let store = lock_store(state)?;
@@ -532,6 +550,17 @@ struct ProjectAddParams {
     path: String,
     #[serde(default, deserialize_with = "deserialize_present")]
     name: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct WorkspacePathParams {
+    path: String,
+}
+
+#[derive(Deserialize)]
+struct WorkspaceSwitchParams {
+    path: String,
+    branch: String,
 }
 
 #[derive(Deserialize)]

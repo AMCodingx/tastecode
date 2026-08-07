@@ -8,6 +8,7 @@ members = [
   "crates/harness-state",
   "crates/harness-store",
   "crates/harness-ui",
+  "crates/harness-workspace",
 ]
 
 [workspace.package]

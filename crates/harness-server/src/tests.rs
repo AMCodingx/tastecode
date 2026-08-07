@@ -3,6 +3,7 @@ use harness_protocol::{DomainEvent, Item, ItemStatus, ItemType, MessageRole, Pro
 use harness_store::{NewCheckpoint, NewThread as StoreNewThread};
 use serde_json::{Value, json};
 use std::net::{IpAddr, Ipv4Addr, TcpStream};
+use std::process::Command;
 use std::time::Instant;
 use tempfile::TempDir;
 use tungstenite::client::IntoClientRequest as _;
@@ -56,6 +57,20 @@ fn send_request(socket: &mut ClientSocket, id: &str, method: &str, params: Value
             json!({ "id": id, "method": method, "params": params }).to_string(),
         ))
         .unwrap();
+}
+
+fn git(cwd: &std::path::Path, args: &[&str]) {
+    let output = Command::new("git")
+        .args(args)
+        .current_dir(cwd)
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "git {:?}: {}",
+        args,
+        String::from_utf8_lossy(&output.stderr)
+    );
 }
 
 fn assert_welcome(socket: &mut ClientSocket) {
@@ -327,6 +342,64 @@ fn sidebar_and_lifecycle_pushes_are_ordered_per_connection_before_the_response()
 
     first.close(None).unwrap();
     second.close(None).unwrap();
+    server.close().unwrap();
+}
+
+#[test]
+fn live_workspace_routes_report_and_switch_only_local_branches() {
+    let repository = tempfile::tempdir().unwrap();
+    git(repository.path(), &["init", "--initial-branch=main"]);
+    git(
+        repository.path(),
+        &["config", "user.email", "test@example.com"],
+    );
+    git(repository.path(), &["config", "user.name", "Test"]);
+    std::fs::write(repository.path().join("file.txt"), "initial\n").unwrap();
+    git(repository.path(), &["add", "file.txt"]);
+    git(repository.path(), &["commit", "-m", "initial"]);
+    git(repository.path(), &["branch", "feature/native"]);
+
+    let (_directory, server) = start_test_server(None, |_| {});
+    let mut socket = connect_native(&server, "");
+    assert_welcome(&mut socket);
+    let path = repository.path().to_string_lossy();
+
+    send_request(
+        &mut socket,
+        "branches",
+        "workspace.branches",
+        json!({ "path": path }),
+    );
+    assert_eq!(
+        read_value(&mut socket)["result"]["branches"],
+        json!(["main", "feature/native"])
+    );
+    send_request(
+        &mut socket,
+        "switch",
+        "workspace.switchBranch",
+        json!({ "path": path, "branch": "feature/native" }),
+    );
+    let switched = read_value(&mut socket);
+    assert_eq!(switched["result"]["branch"], "feature/native");
+    assert_eq!(switched["result"]["dirtyFiles"], 0);
+
+    send_request(
+        &mut socket,
+        "revision",
+        "workspace.switchBranch",
+        json!({ "path": path, "branch": "HEAD~1" }),
+    );
+    let rejected = read_value(&mut socket);
+    assert_eq!(rejected["error"]["code"], "internal");
+    assert!(
+        rejected["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("unknown local branch")
+    );
+
+    socket.close(None).unwrap();
     server.close().unwrap();
 }
 

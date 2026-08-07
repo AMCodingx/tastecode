@@ -1001,6 +1001,16 @@ pub struct SystemInfo {
     pub platform: SystemPlatform,
 }
 
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkspaceInfo {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub branch: Option<String>,
+    pub added: u64,
+    pub removed: u64,
+    pub dirty_files: u64,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct UpdateRemote {
@@ -1625,5 +1635,21 @@ mod tests {
             limits: Vec::new(),
         };
         assert_eq!(serde_json::to_value(summary).unwrap()["limits"], json!([]));
+
+        assert_eq!(
+            serde_json::to_value(WorkspaceInfo {
+                branch: Some("feature/native".into()),
+                added: 3,
+                removed: 1,
+                dirty_files: 2,
+            })
+            .unwrap(),
+            json!({
+                "branch": "feature/native",
+                "added": 3,
+                "removed": 1,
+                "dirtyFiles": 2
+            })
+        );
     }
 }
