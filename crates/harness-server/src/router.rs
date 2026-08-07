@@ -99,6 +99,10 @@ pub(crate) fn route(
                 platform: current_platform(),
             })
         }
+        method::SYSTEM_PANIC_STOP => {
+            let _: EmptyParams = decode(method_name, params)?;
+            encoded(state.agents.panic_stop(state))
+        }
         method::SYSTEM_UPDATE_CHECK => {
             let _: EmptyParams = decode(method_name, params)?;
             encoded(crate::update_check::check())
@@ -827,6 +831,27 @@ pub(crate) fn route(
             let params: ThreadIdParams = decode(method_name, params)?;
             require_non_empty(method_name, "threadId", &params.thread_id)?;
             encoded(state.agents.queue(&params.thread_id))
+        }
+        method::THREAD_DELETE_QUEUED_TURN => {
+            let params: ThreadSteerQueuedParams = decode(method_name, params)?;
+            require_non_empty(method_name, "threadId", &params.thread_id)?;
+            require_non_empty(method_name, "queuedTurnId", &params.queued_turn_id)?;
+            state
+                .agents
+                .delete_queued(state, &params.thread_id, &params.queued_turn_id);
+            empty_result()
+        }
+        method::THREAD_MOVE_QUEUED_TURN => {
+            let params: ThreadMoveQueuedParams = decode(method_name, params)?;
+            require_non_empty(method_name, "threadId", &params.thread_id)?;
+            require_non_empty(method_name, "queuedTurnId", &params.queued_turn_id)?;
+            state.agents.move_queued(
+                state,
+                &params.thread_id,
+                &params.queued_turn_id,
+                params.direction,
+            );
+            empty_result()
         }
         method::THREAD_STEER_QUEUED_TURN => {
             let params: ThreadSteerQueuedParams = decode(method_name, params)?;
@@ -1615,6 +1640,14 @@ struct ThreadSendTurnParams {
 struct ThreadSteerQueuedParams {
     thread_id: String,
     queued_turn_id: String,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ThreadMoveQueuedParams {
+    thread_id: String,
+    queued_turn_id: String,
+    direction: crate::agents::QueueDirection,
 }
 
 #[derive(Deserialize)]

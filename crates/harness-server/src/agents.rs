@@ -34,24 +34,25 @@ use harness_protocol::{
     Account, ApprovalDecision, AuthEventPush, AuthStartLoginResult, DomainEvent, Item, ItemStatus,
     ItemType, McpAuth, McpCapabilities, McpConfigValue, McpListResult, McpOAuthPush,
     McpOAuthStartResult, McpServer, McpServerConfig, McpServerScope, McpStartupStatus,
-    McpTransport, MessageRole, Model, ProviderId, QueuedTurn, SendTurnResult, Skill,
-    SkillCapabilities, SkillSource, SkillsListResult, Thread, ThreadEventPush, ThreadInboxStatus,
-    ThreadLifecyclePush, ThreadQueuePush, ThreadQueueResult, TurnStatus, UserInputOption,
-    UserInputQuestion, UserInputRequest, VoiceStatusReason, VoiceStatusResult,
-    VoiceTranscribeParams, channel,
+    McpTransport, MessageRole, Model, PanicStopResult, PanicStopSessionResult, ProviderId,
+    QueuedTurn, SendTurnResult, Skill, SkillCapabilities, SkillSource, SkillsListResult, Thread,
+    ThreadEventPush, ThreadInboxStatus, ThreadLifecyclePush, ThreadQueuePush, ThreadQueueResult,
+    TurnStatus, UserInputOption, UserInputQuestion, UserInputRequest, VoiceStatusReason,
+    VoiceStatusResult, VoiceTranscribeParams, channel,
 };
 use harness_store::{NewCheckpoint, NewThread};
 use harness_workspace::Worktree;
 use serde_json::Value;
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Condvar, Mutex, Weak};
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use uuid::Uuid;
 
 const REPLY_STYLE_INSTRUCTIONS: &str = "Write like a clear, capable teammate.\n\n- Lead with the useful answer or outcome.\n- Use plain, specific language. Avoid generic AI filler, canned praise, and throat-clearing.\n- Keep routine replies compact, but include detail when the task needs it.\n- Prefer short paragraphs and only use lists when they improve scanning.\n- Do not use em dashes. Use a comma, colon, parentheses, or a new sentence instead.\n- Be warm and direct without slang overload or forced personality.\n- Never omit risks, blockers, or verification results just to sound concise.";
+const PANIC_STOP_TIMEOUT: Duration = Duration::from_secs(5);
 
 pub(crate) trait RuntimeRegistry: Send + Sync {
     fn runtime(
@@ -261,6 +262,13 @@ enum DesignContinuation {
     Complete(String),
 }
 
+#[derive(Clone, Copy, serde::Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub(crate) enum QueueDirection {
+    Up,
+    Down,
+}
+
 struct ResumeSlot {
     result: Mutex<Option<Result<Arc<dyn AgentSession>, String>>>,
     ready: Condvar,
@@ -304,6 +312,9 @@ pub(crate) struct AgentManager {
     watched_mcp_projects: Arc<Mutex<HashMap<ProviderId, HashSet<String>>>>,
     watched_skill_projects: Arc<Mutex<HashMap<ProviderId, HashSet<String>>>>,
     worktree_root: PathBuf,
+    panic_stopping: AtomicBool,
+    panic_generation: AtomicU64,
+    panic_lock: Mutex<()>,
 }
 
 impl AgentManager {
@@ -321,6 +332,9 @@ impl AgentManager {
             watched_mcp_projects: Arc::new(Mutex::new(HashMap::new())),
             watched_skill_projects: Arc::new(Mutex::new(HashMap::new())),
             worktree_root: std::env::temp_dir().join("personal-harness-trees"),
+            panic_stopping: AtomicBool::new(false),
+            panic_generation: AtomicU64::new(0),
+            panic_lock: Mutex::new(()),
         }
     }
 
@@ -774,7 +788,16 @@ impl AgentManager {
         state: &Arc<ServerState>,
         request: SubmitTurnRequest,
     ) -> Result<SendTurnResult, String> {
+        if self.panic_stopping.load(Ordering::Acquire) {
+            return Err("turn cancelled by panic stop".into());
+        }
+        let panic_generation = self.panic_generation.load(Ordering::Acquire);
         let session = self.ensure_session(state, &request.thread_id)?;
+        if self.panic_stopping.load(Ordering::Acquire)
+            || self.panic_generation.load(Ordering::Acquire) != panic_generation
+        {
+            return Err("turn cancelled by panic stop".into());
+        }
         let queued = {
             let mut live = lock(&self.live);
             let busy = live.active_turns.contains(&request.thread_id)
@@ -834,6 +857,59 @@ impl AgentManager {
     pub(crate) fn queue(&self, thread_id: &str) -> ThreadQueueResult {
         let live = lock(&self.live);
         queue_result(&live, thread_id)
+    }
+
+    pub(crate) fn delete_queued(&self, state: &ServerState, thread_id: &str, queued_turn_id: &str) {
+        let changed = {
+            let mut live = lock(&self.live);
+            let Some(queue) = live.queues.get_mut(thread_id) else {
+                return;
+            };
+            let Some(index) = queue
+                .iter()
+                .position(|entry| entry.turn.id == queued_turn_id)
+            else {
+                return;
+            };
+            queue.remove(index);
+            true
+        };
+        if changed {
+            self.notify_queue(state, thread_id);
+        }
+    }
+
+    pub(crate) fn move_queued(
+        &self,
+        state: &ServerState,
+        thread_id: &str,
+        queued_turn_id: &str,
+        direction: QueueDirection,
+    ) {
+        let changed = {
+            let mut live = lock(&self.live);
+            let Some(queue) = live.queues.get_mut(thread_id) else {
+                return;
+            };
+            let Some(from) = queue
+                .iter()
+                .position(|entry| entry.turn.id == queued_turn_id)
+            else {
+                return;
+            };
+            let to = match direction {
+                QueueDirection::Up => from.checked_sub(1),
+                QueueDirection::Down => from.checked_add(1).filter(|to| *to < queue.len()),
+            };
+            let Some(to) = to else {
+                return;
+            };
+            queue.swap(from, to);
+            true
+        };
+        if changed {
+            self.notify_queue(state, thread_id);
+        }
     }
 
     pub(crate) fn steer_queued(
@@ -983,6 +1059,101 @@ impl AgentManager {
             .map_err(|error| error.to_string())
     }
 
+    pub(crate) fn panic_stop(&self, state: &Arc<ServerState>) -> PanicStopResult {
+        let _panic = lock(&self.panic_lock);
+        self.panic_stopping.store(true, Ordering::Release);
+        self.panic_generation.fetch_add(1, Ordering::AcqRel);
+        let (sessions, queued_threads, design_threads) = {
+            let mut live = lock(&self.live);
+            let sessions = live
+                .session_order
+                .iter()
+                .filter_map(|thread_id| {
+                    live.sessions
+                        .get(thread_id)
+                        .cloned()
+                        .map(|session| (thread_id.clone(), session))
+                })
+                .collect::<Vec<_>>();
+            let queued_threads = live
+                .queues
+                .iter()
+                .filter(|(_, queue)| !queue.is_empty())
+                .map(|(thread_id, _)| thread_id.clone())
+                .collect::<Vec<_>>();
+            let design_threads = live.design.flows.keys().cloned().collect::<Vec<_>>();
+            live.queues.clear();
+            live.starting_turns.clear();
+            (sessions, queued_threads, design_threads)
+        };
+        for thread_id in queued_threads {
+            self.notify_queue(state, &thread_id);
+        }
+
+        let deadline = Instant::now() + PANIC_STOP_TIMEOUT;
+        let mut pending = Vec::with_capacity(sessions.len());
+        for (thread_id, session) in sessions {
+            let (sender, receiver) = std::sync::mpsc::sync_channel(1);
+            let interrupt_thread_id = thread_id.clone();
+            thread::spawn(move || {
+                let result = session
+                    .interrupt(&interrupt_thread_id)
+                    .map_err(|error| error.to_string());
+                let _ = sender.send(result);
+            });
+            pending.push((thread_id, receiver));
+        }
+
+        let mut results = Vec::with_capacity(pending.len());
+        let mut failed = Vec::new();
+        for (thread_id, receiver) in pending {
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            let result = match receiver.recv_timeout(remaining) {
+                Ok(result) => result,
+                Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+                    Err("interrupt timed out; session was force-stopped".to_owned())
+                }
+                Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+                    Err("interrupt worker stopped unexpectedly".to_owned())
+                }
+            };
+            match result {
+                Ok(()) => results.push(PanicStopSessionResult::Interrupted { thread_id }),
+                Err(error) => {
+                    let error = if error.trim().is_empty() {
+                        "Unknown error".into()
+                    } else {
+                        error
+                    };
+                    failed.push(thread_id.clone());
+                    results.push(PanicStopSessionResult::Failed { thread_id, error });
+                }
+            }
+        }
+
+        for thread_id in &design_threads {
+            self.complete_design_activities_for_thread(state, thread_id, ItemStatus::Failed);
+            self.clear_design_flow(state, thread_id);
+        }
+        {
+            let mut live = lock(&self.live);
+            for result in &results {
+                let thread_id = match result {
+                    PanicStopSessionResult::Interrupted { thread_id }
+                    | PanicStopSessionResult::Failed { thread_id, .. } => thread_id,
+                };
+                live.active_turns.remove(thread_id);
+                live.starting_turns.remove(thread_id);
+            }
+        }
+        for thread_id in failed {
+            self.close(&thread_id);
+            state.terminals.close_thread(&thread_id);
+        }
+        self.panic_stopping.store(false, Ordering::Release);
+        PanicStopResult { sessions: results }
+    }
+
     pub(crate) fn close(&self, thread_id: &str) {
         let (session, preview, bridge) = {
             let mut live = lock(&self.live);
@@ -1082,14 +1253,32 @@ impl AgentManager {
         options: &TurnOptions,
         session: &Arc<dyn AgentSession>,
     ) -> Result<String, String> {
+        let panic_generation = self.panic_generation.load(Ordering::Acquire);
+        if self.turn_cancelled_by_panic(panic_generation) {
+            self.clear_starting_turn(thread_id);
+            return Err("turn cancelled by panic stop".into());
+        }
         self.checkpoint(state, thread_id, text);
+        if self.turn_cancelled_by_panic(panic_generation) {
+            self.clear_starting_turn(thread_id);
+            return Err("turn cancelled by panic stop".into());
+        }
         if attachments
             .iter()
             .any(|attachment| attachment == DESIGN_BRIEF_ATTACHMENT)
         {
-            let workspace_path = self.thread_workspace_path(state, thread_id)?;
+            let workspace_path = match self.thread_workspace_path(state, thread_id) {
+                Ok(workspace_path) => workspace_path,
+                Err(error) => {
+                    self.clear_starting_turn(thread_id);
+                    return Err(error);
+                }
+            };
             let flow = DesignFlow::new(workspace_path, text.into(), options);
-            self.replace_design_flow(state, thread_id, flow)?;
+            if let Err(error) = self.replace_design_flow(state, thread_id, flow) {
+                self.clear_starting_turn(thread_id);
+                return Err(error);
+            }
             let visible_attachments = attachments
                 .iter()
                 .filter(|attachment| attachment.as_str() != DESIGN_BRIEF_ATTACHMENT)
@@ -1107,11 +1296,12 @@ impl AgentManager {
         let result = session
             .send_turn(thread_id, text, attachments, options)
             .map_err(|error| error.to_string());
+        let cancelled = self.turn_cancelled_by_panic(panic_generation);
         let completed_during_start = {
             let mut live = lock(&self.live);
             live.starting_turns.remove(thread_id);
             let completed = live.terminal_while_starting.remove(thread_id);
-            if result.is_ok() && !completed {
+            if result.is_ok() && !completed && !cancelled {
                 live.active_turns.insert(thread_id.into());
             }
             completed
@@ -1119,7 +1309,22 @@ impl AgentManager {
         if completed_during_start {
             schedule_drain(state, thread_id.into());
         }
+        if cancelled {
+            let _ = session.interrupt(thread_id);
+            return Err("turn cancelled by panic stop".into());
+        }
         result
+    }
+
+    fn turn_cancelled_by_panic(&self, generation: u64) -> bool {
+        self.panic_stopping.load(Ordering::Acquire)
+            || self.panic_generation.load(Ordering::Acquire) != generation
+    }
+
+    fn clear_starting_turn(&self, thread_id: &str) {
+        let mut live = lock(&self.live);
+        live.starting_turns.remove(thread_id);
+        live.design.starting_threads.remove(thread_id);
     }
 
     fn run_design_turn_with_session(
@@ -1131,6 +1336,12 @@ impl AgentManager {
         session: &Arc<dyn AgentSession>,
         report_failure: bool,
     ) -> Result<String, String> {
+        let panic_generation = self.panic_generation.load(Ordering::Acquire);
+        if self.turn_cancelled_by_panic(panic_generation) {
+            self.clear_design_flow(state, thread_id);
+            self.clear_starting_turn(thread_id);
+            return Err("turn cancelled by panic stop".into());
+        }
         let options = {
             let mut live = lock(&self.live);
             let flow = live
@@ -1146,6 +1357,7 @@ impl AgentManager {
         let result = session
             .send_turn(thread_id, prompt, attachments, &options)
             .map_err(|error| error.to_string());
+        let cancelled = self.turn_cancelled_by_panic(panic_generation);
         let completed_during_start = {
             let mut live = lock(&self.live);
             live.starting_turns.remove(thread_id);
@@ -1153,6 +1365,7 @@ impl AgentManager {
             let completed = live.terminal_while_starting.remove(thread_id);
             if let Ok(turn_id) = &result
                 && !completed
+                && !cancelled
             {
                 live.active_turns.insert(thread_id.into());
                 live.design
@@ -1164,6 +1377,11 @@ impl AgentManager {
         };
         if completed_during_start {
             schedule_drain(state, thread_id.into());
+        }
+        if cancelled {
+            let _ = session.interrupt(thread_id);
+            self.clear_design_flow(state, thread_id);
+            return Err("turn cancelled by panic stop".into());
         }
         if let Err(error) = &result {
             if report_failure {
@@ -1297,7 +1515,12 @@ impl AgentManager {
         }
     }
 
-    fn fail_design_flow(&self, state: &Arc<ServerState>, thread_id: &str, error: &str) {
+    fn complete_design_activities_for_thread(
+        &self,
+        state: &Arc<ServerState>,
+        thread_id: &str,
+        status: ItemStatus,
+    ) {
         let turn_ids = {
             let live = lock(&self.live);
             live.design
@@ -1308,8 +1531,12 @@ impl AgentManager {
                 .collect::<Vec<_>>()
         };
         for turn_id in turn_ids {
-            self.complete_design_activity(state, thread_id, &turn_id, ItemStatus::Failed);
+            self.complete_design_activity(state, thread_id, &turn_id, status);
         }
+    }
+
+    fn fail_design_flow(&self, state: &Arc<ServerState>, thread_id: &str, error: &str) {
+        self.complete_design_activities_for_thread(state, thread_id, ItemStatus::Failed);
         self.clear_design_flow(state, thread_id);
         record_event(
             state,
@@ -1634,18 +1861,7 @@ impl AgentManager {
         if matches!(event, DomainEvent::ThreadError { .. })
             && lock(&self.live).design.owns_thread(thread_id)
         {
-            let turn_ids = {
-                let live = lock(&self.live);
-                live.design
-                    .turns
-                    .iter()
-                    .filter(|(_, owner)| owner.as_str() == thread_id)
-                    .map(|(turn_id, _)| turn_id.clone())
-                    .collect::<Vec<_>>()
-            };
-            for turn_id in turn_ids {
-                self.complete_design_activity(state, thread_id, &turn_id, ItemStatus::Failed);
-            }
+            self.complete_design_activities_for_thread(state, thread_id, ItemStatus::Failed);
             self.clear_design_flow(state, thread_id);
             record_event(state, thread_id, event.clone());
             return;
@@ -2516,6 +2732,9 @@ impl AgentManager {
     }
 
     fn drain_queue(&self, state: &Arc<ServerState>, thread_id: &str) {
+        if self.panic_stopping.load(Ordering::Acquire) {
+            return;
+        }
         let selected = {
             let mut live = lock(&self.live);
             if live.active_turns.contains(thread_id)

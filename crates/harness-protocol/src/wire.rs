@@ -74,6 +74,7 @@ pub mod method {
     pub const CLIENT_CAPABILITIES: &str = "client.capabilities";
     pub const PREVIEW_CAPTURE_RESULT: &str = "preview.captureResult";
     pub const SYSTEM_INFO: &str = "system.info";
+    pub const SYSTEM_PANIC_STOP: &str = "system.panicStop";
     pub const SEARCH_SESSIONS: &str = "search.sessions";
     pub const SYSTEM_UPDATE_CHECK: &str = "system.updateCheck";
     pub const VOICE_STATUS: &str = "voice.status";
@@ -141,6 +142,8 @@ pub mod method {
     pub const THREAD_UNSAVED_WORK: &str = "thread.unsavedWork";
     pub const THREAD_DISCARD_WORKTREE: &str = "thread.discardWorktree";
     pub const THREAD_QUEUE: &str = "thread.queue";
+    pub const THREAD_DELETE_QUEUED_TURN: &str = "thread.deleteQueuedTurn";
+    pub const THREAD_MOVE_QUEUED_TURN: &str = "thread.moveQueuedTurn";
     pub const THREAD_STEER_QUEUED_TURN: &str = "thread.steerQueuedTurn";
     pub const SIDEBAR_SETTINGS: &str = "sidebar.settings";
     pub const SIDEBAR_UPDATE_SETTINGS: &str = "sidebar.updateSettings";
@@ -249,7 +252,15 @@ mod tests {
     #[test]
     fn system_contract_keeps_the_existing_update_method() {
         assert_eq!(method::SYSTEM_INFO, "system.info");
+        assert_eq!(method::SYSTEM_PANIC_STOP, "system.panicStop");
         assert_eq!(method::SYSTEM_UPDATE_CHECK, "system.updateCheck");
+    }
+
+    #[test]
+    fn queue_mutation_contract_keeps_the_existing_method_names() {
+        assert_eq!(method::THREAD_DELETE_QUEUED_TURN, "thread.deleteQueuedTurn");
+        assert_eq!(method::THREAD_MOVE_QUEUED_TURN, "thread.moveQueuedTurn");
+        assert_eq!(method::THREAD_STEER_QUEUED_TURN, "thread.steerQueuedTurn");
     }
 
     #[test]

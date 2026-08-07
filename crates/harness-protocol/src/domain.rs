@@ -1209,6 +1209,26 @@ pub struct ThreadUnsavedWorkResult {
     pub uncommitted: bool,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PanicStopResult {
+    pub sessions: Vec<PanicStopSessionResult>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "status", rename_all = "lowercase")]
+pub enum PanicStopSessionResult {
+    Interrupted {
+        #[serde(rename = "threadId")]
+        thread_id: String,
+    },
+    Failed {
+        #[serde(rename = "threadId")]
+        thread_id: String,
+        error: String,
+    },
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct QueuedTurn {
@@ -1311,6 +1331,34 @@ mod tests {
         assert_eq!(update.local_commit.as_deref(), Some("1111111"));
         assert_eq!(update.remote.unwrap().message, "Latest change");
         assert_eq!(update.up_to_date, Some(false));
+    }
+
+    #[test]
+    fn panic_stop_results_match_the_discriminated_wire_contract() {
+        let result = PanicStopResult {
+            sessions: vec![
+                PanicStopSessionResult::Interrupted {
+                    thread_id: "thread-1".into(),
+                },
+                PanicStopSessionResult::Failed {
+                    thread_id: "thread-2".into(),
+                    error: "Adapter did not respond".into(),
+                },
+            ],
+        };
+        assert_eq!(
+            serde_json::to_value(result).unwrap(),
+            json!({
+                "sessions": [
+                    {"threadId": "thread-1", "status": "interrupted"},
+                    {
+                        "threadId": "thread-2",
+                        "status": "failed",
+                        "error": "Adapter did not respond"
+                    }
+                ]
+            })
+        );
     }
 
     #[test]

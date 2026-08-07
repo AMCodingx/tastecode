@@ -747,6 +747,236 @@ fn live_agent_routes_persist_stream_queue_and_resume_draining() {
 }
 
 #[test]
+fn queued_turn_routes_reorder_delete_and_preserve_the_selected_prompt() {
+    let runtime = Arc::new(FakeRuntime::default());
+    let registry = Arc::new(FakeRuntimes {
+        runtime: Arc::clone(&runtime),
+    });
+    let (directory, server) = start_test_server_with_runtimes(registry);
+    let workspace = directory.path().join("workspace");
+    fs::create_dir(&workspace).unwrap();
+    let mut socket = connect_native(&server, "");
+    assert_welcome(&mut socket);
+    send_request(
+        &mut socket,
+        "queue-start",
+        "thread.start",
+        json!({
+            "provider": "codex",
+            "workspacePath": workspace.to_string_lossy()
+        }),
+    );
+    let _ = read_until_response(&mut socket, "queue-start");
+    send_request(
+        &mut socket,
+        "queue-running",
+        "thread.sendTurn",
+        json!({"threadId": "thread-1", "text": "running"}),
+    );
+    let _ = read_until_response(&mut socket, "queue-running");
+    send_request(
+        &mut socket,
+        "queue-first",
+        "thread.sendTurn",
+        json!({"threadId": "thread-1", "text": "first queued"}),
+    );
+    let (_, first) = read_until_response(&mut socket, "queue-first");
+    let first_id = first["result"]["queuedTurn"]["id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    send_request(
+        &mut socket,
+        "queue-second",
+        "thread.sendTurn",
+        json!({
+            "threadId": "thread-1",
+            "text": "second queued",
+            "attachments": ["/repo/reference.png"]
+        }),
+    );
+    let (_, second) = read_until_response(&mut socket, "queue-second");
+    let second_id = second["result"]["queuedTurn"]["id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+
+    send_request(
+        &mut socket,
+        "queue-move",
+        "thread.moveQueuedTurn",
+        json!({
+            "threadId": "thread-1",
+            "queuedTurnId": second_id,
+            "direction": "up"
+        }),
+    );
+    let _ = read_until_response(&mut socket, "queue-move");
+    send_request(
+        &mut socket,
+        "queue-after-move",
+        "thread.queue",
+        json!({"threadId": "thread-1"}),
+    );
+    let (_, moved) = read_until_response(&mut socket, "queue-after-move");
+    assert_eq!(moved["result"]["items"][0]["text"], "second queued");
+    assert_eq!(
+        moved["result"]["items"][0]["attachments"],
+        json!(["/repo/reference.png"])
+    );
+    assert_eq!(moved["result"]["items"][1]["text"], "first queued");
+
+    send_request(
+        &mut socket,
+        "queue-delete",
+        "thread.deleteQueuedTurn",
+        json!({"threadId": "thread-1", "queuedTurnId": first_id}),
+    );
+    let _ = read_until_response(&mut socket, "queue-delete");
+    send_request(
+        &mut socket,
+        "queue-after-delete",
+        "thread.queue",
+        json!({"threadId": "thread-1"}),
+    );
+    let (_, deleted) = read_until_response(&mut socket, "queue-after-delete");
+    assert_eq!(deleted["result"]["items"].as_array().unwrap().len(), 1);
+    assert_eq!(deleted["result"]["items"][0]["text"], "second queued");
+
+    send_request(
+        &mut socket,
+        "queue-invalid-direction",
+        "thread.moveQueuedTurn",
+        json!({
+            "threadId": "thread-1",
+            "queuedTurnId": second_id,
+            "direction": "sideways"
+        }),
+    );
+    let invalid = read_value(&mut socket);
+    assert_eq!(invalid["error"]["code"], "bad_request");
+
+    let session = runtime.session();
+    session.complete("turn-1");
+    wait_for_sent_count(&session, 2);
+    assert_eq!(
+        session.sent_texts.lock().unwrap().as_slice(),
+        ["running", "second queued"]
+    );
+    socket.close(None).unwrap();
+    server.close().unwrap();
+}
+
+#[test]
+fn panic_stop_interrupts_live_sessions_concurrently_and_drops_their_queues() {
+    let runtime = Arc::new(FakeRuntime::default());
+    let registry = Arc::new(FakeRuntimes {
+        runtime: Arc::clone(&runtime),
+    });
+    let workspace = tempfile::tempdir().unwrap();
+    let workspace_path = workspace.path().to_string_lossy().into_owned();
+    let stored_workspace = workspace_path.clone();
+    let (directory, server) = start_test_server_with_runtimes_and_seed(registry, move |store| {
+        store.add_project(&stored_workspace, None).unwrap();
+        for thread_id in ["panic-one", "panic-two"] {
+            store
+                .add_thread(StoreNewThread {
+                    id: thread_id.into(),
+                    project_path: stored_workspace.clone(),
+                    provider: ProviderId::Codex,
+                    agent: None,
+                    title: thread_id.into(),
+                    created_at: Some(1_000),
+                    worktree_path: None,
+                    worktree_branch: None,
+                })
+                .unwrap();
+        }
+    });
+    let mut socket = connect_native(&server, "");
+    assert_welcome(&mut socket);
+    for (index, thread_id) in ["panic-one", "panic-two"].into_iter().enumerate() {
+        send_request(
+            &mut socket,
+            &format!("panic-running-{index}"),
+            "thread.sendTurn",
+            json!({"threadId": thread_id, "text": format!("running {index}")}),
+        );
+        let _ = read_until_response(&mut socket, &format!("panic-running-{index}"));
+        send_request(
+            &mut socket,
+            &format!("panic-queued-{index}"),
+            "thread.sendTurn",
+            json!({"threadId": thread_id, "text": "must not restart"}),
+        );
+        let (_, queued) = read_until_response(&mut socket, &format!("panic-queued-{index}"));
+        assert_eq!(queued["result"]["queued"], true);
+    }
+    let sessions = runtime.sessions.lock().unwrap().clone();
+    assert_eq!(sessions.len(), 2);
+    sessions[0].interrupt_delay_ms.store(75, Ordering::Release);
+    *sessions[1].interrupt_error.lock().unwrap() = Some("adapter did not respond".into());
+
+    send_request(&mut socket, "panic-stop", "system.panicStop", json!({}));
+    let (_, stopped) = read_until_response(&mut socket, "panic-stop");
+    assert_eq!(
+        stopped["result"],
+        json!({
+            "sessions": [
+                {"threadId": "panic-one", "status": "interrupted"},
+                {
+                    "threadId": "panic-two",
+                    "status": "failed",
+                    "error": "adapter did not respond"
+                }
+            ]
+        })
+    );
+    assert!(
+        sessions
+            .iter()
+            .all(|session| session.interrupted.load(Ordering::Acquire))
+    );
+    assert!(!sessions[0].disposed.load(Ordering::Acquire));
+    assert!(sessions[1].disposed.load(Ordering::Acquire));
+    for (index, thread_id) in ["panic-one", "panic-two"].into_iter().enumerate() {
+        send_request(
+            &mut socket,
+            &format!("panic-queue-check-{index}"),
+            "thread.queue",
+            json!({"threadId": thread_id}),
+        );
+        let (_, queue) = read_until_response(&mut socket, &format!("panic-queue-check-{index}"));
+        assert_eq!(queue["result"]["items"], json!([]));
+    }
+    assert_eq!(
+        sessions[0].sent_texts.lock().unwrap().as_slice(),
+        ["running 0"]
+    );
+
+    socket.close(None).unwrap();
+    server.close().unwrap();
+    let store = Store::open(directory.path().join("harness.db")).unwrap();
+    assert!(
+        store
+            .thread("panic-one")
+            .unwrap()
+            .unwrap()
+            .closed_at
+            .is_none()
+    );
+    assert!(
+        store
+            .thread("panic-two")
+            .unwrap()
+            .unwrap()
+            .closed_at
+            .is_none()
+    );
+    store.close().unwrap();
+}
+
+#[test]
 fn design_mode_runs_native_artifact_pipeline_and_drains_queue() {
     let runtime = Arc::new(FakeRuntime::default());
     runtime.images_disabled.store(true, Ordering::Release);
@@ -3855,6 +4085,8 @@ impl AgentRuntime for FakeRuntime {
             next_turn: AtomicU64::new(1),
             complete_during_send: Arc::clone(&self.complete_during_send),
             interrupted: AtomicBool::new(false),
+            interrupt_delay_ms: AtomicU64::new(0),
+            interrupt_error: Mutex::new(None),
             disposed: AtomicBool::new(false),
             approvals: Mutex::new(Vec::new()),
             user_inputs: Mutex::new(Vec::new()),
@@ -3898,6 +4130,8 @@ impl AgentRuntime for FakeRuntime {
             next_turn: AtomicU64::new(1),
             complete_during_send: Arc::clone(&self.complete_during_send),
             interrupted: AtomicBool::new(false),
+            interrupt_delay_ms: AtomicU64::new(0),
+            interrupt_error: Mutex::new(None),
             disposed: AtomicBool::new(false),
             approvals: Mutex::new(Vec::new()),
             user_inputs: Mutex::new(Vec::new()),
@@ -4147,6 +4381,8 @@ struct FakeSession {
     next_turn: AtomicU64,
     complete_during_send: Arc<AtomicBool>,
     interrupted: AtomicBool,
+    interrupt_delay_ms: AtomicU64,
+    interrupt_error: Mutex<Option<String>>,
     disposed: AtomicBool,
     approvals: Mutex<Vec<(String, ApprovalDecision)>>,
     user_inputs: Mutex<FakeUserInputResponses>,
@@ -4268,7 +4504,14 @@ impl AgentSession for FakeSession {
 
     fn interrupt(&self, _thread_id: &str) -> AgentResult<()> {
         self.interrupted.store(true, Ordering::Release);
-        Ok(())
+        let delay = self.interrupt_delay_ms.load(Ordering::Acquire);
+        if delay > 0 {
+            std::thread::sleep(Duration::from_millis(delay));
+        }
+        match self.interrupt_error.lock().unwrap().clone() {
+            Some(error) => Err(AgentError::Failed(error)),
+            None => Ok(()),
+        }
     }
 
     fn respond_to_approval(
