@@ -425,6 +425,7 @@ fn native_claude_runtime_exposes_the_captured_model_catalog() {
             "haiku",
             "claude-opus-4-8",
             "claude-opus-4-7",
+            "claude-opus-4-6",
             "claude-sonnet-4-6",
         ]
     );
@@ -3080,15 +3081,7 @@ fn live_provider_routes_report_the_catalog_and_refuse_client_selected_commands()
             .iter()
             .map(|provider| provider["id"].as_str().unwrap())
             .collect::<Vec<_>>(),
-        [
-            "codex",
-            "claude-code",
-            "grok",
-            "cursor",
-            "opencode",
-            "antigravity",
-            "acp",
-        ]
+        ["codex", "claude-code", "grok"]
     );
     assert!(
         providers["result"]["providers"]
