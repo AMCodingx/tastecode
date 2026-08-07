@@ -2068,6 +2068,11 @@ impl Render for HarnessApp {
         self.prepare_auto_settle_days_input(window, cx);
         self.sync_sidebar_status_clocks();
         let sidebar_query = self.sidebar_search.read(cx).value().to_string();
+        let sidebar_search_focused = self
+            .sidebar_search
+            .read(cx)
+            .focus_handle(cx)
+            .is_focused(window);
         let ordered_sidebar_ids = if self.state.sidebar_settings.mode == SidebarMode::Inbox {
             ordered_inbox_ids(
                 &self.state.projects,
@@ -2118,13 +2123,13 @@ impl Render for HarnessApp {
                 selected_thread_id: self.selected_thread_id.as_deref(),
                 selected_scope: self.sidebar_scope.as_deref(),
                 query: &sidebar_query,
+                search_focused: sidebar_search_focused,
                 search_input: self.sidebar_search.clone(),
                 rename_input: self.sidebar_controls.input.clone(),
                 renaming_project: self.sidebar_controls.renaming_project(),
                 renaming_thread: self.sidebar_controls.renaming_thread(),
                 dragging_thread: self.sidebar_session_drag.as_deref(),
                 scope_open: self.scope_open,
-                new_thread_picker: self.new_thread_picker,
                 collapsed_projects: &self.collapsed_projects,
                 expanded_project_sessions: &self.expanded_project_sessions,
                 status_clocks: &self.sidebar_status_clocks,

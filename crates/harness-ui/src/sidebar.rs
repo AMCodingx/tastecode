@@ -1,6 +1,6 @@
 use crate::chrome;
 use crate::shortcuts::{NEW_CHAT, NEW_PROJECT, SETTINGS, label as shortcut_label};
-use crate::theme::{RADIUS_MD, RADIUS_SM, Theme};
+use crate::theme::{ColorToken, RADIUS_MD, RADIUS_SM, Theme, ThemeMode};
 use crate::zoom::px;
 use chrono::{DateTime, Datelike, Local};
 use gpui::{
@@ -90,13 +90,13 @@ pub(crate) struct SidebarProps<'a> {
     pub(crate) selected_thread_id: Option<&'a str>,
     pub(crate) selected_scope: Option<&'a str>,
     pub(crate) query: &'a str,
+    pub(crate) search_focused: bool,
     pub(crate) search_input: Entity<InputState>,
     pub(crate) rename_input: Entity<InputState>,
     pub(crate) renaming_project: Option<&'a str>,
     pub(crate) renaming_thread: Option<&'a str>,
     pub(crate) dragging_thread: Option<&'a str>,
     pub(crate) scope_open: bool,
-    pub(crate) new_thread_picker: bool,
     pub(crate) collapsed_projects: &'a std::collections::HashSet<String>,
     pub(crate) expanded_project_sessions: &'a std::collections::HashSet<String>,
     pub(crate) status_clocks: &'a HashMap<String, (ThreadInboxStatus, f64)>,
@@ -120,6 +120,12 @@ struct SidebarRowState<'a> {
     rename_input: &'a Entity<InputState>,
     dragging_thread: Option<&'a str>,
     classic_row_width: f32,
+}
+
+struct SidebarSearch<'a> {
+    query: &'a str,
+    focused: bool,
+    input: &'a Entity<InputState>,
 }
 
 #[derive(Clone)]
@@ -169,13 +175,13 @@ pub fn sidebar(props: SidebarProps<'_>, actions: SidebarActions) -> impl IntoEle
         selected_thread_id,
         selected_scope,
         query,
+        search_focused,
         search_input,
         rename_input,
         renaming_project,
         renaming_thread,
         dragging_thread,
         scope_open,
-        new_thread_picker,
         collapsed_projects,
         expanded_project_sessions,
         status_clocks,
@@ -214,8 +220,11 @@ pub fn sidebar(props: SidebarProps<'_>, actions: SidebarActions) -> impl IntoEle
                 projects,
                 selected_scope,
                 scope_open,
-                new_thread_picker,
-                &search_input,
+                SidebarSearch {
+                    query,
+                    focused: search_focused,
+                    input: &search_input,
+                },
                 &actions,
             )
             .into_any_element()
@@ -666,10 +675,10 @@ fn sidebar_actions(
     projects: &[ProjectSummary],
     selected_scope: Option<&str>,
     scope_open: bool,
-    _new_thread_picker: bool,
-    search_input: &Entity<InputState>,
+    search: SidebarSearch<'_>,
     actions: &SidebarActions,
 ) -> impl IntoElement {
+    let clear_input = search.input.clone();
     div()
         .flex_none()
         .flex()
@@ -696,27 +705,63 @@ fn sidebar_actions(
                         .px(px(9.0))
                         .rounded(px(RADIUS_MD))
                         .border_1()
-                        .border_color(theme.line_strong.hsla())
-                        .bg(theme.background.hsla())
+                        .border_color(if search.focused {
+                            theme.text_3.hsla()
+                        } else {
+                            chrome::border(theme)
+                        })
+                        .bg(chrome::recessed(theme))
                         .text_color(theme.text_3.hsla())
                         .hover(move |style| {
                             style
-                                .border_color(theme.text_3.hsla().opacity(0.65))
+                                .border_color(if search.focused {
+                                    theme.text_3.hsla()
+                                } else {
+                                    inbox_search_hover_border(theme)
+                                })
                                 .text_color(theme.text.hsla())
                         })
                         .child(icon("icons/search.svg", 14.0))
                         .child(
-                            Input::new(search_input)
+                            Input::new(search.input)
+                                .xsmall()
                                 .appearance(false)
                                 .bordered(false)
                                 .focus_bordered(false)
-                                .cleanable(true)
-                                .h(px(30.0))
+                                .cleanable(false)
                                 .min_w(px(0.0))
                                 .flex_1()
-                                .text_size(px(11.5))
+                                .px(px(0.0))
+                                .py(px(0.0))
+                                .line_height(relative(1.55))
+                                .text_size(px(12.5))
                                 .text_color(theme.text.hsla()),
-                        ),
+                        )
+                        .when(!search.query.is_empty(), |field| {
+                            field.child(
+                                div()
+                                    .id("clear-thread-list-search")
+                                    .size(px(20.0))
+                                    .flex_none()
+                                    .flex()
+                                    .items_center()
+                                    .justify_center()
+                                    .rounded(px(RADIUS_SM))
+                                    .cursor_pointer()
+                                    .hover(move |style| {
+                                        style
+                                            .bg(theme.surface_3.hsla())
+                                            .text_color(theme.text.hsla())
+                                    })
+                                    .on_click(move |_event, window, cx| {
+                                        clear_input.update(cx, |input, cx| {
+                                            input.set_value("", window, cx);
+                                            input.focus(window, cx);
+                                        });
+                                    })
+                                    .child(icon("icons/x.svg", 12.0)),
+                            )
+                        }),
                 )
                 .child(
                     div()
@@ -792,6 +837,14 @@ fn sidebar_actions(
                         .child("Add Project"),
                 ),
         )
+}
+
+fn inbox_search_hover_border(theme: Theme) -> Hsla {
+    let border = match theme.mode {
+        ThemeMode::Dark => ColorToken(0x303030),
+        ThemeMode::Light => ColorToken(0xe3e3e6),
+    };
+    theme.text_3.mix_srgb(border, 0.35).hsla()
 }
 
 fn fixture_sidebar_body(theme: Theme) -> impl IntoElement {
