@@ -14,11 +14,11 @@ use harness_agent::{
 use harness_credentials::CredentialStore;
 use harness_protocol::{
     Account, ApprovalDecision, AuthEventPush, AuthStartLoginResult, DomainEvent, McpAuth,
-    McpConfigValue, McpListResult, McpOAuthPush, McpOAuthStartResult, McpServer, McpServerConfig,
-    McpServerScope, McpStartupStatus, McpTransport, Model, ProviderId, QueuedTurn, SendTurnResult,
-    Skill, SkillSource, SkillsListResult, Thread, ThreadEventPush, ThreadInboxStatus,
-    ThreadLifecyclePush, ThreadQueuePush, ThreadQueueResult, VoiceStatusReason, VoiceStatusResult,
-    VoiceTranscribeParams, channel,
+    McpCapabilities, McpConfigValue, McpListResult, McpOAuthPush, McpOAuthStartResult, McpServer,
+    McpServerConfig, McpServerScope, McpStartupStatus, McpTransport, Model, ProviderId, QueuedTurn,
+    SendTurnResult, Skill, SkillCapabilities, SkillSource, SkillsListResult, Thread,
+    ThreadEventPush, ThreadInboxStatus, ThreadLifecyclePush, ThreadQueuePush, ThreadQueueResult,
+    VoiceStatusReason, VoiceStatusResult, VoiceTranscribeParams, channel,
 };
 use harness_store::{NewCheckpoint, NewThread};
 use harness_workspace::Worktree;
@@ -37,6 +37,14 @@ pub(crate) trait RuntimeRegistry: Send + Sync {
         agent: Option<&str>,
         connection_id: Option<&str>,
     ) -> Result<Arc<dyn AgentRuntime>, AgentError>;
+
+    fn mcp_capabilities(&self, _provider: ProviderId) -> McpCapabilities {
+        unsupported_mcp_capabilities()
+    }
+
+    fn skill_capabilities(&self, _provider: ProviderId) -> SkillCapabilities {
+        unsupported_skill_capabilities()
+    }
 }
 
 pub(crate) struct NativeRuntimes {
@@ -143,6 +151,32 @@ impl RuntimeRegistry for NativeRuntimes {
             )),
         }
     }
+
+    fn mcp_capabilities(&self, provider: ProviderId) -> McpCapabilities {
+        match provider {
+            ProviderId::Codex => harness_adapter_codex::CODEX_MCP_CAPABILITIES,
+            ProviderId::OpenCode => McpCapabilities {
+                inventory: false,
+                add: true,
+                update: true,
+                remove: true,
+                reload: false,
+                start_o_auth: false,
+                cancel_o_auth: false,
+            },
+            ProviderId::ClaudeCode | ProviderId::Cursor | ProviderId::Acp | ProviderId::Api => {
+                unsupported_mcp_capabilities()
+            }
+        }
+    }
+
+    fn skill_capabilities(&self, provider: ProviderId) -> SkillCapabilities {
+        if provider == ProviderId::Codex {
+            harness_adapter_codex::CODEX_SKILL_CAPABILITIES
+        } else {
+            unsupported_skill_capabilities()
+        }
+    }
 }
 
 pub(crate) struct StartThreadRequest {
@@ -229,6 +263,10 @@ pub(crate) struct AgentManager {
 }
 
 impl AgentManager {
+    pub(crate) fn mcp_capabilities(&self, provider: ProviderId) -> McpCapabilities {
+        self.runtimes.mcp_capabilities(provider)
+    }
+
     pub(crate) fn new(runtimes: Arc<dyn RuntimeRegistry>) -> Self {
         Self {
             runtimes,
@@ -335,22 +373,37 @@ impl AgentManager {
         provider: ProviderId,
         project_path: &str,
     ) -> Result<McpListResult, String> {
+        let capabilities = self.runtimes.mcp_capabilities(provider);
+        if capabilities == unsupported_mcp_capabilities() {
+            return Ok(McpListResult {
+                capabilities,
+                servers: Vec::new(),
+            });
+        }
         watch_project(&self.watched_mcp_projects, provider, project_path);
-        let active = self.project_session(state, provider, project_path)?;
-        let mut inventory = match active {
-            Some((thread_id, session)) => match session.list_mcp_servers(&thread_id) {
-                Ok(inventory) => inventory,
-                Err(AgentError::Unsupported(_)) => self
+        let mut inventory = if capabilities.inventory {
+            let active = self.project_session(state, provider, project_path)?;
+            match active {
+                Some((thread_id, session)) => match session.list_mcp_servers(&thread_id) {
+                    Ok(inventory) => inventory,
+                    Err(AgentError::Unsupported(_)) => self
+                        .control(state, provider, None)?
+                        .list_mcp_servers()
+                        .map_err(|error| error.to_string())?,
+                    Err(error) => return Err(error.to_string()),
+                },
+                None => self
                     .control(state, provider, None)?
                     .list_mcp_servers()
                     .map_err(|error| error.to_string())?,
-                Err(error) => return Err(error.to_string()),
-            },
-            None => self
-                .control(state, provider, None)?
-                .list_mcp_servers()
-                .map_err(|error| error.to_string())?,
+            }
+        } else {
+            McpListResult {
+                capabilities,
+                servers: Vec::new(),
+            }
         };
+        inventory.capabilities = capabilities;
         let configured = lock(&state.mcp_config)
             .list(provider, project_path)
             .map_err(|error| error.to_string())?;
@@ -401,6 +454,9 @@ impl AgentManager {
         provider: ProviderId,
         project_path: &str,
     ) -> Result<(), String> {
+        if !self.runtimes.mcp_capabilities(provider).reload {
+            return Err("this provider cannot reload MCP servers".into());
+        }
         let (thread_id, session) = self
             .project_session(state, provider, project_path)?
             .ok_or_else(|| {
@@ -420,6 +476,9 @@ impl AgentManager {
         project_path: &str,
         server_id: &str,
     ) -> Result<McpOAuthStartResult, String> {
+        if !self.runtimes.mcp_capabilities(provider).start_o_auth {
+            return Err("this provider cannot start MCP OAuth".into());
+        }
         let (thread_id, session) = self
             .project_session(state, provider, project_path)?
             .ok_or_else(|| {
@@ -444,10 +503,21 @@ impl AgentManager {
         provider: ProviderId,
         project_path: &str,
     ) -> Result<SkillsListResult, String> {
+        let capabilities = self.runtimes.skill_capabilities(provider);
+        if !capabilities.inventory {
+            return Ok(SkillsListResult {
+                capabilities,
+                skills: Vec::new(),
+                errors: Vec::new(),
+            });
+        }
         watch_project(&self.watched_skill_projects, provider, project_path);
-        self.control(state, provider, None)?
+        let mut inventory = self
+            .control(state, provider, None)?
             .list_skills(project_path)
-            .map_err(|error| error.to_string())
+            .map_err(|error| error.to_string())?;
+        inventory.capabilities = capabilities;
+        Ok(inventory)
     }
 
     pub(crate) fn set_skill_enabled(
@@ -458,6 +528,9 @@ impl AgentManager {
         skill_id: &str,
         enabled: bool,
     ) -> Result<bool, String> {
+        if !self.runtimes.skill_capabilities(provider).configure {
+            return Err("this provider cannot configure skills".into());
+        }
         watch_project(&self.watched_skill_projects, provider, project_path);
         self.control(state, provider, None)?
             .set_skill_enabled(skill_id, enabled)
@@ -471,6 +544,9 @@ impl AgentManager {
         project_path: &str,
         folder_path: &str,
     ) -> Result<Skill, String> {
+        if !self.runtimes.skill_capabilities(provider).install {
+            return Err("this provider cannot install skills".into());
+        }
         watch_project(&self.watched_skill_projects, provider, project_path);
         let control = self.control(state, provider, None)?;
         let current = control
@@ -988,6 +1064,9 @@ impl AgentManager {
         provider: ProviderId,
         project_path: &str,
     ) -> Result<(Vec<McpServerConfig>, CredentialValues), String> {
+        if !self.runtimes.mcp_capabilities(provider).add {
+            return Ok((Vec::new(), CredentialValues::default()));
+        }
         let servers = lock(&state.mcp_config)
             .list(provider, project_path)
             .map_err(|error| error.to_string())?;
@@ -1283,6 +1362,26 @@ impl AgentManager {
             }
         }
         self.notify_queue(state, thread_id);
+    }
+}
+
+fn unsupported_mcp_capabilities() -> McpCapabilities {
+    McpCapabilities {
+        inventory: false,
+        add: false,
+        update: false,
+        remove: false,
+        reload: false,
+        start_o_auth: false,
+        cancel_o_auth: false,
+    }
+}
+
+fn unsupported_skill_capabilities() -> SkillCapabilities {
+    SkillCapabilities {
+        inventory: false,
+        configure: false,
+        install: false,
     }
 }
 

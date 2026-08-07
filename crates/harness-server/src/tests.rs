@@ -1849,6 +1849,80 @@ fn live_mcp_and_skills_routes_share_control_and_push_invalidations() {
 }
 
 #[test]
+fn unsupported_provider_management_is_typed_and_does_not_write_config() {
+    let runtime = Arc::new(FakeRuntime::default());
+    let registry = Arc::new(FakeRuntimes {
+        runtime: Arc::clone(&runtime),
+    });
+    let (directory, server) = start_test_server_with_runtimes(registry);
+    let mut socket = connect_native(&server, "");
+    assert_welcome(&mut socket);
+
+    send_request(
+        &mut socket,
+        "mcp",
+        "mcp.list",
+        json!({ "provider": "claude-code", "projectPath": "/repo" }),
+    );
+    let mcp = read_value(&mut socket);
+    assert_eq!(mcp["result"]["servers"], json!([]));
+    assert_eq!(
+        mcp["result"]["capabilities"],
+        json!({
+            "inventory": false,
+            "add": false,
+            "update": false,
+            "remove": false,
+            "reload": false,
+            "startOAuth": false,
+            "cancelOAuth": false
+        })
+    );
+
+    send_request(
+        &mut socket,
+        "skills",
+        "skills.list",
+        json!({ "provider": "acp", "projectPath": "/repo" }),
+    );
+    let skills = read_value(&mut socket);
+    assert_eq!(skills["result"]["skills"], json!([]));
+    assert_eq!(skills["result"]["errors"], json!([]));
+    assert_eq!(
+        skills["result"]["capabilities"],
+        json!({ "inventory": false, "configure": false, "install": false })
+    );
+
+    send_request(
+        &mut socket,
+        "add",
+        "mcp.add",
+        json!({
+            "provider": "claude-code",
+            "projectPath": "/repo",
+            "server": {
+                "id": "forbidden",
+                "enabled": true,
+                "transport": { "type": "http", "url": "https://example.com/mcp" }
+            }
+        }),
+    );
+    let add = read_value(&mut socket);
+    assert_eq!(add["error"]["code"], "internal");
+    assert!(
+        add["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("cannot add MCP servers")
+    );
+    assert_eq!(runtime.control_open_count.load(Ordering::Acquire), 0);
+    assert!(!directory.path().join("mcp.json").exists());
+
+    socket.close(None).unwrap();
+    server.close().unwrap();
+}
+
+#[test]
 fn live_transport_sends_welcome_drops_malformed_frames_and_reports_typed_errors() {
     let (_directory, server) = start_test_server(None, |_| {});
     let mut socket = connect_native(&server, "");
@@ -3061,6 +3135,34 @@ impl crate::agents::RuntimeRegistry for FakeRuntimes {
             return Err(AgentError::Failed("unsupported fake provider".into()));
         }
         Ok(self.runtime.clone())
+    }
+
+    fn mcp_capabilities(&self, provider: ProviderId) -> harness_protocol::McpCapabilities {
+        if provider == ProviderId::Codex {
+            harness_adapter_codex::CODEX_MCP_CAPABILITIES
+        } else {
+            harness_protocol::McpCapabilities {
+                inventory: false,
+                add: false,
+                update: false,
+                remove: false,
+                reload: false,
+                start_o_auth: false,
+                cancel_o_auth: false,
+            }
+        }
+    }
+
+    fn skill_capabilities(&self, provider: ProviderId) -> harness_protocol::SkillCapabilities {
+        if provider == ProviderId::Codex {
+            harness_adapter_codex::CODEX_SKILL_CAPABILITIES
+        } else {
+            harness_protocol::SkillCapabilities {
+                inventory: false,
+                configure: false,
+                install: false,
+            }
+        }
     }
 }
 

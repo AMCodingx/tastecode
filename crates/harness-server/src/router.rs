@@ -310,6 +310,9 @@ pub(crate) fn route(
         method::MCP_ADD => {
             let params: McpMutationParams = decode(method_name, params)?;
             require_non_empty(method_name, "projectPath", &params.project_path)?;
+            if !state.agents.mcp_capabilities(params.provider).add {
+                return Err(RouteError::internal("this provider cannot add MCP servers"));
+            }
             state
                 .mcp_config
                 .lock()
@@ -327,6 +330,11 @@ pub(crate) fn route(
         method::MCP_UPDATE => {
             let params: McpMutationParams = decode(method_name, params)?;
             require_non_empty(method_name, "projectPath", &params.project_path)?;
+            if !state.agents.mcp_capabilities(params.provider).update {
+                return Err(RouteError::internal(
+                    "this provider cannot update MCP servers",
+                ));
+            }
             state
                 .mcp_config
                 .lock()
@@ -345,6 +353,11 @@ pub(crate) fn route(
             let params: McpRemoveParams = decode(method_name, params)?;
             require_non_empty(method_name, "projectPath", &params.project_path)?;
             require_non_empty(method_name, "serverId", &params.server_id)?;
+            if !state.agents.mcp_capabilities(params.provider).remove {
+                return Err(RouteError::internal(
+                    "this provider cannot remove MCP servers",
+                ));
+            }
             state
                 .mcp_config
                 .lock()
