@@ -31,6 +31,52 @@ pub(crate) fn hover_border(theme: Theme) -> Hsla {
     border(theme).blend(theme.text_3.hsla().opacity(0.4))
 }
 
+pub(crate) fn menu_background(theme: Theme) -> Background {
+    match theme.mode {
+        ThemeMode::Dark => theme.surface_2.hsla().into(),
+        ThemeMode::Light => raised(theme),
+    }
+}
+
+pub(crate) fn menu_hover_background(theme: Theme) -> Background {
+    match theme.mode {
+        ThemeMode::Dark => theme.surface_3.hsla().into(),
+        ThemeMode::Light => raised_hover(theme),
+    }
+}
+
+pub(crate) fn menu_border(theme: Theme) -> Hsla {
+    match theme.mode {
+        ThemeMode::Dark => theme.line_strong.hsla(),
+        ThemeMode::Light => gpui::rgb(0xe6e6e9).into(),
+    }
+}
+
+pub(crate) fn flyout_shadows(theme: Theme) -> Vec<BoxShadow> {
+    match theme.mode {
+        ThemeMode::Dark => vec![BoxShadow {
+            color: gpui::black().opacity(0.46),
+            offset: point(px(0.0), px(8.0)),
+            blur_radius: px(24.0),
+            spread_radius: px(-14.0),
+        }],
+        ThemeMode::Light => vec![
+            BoxShadow {
+                color: gpui::rgba(0x18181b0d).into(),
+                offset: point(px(0.0), px(1.0)),
+                blur_radius: px(2.0),
+                spread_radius: px(0.0),
+            },
+            BoxShadow {
+                color: gpui::rgba(0x18181b2e).into(),
+                offset: point(px(0.0), px(10.0)),
+                blur_radius: px(28.0),
+                spread_radius: px(-18.0),
+            },
+        ],
+    }
+}
+
 pub(crate) fn shadows(theme: Theme) -> Vec<BoxShadow> {
     match theme.mode {
         ThemeMode::Dark => vec![BoxShadow {

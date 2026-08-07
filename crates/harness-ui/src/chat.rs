@@ -4069,16 +4069,16 @@ impl ChatView {
             .occlude()
             .absolute()
             .left(px(8.0))
-            .bottom(px(183.0))
+            .top(px(38.0))
             .w(px(350.0))
             .max_h(px(290.0))
             .overflow_y_scroll()
-            .rounded(px(13.0))
+            .rounded(px(8.0))
             .border_1()
-            .border_color(theme.line_strong.hsla())
-            .bg(theme.surface_2.hsla())
-            .shadow_lg()
-            .p(px(5.0))
+            .border_color(chrome::menu_border(theme))
+            .bg(chrome::menu_background(theme))
+            .shadow(chrome::flyout_shadows(theme))
+            .p(px(4.0))
             .children(
                 self.stage_settings
                     .projects
@@ -4090,51 +4090,52 @@ impl ChatView {
                         let path = project.path.clone();
                         div()
                             .id(("composer-project-option", index))
-                            .min_h(px(45.0))
                             .w_full()
                             .flex()
-                            .items_center()
-                            .gap(px(8.0))
-                            .px(px(8.0))
-                            .rounded(px(8.0))
-                            .when(selected, |row| row.bg(theme.surface_3.hsla()))
+                            .flex_col()
+                            .px(px(9.0))
+                            .py(px(7.0))
+                            .rounded(px(5.0))
                             .cursor_pointer()
-                            .hover(move |style| style.bg(theme.surface_3.hsla()))
+                            .hover(move |style| style.bg(chrome::menu_hover_background(theme)))
                             .on_click(cx.listener(move |this, _event, _window, cx| {
                                 this.choose_project(path.clone(), cx);
                             }))
-                            .child(svg_icon("icons/folder.svg", 14.0))
                             .child(
                                 div()
+                                    .w_full()
                                     .min_w(px(0.0))
-                                    .flex_1()
                                     .flex()
-                                    .flex_col()
+                                    .items_center()
+                                    .justify_between()
+                                    .gap(px(6.0))
                                     .child(
                                         div()
+                                            .min_w(px(0.0))
+                                            .flex_1()
                                             .truncate()
-                                            .text_size(px(12.0))
-                                            .font_weight(FontWeight::MEDIUM)
+                                            .text_size(px(13.5))
                                             .text_color(theme.text.hsla())
                                             .child(project.name),
                                     )
-                                    .child(
-                                        div()
-                                            .mt(px(1.0))
-                                            .truncate()
-                                            .font_family("Geist Mono")
-                                            .text_size(px(9.5))
-                                            .text_color(theme.text_3.hsla())
-                                            .child(project.path),
-                                    ),
+                                    .when(selected, |name| {
+                                        name.child(svg_icon("icons/check.svg", 13.0))
+                                    }),
                             )
-                            .when(selected, |row| row.child(svg_icon("icons/check.svg", 12.0)))
+                            .child(
+                                div()
+                                    .w_full()
+                                    .truncate()
+                                    .text_size(px(11.5))
+                                    .text_color(theme.text_3.hsla())
+                                    .child(project.path),
+                            )
                     }),
             )
             .with_animation(
                 "composer-project-menu",
                 Animation::new(theme.motion.fast).with_easing(crate::theme::web_ease_out),
-                |menu, delta| menu.opacity(delta),
+                |menu, delta| menu.opacity(delta).top(px(40.0 - 2.0 * delta)),
             )
             .into_any_element()
     }
@@ -4147,16 +4148,16 @@ impl ChatView {
             .occlude()
             .absolute()
             .left(px(175.0))
-            .bottom(px(183.0))
+            .top(px(38.0))
             .w(px(280.0))
             .max_h(px(290.0))
             .overflow_y_scroll()
-            .rounded(px(13.0))
+            .rounded(px(8.0))
             .border_1()
-            .border_color(theme.line_strong.hsla())
-            .bg(theme.surface_2.hsla())
-            .shadow_lg()
-            .p(px(5.0))
+            .border_color(chrome::menu_border(theme))
+            .bg(chrome::menu_background(theme))
+            .shadow(chrome::flyout_shadows(theme))
+            .p(px(4.0))
             .children(
                 self.stage_settings
                     .branches
@@ -4168,39 +4169,32 @@ impl ChatView {
                         let value = branch.clone();
                         div()
                             .id(("composer-branch-option", index))
-                            .h(px(34.0))
                             .w_full()
                             .flex()
                             .items_center()
-                            .gap(px(8.0))
-                            .px(px(8.0))
-                            .rounded(px(8.0))
-                            .when(active, |row| row.bg(theme.surface_3.hsla()))
-                            .text_size(px(11.5))
-                            .font_family("Geist Mono")
-                            .text_color(if active {
-                                theme.text.hsla()
-                            } else {
-                                theme.text_2.hsla()
-                            })
+                            .gap(px(6.0))
+                            .px(px(9.0))
+                            .py(px(7.0))
+                            .rounded(px(5.0))
+                            .text_size(px(13.5))
+                            .text_color(theme.text.hsla())
                             .cursor_pointer()
                             .hover(move |style| {
                                 style
-                                    .bg(theme.surface_3.hsla())
+                                    .bg(chrome::menu_hover_background(theme))
                                     .text_color(theme.text.hsla())
                             })
                             .on_click(cx.listener(move |this, _event, _window, cx| {
                                 this.choose_branch(value.clone(), cx);
                             }))
-                            .child(svg_icon("icons/git-branch.svg", 13.0))
                             .child(div().min_w(px(0.0)).flex_1().truncate().child(branch))
-                            .when(active, |row| row.child(svg_icon("icons/check.svg", 12.0)))
+                            .when(active, |row| row.child(svg_icon("icons/check.svg", 13.0)))
                     }),
             )
             .with_animation(
                 "composer-branch-menu",
                 Animation::new(theme.motion.fast).with_easing(crate::theme::web_ease_out),
-                |menu, delta| menu.opacity(delta),
+                |menu, delta| menu.opacity(delta).top(px(40.0 - 2.0 * delta)),
             )
             .into_any_element()
     }
@@ -4232,19 +4226,19 @@ impl ChatView {
                 "No sandbox, no prompts, no undo. Use with care.",
             ),
         ];
+        let menu_bottom = (if is_new_session { 183.0 } else { 147.0 }) + attachment_offset;
         div()
+            .occlude()
             .absolute()
             .left(px(40.0))
-            .bottom(px(
-                (if is_new_session { 183.0 } else { 147.0 }) + attachment_offset
-            ))
+            .bottom(px(menu_bottom))
             .w(px(315.0))
-            .rounded(px(13.0))
+            .rounded(px(8.0))
             .border_1()
-            .border_color(theme.line_strong.hsla())
-            .bg(theme.surface_2.hsla())
-            .shadow_lg()
-            .p(px(5.0))
+            .border_color(chrome::menu_border(theme))
+            .bg(chrome::menu_background(theme))
+            .shadow(chrome::flyout_shadows(theme))
+            .p(px(4.0))
             .children(
                 options
                     .into_iter()
@@ -4258,52 +4252,67 @@ impl ChatView {
                         let icon_color = semantic_color.unwrap_or_else(|| theme.text_3.hsla());
                         div()
                             .id(("permission-option", index))
-                            .min_h(px(48.0))
                             .w_full()
                             .flex()
-                            .items_center()
-                            .gap(px(9.0))
-                            .px(px(8.0))
-                            .rounded(px(8.0))
-                            .when(active, |row| row.bg(theme.surface_3.hsla()))
+                            .flex_col()
+                            .px(px(9.0))
+                            .py(px(7.0))
+                            .rounded(px(5.0))
                             .cursor_pointer()
-                            .hover(move |style| style.bg(theme.surface_3.hsla()))
+                            .hover(move |style| style.bg(chrome::menu_hover_background(theme)))
                             .on_click(cx.listener(move |this, _event, _window, cx| {
                                 this.choose_approval(mode, cx);
                             }))
                             .child(
                                 div()
-                                    .size(px(20.0))
+                                    .w_full()
+                                    .min_w(px(0.0))
                                     .flex()
                                     .items_center()
-                                    .justify_center()
-                                    .text_color(icon_color)
-                                    .child(svg_icon(icon_path, 14.0)),
+                                    .justify_between()
+                                    .gap(px(6.0))
+                                    .child(
+                                        div()
+                                            .min_w(px(0.0))
+                                            .flex()
+                                            .items_center()
+                                            .gap(px(8.0))
+                                            .child(
+                                                div()
+                                                    .flex_none()
+                                                    .text_color(icon_color)
+                                                    .child(svg_icon(icon_path, 14.0)),
+                                            )
+                                            .child(
+                                                div()
+                                                    .min_w(px(0.0))
+                                                    .truncate()
+                                                    .text_size(px(13.5))
+                                                    .text_color(title_color)
+                                                    .child(title),
+                                            ),
+                                    )
+                                    .when(active, |name| {
+                                        name.child(svg_icon("icons/check.svg", 13.0))
+                                    }),
                             )
                             .child(
                                 div()
-                                    .min_w(px(0.0))
-                                    .flex_1()
-                                    .flex()
-                                    .flex_col()
-                                    .child(
-                                        div()
-                                            .text_size(px(12.0))
-                                            .font_weight(FontWeight::MEDIUM)
-                                            .text_color(title_color)
-                                            .child(title),
-                                    )
-                                    .child(
-                                        div()
-                                            .mt(px(2.0))
-                                            .truncate()
-                                            .text_size(px(10.5))
-                                            .text_color(theme.text_3.hsla())
-                                            .child(detail),
-                                    ),
+                                    .w_full()
+                                    .truncate()
+                                    .text_size(px(11.5))
+                                    .text_color(theme.text_3.hsla())
+                                    .child(detail),
                             )
-                            .when(active, |row| row.child(svg_icon("icons/check.svg", 12.0)))
                     }),
+            )
+            .with_animation(
+                "composer-permission-menu",
+                Animation::new(theme.motion.fast).with_easing(crate::theme::web_ease_out),
+                move |menu, delta| {
+                    menu.opacity(delta)
+                        .bottom(px(menu_bottom - 2.0 * (1.0 - delta)))
+                },
             )
             .into_any_element()
     }
@@ -4348,7 +4357,7 @@ impl ChatView {
             .py(px(6.0))
             .bg(theme.surface.hsla())
             .border_r_1()
-            .border_color(theme.line.hsla())
+            .border_color(chrome::menu_border(theme))
             .children(groups.into_iter().enumerate().map(|(index, group)| {
                 let active = active_group_key.as_deref() == Some(group.key.as_str());
                 let key = group.key;
@@ -4510,7 +4519,7 @@ impl ChatView {
             .border_1()
             .border_color(model_picker_border(theme))
             .bg(model_picker_background(theme))
-            .shadow_lg()
+            .shadow(chrome::flyout_shadows(theme))
             .overflow_hidden()
             .child(
                 div()
@@ -4658,7 +4667,7 @@ impl ChatView {
             .flex_col()
             .gap(px(6.0))
             .border_t_1()
-            .border_color(theme.line.hsla())
+            .border_color(chrome::menu_border(theme))
             .bg(controls_background)
             .p(px(8.0))
             .child(
@@ -5569,11 +5578,7 @@ fn model_picker_background(theme: Theme) -> Background {
 }
 
 fn model_picker_border(theme: Theme) -> gpui::Hsla {
-    if theme.mode == ThemeMode::Dark {
-        theme.line_strong.hsla()
-    } else {
-        gpui::rgb(0xe3e3e6).into()
-    }
+    chrome::menu_border(theme)
 }
 
 fn model_picker_selected_background(theme: Theme) -> Background {
