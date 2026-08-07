@@ -1441,14 +1441,12 @@ impl HarnessApp {
     fn mcp_settings(&self, cx: &mut Context<Self>) -> gpui::Div {
         let theme = self.theme;
         let Some((provider, project_path)) = self.settings_scope() else {
-            return settings_panel(
+            return inventory_settings_panel(
                 "MCP servers",
-                vec![settings_group(
-                    "Model Context Protocol",
-                    vec![settings_empty_row(
-                        "Select a project in the sidebar before managing MCP servers.",
-                        theme,
-                    )],
+                "Choose a project to inspect its servers.".into(),
+                None,
+                vec![inventory_empty(
+                    "Select a project in the sidebar first.",
                     theme,
                 )],
                 theme,
@@ -1458,15 +1456,6 @@ impl HarnessApp {
         let provider_name = self.settings_provider_name(provider);
         let inventory = self.state.mcp_inventory.as_ref().filter(|inventory| {
             inventory.provider == provider && inventory.project_path == project_path
-        });
-        let refresh_view = cx.weak_entity();
-        let refresh_path = project_path.clone();
-        let refresh: SettingsAction = Rc::new(move |cx| {
-            let path = refresh_path.clone();
-            let _ = refresh_view.update(cx, |this, cx| {
-                let update = this.state.request_mcp_inventory(provider, path);
-                this.apply_client_update(update, cx);
-            });
         });
         let add_action = inventory
             .filter(|inventory| inventory.result.capabilities.add)
@@ -1490,56 +1479,13 @@ impl HarnessApp {
                     }),
                 )
             });
-        let intro = div()
-            .w_full()
-            .flex()
-            .items_center()
-            .justify_between()
-            .gap(px(16.0))
-            .child(
-                div()
-                    .min_w(px(0.0))
-                    .child(
-                        div()
-                            .text_size(px(12.0))
-                            .text_color(theme.text_2.hsla())
-                            .child(format!("Available in {project_name}")),
-                    )
-                    .child(
-                        div()
-                            .mt(px(3.0))
-                            .text_size(px(10.5))
-                            .text_color(theme.text_3.hsla())
-                            .child(format!("Managed through {provider_name}")),
-                    ),
-            )
-            .child(
-                div()
-                    .flex()
-                    .items_center()
-                    .gap(px(8.0))
-                    .when_some(add_action, |actions, add| actions.child(add))
-                    .child(settings_button(
-                        "refresh-mcp",
-                        if self.state.mcp_loading {
-                            "Refreshing…"
-                        } else {
-                            "Refresh"
-                        },
-                        "icons/rotate-ccw.svg",
-                        theme,
-                        refresh,
-                        false,
-                    )),
-            )
-            .into_any_element();
-        let mut blocks = vec![settings_plain_group("Project inventory", intro, theme)];
+        let mut blocks = Vec::new();
 
         if let Some(error) = &self.state.mcp_error {
-            blocks.push(settings_error_group("MCP error", error.clone(), theme));
+            blocks.push(inventory_message(error.clone(), true, theme));
         }
         if let Some(notice) = &self.state.mcp_notice {
-            blocks.push(settings_notice_group("MCP", notice.clone(), theme));
+            blocks.push(inventory_message(notice.clone(), false, theme));
         }
         if self.mcp_editor.as_ref().is_some_and(|editor| {
             editor.provider == provider && editor.project_path == project_path
@@ -1547,30 +1493,34 @@ impl HarnessApp {
             blocks.push(self.mcp_editor_form(cx));
         }
         let Some(inventory) = inventory else {
-            blocks.push(settings_group(
-                "Servers",
-                vec![settings_empty_row(
-                    if self.state.mcp_loading {
-                        "Loading MCP servers…"
-                    } else {
-                        "MCP inventory has not been loaded yet."
-                    },
-                    theme,
-                )],
+            blocks.push(inventory_empty(
+                if self.state.mcp_loading {
+                    "Loading MCP servers…"
+                } else {
+                    "MCP inventory has not been loaded yet."
+                },
                 theme,
             ));
-            return settings_panel("MCP servers", blocks, theme);
+            return inventory_settings_panel(
+                "MCP servers",
+                format!("Available in {project_name}"),
+                add_action,
+                blocks,
+                theme,
+            );
         };
         if !inventory.result.capabilities.inventory {
-            blocks.push(settings_group(
-                "Servers",
-                vec![settings_empty_row(
-                    format!("{provider_name} does not expose MCP inventory here."),
-                    theme,
-                )],
+            blocks.push(inventory_empty(
+                format!("{provider_name} does not expose MCP servers here yet."),
                 theme,
             ));
-            return settings_panel("MCP servers", blocks, theme);
+            return inventory_settings_panel(
+                "MCP servers",
+                format!("Available in {project_name}"),
+                add_action,
+                blocks,
+                theme,
+            );
         }
 
         let mut rows = Vec::new();
@@ -1846,13 +1796,20 @@ impl HarnessApp {
             );
         }
         if rows.is_empty() {
-            rows.push(settings_empty_row(
+            blocks.push(inventory_empty(
                 "No MCP servers are configured for this project.",
                 theme,
             ));
+        } else {
+            blocks.push(settings_group("", rows, theme));
         }
-        blocks.push(settings_group("Servers", rows, theme));
-        settings_panel("MCP servers", blocks, theme)
+        inventory_settings_panel(
+            "MCP servers",
+            format!("Available in {project_name}"),
+            add_action,
+            blocks,
+            theme,
+        )
     }
 
     fn mcp_editor_form(&self, cx: &mut Context<Self>) -> AnyElement {
@@ -2098,14 +2055,12 @@ impl HarnessApp {
     fn skills_settings(&self, cx: &mut Context<Self>) -> gpui::Div {
         let theme = self.theme;
         let Some((provider, project_path)) = self.settings_scope() else {
-            return settings_panel(
+            return inventory_settings_panel(
                 "Agent Skills",
-                vec![settings_group(
-                    "Skills",
-                    vec![settings_empty_row(
-                        "Select a project in the sidebar before managing Agent Skills.",
-                        theme,
-                    )],
+                "Choose a project to manage its skills.".into(),
+                None,
+                vec![inventory_empty(
+                    "Select a project in the sidebar first.",
                     theme,
                 )],
                 theme,
@@ -2113,22 +2068,13 @@ impl HarnessApp {
         };
         let project_name = self.settings_project_name(&project_path);
         let provider_name = self.settings_provider_name(provider);
-        let refresh_view = cx.weak_entity();
-        let refresh_path = project_path.clone();
-        let refresh: SettingsAction = Rc::new(move |cx| {
-            let path = refresh_path.clone();
-            let _ = refresh_view.update(cx, |this, cx| {
-                let update = this.state.request_skills_inventory(provider, path);
-                this.apply_client_update(update, cx);
-            });
-        });
         let inventory = self.state.skills_inventory.as_ref().filter(|inventory| {
             inventory.provider == provider && inventory.project_path == project_path
         });
         let install_supported = inventory.is_some_and(|inventory| {
             inventory.result.capabilities.install && self.state.skills_busy.is_none()
         });
-        let intro_action = if install_supported {
+        let intro_action = install_supported.then(|| {
             let install_view = cx.weak_entity();
             let install_path = project_path.clone();
             let install: SettingsAction = Rc::new(move |cx| {
@@ -2144,64 +2090,28 @@ impl HarnessApp {
                 install,
                 false,
             )
-        } else {
-            settings_button(
-                "refresh-skills",
-                if self.state.skills_loading {
-                    "Refreshing…"
-                } else {
-                    "Refresh"
-                },
-                "icons/rotate-ccw.svg",
-                theme,
-                refresh,
-                false,
-            )
-        };
-        let intro = div()
-            .w_full()
-            .flex()
-            .items_center()
-            .justify_between()
-            .gap(px(16.0))
-            .child(
-                div()
-                    .min_w(px(0.0))
-                    .child(
-                        div()
-                            .text_size(px(12.0))
-                            .text_color(theme.text_2.hsla())
-                            .child(format!("Available in {project_name}")),
-                    )
-                    .child(
-                        div()
-                            .mt(px(3.0))
-                            .text_size(px(10.5))
-                            .text_color(theme.text_3.hsla())
-                            .child(format!("Discovered by {provider_name}")),
-                    ),
-            )
-            .child(intro_action)
-            .into_any_element();
-        let mut blocks = vec![settings_plain_group("Project inventory", intro, theme)];
+        });
+        let mut blocks = Vec::new();
 
         if let Some(error) = &self.state.skills_error {
-            blocks.push(settings_error_group("Skills error", error.clone(), theme));
+            blocks.push(inventory_message(error.clone(), true, theme));
         }
         let Some(inventory) = inventory else {
-            blocks.push(settings_group(
-                "Skills",
-                vec![settings_empty_row(
-                    if self.state.skills_loading {
-                        "Discovering Agent Skills…"
-                    } else {
-                        "Skill inventory has not been loaded yet."
-                    },
-                    theme,
-                )],
+            blocks.push(inventory_empty(
+                if self.state.skills_loading {
+                    "Discovering skills…"
+                } else {
+                    "Skill inventory has not been loaded yet."
+                },
                 theme,
             ));
-            return settings_panel("Agent Skills", blocks, theme);
+            return inventory_settings_panel(
+                "Agent Skills",
+                format!("Available in {project_name}"),
+                intro_action,
+                blocks,
+                theme,
+            );
         };
         if !inventory.result.errors.is_empty() {
             let details = inventory
@@ -2211,22 +2121,24 @@ impl HarnessApp {
                 .map(|error| format!("{} · {}", error.message, error.path))
                 .collect::<Vec<_>>()
                 .join("\n");
-            blocks.push(settings_error_group(
-                "Some skills could not be loaded",
-                details,
+            blocks.push(inventory_message(
+                format!("Some skills could not be loaded\n{details}"),
+                true,
                 theme,
             ));
         }
         if !inventory.result.capabilities.inventory {
-            blocks.push(settings_group(
-                "Skills",
-                vec![settings_empty_row(
-                    format!("{provider_name} does not expose Agent Skills here."),
-                    theme,
-                )],
+            blocks.push(inventory_empty(
+                format!("{provider_name} does not expose Agent Skills here yet."),
                 theme,
             ));
-            return settings_panel("Agent Skills", blocks, theme);
+            return inventory_settings_panel(
+                "Agent Skills",
+                format!("Available in {project_name}"),
+                intro_action,
+                blocks,
+                theme,
+            );
         }
 
         let mut rows = Vec::new();
@@ -2258,13 +2170,20 @@ impl HarnessApp {
             rows.push(skill_settings_row(index, skill, trailing, theme));
         }
         if rows.is_empty() {
-            rows.push(settings_empty_row(
-                "No Agent Skills were discovered for this project.",
+            blocks.push(inventory_empty(
+                "No skills were discovered for this project.",
                 theme,
             ));
+        } else {
+            blocks.push(settings_group("", rows, theme));
         }
-        blocks.push(settings_group("Skills", rows, theme));
-        settings_panel("Agent Skills", blocks, theme)
+        inventory_settings_panel(
+            "Agent Skills",
+            format!("Available in {project_name}"),
+            intro_action,
+            blocks,
+            theme,
+        )
     }
 
     fn workflow_settings(&self, cx: &mut Context<Self>) -> gpui::Div {
@@ -2894,6 +2813,95 @@ fn settings_panel(title: &str, blocks: Vec<AnyElement>, theme: Theme) -> gpui::D
         )
 }
 
+fn inventory_settings_panel(
+    title: &'static str,
+    subtitle: String,
+    action: Option<AnyElement>,
+    blocks: Vec<AnyElement>,
+    theme: Theme,
+) -> gpui::Div {
+    div()
+        .w_full()
+        .child(
+            div()
+                .w_full()
+                .flex()
+                .items_start()
+                .justify_between()
+                .gap(px(24.0))
+                .mb(px(24.0))
+                .child(
+                    div()
+                        .min_w(px(0.0))
+                        .child(
+                            div()
+                                .mb(px(5.0))
+                                .text_size(px(26.0))
+                                .line_height(relative(1.2))
+                                .font_weight(FontWeight(550.0))
+                                .text_color(theme.text.hsla())
+                                .child(title),
+                        )
+                        .child(
+                            div()
+                                .text_size(px(12.5))
+                                .text_color(theme.text_3.hsla())
+                                .child(subtitle),
+                        ),
+                )
+                .when_some(action, |header, action| header.child(action)),
+        )
+        .child(
+            div()
+                .w_full()
+                .flex()
+                .flex_col()
+                .gap(px(14.0))
+                .children(blocks),
+        )
+}
+
+fn inventory_empty(message: impl Into<SharedString>, theme: Theme) -> AnyElement {
+    div()
+        .w_full()
+        .p(px(28.0))
+        .text_center()
+        .rounded(px(8.0))
+        .border_1()
+        .border_color(theme.line_strong.hsla())
+        .bg(theme.rail.hsla())
+        .text_size(px(12.5))
+        .text_color(theme.text_3.hsla())
+        .child(message.into())
+        .into_any_element()
+}
+
+fn inventory_message(message: impl Into<SharedString>, error: bool, theme: Theme) -> AnyElement {
+    div()
+        .w_full()
+        .px(px(12.0))
+        .py(px(10.0))
+        .rounded(px(8.0))
+        .border_1()
+        .border_color(if error {
+            theme.error.hsla().opacity(0.42)
+        } else {
+            theme.line_strong.hsla()
+        })
+        .when(error, |message| {
+            message.bg(theme.error.hsla().opacity(0.07))
+        })
+        .text_size(px(12.5))
+        .line_height(relative(1.45))
+        .text_color(if error {
+            theme.error.hsla()
+        } else {
+            theme.text_2.hsla()
+        })
+        .child(message.into())
+        .into_any_element()
+}
+
 fn settings_group(title: &str, rows: Vec<AnyElement>, theme: Theme) -> AnyElement {
     div()
         .w_full()
@@ -2996,34 +3004,6 @@ fn settings_error_group(title: &str, message: String, theme: Theme) -> AnyElemen
                 .text_size(px(11.0))
                 .line_height(px(16.0))
                 .text_color(theme.error.hsla())
-                .child(message),
-        )
-        .into_any_element()
-}
-
-fn settings_notice_group(title: &str, message: String, theme: Theme) -> AnyElement {
-    div()
-        .w_full()
-        .child(
-            div()
-                .mb(px(12.0))
-                .text_size(px(12.5))
-                .font_weight(FontWeight::MEDIUM)
-                .text_color(theme.success.hsla())
-                .child(title.to_owned()),
-        )
-        .child(
-            div()
-                .w_full()
-                .rounded(px(10.0))
-                .border_1()
-                .border_color(theme.success.hsla().opacity(0.3))
-                .bg(theme.success.hsla().opacity(0.07))
-                .px(px(16.0))
-                .py(px(12.0))
-                .text_size(px(11.0))
-                .line_height(px(16.0))
-                .text_color(theme.text_2.hsla())
                 .child(message),
         )
         .into_any_element()
