@@ -7,6 +7,7 @@ members = [
   "crates/harness-adapter-api",
   "crates/harness-adapter-claude-code",
   "crates/harness-adapter-cursor",
+  "crates/harness-adapter-grok",
   "crates/harness-adapter-opencode",
   "crates/harness-client",
   "crates/harness-credentials",

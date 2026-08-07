@@ -2834,6 +2834,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "harness-adapter-grok"
+version = "0.1.0"
+dependencies = [
+ "dirs 5.0.1",
+ "harness-agent",
+ "harness-proc",
+ "harness-protocol",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "uuid",
+]
+
+[[package]]
 name = "harness-adapter-opencode"
 version = "0.1.0"
 dependencies = [
