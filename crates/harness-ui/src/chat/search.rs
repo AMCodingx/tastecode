@@ -48,6 +48,25 @@ impl ThreadSearchState {
 }
 
 impl ChatView {
+    pub(super) fn handle_composer_paste_key(
+        &mut self,
+        event: &KeyDownEvent,
+        window: &Window,
+        cx: &mut Context<Self>,
+    ) {
+        let modifiers = event.keystroke.modifiers;
+        if !event.is_held
+            && self.composer.read(cx).focus_handle(cx).is_focused(window)
+            && (modifiers.platform || modifiers.control)
+            && !modifiers.shift
+            && !modifiers.alt
+            && event.keystroke.key.eq_ignore_ascii_case("v")
+            && self.attach_pasted_image(cx)
+        {
+            cx.stop_propagation();
+        }
+    }
+
     fn open_thread_search(&mut self, cx: &mut Context<Self>) {
         if self.thread_search.open {
             self.thread_search.focus_pending = true;
@@ -194,6 +213,7 @@ impl ChatView {
         window: &Window,
         cx: &mut Context<Self>,
     ) {
+        let modifiers = event.keystroke.modifiers;
         if event.keystroke.key.eq_ignore_ascii_case("escape") && self.thread_search.open {
             cx.stop_propagation();
             self.close_thread_search(cx);
@@ -210,7 +230,6 @@ impl ChatView {
         if self.text_input_focused_for_search(window, cx) {
             return;
         }
-        let modifiers = event.keystroke.modifiers;
         if (modifiers.platform || modifiers.control)
             && !modifiers.shift
             && !modifiers.alt

@@ -9,9 +9,9 @@ use crate::client_state::{ChatUpdate, ModelChoice};
 use crate::theme::{CHAT_WIDTH, Theme};
 use diff::DiffUiState;
 use gpui::{
-    Animation, AnimationExt, AnyElement, App, Context, Entity, EventEmitter, Focusable, FontWeight,
-    ListAlignment, ListState, Render, SharedString, Window, div, ease_out_quint, prelude::*, px,
-    relative, svg,
+    Animation, AnimationExt, AnyElement, App, ClipboardEntry, Context, Entity, EventEmitter,
+    Focusable, FontWeight, Image, ImageFormat, ListAlignment, ListState, ObjectFit, Render,
+    SharedString, StyledImage, Window, div, ease_out_quint, img, prelude::*, px, relative, svg,
 };
 use gpui_component::RopeExt;
 use gpui_component::input::{Input, InputEvent, InputState};
@@ -24,7 +24,11 @@ use harness_state::{ApplyOutcome, HistoryError, ThreadState};
 use presentation::TranscriptPresentation;
 use search::ThreadSearchState;
 use std::collections::{BTreeSet, HashMap, HashSet};
+use std::fs::OpenOptions;
+use std::io::Write as _;
+use std::path::{Path, PathBuf};
 use std::rc::Rc;
+use std::sync::Arc;
 use std::time::Duration;
 use terminal::TerminalUiState;
 use voice::{MAX_RECORDING_DURATION, VOICE_SAMPLE_RATE, VoiceRecorder};
@@ -32,6 +36,7 @@ use voice::{MAX_RECORDING_DURATION, VOICE_SAMPLE_RATE, VoiceRecorder};
 const LIVE_FLUSH_INTERVAL: Duration = Duration::from_millis(16);
 const VOICE_LEVEL_INTERVAL: Duration = Duration::from_millis(45);
 const MAX_WAVEFORM_LEVELS: usize = 160;
+const MAX_PASTED_IMAGE_BYTES: usize = 25 * 1024 * 1024;
 
 #[derive(Clone)]
 pub(crate) struct SessionContext {
@@ -96,6 +101,11 @@ pub(crate) enum ChatEvent {
     OpenRollback,
     OpenCheckpoint {
         checkpoint_id: u64,
+    },
+    OpenImage {
+        image: Arc<Image>,
+        path: Option<String>,
+        name: String,
     },
     PickAttachments,
     TranscribeVoice {
@@ -221,6 +231,25 @@ struct PendingTranscript {
     send_after: bool,
 }
 
+#[derive(Clone)]
+struct ComposerAttachment {
+    id: String,
+    name: String,
+    path: Option<String>,
+    preview: Option<Arc<Image>>,
+}
+
+impl ComposerAttachment {
+    fn file(path: String) -> Self {
+        Self {
+            id: path.clone(),
+            name: path_label(&path).to_owned(),
+            path: Some(path),
+            preview: None,
+        }
+    }
+}
+
 pub(crate) struct ChatView {
     theme: Theme,
     session: Option<SessionContext>,
@@ -250,7 +279,8 @@ pub(crate) struct ChatView {
     stage_settings: StageSettings,
     composer_menu: Option<ComposerMenu>,
     header_menu: Option<HeaderMenu>,
-    attachments: Vec<String>,
+    attachments: Vec<ComposerAttachment>,
+    attachment_error: Option<String>,
     active_user_input_id: Option<String>,
     user_input_step: usize,
     user_input_answers: HashMap<String, String>,
@@ -333,6 +363,7 @@ impl ChatView {
             composer_menu: None,
             header_menu: None,
             attachments: Vec::new(),
+            attachment_error: None,
             active_user_input_id: None,
             user_input_step: 0,
             user_input_answers: HashMap::new(),
@@ -405,6 +436,7 @@ impl ChatView {
         self.pending_live.clear();
         self.delta_flush_scheduled = false;
         self.attachments.clear();
+        self.attachment_error = None;
         self.composer_menu = None;
         self.header_menu = None;
         self.active_user_input_id = None;
@@ -479,10 +511,15 @@ impl ChatView {
 
     pub(crate) fn add_attachments(&mut self, paths: Vec<String>, cx: &mut Context<Self>) {
         for path in paths {
-            if !self.attachments.contains(&path) {
-                self.attachments.push(path);
+            if !self
+                .attachments
+                .iter()
+                .any(|attachment| attachment.path.as_deref() == Some(path.as_str()))
+            {
+                self.attachments.push(ComposerAttachment::file(path));
             }
         }
+        self.attachment_error = None;
         cx.notify();
     }
 
@@ -596,7 +633,10 @@ impl ChatView {
                 self.creating = false;
                 self.error = Some(message);
                 self.restore_composer = Some(restore_text);
-                self.attachments = restore_attachments;
+                self.attachments = restore_attachments
+                    .into_iter()
+                    .map(ComposerAttachment::file)
+                    .collect();
                 cx.notify();
             }
             ChatUpdate::TurnError {
@@ -608,7 +648,10 @@ impl ChatView {
                 self.loading = false;
                 self.error = Some(message);
                 self.restore_composer = Some(restore_text);
-                self.attachments = restore_attachments;
+                self.attachments = restore_attachments
+                    .into_iter()
+                    .map(ComposerAttachment::file)
+                    .collect();
                 cx.notify();
             }
             ChatUpdate::ApprovalError {
@@ -1086,9 +1129,20 @@ impl ChatView {
         if self.creating {
             return;
         }
+        if self
+            .attachments
+            .iter()
+            .any(|attachment| attachment.path.is_none())
+        {
+            return;
+        }
         self.clear_composer = true;
         self.composer_menu = None;
-        let attachments = std::mem::take(&mut self.attachments);
+        let attachments = std::mem::take(&mut self.attachments)
+            .into_iter()
+            .filter_map(|attachment| attachment.path)
+            .collect();
+        self.attachment_error = None;
         match &session.thread_id {
             Some(thread_id) => cx.emit(ChatEvent::Submit {
                 thread_id: thread_id.clone(),
@@ -1113,7 +1167,8 @@ impl ChatView {
         if self.voice_phase != VoicePhase::Idle {
             return;
         }
-        let has_draft = !self.composer.read(cx).value().trim().is_empty();
+        let has_text = !self.composer.read(cx).value().trim().is_empty();
+        let has_draft = has_text || !self.attachments.is_empty();
         if self.state.running && !has_draft {
             if let Some(thread_id) = self
                 .session
@@ -1857,11 +1912,7 @@ impl ChatView {
         let question = request.questions.get(self.user_input_step)?;
         let theme = self.theme;
         let pending = self.pending_user_inputs.contains(&request.id);
-        let attachment_offset = if self.attachments.is_empty() {
-            0.0
-        } else {
-            34.0
-        };
+        let attachment_offset = self.attachment_shelf_height();
         let bottom = (if is_new_session { 150.0 } else { 114.0 }) + attachment_offset;
 
         if pending {
@@ -2338,7 +2389,15 @@ impl ChatView {
     fn composer(&self, window: &Window, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = self.theme;
         let session = self.session.clone();
-        let has_draft = !self.composer.read(cx).value().trim().is_empty();
+        let has_text = !self.composer.read(cx).value().trim().is_empty();
+        let has_draft = has_text || !self.attachments.is_empty();
+        let show_stop = self.state.running && !has_draft;
+        let send_disabled = !has_text
+            || self
+                .attachments
+                .iter()
+                .any(|attachment| attachment.path.is_none())
+            || self.creating;
         let running = self.state.running;
         let is_new_session = session
             .as_ref()
@@ -2491,18 +2550,22 @@ impl ChatView {
                                                     .text_color(theme.background.hsla())
                                                     .text_size(px(13.0))
                                                     .font_weight(FontWeight::SEMIBOLD)
-                                                    .cursor_pointer()
-                                                    .active(|style| style.opacity(0.72))
-                                                    .on_click(cx.listener(
-                                                        |this, _event, _window, cx| {
-                                                            this.primary_action(cx);
-                                                        },
-                                                    ))
-                                                    .child(if running && !has_draft {
-                                                        "■"
+                                                    .opacity(if !show_stop && send_disabled {
+                                                        0.42
                                                     } else {
-                                                        "↑"
-                                                    }),
+                                                        1.0
+                                                    })
+                                                    .when(show_stop || !send_disabled, |button| {
+                                                        button
+                                                            .cursor_pointer()
+                                                            .active(|style| style.opacity(0.72))
+                                                            .on_click(cx.listener(
+                                                                |this, _event, _window, cx| {
+                                                                    this.primary_action(cx);
+                                                                },
+                                                            ))
+                                                    })
+                                                    .child(if show_stop { "■" } else { "↑" }),
                                             )
                                     })
                                     .when(self.voice_phase != VoicePhase::Idle, |tools| {
@@ -2654,58 +2717,263 @@ impl ChatView {
             .into_any_element()
     }
 
+    fn attachment_shelf_height(&self) -> f32 {
+        if self.attachments.is_empty() && self.attachment_error.is_none() {
+            0.0
+        } else if self
+            .attachments
+            .iter()
+            .any(|attachment| attachment.preview.is_some())
+        {
+            81.0
+        } else {
+            34.0
+        }
+    }
+
+    fn attach_pasted_image(&mut self, cx: &mut Context<Self>) -> bool {
+        let Some(image) = cx
+            .read_from_clipboard()
+            .into_iter()
+            .flat_map(|clipboard| clipboard.into_entries())
+            .find_map(|entry| match entry {
+                ClipboardEntry::Image(image) => Some(Arc::new(image)),
+                ClipboardEntry::String(_) => None,
+            })
+        else {
+            return false;
+        };
+        let Some(extension) = pasted_image_extension(&image) else {
+            self.attachment_error = Some("Couldn’t attach that image.".into());
+            cx.notify();
+            return true;
+        };
+        if image.bytes().is_empty() || image.bytes().len() > MAX_PASTED_IMAGE_BYTES {
+            self.attachment_error = Some("Couldn’t attach that image.".into());
+            cx.notify();
+            return true;
+        }
+
+        let id = uuid::Uuid::new_v4().to_string();
+        self.attachments.push(ComposerAttachment {
+            id: id.clone(),
+            name: format!("Pasted image.{extension}"),
+            path: None,
+            preview: Some(image.clone()),
+        });
+        self.attachment_error = None;
+        let save = cx.background_spawn(async move { materialize_pasted_image(&image) });
+        cx.spawn(async move |view, cx| {
+            let result = save.await;
+            let _ = view.update(cx, |this, cx| {
+                let Some(index) = this
+                    .attachments
+                    .iter()
+                    .position(|attachment| attachment.id == id)
+                else {
+                    return;
+                };
+                match result {
+                    Ok(path) => {
+                        this.attachments[index].path = Some(path.to_string_lossy().into_owned());
+                    }
+                    Err(_) => {
+                        this.attachments.remove(index);
+                        this.attachment_error = Some("Couldn’t attach that image.".into());
+                    }
+                }
+                cx.notify();
+            });
+        })
+        .detach();
+        cx.notify();
+        true
+    }
+
     fn attachment_chips(&self, cx: &Context<Self>) -> Option<AnyElement> {
-        if self.attachments.is_empty() {
+        if self.attachments.is_empty() && self.attachment_error.is_none() {
             return None;
         }
         let theme = self.theme;
+        let attachments = self
+            .attachments
+            .iter()
+            .enumerate()
+            .filter(|(_, attachment)| attachment.preview.is_some())
+            .chain(
+                self.attachments
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, attachment)| attachment.preview.is_none()),
+            );
         Some(
             div()
-                .h(px(34.0))
+                .min_h(px(self.attachment_shelf_height()))
                 .w_full()
                 .flex()
-                .items_center()
-                .gap(px(6.0))
-                .px(px(12.0))
-                .pt(px(6.0))
-                .children(self.attachments.iter().enumerate().map(|(index, path)| {
-                    let label = path_label(path).to_owned();
-                    div()
-                        .id(("attachment-chip", index))
-                        .h(px(25.0))
-                        .max_w(px(190.0))
-                        .flex()
-                        .items_center()
-                        .gap(px(6.0))
-                        .px(px(8.0))
-                        .rounded(px(8.0))
-                        .bg(theme.surface_2.hsla())
-                        .text_size(px(11.0))
-                        .text_color(theme.text_2.hsla())
-                        .child(div().min_w(px(0.0)).flex_1().truncate().child(label))
-                        .child(
-                            div()
-                                .id(("attachment-remove", index))
-                                .size(px(16.0))
-                                .flex()
-                                .items_center()
-                                .justify_center()
-                                .rounded(px(5.0))
-                                .cursor_pointer()
-                                .hover(move |style| {
-                                    style
-                                        .bg(theme.surface_3.hsla())
-                                        .text_color(theme.text.hsla())
-                                })
-                                .on_click(cx.listener(move |this, _event, _window, cx| {
-                                    if index < this.attachments.len() {
-                                        this.attachments.remove(index);
-                                        cx.notify();
-                                    }
-                                }))
-                                .child("×"),
-                        )
+                .flex_wrap()
+                .items_start()
+                .gap(px(5.0))
+                .px(px(10.0))
+                .pt(px(9.0))
+                .children(attachments.map(|(index, attachment)| {
+                    if let Some(preview) = attachment.preview.clone() {
+                        let image = preview.clone();
+                        let path = attachment.path.clone();
+                        let name = attachment.name.clone();
+                        let loading = path.is_none();
+                        div()
+                            .id(("attachment-preview", index))
+                            .relative()
+                            .size(px(72.0))
+                            .flex_none()
+                            .rounded(px(12.0))
+                            .border_1()
+                            .border_color(theme.line_strong.hsla())
+                            .overflow_hidden()
+                            .cursor_pointer()
+                            .on_click(cx.listener(move |_this, _event, _window, cx| {
+                                cx.emit(ChatEvent::OpenImage {
+                                    image: image.clone(),
+                                    path: path.clone(),
+                                    name: name.clone(),
+                                });
+                            }))
+                            .child(
+                                img(preview)
+                                    .size_full()
+                                    .object_fit(ObjectFit::Cover)
+                                    .opacity(if loading { 0.68 } else { 1.0 }),
+                            )
+                            .child(
+                                div()
+                                    .id(("attachment-preview-remove", index))
+                                    .absolute()
+                                    .top(px(4.0))
+                                    .right(px(4.0))
+                                    .size(px(22.0))
+                                    .flex()
+                                    .items_center()
+                                    .justify_center()
+                                    .rounded_full()
+                                    .border_1()
+                                    .border_color(gpui::white().opacity(0.12))
+                                    .bg(gpui::rgba(0x121212eb))
+                                    .text_color(gpui::white())
+                                    .cursor_pointer()
+                                    .hover(|style| style.bg(gpui::rgb(0x222222)))
+                                    .active(|style| style.opacity(0.78))
+                                    .on_click(cx.listener(move |this, _event, _window, cx| {
+                                        cx.stop_propagation();
+                                        if index < this.attachments.len() {
+                                            this.attachments.remove(index);
+                                            cx.notify();
+                                        }
+                                    }))
+                                    .child(svg_icon("icons/x.svg", 13.0)),
+                            )
+                            .when(loading, |preview| {
+                                preview.child(
+                                    svg()
+                                        .path("icons/loader-circle.svg")
+                                        .absolute()
+                                        .right(px(8.0))
+                                        .bottom(px(8.0))
+                                        .size(px(12.0))
+                                        .text_color(gpui::white())
+                                        .with_animation(
+                                            ("pasted-image-loading", index),
+                                            Animation::new(Duration::from_millis(700)).repeat(),
+                                            |spinner, delta| {
+                                                spinner.with_transformation(
+                                                    gpui::Transformation::rotate(gpui::percentage(
+                                                        delta,
+                                                    )),
+                                                )
+                                            },
+                                        ),
+                                )
+                            })
+                            .with_animation(
+                                ("attachment-preview-in", index),
+                                Animation::new(theme.motion.fast).with_easing(ease_out_quint()),
+                                |preview, delta| preview.opacity(delta),
+                            )
+                            .into_any_element()
+                    } else {
+                        let path = attachment.path.as_deref().unwrap_or_default();
+                        div()
+                            .id(("attachment-chip", index))
+                            .h(px(25.0))
+                            .max_w(px(220.0))
+                            .flex()
+                            .items_center()
+                            .gap(px(6.0))
+                            .pl(px(7.0))
+                            .pr(px(3.0))
+                            .rounded(px(8.0))
+                            .bg(theme.surface_2.hsla())
+                            .text_size(px(12.5))
+                            .text_color(theme.text_2.hsla())
+                            .child(svg_icon(
+                                if is_image_path(path) {
+                                    "icons/image.svg"
+                                } else {
+                                    "icons/file.svg"
+                                },
+                                13.0,
+                            ))
+                            .child(
+                                div()
+                                    .min_w(px(0.0))
+                                    .flex_1()
+                                    .truncate()
+                                    .child(attachment.name.clone()),
+                            )
+                            .child(
+                                div()
+                                    .id(("attachment-remove", index))
+                                    .size(px(17.0))
+                                    .flex()
+                                    .items_center()
+                                    .justify_center()
+                                    .rounded(px(5.0))
+                                    .cursor_pointer()
+                                    .hover(move |style| {
+                                        style
+                                            .bg(theme.surface_3.hsla())
+                                            .text_color(theme.text.hsla())
+                                    })
+                                    .on_click(cx.listener(move |this, _event, _window, cx| {
+                                        if index < this.attachments.len() {
+                                            this.attachments.remove(index);
+                                            cx.notify();
+                                        }
+                                    }))
+                                    .child(svg_icon("icons/x.svg", 10.0)),
+                            )
+                            .with_animation(
+                                ("attachment-chip-in", index),
+                                Animation::new(theme.motion.fast).with_easing(ease_out_quint()),
+                                |chip, delta| chip.opacity(delta),
+                            )
+                            .into_any_element()
+                    }
                 }))
+                .when_some(self.attachment_error.clone(), |chips, error| {
+                    chips.child(
+                        div()
+                            .h(px(25.0))
+                            .flex()
+                            .items_center()
+                            .px(px(8.0))
+                            .rounded(px(8.0))
+                            .bg(theme.surface_2.hsla())
+                            .text_size(px(12.5))
+                            .text_color(theme.error.hsla())
+                            .child(error),
+                    )
+                })
                 .into_any_element(),
         )
     }
@@ -3070,11 +3338,7 @@ impl ChatView {
         let theme = self.theme;
         let selected = self.composer_settings.approval;
         let auto_review = self.composer_settings.auto_review_supported;
-        let attachment_offset = if self.attachments.is_empty() {
-            0.0
-        } else {
-            34.0
-        };
+        let attachment_offset = self.attachment_shelf_height();
         let options = [
             (
                 ApprovalMode::Ask,
@@ -3179,11 +3443,7 @@ impl ChatView {
         let selected_key = self.composer_settings.selected_model_key.clone();
         let selected = self.selected_model().cloned();
         let mut last_source = None::<String>;
-        let attachment_offset = if self.attachments.is_empty() {
-            0.0
-        } else {
-            34.0
-        };
+        let attachment_offset = self.attachment_shelf_height();
         let mut rows = Vec::new();
         for (index, choice) in self.composer_settings.models.iter().cloned().enumerate() {
             if last_source.as_deref() != Some(choice.source_name.as_str()) {
@@ -3433,6 +3693,9 @@ impl Render for ChatView {
                     this.finish_terminal_resize(cx);
                 }),
             )
+            .capture_key_down(cx.listener(|this, event, window, cx| {
+                this.handle_composer_paste_key(event, window, cx);
+            }))
             .on_key_down(cx.listener(|this, event, window, cx| {
                 this.handle_thread_navigation_key(event, window, cx);
             }))
@@ -3770,12 +4033,78 @@ fn merge_queued_draft(queued: &str, draft: &str) -> String {
     }
 }
 
-fn merge_unique_attachments(current: &mut Vec<String>, queued: Vec<String>) {
-    for attachment in queued {
-        if !current.contains(&attachment) {
-            current.push(attachment);
+fn merge_unique_attachments(current: &mut Vec<ComposerAttachment>, queued: Vec<String>) {
+    for path in queued {
+        if !current
+            .iter()
+            .any(|attachment| attachment.path.as_deref() == Some(path.as_str()))
+        {
+            current.push(ComposerAttachment::file(path));
         }
     }
+}
+
+fn is_image_path(path: &str) -> bool {
+    Path::new(path)
+        .extension()
+        .and_then(|extension| extension.to_str())
+        .is_some_and(|extension| {
+            matches!(
+                extension.to_ascii_lowercase().as_str(),
+                "png" | "jpg" | "jpeg" | "gif" | "webp" | "bmp" | "svg"
+            )
+        })
+}
+
+fn pasted_image_extension(image: &Image) -> Option<&'static str> {
+    let bytes = image.bytes();
+    match image.format() {
+        ImageFormat::Png
+            if bytes.starts_with(&[0x89, b'P', b'N', b'G', 0x0d, 0x0a, 0x1a, 0x0a]) =>
+        {
+            Some("png")
+        }
+        ImageFormat::Jpeg if bytes.starts_with(&[0xff, 0xd8, 0xff]) => Some("jpg"),
+        ImageFormat::Gif if bytes.starts_with(b"GIF87a") || bytes.starts_with(b"GIF89a") => {
+            Some("gif")
+        }
+        ImageFormat::Webp
+            if bytes.starts_with(b"RIFF") && bytes.get(8..12) == Some(b"WEBP".as_slice()) =>
+        {
+            Some("webp")
+        }
+        ImageFormat::Bmp if bytes.starts_with(b"BM") => Some("bmp"),
+        _ => None,
+    }
+}
+
+fn materialize_pasted_image(image: &Image) -> anyhow::Result<PathBuf> {
+    let extension =
+        pasted_image_extension(image).ok_or_else(|| anyhow::anyhow!("unsupported pasted image"))?;
+    if image.bytes().is_empty() || image.bytes().len() > MAX_PASTED_IMAGE_BYTES {
+        anyhow::bail!("pasted image is empty or too large");
+    }
+    let directory = std::env::temp_dir()
+        .join("Personal Harness")
+        .join("pasted-images");
+    std::fs::create_dir_all(&directory)?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt as _;
+        std::fs::set_permissions(&directory, std::fs::Permissions::from_mode(0o700))?;
+    }
+    let destination = directory.join(format!("pasted-{}.{}", uuid::Uuid::new_v4(), extension));
+    let mut options = OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt as _;
+        options.mode(0o600);
+    }
+    let mut file = options.open(&destination)?;
+    file.write_all(image.bytes())?;
+    file.sync_all()?;
+    Ok(destination)
 }
 
 fn format_voice_duration(duration: Duration) -> String {
@@ -3849,12 +4178,18 @@ mod tests {
             "Polish the queue"
         );
 
-        let mut attachments = vec!["/work/existing.png".into()];
+        let mut attachments = vec![ComposerAttachment::file("/work/existing.png".into())];
         merge_unique_attachments(
             &mut attachments,
             vec!["/work/reference.png".into(), "/work/existing.png".into()],
         );
-        assert_eq!(attachments, ["/work/existing.png", "/work/reference.png"]);
+        assert_eq!(
+            attachments
+                .iter()
+                .filter_map(|attachment| attachment.path.as_deref())
+                .collect::<Vec<_>>(),
+            ["/work/existing.png", "/work/reference.png"]
+        );
     }
 
     #[test]
@@ -3874,5 +4209,26 @@ mod tests {
             Some("Reviewing the design")
         );
         assert_eq!(design_phase_label("ordinary tool"), None);
+    }
+
+    #[test]
+    fn pasted_images_require_a_matching_supported_signature() {
+        let png = Image::from_bytes(
+            ImageFormat::Png,
+            vec![0x89, b'P', b'N', b'G', 0x0d, 0x0a, 0x1a, 0x0a],
+        );
+        let spoofed = Image::from_bytes(ImageFormat::Png, b"not a png".to_vec());
+        let svg = Image::from_bytes(ImageFormat::Svg, b"<svg/>".to_vec());
+
+        assert_eq!(pasted_image_extension(&png), Some("png"));
+        assert_eq!(pasted_image_extension(&spoofed), None);
+        assert_eq!(pasted_image_extension(&svg), None);
+    }
+
+    #[test]
+    fn attachment_image_detection_is_case_insensitive() {
+        assert!(is_image_path("C:\\work\\REFERENCE.PNG"));
+        assert!(is_image_path("/work/reference.webp"));
+        assert!(!is_image_path("/work/notes.md"));
     }
 }

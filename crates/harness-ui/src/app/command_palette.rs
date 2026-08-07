@@ -117,6 +117,13 @@ impl HarnessApp {
         window: &Window,
         cx: &mut Context<Self>,
     ) {
+        if self.image_viewer.is_some() {
+            if event.keystroke.key.eq_ignore_ascii_case("escape") {
+                cx.stop_propagation();
+                self.close_image_viewer(cx);
+            }
+            return;
+        }
         if self.onboarding.is_some() || event.is_held {
             return;
         }

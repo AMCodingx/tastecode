@@ -1,4 +1,5 @@
 mod command_palette;
+mod image_viewer;
 mod onboarding;
 mod provider_terminal;
 mod session_search;
@@ -126,6 +127,7 @@ struct HarnessApp {
     provider_terminals: HashMap<ProviderTerminalKey, Entity<ProviderTerminalView>>,
     provider_terminal_ids: HashMap<String, ProviderTerminalKey>,
     preview_capture: Option<PreviewCaptureRuntime>,
+    image_viewer: Option<image_viewer::ImageViewerState>,
     fixture: bool,
 }
 
@@ -330,6 +332,9 @@ impl HarnessApp {
             ChatEvent::OpenCheckpoint { checkpoint_id } => {
                 this.open_rollback_checkpoint(*checkpoint_id, cx);
             }
+            ChatEvent::OpenImage { image, path, name } => {
+                this.open_image_viewer(image.clone(), path.clone(), name.clone(), cx);
+            }
             ChatEvent::PickAttachments => this.pick_attachments(cx),
             ChatEvent::TranscribeVoice { params } => {
                 let update = this.state.transcribe_voice(params.clone());
@@ -491,6 +496,7 @@ impl HarnessApp {
             provider_terminals: HashMap::new(),
             provider_terminal_ids: HashMap::new(),
             preview_capture,
+            image_viewer: None,
             fixture,
         }
     }
@@ -1485,6 +1491,7 @@ impl Render for HarnessApp {
         let rollback_open = self.stage_controls.overlay_open();
         let rollback_overlay = self.rollback_overlay(cx);
         let global_notice = self.global_notice(cx);
+        let image_viewer_overlay = self.image_viewer_overlay(cx);
         div()
             .size_full()
             .relative()
@@ -1558,6 +1565,7 @@ impl Render for HarnessApp {
                 root.child(overlay)
             })
             .when_some(rollback_overlay, |root, overlay| root.child(overlay))
+            .when_some(image_viewer_overlay, |root, viewer| root.child(viewer))
             .when_some(global_notice, |root, notice| root.child(notice))
     }
 }

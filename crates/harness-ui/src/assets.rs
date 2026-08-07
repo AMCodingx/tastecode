@@ -69,6 +69,10 @@ impl AssetSource for HarnessAssets {
             "icons/circle-question-mark.svg" => {
                 Some(include_bytes!("../assets/icons/circle-question-mark.svg"))
             }
+            "icons/file.svg" => Some(include_bytes!("../assets/icons/file.svg")),
+            "icons/image.svg" => Some(include_bytes!("../assets/icons/image.svg")),
+            "icons/download.svg" => Some(include_bytes!("../assets/icons/download.svg")),
+            "icons/minus.svg" => Some(include_bytes!("../assets/icons/minus.svg")),
             _ => None,
         };
         Ok(bytes.map(Cow::Borrowed))
