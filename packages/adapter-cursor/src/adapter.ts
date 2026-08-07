@@ -30,8 +30,21 @@ type StartOptions = {
   approval?: ApprovalMode
   instructions?: string
 }
+export type CursorTurnOptions = Pick<StartOptions, 'model' | 'effort' | 'serviceTier'>
 type Spawn = typeof spawnCli
 type Run = typeof runCli
+
+function applyCursorTurnOptions(current: StartOptions, next: CursorTurnOptions): StartOptions {
+  if (Object.keys(next).length === 0) return current
+  const merged = { ...current }
+  for (const field of ['model', 'effort', 'serviceTier'] as const) {
+    if (!(field in next)) continue
+    const value = next[field]
+    if (value === undefined) delete merged[field]
+    else merged[field] = value
+  }
+  return merged
+}
 
 export class CursorAdapter extends EventEmitter<Events> {
   #workspacePath = ''
@@ -41,6 +54,7 @@ export class CursorAdapter extends EventEmitter<Events> {
   #child: ChildProcessWithoutNullStreams | undefined
   #mapper: CursorEventMapper | undefined
   #turnId: string | undefined
+  #startingTurn = false
   #turnCounter = 0
   #instructionsPending = false
   readonly #spawn: Spawn
@@ -59,7 +73,8 @@ export class CursorAdapter extends EventEmitter<Events> {
   async startThread(workspacePath: string, options: StartOptions = {}): Promise<Thread> {
     validateApproval(options.approval)
     this.#workspacePath = workspacePath
-    this.#options = await this.#withConcreteModel(options)
+    this.#options = options
+    await this.#withConcreteModel(options)
     this.#sessionId = undefined
     this.#instructionsPending = Boolean(options.instructions)
     this.#threadId = `cursor-${crypto.randomUUID()}`
@@ -80,7 +95,8 @@ export class CursorAdapter extends EventEmitter<Events> {
     const sessionId = threadId.startsWith('cursor-') ? threadId.slice(7) : threadId
     if (!sessionId) throw new Error('Cursor session id is missing')
     this.#workspacePath = workspacePath
-    this.#options = await this.#withConcreteModel(options)
+    this.#options = options
+    await this.#withConcreteModel(options)
     this.#sessionId = sessionId
     this.#instructionsPending = false
     this.#threadId = `cursor-${sessionId}`
@@ -115,12 +131,22 @@ export class CursorAdapter extends EventEmitter<Events> {
     }
   }
 
-  async sendTurn(threadId: string, text: string, attachments: string[] = []): Promise<string> {
+  async sendTurn(
+    threadId: string,
+    text: string,
+    attachments: string[] = [],
+    options: CursorTurnOptions = {},
+  ): Promise<string> {
     if (!this.#workspacePath || threadId !== this.#threadId) {
       throw new Error('Cursor session has not started')
     }
-    if (this.#turnId) throw new Error('a turn is already running')
+    if (this.#turnId || this.#startingTurn) throw new Error('a turn is already running')
     if (attachments.length) throw new Error('Cursor CLI attachments are not supported')
+    this.#startingTurn = true
+    this.#options = applyCursorTurnOptions(this.#options, options)
+    const effectiveOptions = await this.#withConcreteModel(this.#options).finally(() => {
+      this.#startingTurn = false
+    })
     // The previous turn's process can outlive its `result` event by a moment;
     // a lingering child must not block or clobber the new turn.
     if (this.#child) killTree(this.#child)
@@ -134,10 +160,10 @@ export class CursorAdapter extends EventEmitter<Events> {
       '--print',
       '--output-format',
       'stream-json',
-      ...(this.#options.approval === 'auto' || this.#options.approval === 'full'
+      ...(effectiveOptions.approval === 'auto' || effectiveOptions.approval === 'full'
         ? ['--force']
         : []),
-      ...(this.#options.model ? ['--model', this.#options.model] : []),
+      ...(effectiveOptions.model ? ['--model', effectiveOptions.model] : []),
       ...(this.#sessionId ? ['--resume', this.#sessionId] : []),
       prompt,
     ]
