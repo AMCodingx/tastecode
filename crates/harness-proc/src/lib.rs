@@ -26,6 +26,21 @@ pub enum ProcessError {
         program: String,
         source: std::io::Error,
     },
+    #[error("could not write to {program}: {source}")]
+    Input {
+        program: String,
+        source: std::io::Error,
+    },
+    #[error("could not wait for {program}: {source}")]
+    Wait {
+        program: String,
+        source: std::io::Error,
+    },
+    #[error("could not stop {program}: {source}")]
+    Stop {
+        program: String,
+        source: std::io::Error,
+    },
 }
 
 pub fn run(
@@ -184,3 +199,6 @@ mod tests {
         assert!(!output.exceeded);
     }
 }
+mod child;
+
+pub use child::{CliOutput, SpawnOptions, SpawnedChild, run_cli, spawn_cli};
