@@ -25,8 +25,8 @@ use gpui::{
     StyledText, Window, canvas, div, fill, img, linear_color_stop, linear_gradient, point,
     prelude::*, relative, size, svg,
 };
-use gpui_component::RopeExt;
 use gpui_component::input::{Input, InputEvent, InputState};
+use gpui_component::{RopeExt, Sizable as _};
 use harness_protocol::{
     ApprovalDecision, ApprovalKind, ApprovalMode, ApprovalReview, ApprovalReviewStatus,
     CheckpointSummary, DiffDecision, DomainEvent, Item, ProviderId, QueueDirection, RiskLevel,
@@ -4622,14 +4622,16 @@ impl ChatView {
             .child(svg_icon("icons/search.svg", 13.0))
             .child(
                 Input::new(&self.model_search)
+                    .xsmall()
                     .appearance(false)
                     .bordered(false)
                     .focus_bordered(false)
                     .cleanable(false)
-                    .h(px(24.0))
                     .min_w(px(0.0))
                     .flex_1()
                     .px(px(0.0))
+                    .py(px(0.0))
+                    .line_height(relative(1.55))
                     .text_size(px(12.5))
                     .text_color(theme.text.hsla()),
             )
