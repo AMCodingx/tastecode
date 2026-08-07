@@ -2088,18 +2088,18 @@ impl ChatView {
         let pending = self.pending_approvals.contains(&request.id);
         let weak = cx.weak_entity();
         let actions = [
-            ("Deny", ApprovalDecision::Deny, false),
-            ("Stop the turn", ApprovalDecision::Abort, true),
+            ("Deny", ApprovalDecision::Deny, true),
+            ("Stop the turn", ApprovalDecision::Abort, false),
             (
                 "Always this session",
                 ApprovalDecision::ApproveSession,
-                true,
+                false,
             ),
-            ("Allow once", ApprovalDecision::Approve, false),
+            ("Allow once", ApprovalDecision::Approve, true),
         ]
         .into_iter()
         .enumerate()
-        .map(|(action_index, (label, decision, quiet))| {
+        .map(|(action_index, (label, decision, filled))| {
             let approval_id = request.id.clone();
             let weak = weak.clone();
             let action: Option<UiAction> = (!pending).then(|| {
@@ -2113,8 +2113,7 @@ impl ChatView {
             approval_action_button(
                 card_index * 4 + action_index,
                 label,
-                action_index == 3,
-                quiet,
+                filled,
                 action_index == 2,
                 theme,
                 action,
@@ -2125,8 +2124,8 @@ impl ChatView {
 
         div()
             .w_full()
-            .mb(px(8.0))
-            .rounded(px(9.0))
+            .mb(px(12.0))
+            .rounded(px(5.0))
             .border_1()
             .border_color(theme.line_strong.hsla())
             .bg(theme.surface.hsla())
@@ -2139,37 +2138,28 @@ impl ChatView {
                     .items_center()
                     .gap(px(8.0))
                     .text_color(theme.text_2.hsla())
-                    .child(svg_icon("icons/shield-question.svg", 14.0))
+                    .child(svg_icon("icons/shield-alert.svg", 14.0))
                     .child(
                         div()
                             .text_color(theme.text.hsla())
-                            .font_weight(FontWeight::MEDIUM)
+                            .font_weight(FontWeight(560.0))
                             .child(approval_title(request.kind)),
-                    )
-                    .when(pending, |head| {
-                        head.child(
-                            div()
-                                .ml_auto()
-                                .text_size(px(11.0))
-                                .text_color(theme.text_3.hsla())
-                                .child("Submitting…"),
-                        )
-                    }),
+                    ),
             )
             .when_some(request.command.clone(), |card, command| {
                 card.child(
                     div()
                         .w_full()
                         .mb(px(8.0))
-                        .rounded(px(6.0))
+                        .rounded(px(3.0))
                         .border_1()
                         .border_color(theme.line.hsla())
                         .bg(theme.background.hsla())
                         .px(px(10.0))
                         .py(px(8.0))
                         .font_family("Geist Mono")
-                        .text_size(px(11.5))
-                        .line_height(relative(1.45))
+                        .text_size(px(12.5))
+                        .line_height(relative(1.5))
                         .whitespace_normal()
                         .child(command),
                 )
@@ -2179,8 +2169,8 @@ impl ChatView {
                     div()
                         .mb(px(8.0))
                         .font_family("Geist Mono")
-                        .text_size(px(11.5))
-                        .line_height(relative(1.45))
+                        .text_size(px(12.5))
+                        .line_height(relative(1.5))
                         .whitespace_normal()
                         .child(path),
                 )
@@ -2191,7 +2181,7 @@ impl ChatView {
                         .mb(px(8.0))
                         .flex()
                         .gap(px(5.0))
-                        .text_size(px(11.5))
+                        .text_size(px(12.5))
                         .text_color(theme.text_3.hsla())
                         .child("in")
                         .child(
@@ -2206,12 +2196,12 @@ impl ChatView {
                 card.child(
                     div()
                         .mb(px(12.0))
-                        .rounded(px(6.0))
+                        .rounded(px(3.0))
                         .bg(theme.surface_2.hsla())
                         .px(px(10.0))
                         .py(px(8.0))
-                        .text_size(px(11.5))
-                        .line_height(relative(1.55))
+                        .text_size(px(12.5))
+                        .line_height(relative(1.6))
                         .text_color(theme.text_2.hsla())
                         .whitespace_normal()
                         .child(reason),
@@ -2242,12 +2232,13 @@ impl ChatView {
 
     fn approval_review_card(&self, review: &ApprovalReview, card_index: usize) -> AnyElement {
         let theme = self.theme;
-        let (status, icon_path, tone) = review_status(review.status, theme);
+        let (status, icon_path) = review_status(review.status);
+        let reviewing = review.status == ApprovalReviewStatus::InProgress;
         div()
             .id(("approval-review", card_index))
             .w_full()
-            .mb(px(8.0))
-            .rounded(px(9.0))
+            .mb(px(12.0))
+            .rounded(px(5.0))
             .border_1()
             .border_color(theme.line_strong.hsla())
             .bg(theme.surface.hsla())
@@ -2259,11 +2250,27 @@ impl ChatView {
                     .flex()
                     .items_center()
                     .gap(px(8.0))
-                    .text_color(tone)
-                    .child(svg_icon(icon_path, 14.0))
+                    .text_color(theme.text_2.hsla())
+                    .child(if reviewing {
+                        svg()
+                            .path("icons/loader-circle.svg")
+                            .size(px(11.0))
+                            .with_animation(
+                                ("approval-review-spinner", card_index),
+                                theme.repeating_animation(Duration::from_millis(700)),
+                                |spinner, delta| {
+                                    spinner.with_transformation(gpui::Transformation::rotate(
+                                        gpui::percentage(delta),
+                                    ))
+                                },
+                            )
+                            .into_any_element()
+                    } else {
+                        svg_icon(icon_path, 14.0).into_any_element()
+                    })
                     .child(
                         div()
-                            .font_weight(FontWeight::MEDIUM)
+                            .font_weight(FontWeight(560.0))
                             .text_color(theme.text.hsla())
                             .child(status),
                     )
@@ -2271,7 +2278,7 @@ impl ChatView {
                         head.child(
                             div()
                                 .ml_auto()
-                                .text_size(px(10.5))
+                                .text_size(px(11.5))
                                 .text_color(theme.text_3.hsla())
                                 .child(format!("{} risk", risk_label(risk))),
                         )
@@ -2280,7 +2287,7 @@ impl ChatView {
             .child(
                 div()
                     .font_family("Geist Mono")
-                    .text_size(px(11.5))
+                    .text_size(px(12.5))
                     .line_height(relative(1.5))
                     .whitespace_normal()
                     .child(review.description.clone()),
@@ -2289,7 +2296,7 @@ impl ChatView {
                 card.child(
                     div()
                         .mt(px(6.0))
-                        .text_size(px(11.5))
+                        .text_size(px(12.5))
                         .line_height(relative(1.5))
                         .text_color(theme.text_2.hsla())
                         .whitespace_normal()
@@ -4347,36 +4354,13 @@ fn approval_title(kind: ApprovalKind) -> &'static str {
     }
 }
 
-fn review_status(
-    status: ApprovalReviewStatus,
-    theme: Theme,
-) -> (&'static str, &'static str, gpui::Hsla) {
+fn review_status(status: ApprovalReviewStatus) -> (&'static str, &'static str) {
     match status {
-        ApprovalReviewStatus::InProgress => (
-            "Reviewing access",
-            "icons/scan-eye.svg",
-            theme.attention.hsla(),
-        ),
-        ApprovalReviewStatus::Approved => (
-            "Access approved",
-            "icons/shield-check.svg",
-            theme.success.hsla(),
-        ),
-        ApprovalReviewStatus::Denied => (
-            "Access denied",
-            "icons/shield-question.svg",
-            theme.error.hsla(),
-        ),
-        ApprovalReviewStatus::TimedOut => (
-            "Review timed out",
-            "icons/shield-question.svg",
-            theme.text_3.hsla(),
-        ),
-        ApprovalReviewStatus::Aborted => (
-            "Review stopped",
-            "icons/shield-question.svg",
-            theme.text_3.hsla(),
-        ),
+        ApprovalReviewStatus::InProgress => ("Reviewing access", "icons/loader-circle.svg"),
+        ApprovalReviewStatus::Approved => ("Access approved", "icons/shield-check.svg"),
+        ApprovalReviewStatus::Denied => ("Access denied", "icons/shield-check.svg"),
+        ApprovalReviewStatus::TimedOut => ("Review timed out", "icons/shield-check.svg"),
+        ApprovalReviewStatus::Aborted => ("Review aborted", "icons/shield-check.svg"),
     }
 }
 
@@ -4411,8 +4395,7 @@ fn radio_mark(active: bool, theme: Theme) -> impl IntoElement {
 fn approval_action_button(
     id: usize,
     label: &'static str,
-    primary: bool,
-    quiet: bool,
+    filled: bool,
     push_right: bool,
     theme: Theme,
     action: Option<UiAction>,
@@ -4420,48 +4403,59 @@ fn approval_action_button(
     let enabled = action.is_some();
     div()
         .id(("approval-action", id))
-        .h(px(30.0))
-        .px(px(10.0))
+        .h(px(if filled { 33.0 } else { 27.0 }))
+        .px(px(if filled { 15.0 } else { 8.0 }))
         .flex()
         .items_center()
         .justify_center()
-        .rounded(px(7.0))
+        .rounded(px(if filled { 5.0 } else { 3.0 }))
         .when(push_right, |button| button.ml_auto())
-        .when(!quiet, |button| {
-            button
-                .border_1()
-                .border_color(theme.line_strong.hsla())
-                .bg(if primary {
-                    theme.text.hsla()
-                } else {
-                    theme.surface_2.hsla()
-                })
+        .bg(if filled {
+            theme.text.hsla()
+        } else {
+            gpui::transparent_black()
         })
-        .text_size(px(11.0))
-        .font_weight(FontWeight::MEDIUM)
-        .text_color(if primary {
+        .text_size(px(if filled { 13.5 } else { 12.5 }))
+        .font_weight(if filled {
+            FontWeight(540.0)
+        } else {
+            FontWeight::NORMAL
+        })
+        .text_color(if filled {
             theme.background.hsla()
         } else {
             theme.text_2.hsla()
         })
-        .opacity(if enabled { 1.0 } else { 0.46 })
+        .opacity(if enabled {
+            1.0
+        } else if filled {
+            0.28
+        } else {
+            0.46
+        })
         .when(enabled, |button| {
             button
                 .cursor_pointer()
                 .hover(move |style| {
                     style
-                        .bg(if primary {
-                            theme.text.hsla().opacity(0.88)
+                        .bg(if filled {
+                            theme.text.hsla()
                         } else {
                             theme.surface_3.hsla()
                         })
-                        .text_color(if primary {
+                        .text_color(if filled {
                             theme.background.hsla()
                         } else {
                             theme.text.hsla()
                         })
                 })
-                .active(|style| style.opacity(0.72))
+                .active(move |style| {
+                    if filled {
+                        style.inset(px(0.5))
+                    } else {
+                        style.opacity(0.72)
+                    }
+                })
         })
         .when_some(action, |button, action| {
             button.on_click(move |_event, _window, cx| action(cx))

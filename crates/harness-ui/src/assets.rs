@@ -25,6 +25,7 @@ impl AssetSource for HarnessAssets {
                 Some(include_bytes!("../assets/icons/shield-question.svg"))
             }
             "icons/shield-check.svg" => Some(include_bytes!("../assets/icons/shield-check.svg")),
+            "icons/shield-alert.svg" => Some(include_bytes!("../assets/icons/shield-alert.svg")),
             "icons/scan-eye.svg" => Some(include_bytes!("../assets/icons/scan-eye.svg")),
             "icons/lock-open.svg" => Some(include_bytes!("../assets/icons/lock-open.svg")),
             "icons/lock-keyhole.svg" => Some(include_bytes!("../assets/icons/lock-keyhole.svg")),
