@@ -15,6 +15,7 @@ use crate::model_selection::{
 };
 use crate::motion_icon::{IconTransformation, motion_icon};
 use crate::provider_icon::{provider_mark, provider_mark_path};
+use crate::shortcuts::is_button_activation;
 use crate::theme::{CHAT_WIDTH, RADIUS_XL, Theme, ThemeMode, cubic_bezier_timing};
 use crate::zoom::px;
 use diff::DiffUiState;
@@ -4800,6 +4801,7 @@ impl ChatView {
             .focus_handle(cx)
             .is_focused(window);
         let clear_input = self.model_search.clone();
+        let keyboard_clear_input = clear_input.clone();
         div()
             .id("model-search")
             .relative()
@@ -4858,6 +4860,7 @@ impl ChatView {
                     div()
                         .id("clear-model-search")
                         .group("clear-model-search-hover")
+                        .tab_index(0)
                         .size(px(18.0))
                         .flex_none()
                         .flex()
@@ -4869,6 +4872,15 @@ impl ChatView {
                             style
                                 .bg(theme.surface_3.hsla())
                                 .text_color(theme.text.hsla())
+                        })
+                        .on_key_down(move |event, window, cx| {
+                            if is_button_activation(event) {
+                                cx.stop_propagation();
+                                keyboard_clear_input.update(cx, |input, cx| {
+                                    input.set_value("", window, cx);
+                                    input.focus(window, cx);
+                                });
+                            }
                         })
                         .on_click(move |_event, window, cx| {
                             clear_input.update(cx, |input, cx| {

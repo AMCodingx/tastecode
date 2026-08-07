@@ -1,6 +1,8 @@
 use crate::chrome;
 use crate::motion_icon::{IconTransformation, motion_icon};
-use crate::shortcuts::{NEW_CHAT, NEW_PROJECT, SETTINGS, label as shortcut_label};
+use crate::shortcuts::{
+    NEW_CHAT, NEW_PROJECT, SETTINGS, is_button_activation, label as shortcut_label,
+};
 use crate::theme::{ColorToken, RADIUS_MD, RADIUS_SM, Theme, ThemeMode};
 use crate::zoom::px;
 use chrono::{DateTime, Datelike, Local};
@@ -689,6 +691,7 @@ fn sidebar_actions(
     actions: &SidebarActions,
 ) -> impl IntoElement {
     let clear_input = search.input.clone();
+    let keyboard_clear_input = clear_input.clone();
     div()
         .flex_none()
         .flex()
@@ -758,6 +761,7 @@ fn sidebar_actions(
                                 div()
                                     .id("clear-thread-list-search")
                                     .group("clear-thread-list-search-hover")
+                                    .tab_index(0)
                                     .size(px(20.0))
                                     .flex_none()
                                     .flex()
@@ -769,6 +773,15 @@ fn sidebar_actions(
                                         style
                                             .bg(theme.surface_3.hsla())
                                             .text_color(theme.text.hsla())
+                                    })
+                                    .on_key_down(move |event, window, cx| {
+                                        if is_button_activation(event) {
+                                            cx.stop_propagation();
+                                            keyboard_clear_input.update(cx, |input, cx| {
+                                                input.set_value("", window, cx);
+                                                input.focus(window, cx);
+                                            });
+                                        }
                                     })
                                     .on_click(move |_event, window, cx| {
                                         clear_input.update(cx, |input, cx| {

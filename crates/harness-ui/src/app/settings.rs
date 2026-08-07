@@ -10,6 +10,7 @@ use crate::preferences::{FontPreference, NativePreferences, ThemePreference};
 use crate::provider_icon::{
     ProviderMark, agent_mark, connection_mark, provider_mark, provider_mark_path,
 };
+use crate::shortcuts::is_button_activation;
 use crate::theme::{Accent, Backdrop, Theme, ThemeMode};
 use crate::zoom::px;
 use gpui::{
@@ -3251,6 +3252,7 @@ fn model_settings_search_field(
     let focused = state.read(cx).focus_handle(cx).is_focused(window);
     let escape_state = state.clone();
     let clear_state = state.clone();
+    let keyboard_clear_state = clear_state.clone();
 
     div()
         .id(SharedString::from(format!(
@@ -3312,6 +3314,7 @@ fn model_settings_search_field(
                         "model-settings-search-clear:{source_index}"
                     )))
                     .group("model-settings-search-clear-hover")
+                    .tab_index(0)
                     .size(px(18.0))
                     .flex_none()
                     .flex()
@@ -3323,6 +3326,15 @@ fn model_settings_search_field(
                         style
                             .bg(theme.surface_3.hsla())
                             .text_color(theme.text.hsla())
+                    })
+                    .on_key_down(move |event, window, cx| {
+                        if is_button_activation(event) {
+                            cx.stop_propagation();
+                            keyboard_clear_state.update(cx, |input, cx| {
+                                input.set_value("", window, cx);
+                                input.focus(window, cx);
+                            });
+                        }
                     })
                     .on_click(move |_event, window, cx| {
                         cx.stop_propagation();

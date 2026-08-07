@@ -47,6 +47,14 @@ pub(crate) fn matches(event: &KeyDownEvent, shortcut: Shortcut) -> bool {
         && event.keystroke.key.eq_ignore_ascii_case(shortcut.key)
 }
 
+pub(crate) fn is_button_activation(event: &KeyDownEvent) -> bool {
+    !event.is_held
+        && matches!(
+            event.keystroke.key.to_ascii_lowercase().as_str(),
+            "enter" | "space" | " "
+        )
+}
+
 pub(crate) fn label(shortcut: Shortcut) -> String {
     let key = shortcut.key.to_uppercase();
     if cfg!(target_os = "macos") {
@@ -102,5 +110,21 @@ mod tests {
             "Ctrl Shift O"
         };
         assert_eq!(label(NEW_PROJECT), expected);
+    }
+
+    #[test]
+    fn button_activation_accepts_enter_and_space_without_key_repeat() {
+        assert!(is_button_activation(&key_event(
+            "Enter", false, false, false
+        )));
+        assert!(is_button_activation(&key_event(
+            "space", false, false, false
+        )));
+        let mut repeated = key_event("space", false, false, false);
+        repeated.is_held = true;
+        assert!(!is_button_activation(&repeated));
+        assert!(!is_button_activation(&key_event(
+            "escape", false, false, false
+        )));
     }
 }
