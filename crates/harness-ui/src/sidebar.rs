@@ -1,5 +1,5 @@
-use crate::shortcuts::{NEW_CHAT, NEW_PROJECT, SEARCH_SESSIONS, SETTINGS, label as shortcut_label};
-use crate::theme::{RAIL_WIDTH, Theme};
+use crate::shortcuts::{NEW_CHAT, NEW_PROJECT, SETTINGS, label as shortcut_label};
+use crate::theme::{RADIUS_MD, RAIL_WIDTH, Theme};
 use crate::zoom::px;
 use chrono::{DateTime, Datelike, Local};
 use gpui::{
@@ -436,7 +436,7 @@ fn classic_sidebar_actions(theme: Theme, actions: &SidebarActions) -> impl IntoE
         .pb(px(8.0))
         .child(nav_item(
             "new-chat",
-            "icons/plus.svg",
+            "icons/square-pen.svg",
             "New chat",
             shortcut_label(NEW_CHAT),
             theme,
@@ -486,74 +486,131 @@ fn sidebar_actions(
     projects: &[ProjectSummary],
     selected_scope: Option<&str>,
     scope_open: bool,
-    new_thread_picker: bool,
+    _new_thread_picker: bool,
     actions: &SidebarActions,
 ) -> impl IntoElement {
     div()
         .flex_none()
         .flex()
         .flex_col()
+        .gap(px(5.0))
         .px(px(10.0))
-        .pt(px(12.0))
-        .pb(px(10.0))
-        .child(nav_item(
-            "new-chat",
-            "icons/plus.svg",
-            "New chat",
-            shortcut_label(NEW_CHAT),
-            theme,
-            Some(actions.new_chat.clone()),
-        ))
-        .child(nav_item(
-            "new-project",
-            "icons/folder-pen.svg",
-            "New project",
-            shortcut_label(NEW_PROJECT),
-            theme,
-            Some(actions.new_project.clone()),
-        ))
+        .pt(px(10.0))
+        .pb(px(9.0))
+        .border_b_1()
+        .border_color(theme.line.hsla())
         .child(
             div()
-                .id("search-chats")
-                .mt(px(8.0))
-                .h(px(32.0))
-                .w_full()
                 .flex()
-                .items_center()
-                .px(px(8.0))
-                .rounded(px(8.0))
-                .bg(theme.surface.hsla())
-                .text_color(theme.text_3.hsla())
-                .cursor_pointer()
-                .hover(move |style| style.bg(theme.surface_2.hsla()))
-                .on_click({
-                    let open_search = actions.open_search.clone();
-                    move |_event, _window, cx| open_search(cx)
-                })
-                .child(icon("icons/search.svg", 13.0))
+                .flex_col()
+                .gap(px(3.0))
                 .child(
                     div()
-                        .ml(px(8.0))
-                        .flex_1()
-                        .text_size(px(11.5))
-                        .child("Search chats"),
+                        .id("search-chats")
+                        .h(px(32.0))
+                        .w_full()
+                        .flex()
+                        .items_center()
+                        .gap(px(7.0))
+                        .px(px(9.0))
+                        .rounded(px(RADIUS_MD))
+                        .border_1()
+                        .border_color(theme.line_strong.hsla())
+                        .bg(theme.background.hsla())
+                        .text_color(theme.text_3.hsla())
+                        .cursor_pointer()
+                        .hover(move |style| {
+                            style
+                                .border_color(theme.text_3.hsla().opacity(0.65))
+                                .text_color(theme.text.hsla())
+                        })
+                        .on_click({
+                            let open_search = actions.open_search.clone();
+                            move |_event, _window, cx| open_search(cx)
+                        })
+                        .child(icon("icons/search.svg", 14.0))
+                        .child(
+                            div()
+                                .min_w(px(0.0))
+                                .flex_1()
+                                .text_size(px(11.5))
+                                .child("Search threads"),
+                        ),
                 )
                 .child(
                     div()
-                        .font_family("Geist Mono")
-                        .text_size(px(10.5))
-                        .child(shortcut_label(SEARCH_SESSIONS)),
+                        .id("new-chat")
+                        .h(px(34.0))
+                        .w_full()
+                        .flex()
+                        .items_center()
+                        .gap(px(8.0))
+                        .px(px(8.0))
+                        .rounded(px(RADIUS_MD))
+                        .text_size(px(13.5))
+                        .text_color(theme.text.hsla())
+                        .cursor_pointer()
+                        .hover(move |style| style.bg(theme.surface_2.hsla()))
+                        .active(|style| style.opacity(0.82).top(px(1.0)))
+                        .on_click({
+                            let new_chat = actions.new_chat.clone();
+                            move |_event, _window, cx| new_chat(cx)
+                        })
+                        .child(
+                            div()
+                                .flex_none()
+                                .text_color(theme.text_2.hsla())
+                                .child(icon("icons/square-pen.svg", 16.0)),
+                        )
+                        .child("New chat"),
                 ),
         )
-        .child(scope_control(
-            theme,
-            projects,
-            selected_scope,
-            scope_open,
-            new_thread_picker,
-            actions.toggle_scope.clone(),
-            actions.select_scope.clone(),
-        ))
+        .child(
+            div()
+                .mt(px(1.0))
+                .h(px(29.0))
+                .w_full()
+                .flex()
+                .items_center()
+                .gap(px(5.0))
+                .child(scope_control(
+                    theme,
+                    projects,
+                    selected_scope,
+                    scope_open,
+                    actions.toggle_scope.clone(),
+                    actions.select_scope.clone(),
+                ))
+                .child(
+                    div()
+                        .id("new-project")
+                        .h(px(29.0))
+                        .flex_none()
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .gap(px(6.0))
+                        .px(px(8.0))
+                        .rounded(px(RADIUS_MD))
+                        .border_1()
+                        .border_color(theme.line_strong.hsla())
+                        .text_size(px(10.5))
+                        .text_color(theme.text_3.hsla())
+                        .cursor_pointer()
+                        .hover(move |style| {
+                            style
+                                .border_color(theme.text_3.hsla().opacity(0.72))
+                                .text_color(theme.text.hsla())
+                        })
+                        .active(|style| style.opacity(0.76).top(px(1.0)))
+                        .on_click({
+                            let new_project = actions.new_project.clone();
+                            move |_event, _window, cx| new_project(cx)
+                        })
+                        .child(icon("icons/folder-plus.svg", 13.0))
+                        .child("Add Project"),
+                ),
+        )
 }
 
 fn fixture_sidebar_body(theme: Theme) -> impl IntoElement {
@@ -1175,7 +1232,6 @@ fn scope_control(
     projects: &[ProjectSummary],
     selected_scope: Option<&str>,
     open: bool,
-    new_thread_picker: bool,
     on_toggle: SidebarAction,
     on_select: SelectScope,
 ) -> impl IntoElement {
@@ -1188,76 +1244,60 @@ fn scope_control(
     let all_action = on_select.clone();
 
     div()
-        .mt(px(8.0))
-        .w_full()
+        .relative()
+        .min_w(px(0.0))
+        .flex_1()
         .flex()
         .flex_col()
         .child(
             div()
+                .id("sidebar-scope")
                 .h(px(29.0))
                 .w_full()
                 .flex()
                 .items_center()
+                .min_w(px(0.0))
+                .px(px(8.0))
+                .rounded(px(RADIUS_MD))
+                .border_1()
+                .border_color(if open {
+                    theme.text_3.hsla()
+                } else {
+                    theme.line_strong.hsla()
+                })
+                .bg(theme.background.hsla())
+                .text_size(px(11.5))
+                .text_color(theme.text_2.hsla())
+                .cursor_pointer()
+                .hover(move |style| {
+                    style
+                        .border_color(theme.text_3.hsla().opacity(0.72))
+                        .text_color(theme.text.hsla())
+                })
+                .on_click(move |_event, _window, cx| on_toggle(cx))
                 .child(
                     div()
-                        .w(px(40.0))
-                        .pl(px(6.0))
-                        .text_size(px(10.5))
-                        .font_weight(FontWeight::MEDIUM)
-                        .text_color(theme.text_3.hsla())
-                        .child(if new_thread_picker {
-                            "Project"
-                        } else {
-                            "Scope"
-                        }),
+                        .min_w(px(0.0))
+                        .flex_1()
+                        .truncate()
+                        .child(selected_name),
                 )
                 .child(
                     div()
-                        .id("sidebar-scope")
-                        .h(px(29.0))
-                        .min_w(px(0.0))
-                        .flex_1()
-                        .flex()
-                        .items_center()
-                        .px(px(8.0))
-                        .rounded(px(7.0))
-                        .border_1()
-                        .border_color(if open {
-                            theme.line_strong.hsla()
-                        } else {
-                            theme.line.hsla()
-                        })
-                        .bg(theme.surface.hsla())
-                        .text_size(px(11.5))
-                        .text_color(theme.text_2.hsla())
-                        .cursor_pointer()
-                        .hover(move |style| {
-                            style
-                                .border_color(theme.line_strong.hsla())
-                                .text_color(theme.text.hsla())
-                        })
-                        .on_click(move |_event, _window, cx| on_toggle(cx))
-                        .child(
-                            div()
-                                .min_w(px(0.0))
-                                .flex_1()
-                                .truncate()
-                                .child(selected_name),
-                        )
-                        .child(
-                            div()
-                                .ml(px(5.0))
-                                .text_color(theme.text_3.hsla())
-                                .child(icon("icons/chevron-down.svg", 11.0)),
-                        ),
+                        .ml(px(5.0))
+                        .text_color(theme.text_3.hsla())
+                        .child(icon("icons/chevron-down.svg", 11.0)),
                 ),
         )
         .when(open, |control| {
             control.child(
                 div()
                     .id("scope-options")
-                    .ml(px(40.0))
-                    .mt(px(4.0))
+                    .occlude()
+                    .absolute()
+                    .top(px(33.0))
+                    .left(px(0.0))
+                    .right(px(0.0))
                     .max_h(px(220.0))
                     .overflow_y_scroll()
                     .rounded(px(8.0))
@@ -1265,15 +1305,13 @@ fn scope_control(
                     .border_color(theme.line_strong.hsla())
                     .bg(theme.surface_2.hsla())
                     .p(px(4.0))
-                    .when(!new_thread_picker, |menu| {
-                        menu.child(scope_option(
-                            "scope:all".into(),
-                            "All projects".into(),
-                            selected_scope.is_none(),
-                            theme,
-                            Rc::new(move |cx| all_action(None, cx)),
-                        ))
-                    })
+                    .child(scope_option(
+                        "scope:all".into(),
+                        "All projects".into(),
+                        selected_scope.is_none(),
+                        theme,
+                        Rc::new(move |cx| all_action(None, cx)),
+                    ))
                     .children(projects.iter().map(|project| {
                         let path = project.path.clone();
                         let option_action = on_select.clone();

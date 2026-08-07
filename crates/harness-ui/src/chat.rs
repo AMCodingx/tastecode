@@ -11,7 +11,7 @@ mod voice;
 use crate::client_state::{ChatUpdate, ModelChoice};
 use crate::model_selection::{fast_service_tier, is_fast_mode_enabled};
 use crate::provider_icon::provider_icon;
-use crate::theme::{CHAT_WIDTH, Theme};
+use crate::theme::{CHAT_WIDTH, RADIUS_XL, Theme, ThemeMode};
 use crate::zoom::px;
 use diff::DiffUiState;
 use gpui::{
@@ -2798,12 +2798,12 @@ impl ChatView {
                             )
                             .child(
                                 div()
-                                    .h(px(38.0))
                                     .flex()
                                     .items_center()
-                                    .gap(px(5.0))
-                                    .px(px(10.0))
-                                    .pb(px(6.0))
+                                    .gap(px(6.0))
+                                    .px(px(8.0))
+                                    .pt(px(4.0))
+                                    .pb(px(8.0))
                                     .child(icon_tool_button(
                                         "composer-attach",
                                         "icons/plus.svg",
@@ -3365,21 +3365,29 @@ impl ChatView {
         let approval = self.composer_settings.approval;
         let open = self.composer_menu == Some(ComposerMenu::Permissions);
         let (icon_path, label) = approval_meta(approval);
+        let background = if theme.mode == ThemeMode::Dark {
+            theme.surface_3.hsla()
+        } else {
+            theme.prompt.hsla()
+        };
         div()
             .id("composer-permissions")
-            .h(px(28.0))
-            .px(px(8.0))
+            .min_h(px(34.0))
+            .px(px(12.0))
+            .py(px(5.0))
             .flex()
             .items_center()
             .gap(px(6.0))
-            .rounded(px(9.0))
+            .rounded(px(RADIUS_XL))
             .border_1()
             .border_color(if open {
-                theme.line_strong.hsla()
+                theme.text_3.hsla()
             } else {
-                theme.line.hsla()
+                theme.line_strong.hsla()
             })
-            .text_size(px(11.5))
+            .bg(background)
+            .shadow_sm()
+            .text_size(px(13.5))
             .text_color(if approval == ApprovalMode::Full {
                 theme.error.hsla()
             } else {
@@ -3391,10 +3399,15 @@ impl ChatView {
                     .cursor_pointer()
                     .hover(move |style| {
                         style
-                            .bg(theme.surface_2.hsla())
-                            .border_color(theme.line_strong.hsla())
+                            .bg(if theme.mode == ThemeMode::Dark {
+                                theme.surface_3.hsla()
+                            } else {
+                                theme.surface.hsla()
+                            })
+                            .border_color(theme.text_3.hsla().opacity(0.72))
                             .text_color(theme.text.hsla())
                     })
+                    .active(|style| style.opacity(0.78).top(px(1.0)))
                     .on_click(cx.listener(|this, _event, _window, cx| {
                         this.toggle_composer_menu(ComposerMenu::Permissions, cx);
                     }))
@@ -3418,22 +3431,30 @@ impl ChatView {
             &selected.model,
             self.composer_settings.service_tier.as_deref(),
         );
+        let background = if theme.mode == ThemeMode::Dark {
+            theme.surface_3.hsla()
+        } else {
+            theme.prompt.hsla()
+        };
         Some(
             div()
                 .id("composer-model")
-                .h(px(28.0))
+                .min_h(px(32.0))
                 .max_w(px(270.0))
-                .px(px(8.0))
+                .px(px(13.0))
+                .py(px(5.0))
                 .flex()
                 .items_center()
                 .gap(px(6.0))
-                .rounded(px(9.0))
+                .rounded(px(RADIUS_XL))
                 .border_1()
                 .border_color(if open {
-                    theme.line_strong.hsla()
+                    theme.text_3.hsla()
                 } else {
-                    theme.line.hsla()
+                    theme.line_strong.hsla()
                 })
+                .bg(background)
+                .shadow_sm()
                 .text_size(px(11.5))
                 .text_color(theme.text.hsla())
                 .opacity(if running { 0.42 } else { 1.0 })
@@ -3442,9 +3463,14 @@ impl ChatView {
                         .cursor_pointer()
                         .hover(move |style| {
                             style
-                                .bg(theme.surface_2.hsla())
-                                .border_color(theme.line_strong.hsla())
+                                .bg(if theme.mode == ThemeMode::Dark {
+                                    theme.surface_3.hsla()
+                                } else {
+                                    theme.surface.hsla()
+                                })
+                                .border_color(theme.text_3.hsla().opacity(0.72))
                         })
+                        .active(|style| style.opacity(0.78).top(px(1.0)))
                         .on_click(cx.listener(|this, _event, _window, cx| {
                             this.toggle_composer_menu(ComposerMenu::Model, cx);
                         }))
@@ -4220,39 +4246,55 @@ fn icon_tool_button(
     theme: Theme,
     action: Option<UiAction>,
 ) -> impl IntoElement {
+    let background = if theme.mode == ThemeMode::Dark {
+        theme.surface_3.hsla()
+    } else {
+        theme.prompt.hsla()
+    };
     div()
         .id(id)
-        .h(px(28.0))
-        .min_w(px(28.0))
-        .px(px(if label.is_some() { 8.0 } else { 6.0 }))
+        .min_h(px(34.0))
+        .min_w(px(34.0))
+        .px(px(if label.is_some() { 12.0 } else { 0.0 }))
+        .py(px(if label.is_some() { 5.0 } else { 0.0 }))
         .flex()
         .items_center()
         .justify_center()
         .gap(px(6.0))
-        .rounded(px(9.0))
+        .rounded(px(RADIUS_XL))
         .border_1()
         .border_color(if active {
-            theme.attention.hsla().opacity(0.6)
+            theme.text_3.hsla().opacity(0.8)
         } else {
-            theme.line.hsla()
+            theme.line_strong.hsla()
         })
-        .text_size(px(11.5))
+        .bg(background)
+        .shadow_sm()
+        .text_size(px(13.5))
         .text_color(if active {
-            theme.attention.hsla()
+            theme.text.hsla()
         } else {
             theme.text_2.hsla()
         })
         .cursor_pointer()
         .hover(move |style| {
             style
-                .bg(theme.surface_2.hsla())
-                .border_color(theme.line_strong.hsla())
+                .bg(if theme.mode == ThemeMode::Dark {
+                    theme.surface_3.hsla()
+                } else {
+                    theme.surface.hsla()
+                })
+                .border_color(theme.text_3.hsla().opacity(0.72))
                 .text_color(theme.text.hsla())
         })
+        .active(|style| style.opacity(0.78).top(px(1.0)))
         .when_some(action, |button, action| {
             button.on_click(move |_event, _window, cx| action(cx))
         })
-        .child(svg_icon(icon_path, 14.0))
+        .child(svg_icon(
+            icon_path,
+            if label.is_some() { 13.0 } else { 15.0 },
+        ))
         .when_some(label, |button, label| button.child(label))
 }
 
