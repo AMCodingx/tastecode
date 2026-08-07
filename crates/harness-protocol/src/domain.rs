@@ -1035,6 +1035,44 @@ pub struct VoiceTranscriptionResult {
     pub text: String,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PreviewViewport {
+    pub width: u32,
+    pub height: u32,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PreviewScreenshot {
+    pub path: String,
+    pub width: u32,
+    pub height: u32,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PreviewCaptureRequest {
+    pub request_id: String,
+    pub url: String,
+    pub viewports: Vec<PreviewViewport>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(
+    tag = "status",
+    rename_all = "lowercase",
+    rename_all_fields = "camelCase"
+)]
+pub enum PreviewCaptureResult {
+    Completed {
+        request_id: String,
+        screenshots: Vec<PreviewScreenshot>,
+    },
+    Failed {
+        request_id: String,
+        error: String,
+    },
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ThreadEventPush {
@@ -1215,6 +1253,37 @@ mod tests {
                 "mimeType": "audio/wav",
                 "sampleRateHz": 24_000,
                 "durationMs": 1_000
+            })
+        );
+    }
+
+    #[test]
+    fn preview_capture_results_match_the_desktop_bridge() {
+        let request: PreviewCaptureRequest = serde_json::from_value(json!({
+            "requestId": "3a7c0fb4-222e-471a-97de-f062ad676df4",
+            "url": "http://127.0.0.1:4173",
+            "viewports": [{ "width": 390, "height": 844 }]
+        }))
+        .unwrap();
+        let result = PreviewCaptureResult::Completed {
+            request_id: request.request_id,
+            screenshots: vec![PreviewScreenshot {
+                path: "/tmp/mobile.png".into(),
+                width: request.viewports[0].width,
+                height: request.viewports[0].height,
+            }],
+        };
+
+        assert_eq!(
+            serde_json::to_value(result).unwrap(),
+            json!({
+                "status": "completed",
+                "requestId": "3a7c0fb4-222e-471a-97de-f062ad676df4",
+                "screenshots": [{
+                    "path": "/tmp/mobile.png",
+                    "width": 390,
+                    "height": 844
+                }]
             })
         );
     }

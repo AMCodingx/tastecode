@@ -72,6 +72,7 @@ pub enum InboundFrame {
 
 pub mod method {
     pub const CLIENT_CAPABILITIES: &str = "client.capabilities";
+    pub const PREVIEW_CAPTURE_RESULT: &str = "preview.captureResult";
     pub const SYSTEM_INFO: &str = "system.info";
     pub const SYSTEM_UPDATE_CHECK: &str = "system.updateCheck";
     pub const VOICE_STATUS: &str = "voice.status";
@@ -124,6 +125,7 @@ pub mod method {
 
 pub mod channel {
     pub const SERVER_WELCOME: &str = "server.welcome";
+    pub const PREVIEW_CAPTURE_REQUESTED: &str = "preview.captureRequested";
     pub const AUTH_EVENT: &str = "auth.event";
     pub const THREAD_EVENT: &str = "thread.event";
     pub const THREAD_QUEUE: &str = "thread.queue";
@@ -205,6 +207,15 @@ mod tests {
         assert_eq!(method::VOICE_STATUS, "voice.status");
         assert_eq!(method::VOICE_TRANSCRIBE, "voice.transcribe");
         assert_eq!(method::VOICE_CANCEL, "voice.cancel");
+    }
+
+    #[test]
+    fn preview_capture_keeps_the_existing_method_and_push_names() {
+        assert_eq!(method::PREVIEW_CAPTURE_RESULT, "preview.captureResult");
+        assert_eq!(
+            channel::PREVIEW_CAPTURE_REQUESTED,
+            "preview.captureRequested"
+        );
     }
 
     #[test]
