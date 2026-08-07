@@ -2813,6 +2813,7 @@ dependencies = [
  "harness-protocol",
  "serde",
  "serde_json",
+ "tempfile",
  "uuid",
 ]
 
