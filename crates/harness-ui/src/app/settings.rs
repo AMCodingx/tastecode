@@ -351,16 +351,16 @@ impl HarnessApp {
             };
             let terminal =
                 terminal_key.and_then(|key| self.provider_terminal_snapshot(key, &idle_note, cx));
-            let busy = self.state.auth_busy.as_ref() == Some(&target)
-                || self.state.provider_terminal_busy.as_ref() == Some(&target);
-            let trailing = if busy {
-                status_pill("Working…", false, theme)
-            } else if !provider.installed {
-                if let Some(setup) = &provider.setup {
+            let auth_busy = self.state.auth_busy.as_ref() == Some(&target);
+            let terminal_busy = self.state.provider_terminal_busy.as_ref() == Some(&target);
+            let trailing = if !provider.installed {
+                if terminal_busy {
+                    provider_action_disabled("Installing…", false, theme)
+                } else if let Some(setup) = &provider.setup {
                     if setup.install_command.is_some() {
                         match terminal.as_ref().map(|terminal| terminal.phase) {
                             Some(ProviderTerminalPhase::Starting) => {
-                                status_pill("Starting…", false, theme)
+                                provider_action_disabled("Installing…", false, theme)
                             }
                             Some(ProviderTerminalPhase::Running) => {
                                 let key = install_key.clone();
@@ -384,7 +384,7 @@ impl HarnessApp {
                                 )
                             }
                             Some(ProviderTerminalPhase::Succeeded) => {
-                                status_pill("Installed", true, theme)
+                                provider_action_disabled("Installed", false, theme)
                             }
                             Some(ProviderTerminalPhase::Failed | ProviderTerminalPhase::Error)
                             | None => {
@@ -422,7 +422,7 @@ impl HarnessApp {
                         provider_action_button(index, "Install first", false, theme, action)
                     }
                 } else {
-                    status_pill(status, false, theme)
+                    provider_action_disabled("Install first", false, theme)
                 }
             } else if signed_in
                 || provider
@@ -430,83 +430,104 @@ impl HarnessApp {
                     .as_ref()
                     .is_some_and(|setup| setup.login == ProviderLogin::App)
             {
-                let target = target.clone();
-                let view = cx.weak_entity();
-                let action: SettingsAction = Rc::new(move |cx| {
-                    let target = target.clone();
-                    let _ = view.update(cx, |this, cx| {
-                        let update = if signed_in {
-                            this.state.sign_out(target)
+                if auth_busy {
+                    provider_action_disabled(
+                        if signed_in {
+                            "Signing out…"
                         } else {
-                            this.state.start_auth(target)
-                        };
-                        this.apply_client_update(update, cx);
+                            "Signing in…"
+                        },
+                        signed_in,
+                        theme,
+                    )
+                } else {
+                    let target = target.clone();
+                    let view = cx.weak_entity();
+                    let action: SettingsAction = Rc::new(move |cx| {
+                        let target = target.clone();
+                        let _ = view.update(cx, |this, cx| {
+                            let update = if signed_in {
+                                this.state.sign_out(target)
+                            } else {
+                                this.state.start_auth(target)
+                            };
+                            this.apply_client_update(update, cx);
+                        });
                     });
-                });
-                provider_action_button(
-                    index,
-                    if signed_in { "Sign out" } else { "Sign in" },
-                    signed_in,
-                    theme,
-                    action,
-                )
+                    provider_action_button(
+                        index,
+                        if signed_in { "Sign out" } else { "Sign in" },
+                        signed_in,
+                        theme,
+                        action,
+                    )
+                }
             } else if provider
                 .setup
                 .as_ref()
                 .is_some_and(|setup| setup.login == ProviderLogin::Provider)
                 && !signed_in
             {
-                match terminal.as_ref().map(|terminal| terminal.phase) {
-                    Some(ProviderTerminalPhase::Starting) => status_pill("Starting…", false, theme),
-                    Some(ProviderTerminalPhase::Running) => {
-                        let key = sign_in_key.clone();
-                        let view = cx.weak_entity();
-                        let action: SettingsAction = Rc::new(move |cx| {
-                            let key = key.clone();
-                            let _ = view.update(cx, |this, cx| {
-                                this.toggle_provider_terminal(&key, cx);
+                if terminal_busy {
+                    provider_action_disabled("Signing in…", false, theme)
+                } else {
+                    match terminal.as_ref().map(|terminal| terminal.phase) {
+                        Some(ProviderTerminalPhase::Starting) => {
+                            provider_action_disabled("Signing in…", false, theme)
+                        }
+                        Some(ProviderTerminalPhase::Running) => {
+                            let key = sign_in_key.clone();
+                            let view = cx.weak_entity();
+                            let action: SettingsAction = Rc::new(move |cx| {
+                                let key = key.clone();
+                                let _ = view.update(cx, |this, cx| {
+                                    this.toggle_provider_terminal(&key, cx);
+                                });
                             });
-                        });
-                        provider_action_button(
-                            index,
-                            if terminal.as_ref().is_some_and(|terminal| terminal.visible) {
-                                "Hide details"
-                            } else {
-                                "Details"
-                            },
-                            false,
-                            theme,
-                            action,
-                        )
-                    }
-                    Some(ProviderTerminalPhase::Succeeded) => status_pill("Checking…", true, theme),
-                    Some(ProviderTerminalPhase::Failed | ProviderTerminalPhase::Error) | None => {
-                        let target = target.clone();
-                        let title = provider.display_name.clone();
-                        let view = cx.weak_entity();
-                        let action: SettingsAction = Rc::new(move |cx| {
+                            provider_action_button(
+                                index,
+                                if terminal.as_ref().is_some_and(|terminal| terminal.visible) {
+                                    "Hide details"
+                                } else {
+                                    "Details"
+                                },
+                                false,
+                                theme,
+                                action,
+                            )
+                        }
+                        Some(ProviderTerminalPhase::Succeeded) => {
+                            status_pill("Checking…", true, theme)
+                        }
+                        Some(ProviderTerminalPhase::Failed | ProviderTerminalPhase::Error)
+                        | None => {
                             let target = target.clone();
-                            let title = title.clone();
-                            let _ = view.update(cx, |this, cx| {
-                                this.start_provider_terminal(
-                                    target,
-                                    ProviderTerminalKind::SignIn,
-                                    title,
-                                    cx,
-                                );
+                            let title = provider.display_name.clone();
+                            let view = cx.weak_entity();
+                            let action: SettingsAction = Rc::new(move |cx| {
+                                let target = target.clone();
+                                let title = title.clone();
+                                let _ = view.update(cx, |this, cx| {
+                                    this.start_provider_terminal(
+                                        target,
+                                        ProviderTerminalKind::SignIn,
+                                        title,
+                                        cx,
+                                    );
+                                });
                             });
-                        });
-                        provider_action_button(
-                            index,
-                            if terminal.is_some() {
-                                "Retry sign-in"
-                            } else {
-                                "Sign in"
-                            },
-                            false,
-                            theme,
-                            action,
-                        )
+                            provider_action_button(
+                                index,
+                                if terminal.is_some() {
+                                    "Retry sign-in"
+                                } else {
+                                    "Sign in"
+                                },
+                                false,
+                                theme,
+                                action,
+                            )
+                        }
                     }
                 }
             } else {
@@ -666,7 +687,7 @@ impl HarnessApp {
                 None,
                 None,
                 ProviderMark::Pi,
-                provider_action_disabled("Planned", theme),
+                provider_action_disabled("Planned", false, theme),
                 theme,
             ),
             theme,
@@ -3722,22 +3743,27 @@ fn provider_action_button(
         .into_any_element()
 }
 
-fn provider_action_disabled(label: &'static str, theme: Theme) -> AnyElement {
+fn provider_action_disabled(label: &'static str, sign_out: bool, theme: Theme) -> AnyElement {
     div()
         .relative()
-        .h(px(28.0))
         .flex()
         .items_center()
+        .gap(px(6.0))
         .px(px(10.0))
-        .rounded(px(crate::RADIUS_MD))
+        .py(px(6.0))
+        .rounded(px(5.0))
         .border_1()
         .border_color(chrome::border(theme))
         .bg(chrome::raised(theme))
         .shadow(chrome::shadows(theme))
         .child(chrome::top_highlight(theme))
         .text_size(px(12.5))
+        .line_height(relative(1.55))
         .text_color(theme.text_3.hsla())
-        .opacity(0.55)
+        .opacity(0.5)
+        .when(sign_out, |button| {
+            button.child(settings_icon("icons/log-out.svg", 13.0))
+        })
         .child(label)
         .into_any_element()
 }
