@@ -1,6 +1,7 @@
 use super::ChatView;
 use super::code_extensions::code_file_extension;
 use crate::chrome;
+use crate::motion_icon::motion_icon;
 use crate::theme::{Theme, ThemeMode, web_ease_out};
 use crate::zoom::px;
 use ::markdown::{ParseOptions, mdast::Node};
@@ -11,7 +12,7 @@ use gpui::{
     Edges, Element, ElementId, Entity, FocusHandle, FontWeight, GlobalElementId, Hitbox,
     HitboxBehavior, Image, ImageFormat, ImageSource, InspectorElementId, LayoutId, MouseButton,
     ObjectFit, Pixels, Point, SharedString, StyleRefinement, Styled, StyledImage, StyledText,
-    TextLayout, Window, div, img, point, prelude::*, quad, relative, rems, svg,
+    TextLayout, Window, div, img, point, prelude::*, quad, relative, rems,
 };
 use gpui_component::highlighter::SyntaxHighlighter;
 use gpui_component::scroll::ScrollableElement;
@@ -1115,6 +1116,7 @@ fn render_markdown_image(
     };
     let id = format!("{}:image:{start}", context.id);
     let group: SharedString = format!("markdown-image-group:{id}").into();
+    let download_hover_group: SharedString = format!("{id}:download-hover").into();
     let fallback_theme = context.theme;
     let image = img(source)
         .id(SharedString::from(format!("{id}:content")))
@@ -1154,6 +1156,7 @@ fn render_markdown_image(
         .child(
             div()
                 .id(SharedString::from(format!("{id}:download")))
+                .group(download_hover_group.clone())
                 .absolute()
                 .right(px(8.0))
                 .bottom(px(8.0))
@@ -1185,7 +1188,13 @@ fn render_markdown_image(
                         cx,
                     );
                 })
-                .child(svg().path("icons/download.svg").size(px(14.0))),
+                .child(motion_icon(
+                    SharedString::from(format!("{id}:download-icon")),
+                    "icons/download.svg",
+                    14.0,
+                    download_hover_group,
+                    context.theme,
+                )),
         )
         .into_any_element()
 }
@@ -1792,8 +1801,10 @@ fn table_control_button(
     open: bool,
     on_click: impl Fn(&mut App) + 'static,
 ) -> AnyElement {
+    let id = SharedString::from(id);
     div()
-        .id(SharedString::from(id))
+        .id(id.clone())
+        .group(id.clone())
         .size(px(24.0))
         .flex()
         .items_center()
@@ -1816,7 +1827,13 @@ fn table_control_button(
                     on_click(cx);
                 })
         })
-        .child(svg().path(icon).size(px(13.0)))
+        .child(motion_icon(
+            SharedString::from(format!("{id}:icon")),
+            icon,
+            13.0,
+            id,
+            theme,
+        ))
         .into_any_element()
 }
 
@@ -1912,12 +1929,14 @@ fn copy_control(
     window: &mut Window,
     cx: &mut App,
 ) -> AnyElement {
+    let control_id = SharedString::from(id.clone());
     let state = window.use_keyed_state(SharedString::from(format!("{id}:state")), cx, |_, _| {
         CopyFeedbackState::default()
     });
     let copied = state.read(cx).copied;
     div()
-        .id(SharedString::from(id))
+        .id(control_id.clone())
+        .group(control_id.clone())
         .size(px(24.0))
         .flex()
         .items_center()
@@ -1957,15 +1976,17 @@ fn copy_control(
                     .detach();
                 })
         })
-        .child(
-            svg()
-                .path(if copied {
-                    "icons/check.svg"
-                } else {
-                    "icons/copy.svg"
-                })
-                .size(px(13.0)),
-        )
+        .child(motion_icon(
+            SharedString::from(format!("{id}:icon")),
+            if copied {
+                "icons/check.svg"
+            } else {
+                "icons/copy.svg"
+            },
+            13.0,
+            control_id,
+            theme,
+        ))
         .into_any_element()
 }
 
@@ -1977,8 +1998,10 @@ fn download_control(
     theme: Theme,
     enabled: bool,
 ) -> AnyElement {
+    let id = SharedString::from(id);
     div()
-        .id(SharedString::from(id))
+        .id(id.clone())
+        .group(id.clone())
         .size(px(24.0))
         .flex()
         .items_center()
@@ -2001,7 +2024,13 @@ fn download_control(
                     download_value(filename.clone(), value.clone(), cx);
                 })
         })
-        .child(svg().path("icons/download.svg").size(px(13.0)))
+        .child(motion_icon(
+            SharedString::from(format!("{id}:icon")),
+            "icons/download.svg",
+            13.0,
+            id,
+            theme,
+        ))
         .into_any_element()
 }
 
@@ -2324,11 +2353,10 @@ fn fallback_text_style(theme: Theme) -> TextViewStyle {
 }
 
 fn fallback_code_copy_button(code: String, theme: Theme) -> AnyElement {
+    let id = SharedString::from(format!("copy-code:{}", stable_hash(&code)));
     div()
-        .id(SharedString::from(format!(
-            "copy-code:{}",
-            stable_hash(&code)
-        )))
+        .id(id.clone())
+        .group(id.clone())
         .size(px(24.0))
         .flex()
         .items_center()
@@ -2343,12 +2371,13 @@ fn fallback_code_copy_button(code: String, theme: Theme) -> AnyElement {
         .on_click(move |_event, _window, cx| {
             cx.write_to_clipboard(ClipboardItem::new_string(code.clone()));
         })
-        .child(
-            svg()
-                .path("icons/copy.svg")
-                .size(px(13.0))
-                .text_color(theme.text_3.hsla()),
-        )
+        .child(motion_icon(
+            SharedString::from(format!("{id}:icon")),
+            "icons/copy.svg",
+            13.0,
+            id,
+            theme,
+        ))
         .into_any_element()
 }
 
@@ -3418,6 +3447,7 @@ fn render_inline_unit(unit: InlineUnit, context: &RenderContext<'_>) -> AnyEleme
             .text_size(px(13.5))
             .child(selectable(code, "code")),
         InlineUnitKind::FileReference { path, label } => render_file_reference(
+            &token_id,
             &path,
             selectable(label, "file-reference").into_any_element(),
             context.theme,
@@ -3532,6 +3562,7 @@ fn render_inline_unit(unit: InlineUnit, context: &RenderContext<'_>) -> AnyEleme
 }
 
 fn render_file_reference(
+    id: &str,
     path: &str,
     label: AnyElement,
     theme: Theme,
@@ -3539,11 +3570,14 @@ fn render_file_reference(
 ) -> gpui::Div {
     let spec = file_icon_spec(path);
     let icon = if let Some(path) = spec.icon {
-        svg()
-            .path(path)
-            .size(px(15.0))
-            .text_color(theme.file_reference.hsla())
-            .into_any_element()
+        motion_icon(
+            SharedString::from(format!("{id}:file-icon")),
+            path,
+            15.0,
+            "file-reference-icon-direct-hover",
+            theme,
+        )
+        .into_any_element()
     } else {
         div()
             .size(px(15.0))
