@@ -907,7 +907,7 @@ impl ChatView {
         let old_len = self.state.timeline_len();
         let mut changed_items = HashSet::new();
         let mut transcript_changed = false;
-        let mut presentation_changed = false;
+        let mut presentation_turns = HashSet::new();
         let mut applied = false;
         let mut reconcile_after = None;
         let mut finished_turn_id = None;
@@ -953,14 +953,23 @@ impl ChatView {
                 }
                 _ => None,
             };
-            presentation_changed |= matches!(
-                &push.event,
-                DomainEvent::TurnStarted { .. }
-                    | DomainEvent::ItemStarted { .. }
-                    | DomainEvent::ItemCompleted { .. }
-                    | DomainEvent::TurnCompleted { .. }
-                    | DomainEvent::ThreadError { .. }
-            );
+            match &push.event {
+                DomainEvent::TurnStarted { turn } => {
+                    presentation_turns.insert(turn.id.clone());
+                }
+                DomainEvent::ItemStarted { item } | DomainEvent::ItemCompleted { item } => {
+                    presentation_turns.insert(item.turn_id.clone());
+                }
+                DomainEvent::TurnCompleted { turn_id, .. } => {
+                    presentation_turns.insert(turn_id.clone());
+                }
+                DomainEvent::ThreadError { .. } => {
+                    if let Some(turn) = self.state.active_turn() {
+                        presentation_turns.insert(turn.turn.id.clone());
+                    }
+                }
+                _ => {}
+            }
             let changed_item = match &push.event {
                 DomainEvent::ItemDelta {
                     turn_id, item_id, ..
@@ -1058,10 +1067,11 @@ impl ChatView {
             if let Some(turn_id) = finished_turn_id {
                 self.start_turn_settle(turn_id, cx);
             }
-            let presentation_rows = if presentation_changed {
-                self.presentation.rebuild(&self.state)
-            } else {
+            let presentation_rows = if presentation_turns.is_empty() {
                 Vec::new()
+            } else {
+                self.presentation
+                    .refresh_turns(&self.state, &presentation_turns)
             };
             let mut changed_rows = BTreeSet::new();
             if new_len > old_len {

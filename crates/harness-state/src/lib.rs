@@ -162,6 +162,12 @@ impl ThreadState {
             .find(|turn| turn.turn.status == TurnStatus::Running)
     }
 
+    pub fn turn(&self, id: &str) -> Option<&TurnState> {
+        self.turn_index
+            .get(id)
+            .and_then(|index| self.turns.get(*index))
+    }
+
     pub fn timeline_len(&self) -> usize {
         self.timeline.len()
     }
