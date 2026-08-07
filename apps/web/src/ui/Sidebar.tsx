@@ -295,7 +295,7 @@ function SidebarComponent(props: {
           </>
         )}
 
-        <div className="rail__foot">
+        <div className={`rail__foot${inbox ? ' rail__foot--inbox' : ''}`}>
           {inbox ? (
             <button
               className="navitem inbox-settings"
@@ -308,7 +308,6 @@ function SidebarComponent(props: {
             >
               <SettingsIcon size={15} aria-hidden />
               <span>Settings</span>
-              <ShortcutHint>{shortcutLabel(SHORTCUTS.settings, macOS)}</ShortcutHint>
             </button>
           ) : (
             <Menu

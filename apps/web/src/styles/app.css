@@ -59,6 +59,7 @@
 /* ---------- title bar ---------- */
 
 .titlebar {
+  position: relative;
   display: flex;
   align-items: center;
   gap: 8px;
@@ -67,10 +68,18 @@
   padding-left: max(12px, env(titlebar-area-x, 12px));
   padding-right: 12px;
   width: 100%;
-  background: var(--titlebar-bg);
-  box-shadow: inset 0 1px var(--chrome-highlight);
+  background: linear-gradient(to right, var(--bg-rail) 0 var(--rail-w), var(--bg) var(--rail-w));
   -webkit-app-region: drag;
   user-select: none;
+}
+
+.titlebar::after {
+  content: '';
+  position: absolute;
+  inset: 0 auto 0 calc(var(--rail-w) - 1px);
+  width: 1px;
+  background: var(--line);
+  pointer-events: none;
 }
 
 .titlebar__toggle {
@@ -78,11 +87,12 @@
   -webkit-app-region: no-drag;
 }
 
-.titlebar__name {
-  font-size: var(--t-sm);
-  font-weight: 500;
-  color: var(--titlebar-symbol);
-  opacity: 0.78;
+.shell.is-narrow .titlebar {
+  background: var(--bg);
+}
+
+.shell.is-narrow .titlebar::after {
+  display: none;
 }
 
 /* ---------- rail ---------- */
@@ -291,6 +301,15 @@
   display: grid;
   border-top: 1px solid var(--line);
   padding: 8px 10px 10px;
+}
+
+.rail__foot--inbox {
+  padding: 4px 10px 6px;
+}
+
+.inbox-settings {
+  min-height: 28px;
+  padding-block: 4px;
 }
 
 .account-menu__usage {
@@ -3157,8 +3176,9 @@
 /* ---------- stage ---------- */
 
 .stage {
+  position: relative;
   display: grid;
-  grid-template-rows: auto minmax(0, 1fr);
+  grid-template-rows: minmax(0, 1fr);
   min-height: 0;
   min-width: 0;
 }
@@ -3184,14 +3204,31 @@
 }
 
 .stagehead {
+  position: absolute;
+  z-index: 2;
+  bottom: calc(100% - 8px);
+  left: 0;
+  right: max(0px, calc(100vw - env(titlebar-area-x, 0px) - env(titlebar-area-width, 100vw)));
   display: flex;
   align-items: center;
   gap: 10px;
-  padding: 8px 16px;
-  min-height: 44px;
+  height: var(--titlebar-h);
+  padding: 0 16px;
   /* Without this the session title and token count push the header wider than
      the grid column, and the whole app shifts sideways. */
   min-width: 0;
+  user-select: none;
+  -webkit-app-region: drag;
+}
+
+.stagehead button {
+  -webkit-app-region: no-drag;
+}
+
+@media (min-width: 701px) {
+  .shell.is-narrow .stagehead {
+    padding-left: calc(max(12px, env(titlebar-area-x, 12px)) + 30px);
+  }
 }
 
 .stagehead__title {
@@ -6952,7 +6989,16 @@
   }
 
   .stagehead {
+    position: static;
+    z-index: auto;
+    height: auto;
+    min-height: 44px;
     padding: 6px 12px;
+    -webkit-app-region: no-drag;
+  }
+
+  .stage {
+    grid-template-rows: auto minmax(0, 1fr);
   }
 
   .stagehead__title {
@@ -7649,8 +7695,10 @@
   -webkit-backdrop-filter: blur(26px) saturate(1.4);
   border-right: 1px solid
     color-mix(in srgb, #fff calc(4% + var(--rail-glass, 0) * 10%), transparent);
-  box-shadow: inset 0 1px 0
-    color-mix(in srgb, #fff calc(3% + var(--rail-glass, 0) * 8%), transparent);
+}
+
+:root[data-glass='on'] .titlebar::after {
+  background: color-mix(in srgb, #fff calc(4% + var(--rail-glass, 0) * 10%), transparent);
 }
 
 /* Glass previews: an accent glow behind a rail-colored pane whose opacity
