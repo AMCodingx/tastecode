@@ -4,16 +4,17 @@ use super::provider_terminal::{
 };
 use crate::chrome;
 use crate::client_state::{AuthTarget, ProviderTerminalKind};
+use crate::model_selection::filter_model_choices_by_query;
 use crate::preferences::{FontPreference, NativePreferences, ThemePreference};
 use crate::provider_icon::{ProviderMark, agent_mark, connection_mark, mark_icon, provider_mark};
 use crate::theme::{Accent, Backdrop, Theme, ThemeMode};
 use crate::zoom::px;
 use gpui::{
     Animation, AnimationExt, AnyElement, App, ClipboardItem, Context, Entity, Focusable,
-    FontWeight, PathPromptOptions, PromptButton, PromptLevel, SharedString, Window, div,
-    linear_color_stop, linear_gradient, prelude::*, relative, svg,
+    FontWeight, KeyDownEvent, PathPromptOptions, PromptButton, PromptLevel, SharedString, Window,
+    div, linear_color_stop, linear_gradient, prelude::*, relative, svg,
 };
-use gpui_component::input::{Input, InputState};
+use gpui_component::input::{Input, InputEvent, InputState};
 use gpui_component::tooltip::Tooltip;
 use harness_protocol::{
     McpAuth, McpAuthMethod, McpConfigValue, McpServer, McpServerConfig, McpStartupStatus,
@@ -115,6 +116,7 @@ impl HarnessApp {
         self.settings_open = true;
         self.settings_section = SettingsSection::Providers;
         self.settings_focus_pending = true;
+        self.model_settings_searches.clear();
         self.scope_open = false;
         self.settings_transition = self.settings_transition.wrapping_add(1);
         self.settings_open_transition = self.settings_open_transition.wrapping_add(1);
@@ -125,12 +127,17 @@ impl HarnessApp {
         self.settings_open = false;
         self.chat_visible = self.settings_return_to_chat;
         self.settings_focus_pending = false;
+        self.model_settings_searches.clear();
         self.mcp_editor = None;
         self.mcp_editor_submission_id = None;
         cx.notify();
     }
 
-    pub(super) fn settings_panel(&self, cx: &mut Context<Self>) -> AnyElement {
+    pub(super) fn settings_panel(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
         let theme = self.theme;
         let back_view = cx.weak_entity();
         let back: SettingsAction = Rc::new(move |cx| {
@@ -145,6 +152,7 @@ impl HarnessApp {
                 let _ = view.update(cx, |this, cx| {
                     if this.settings_section != section {
                         this.settings_section = section;
+                        this.model_settings_searches.clear();
                         this.mcp_editor = None;
                         this.mcp_editor_submission_id = None;
                         this.settings_transition = this.settings_transition.wrapping_add(1);
@@ -220,7 +228,7 @@ impl HarnessApp {
             .child(div().flex().flex_col().gap(px(1.0)).children(nav_items));
 
         let transition = self.settings_transition ^ self.settings_section.index() as u64;
-        let content = self.settings_content(cx).with_animation(
+        let content = self.settings_content(window, cx).with_animation(
             ("settings-section", transition),
             Animation::new(theme.motion_duration(std::time::Duration::from_millis(220)))
                 .with_easing(crate::theme::web_ease_out),
@@ -258,10 +266,10 @@ impl HarnessApp {
             .into_any_element()
     }
 
-    fn settings_content(&self, cx: &mut Context<Self>) -> gpui::Div {
+    fn settings_content(&mut self, window: &mut Window, cx: &mut Context<Self>) -> gpui::Div {
         match self.settings_section {
             SettingsSection::Providers => self.provider_settings(cx),
-            SettingsSection::Models => self.model_settings(cx),
+            SettingsSection::Models => self.model_settings(window, cx),
             SettingsSection::Mcp => self.mcp_settings(cx),
             SettingsSection::Skills => self.skills_settings(cx),
             SettingsSection::Workflows => self.workflow_settings(cx),
@@ -1291,7 +1299,7 @@ impl HarnessApp {
         cx.notify();
     }
 
-    fn model_settings(&self, cx: &mut Context<Self>) -> gpui::Div {
+    fn model_settings(&mut self, window: &mut Window, cx: &mut Context<Self>) -> gpui::Div {
         let theme = self.theme;
         let visible_model_count = self
             .state
@@ -1309,6 +1317,25 @@ impl HarnessApp {
             } else {
                 sources.push((choice.source_name.clone(), vec![choice.clone()]));
             }
+        }
+
+        self.model_settings_searches
+            .retain(|source, _| sources.iter().any(|(live_source, _)| live_source == source));
+        for (source, _) in &sources {
+            if self.model_settings_searches.contains_key(source) {
+                continue;
+            }
+            let input = cx.new(|cx| InputState::new(window, cx).placeholder("Search models"));
+            cx.subscribe(&input, |_this, _input, event: &InputEvent, cx| {
+                if matches!(
+                    event,
+                    InputEvent::Change | InputEvent::Focus | InputEvent::Blur
+                ) {
+                    cx.notify();
+                }
+            })
+            .detach();
+            self.model_settings_searches.insert(source.clone(), input);
         }
 
         let mut source_cards = Vec::new();
@@ -1332,17 +1359,25 @@ impl HarnessApp {
                 });
             });
             let source_provider = choices.first().map(|choice| choice.provider);
+            let search_input = self
+                .model_settings_searches
+                .get(&source)
+                .expect("model source search input should exist")
+                .clone();
+            let query = search_input.read(cx).value().to_string();
+            let filtered_choices = filter_model_choices_by_query(&choices, &query);
             let header = div()
                 .min_h(px(46.0))
                 .w_full()
                 .flex()
                 .items_center()
-                .justify_between()
+                .gap(px(18.0))
                 .px(px(16.0))
                 .py(px(7.0))
                 .child(
                     div()
                         .min_w(px(0.0))
+                        .flex_none()
                         .flex()
                         .items_center()
                         .gap(px(9.0))
@@ -1351,18 +1386,27 @@ impl HarnessApp {
                         })
                         .child(
                             div()
-                                .text_size(px(12.5))
-                                .font_weight(FontWeight::MEDIUM)
+                                .max_w(px(270.0))
+                                .truncate()
+                                .text_size(px(13.5))
+                                .font_weight(FontWeight(540.0))
                                 .text_color(theme.text.hsla())
                                 .child(source.clone()),
                         )
                         .child(
                             div()
-                                .text_size(px(11.0))
+                                .text_size(px(12.5))
                                 .text_color(theme.text_3.hsla())
                                 .child(format!("{visible_count}/{}", choices.len())),
                         ),
                 )
+                .child(model_settings_search_field(
+                    source_index,
+                    &search_input,
+                    theme,
+                    window,
+                    cx,
+                ))
                 .child(settings_switch(
                     source_index * 10_000,
                     any_visible,
@@ -1371,7 +1415,11 @@ impl HarnessApp {
                 ));
 
             let mut rows = vec![header.into_any_element()];
-            for (model_index, choice) in choices.into_iter().enumerate() {
+            for choice in filtered_choices {
+                let model_index = choices
+                    .iter()
+                    .position(|candidate| candidate.key == choice.key)
+                    .expect("filtered model should belong to its source");
                 let visible = !self.preferences.hidden_models.contains(&choice.key);
                 let key = choice.key.clone();
                 let view = cx.weak_entity();
@@ -1381,10 +1429,9 @@ impl HarnessApp {
                         this.set_models_visible(&[key], !visible, cx);
                     });
                 });
-                rows.push(settings_row(
-                    model_index + 1,
+                rows.push(model_visibility_row(
                     choice.model.display_name,
-                    "",
+                    visible,
                     settings_switch(
                         source_index * 10_000 + model_index + 1,
                         visible,
@@ -1393,6 +1440,24 @@ impl HarnessApp {
                     ),
                     theme,
                 ));
+            }
+            if rows.len() == 1 {
+                rows.push(
+                    div()
+                        .min_h(px(48.0))
+                        .w_full()
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .border_t_1()
+                        .border_color(theme.line.hsla())
+                        .px(px(16.0))
+                        .py(px(16.0))
+                        .text_size(px(12.5))
+                        .text_color(theme.text_3.hsla())
+                        .child("No matching models.")
+                        .into_any_element(),
+                );
             }
             source_cards.push(settings_group("", rows, theme));
         }
@@ -1417,7 +1482,7 @@ impl HarnessApp {
                         div()
                             .px(px(2.0))
                             .pb(px(2.0))
-                            .text_size(px(11.0))
+                            .text_size(px(12.5))
                             .text_color(theme.text_2.hsla())
                             .child(format!(
                                 "{visible_model_count} of {} visible",
@@ -2985,6 +3050,131 @@ fn model_settings_empty(message: &'static str, theme: Theme) -> AnyElement {
         .text_color(theme.text_3.hsla())
         .child(settings_icon("icons/boxes.svg", 18.0))
         .child(message)
+        .into_any_element()
+}
+
+fn model_settings_search_field(
+    source_index: usize,
+    state: &Entity<InputState>,
+    theme: Theme,
+    window: &Window,
+    cx: &App,
+) -> AnyElement {
+    let query = state.read(cx).value().to_string();
+    let focused = state.read(cx).focus_handle(cx).is_focused(window);
+    let escape_state = state.clone();
+    let clear_state = state.clone();
+
+    div()
+        .id(SharedString::from(format!(
+            "model-settings-search:{source_index}"
+        )))
+        .relative()
+        .h(px(28.0))
+        .min_w(px(120.0))
+        .flex_1()
+        .flex()
+        .items_center()
+        .gap(px(6.0))
+        .px(px(7.0))
+        .overflow_hidden()
+        .rounded(px(5.0))
+        .border_1()
+        .border_color(if focused {
+            theme.text_3.hsla()
+        } else {
+            chrome::border(theme)
+        })
+        .bg(chrome::recessed(theme))
+        .text_color(theme.text_3.hsla())
+        .on_key_down(move |event: &KeyDownEvent, window, cx| {
+            if event.keystroke.key.eq_ignore_ascii_case("escape")
+                && !escape_state.read(cx).value().is_empty()
+            {
+                cx.stop_propagation();
+                escape_state.update(cx, |input, cx| input.set_value("", window, cx));
+            }
+        })
+        .child(chrome::inset_top_shade(theme))
+        .child(settings_icon("icons/search.svg", 13.0))
+        .child(
+            Input::new(state)
+                .appearance(false)
+                .bordered(false)
+                .focus_bordered(false)
+                .cleanable(false)
+                .h(px(26.0))
+                .min_w(px(0.0))
+                .flex_1()
+                .px(px(0.0))
+                .text_size(px(12.5))
+                .text_color(theme.text.hsla()),
+        )
+        .when(!query.is_empty(), |field| {
+            field.child(
+                div()
+                    .id(SharedString::from(format!(
+                        "model-settings-search-clear:{source_index}"
+                    )))
+                    .size(px(18.0))
+                    .flex_none()
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .rounded_full()
+                    .cursor_pointer()
+                    .hover(move |style| {
+                        style
+                            .bg(theme.surface_3.hsla())
+                            .text_color(theme.text.hsla())
+                    })
+                    .active(|style| style.size(px(17.0)).m(px(0.5)))
+                    .on_click(move |_event, window, cx| {
+                        cx.stop_propagation();
+                        clear_state.update(cx, |input, cx| {
+                            input.set_value("", window, cx);
+                            input.focus(window, cx);
+                        });
+                    })
+                    .child(settings_icon("icons/x.svg", 12.0)),
+            )
+        })
+        .into_any_element()
+}
+
+fn model_visibility_row(
+    title: impl Into<SharedString>,
+    visible: bool,
+    trailing: AnyElement,
+    theme: Theme,
+) -> AnyElement {
+    div()
+        .min_h(px(44.0))
+        .w_full()
+        .flex()
+        .items_center()
+        .justify_between()
+        .gap(px(16.0))
+        .px(px(16.0))
+        .py(px(10.0))
+        .border_t_1()
+        .border_color(theme.line.hsla())
+        .hover(move |style| style.bg(theme.surface.hsla()))
+        .child(
+            div()
+                .min_w(px(0.0))
+                .flex_1()
+                .truncate()
+                .text_size(px(13.5))
+                .font_weight(FontWeight::MEDIUM)
+                .text_color(if visible {
+                    theme.text.hsla()
+                } else {
+                    theme.text_2.hsla()
+                })
+                .child(title.into()),
+        )
+        .child(div().flex_none().child(trailing))
         .into_any_element()
 }
 

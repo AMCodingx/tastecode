@@ -150,6 +150,7 @@ struct HarnessApp {
     connection_base_url: Entity<InputState>,
     connection_default_model: Entity<InputState>,
     connection_api_key: Entity<InputState>,
+    model_settings_searches: HashMap<String, Entity<InputState>>,
     mcp_editor: Option<settings::McpEditorState>,
     mcp_editor_submission_id: Option<String>,
     mcp_expanded_servers: HashSet<(ProviderId, String, String)>,
@@ -627,6 +628,7 @@ impl HarnessApp {
             connection_base_url,
             connection_default_model,
             connection_api_key,
+            model_settings_searches: HashMap::new(),
             mcp_editor: None,
             mcp_editor_submission_id: None,
             mcp_expanded_servers: HashSet::new(),
@@ -2171,7 +2173,7 @@ impl Render for HarnessApp {
             .child(content)
             .into_any_element();
         let body = if self.settings_open {
-            self.settings_panel(cx)
+            self.settings_panel(window, cx)
         } else {
             normal_body
         };
