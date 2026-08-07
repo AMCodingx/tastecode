@@ -1266,7 +1266,7 @@ fn download_markdown_image(
         Ok(download) => {
             let filename = image_download_filename(&fallback_source, &alt, download.extension);
             let _ = view.update(cx, |_this, cx| {
-                prompt_download_bytes(filename, download.bytes, cx);
+                download_bytes(filename, download.bytes, cx);
             });
         }
         Err(_) if is_external_image_url(&fallback_source) => {
@@ -1871,7 +1871,7 @@ fn table_menu(
                             TableFormat::Markdown => ("table.md", value),
                             TableFormat::Tsv => ("table.tsv", value),
                         };
-                        prompt_download(filename.to_owned(), value, cx);
+                        download_value(filename.to_owned(), value, cx);
                         state.update(cx, |state, cx| {
                             state.menu = None;
                             cx.notify();
@@ -1998,26 +1998,24 @@ fn download_control(
                 .hover(move |control| control.text_color(theme.text.hsla()))
                 .on_click(move |_event, _window, cx| {
                     cx.stop_propagation();
-                    prompt_download(filename.clone(), value.clone(), cx);
+                    download_value(filename.clone(), value.clone(), cx);
                 })
         })
         .child(svg().path("icons/download.svg").size(px(13.0)))
         .into_any_element()
 }
 
-fn prompt_download(filename: String, value: String, cx: &mut App) {
-    prompt_download_bytes(filename, value.into_bytes(), cx);
+fn download_value(filename: String, value: String, cx: &mut App) {
+    download_bytes(filename, value.into_bytes(), cx);
 }
 
-fn prompt_download_bytes(filename: String, value: Vec<u8>, cx: &mut App) {
+fn download_bytes(filename: String, value: Vec<u8>, cx: &mut App) {
     let directory = dirs::download_dir().unwrap_or_else(std::env::temp_dir);
-    let receiver = cx.prompt_for_new_path(&directory, Some(&filename));
-    cx.spawn(async move |cx| {
-        let Ok(Ok(Some(destination))) = receiver.await else {
-            return;
-        };
-        let write = cx.background_spawn(async move { std::fs::write(destination, value) });
-        let _ = write.await;
+    let save = cx.background_spawn(async move {
+        crate::downloads::save_bytes(&directory, &filename, "download", &value)
+    });
+    cx.spawn(async move |_cx| {
+        let _ = save.await;
     })
     .detach();
 }
