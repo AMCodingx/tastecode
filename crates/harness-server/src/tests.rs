@@ -418,7 +418,15 @@ fn native_claude_runtime_exposes_the_captured_model_catalog() {
             .iter()
             .map(|model| model["id"].as_str().unwrap())
             .collect::<Vec<_>>(),
-        ["fable", "opus", "sonnet", "haiku"]
+        [
+            "fable",
+            "opus",
+            "sonnet",
+            "haiku",
+            "claude-opus-4-8",
+            "claude-opus-4-7",
+            "claude-sonnet-4-6",
+        ]
     );
     assert_eq!(models["result"]["models"][0]["isDefault"], true);
 
@@ -496,6 +504,34 @@ fn native_opencode_runtime_is_registered_without_acp_or_api_routing() {
         crate::agents::RuntimeRegistry::runtime(
             &runtimes,
             ProviderId::OpenCode,
+            None,
+            Some("connection"),
+        )
+        .is_err()
+    );
+}
+
+#[test]
+fn native_grok_runtime_is_registered_without_acp_or_api_routing() {
+    let directory = tempfile::tempdir().unwrap();
+    let credentials: Arc<dyn CredentialStore> = Arc::new(MemoryCredentials::default());
+    let model_connections = Arc::new(Mutex::new(
+        crate::model_connections::ModelConnectionStore::new(
+            directory.path().join("providers.json"),
+            Arc::clone(&credentials),
+        ),
+    ));
+    let runtimes = crate::agents::NativeRuntimes::new(model_connections, credentials);
+    let _runtime =
+        crate::agents::RuntimeRegistry::runtime(&runtimes, ProviderId::Grok, None, None).unwrap();
+    assert!(
+        crate::agents::RuntimeRegistry::runtime(&runtimes, ProviderId::Grok, Some("agent"), None,)
+            .is_err()
+    );
+    assert!(
+        crate::agents::RuntimeRegistry::runtime(
+            &runtimes,
+            ProviderId::Grok,
             None,
             Some("connection"),
         )
@@ -3047,7 +3083,15 @@ fn live_provider_routes_report_the_catalog_and_refuse_client_selected_commands()
             .iter()
             .map(|provider| provider["id"].as_str().unwrap())
             .collect::<Vec<_>>(),
-        ["codex", "claude-code", "cursor", "opencode", "acp"]
+        [
+            "codex",
+            "claude-code",
+            "grok",
+            "cursor",
+            "opencode",
+            "antigravity",
+            "acp",
+        ]
     );
     assert!(
         providers["result"]["providers"]
@@ -3065,7 +3109,7 @@ fn live_provider_routes_report_the_catalog_and_refuse_client_selected_commands()
             .iter()
             .map(|agent| agent["id"].as_str().unwrap())
             .collect::<Vec<_>>(),
-        ["gemini", "kimi", "qwen"]
+        ["kimi"]
     );
 
     send_request(

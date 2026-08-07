@@ -12,6 +12,7 @@ use harness_adapter_api::{ApiRuntime, ApiToolFactory};
 use harness_adapter_claude_code::ClaudeCodeRuntime;
 use harness_adapter_codex::CodexRuntime;
 use harness_adapter_cursor::CursorRuntime;
+use harness_adapter_grok::GrokRuntime;
 use harness_adapter_opencode::OpenCodeRuntime;
 use harness_agent::{
     AgentError, AgentHandlers, AgentRuntime, AgentSession, AgentSessionState, CancellationToken,
@@ -74,6 +75,7 @@ pub(crate) trait RuntimeRegistry: Send + Sync {
 pub(crate) struct NativeRuntimes {
     codex: Arc<CodexRuntime>,
     claude: Arc<ClaudeCodeRuntime>,
+    grok: Arc<GrokRuntime>,
     cursor: Arc<CursorRuntime>,
     opencode: Arc<OpenCodeRuntime>,
     acp: Mutex<HashMap<String, Arc<AcpRuntime>>>,
@@ -90,6 +92,7 @@ impl NativeRuntimes {
         Self {
             codex: Arc::new(CodexRuntime::default()),
             claude: Arc::new(ClaudeCodeRuntime::default()),
+            grok: Arc::new(GrokRuntime::default()),
             cursor: Arc::new(CursorRuntime::default()),
             opencode: Arc::new(OpenCodeRuntime::default()),
             acp: Mutex::new(HashMap::new()),
@@ -120,8 +123,9 @@ impl RuntimeRegistry for NativeRuntimes {
             ProviderId::ClaudeCode => Err(AgentError::Failed(
                 "Claude Code does not accept an ACP agent or model connection".into(),
             )),
+            ProviderId::Grok if agent.is_none() && connection_id.is_none() => Ok(self.grok.clone()),
             ProviderId::Grok => Err(AgentError::Failed(
-                "Grok runtime is not available in this build".into(),
+                "Grok does not accept an ACP agent or model connection".into(),
             )),
             ProviderId::Cursor if agent.is_none() && connection_id.is_none() => {
                 Ok(self.cursor.clone())
