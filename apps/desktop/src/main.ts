@@ -157,7 +157,9 @@ ipcMain.handle('harness:setTheme', (event, theme: unknown) => {
   if (!window) throw new Error('No window for theme change')
   const options = windowThemeOptions(theme)
   window.setBackgroundColor(options.backgroundColor)
-  window.setTitleBarOverlay(options.titleBarOverlay)
+  if (process.platform === 'win32' || process.platform === 'linux') {
+    window.setTitleBarOverlay(options.titleBarOverlay)
+  }
 })
 
 ipcMain.handle('harness:capturePreview', async (event, value: unknown) => {
