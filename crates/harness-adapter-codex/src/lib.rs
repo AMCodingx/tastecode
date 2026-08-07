@@ -2,6 +2,10 @@ use harness_protocol::{Item, ItemStatus, ItemType, MessageRole};
 use serde_json::Value;
 use uuid::Uuid;
 
+mod notification;
+
+pub use notification::{NotificationMappingError, map_domain_notification};
+
 /// Context supplied by the Codex lifecycle notification around a thread item.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct ItemContext<'a> {

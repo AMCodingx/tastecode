@@ -2718,8 +2718,10 @@ dependencies = [
 name = "harness-adapter-codex"
 version = "0.1.0"
 dependencies = [
+ "base64",
  "harness-protocol",
  "serde_json",
+ "thiserror 2.0.19",
  "uuid",
 ]
 
