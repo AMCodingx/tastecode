@@ -18,9 +18,9 @@ use gpui::{
 };
 use gpui_component::Root;
 use gpui_component::input::{InputEvent, InputState};
-use harness_protocol::{ApprovalMode, Model, ModelConnectionPreset};
+use harness_protocol::{ApprovalMode, Model, ModelConnectionPreset, ProviderId};
 use provider_terminal::{ProviderTerminalKey, ProviderTerminalView};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 
 const APP_WIDTH: f32 = 1180.0;
@@ -93,6 +93,12 @@ struct HarnessApp {
     connection_base_url: Entity<InputState>,
     connection_default_model: Entity<InputState>,
     connection_api_key: Entity<InputState>,
+    mcp_editor: Option<settings::McpEditorState>,
+    mcp_editor_submission_id: Option<String>,
+    mcp_expanded_servers: HashSet<(ProviderId, String, String)>,
+    mcp_editor_id: Entity<InputState>,
+    mcp_editor_name: Entity<InputState>,
+    mcp_editor_transport: Entity<InputState>,
     provider_terminals: HashMap<ProviderTerminalKey, Entity<ProviderTerminalView>>,
     provider_terminal_ids: HashMap<String, ProviderTerminalKey>,
     fixture: bool,
@@ -134,12 +140,25 @@ impl HarnessApp {
                 .placeholder("API key")
                 .masked(true)
         });
+        let mcp_editor_id = cx.new(|cx| InputState::new(window, cx).placeholder("docs-server"));
+        let mcp_editor_name =
+            cx.new(|cx| InputState::new(window, cx).placeholder("Optional display name"));
+        let mcp_editor_transport = cx.new(|cx| {
+            InputState::new(window, cx)
+                .code_editor("json")
+                .line_number(false)
+                .rows(8)
+                .placeholder("MCP transport JSON")
+        });
 
         for input in [
             &connection_name,
             &connection_base_url,
             &connection_default_model,
             &connection_api_key,
+            &mcp_editor_id,
+            &mcp_editor_name,
+            &mcp_editor_transport,
         ] {
             cx.subscribe(input, |_this, _input, event, cx| {
                 if matches!(
@@ -344,6 +363,12 @@ impl HarnessApp {
             connection_base_url,
             connection_default_model,
             connection_api_key,
+            mcp_editor: None,
+            mcp_editor_submission_id: None,
+            mcp_expanded_servers: HashSet::new(),
+            mcp_editor_id,
+            mcp_editor_name,
+            mcp_editor_transport,
             provider_terminals: HashMap::new(),
             provider_terminal_ids: HashMap::new(),
             fixture,
@@ -374,6 +399,12 @@ impl HarnessApp {
                 self.connection_editor_open = false;
             }
             self.connection_submission_id = None;
+        }
+        if self.mcp_editor_submission_id.is_some() && self.state.mcp_busy.is_none() {
+            if self.state.mcp_notice.is_some() || self.state.mcp_error.is_none() {
+                self.mcp_editor = None;
+            }
+            self.mcp_editor_submission_id = None;
         }
         if shell_changed {
             self.sync_composer_settings(cx);

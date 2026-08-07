@@ -5,13 +5,13 @@ use crate::preferences::{FontPreference, NativePreferences, ThemePreference};
 use crate::theme::{Accent, Backdrop, Theme, ThemeMode};
 use gpui::{
     Animation, AnimationExt, AnyElement, App, Context, Entity, FontWeight, PathPromptOptions,
-    SharedString, Window, div, ease_out_quint, prelude::*, px, svg,
+    PromptButton, PromptLevel, SharedString, Window, div, ease_out_quint, prelude::*, px, svg,
 };
 use gpui_component::input::{Input, InputState};
 use harness_protocol::{
-    McpAuth, McpServer, McpStartupStatus, ModelConnectionInput, ModelConnectionPreset,
-    ModelTransport, ProviderAuth, ProviderId, ProviderLogin, SidebarMode, SidebarSettings, Skill,
-    SkillScope,
+    McpAuth, McpAuthMethod, McpConfigValue, McpServer, McpServerConfig, McpStartupStatus,
+    McpTransport, ModelConnectionInput, ModelConnectionPreset, ModelTransport, ProviderAuth,
+    ProviderId, ProviderLogin, SidebarMode, SidebarSettings, Skill, SkillScope,
 };
 use std::rc::Rc;
 
@@ -19,6 +19,20 @@ const SETTINGS_CONTENT_WIDTH: f32 = 840.0;
 const SETTINGS_SECTION_GAP: f32 = 30.0;
 
 type SettingsAction = Rc<dyn Fn(&mut App)>;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum McpEditorMode {
+    Add,
+    Edit,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(super) struct McpEditorState {
+    mode: McpEditorMode,
+    provider: ProviderId,
+    project_path: String,
+    server_id: Option<String>,
+}
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub(super) enum SettingsSection {
@@ -98,6 +112,8 @@ impl HarnessApp {
         self.settings_open = false;
         self.chat_visible = self.settings_return_to_chat;
         self.settings_focus_pending = false;
+        self.mcp_editor = None;
+        self.mcp_editor_submission_id = None;
         cx.notify();
     }
 
@@ -116,6 +132,8 @@ impl HarnessApp {
                 let _ = view.update(cx, |this, cx| {
                     if this.settings_section != section {
                         this.settings_section = section;
+                        this.mcp_editor = None;
+                        this.mcp_editor_submission_id = None;
                         this.settings_transition = this.settings_transition.wrapping_add(1);
                         this.refresh_settings_inventory(cx);
                     }
@@ -1211,6 +1229,9 @@ impl HarnessApp {
         };
         let project_name = self.settings_project_name(&project_path);
         let provider_name = self.settings_provider_name(provider);
+        let inventory = self.state.mcp_inventory.as_ref().filter(|inventory| {
+            inventory.provider == provider && inventory.project_path == project_path
+        });
         let refresh_view = cx.weak_entity();
         let refresh_path = project_path.clone();
         let refresh: SettingsAction = Rc::new(move |cx| {
@@ -1220,6 +1241,28 @@ impl HarnessApp {
                 this.apply_client_update(update, cx);
             });
         });
+        let add_action = inventory
+            .filter(|inventory| inventory.result.capabilities.add)
+            .map(|_| {
+                let path = project_path.clone();
+                mcp_action_button(
+                    "mcp-add-server".into(),
+                    "Add server".into(),
+                    false,
+                    self.state.mcp_busy.is_none(),
+                    theme,
+                    cx.listener(move |this, _event, window, cx| {
+                        this.open_mcp_editor(
+                            McpEditorMode::Add,
+                            provider,
+                            path.clone(),
+                            None,
+                            window,
+                            cx,
+                        );
+                    }),
+                )
+            });
         let intro = div()
             .w_full()
             .flex()
@@ -1243,27 +1286,39 @@ impl HarnessApp {
                             .child(format!("Managed through {provider_name}")),
                     ),
             )
-            .child(settings_button(
-                "refresh-mcp",
-                if self.state.mcp_loading {
-                    "Refreshing…"
-                } else {
-                    "Refresh"
-                },
-                "icons/rotate-ccw.svg",
-                theme,
-                refresh,
-                false,
-            ))
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap(px(8.0))
+                    .when_some(add_action, |actions, add| actions.child(add))
+                    .child(settings_button(
+                        "refresh-mcp",
+                        if self.state.mcp_loading {
+                            "Refreshing…"
+                        } else {
+                            "Refresh"
+                        },
+                        "icons/rotate-ccw.svg",
+                        theme,
+                        refresh,
+                        false,
+                    )),
+            )
             .into_any_element();
         let mut blocks = vec![settings_plain_group("Project inventory", intro, theme)];
 
         if let Some(error) = &self.state.mcp_error {
             blocks.push(settings_error_group("MCP error", error.clone(), theme));
         }
-        let inventory = self.state.mcp_inventory.as_ref().filter(|inventory| {
-            inventory.provider == provider && inventory.project_path == project_path
-        });
+        if let Some(notice) = &self.state.mcp_notice {
+            blocks.push(settings_notice_group("MCP", notice.clone(), theme));
+        }
+        if self.mcp_editor.as_ref().is_some_and(|editor| {
+            editor.provider == provider && editor.project_path == project_path
+        }) {
+            blocks.push(self.mcp_editor_form(cx));
+        }
         let Some(inventory) = inventory else {
             blocks.push(settings_group(
                 "Servers",
@@ -1294,14 +1349,67 @@ impl HarnessApp {
         let mut rows = Vec::new();
         for (index, server) in inventory.result.servers.iter().enumerate() {
             let busy = self.state.mcp_busy.as_deref() == Some(server.id.as_str());
-            let configurable = if server.enabled {
-                inventory.result.capabilities.add
-            } else {
-                inventory.result.capabilities.remove
-            };
-            let trailing = if busy {
-                status_pill("Saving…", false, theme)
-            } else if configurable {
+            let needs_oauth = inventory.result.capabilities.start_o_auth
+                && matches!(
+                    server.auth,
+                    McpAuth::SignInRequired {
+                        method: McpAuthMethod::Oauth
+                    }
+                );
+            let can_toggle = inventory.result.capabilities.remove
+                && ((!server.enabled && server.scope == harness_protocol::McpServerScope::Project)
+                    || (inventory.result.capabilities.add
+                        && server.scope == harness_protocol::McpServerScope::Global));
+            let can_edit = inventory.result.capabilities.update
+                && server.scope == harness_protocol::McpServerScope::Project
+                && server.transport.is_some();
+            let can_remove = inventory.result.capabilities.remove
+                && server.scope == harness_protocol::McpServerScope::Project
+                && server.enabled;
+            let oauth_active = self.state.mcp_oauth.as_ref().is_some_and(|oauth| {
+                oauth.provider == provider
+                    && oauth.project_path == project_path
+                    && oauth.server_id == server.id
+            });
+            let mut actions = Vec::new();
+            if busy {
+                actions.push(status_pill("Saving…", false, theme));
+            } else if oauth_active {
+                let can_cancel = inventory.result.capabilities.cancel_o_auth;
+                actions.push(mcp_action_button(
+                    format!("mcp-cancel-oauth-{}", server.id).into(),
+                    if can_cancel {
+                        "Cancel sign-in"
+                    } else {
+                        "Signing in…"
+                    }
+                    .into(),
+                    false,
+                    can_cancel,
+                    theme,
+                    cx.listener(|this, _event, _window, cx| {
+                        let update = this.state.cancel_mcp_oauth();
+                        this.apply_client_update(update, cx);
+                    }),
+                ));
+            } else if needs_oauth {
+                let path = project_path.clone();
+                let server_id = server.id.clone();
+                actions.push(mcp_action_button(
+                    format!("mcp-oauth-{server_id}").into(),
+                    "Sign in".into(),
+                    false,
+                    true,
+                    theme,
+                    cx.listener(move |this, _event, _window, cx| {
+                        let update =
+                            this.state
+                                .start_mcp_oauth(provider, path.clone(), server_id.clone());
+                        this.apply_client_update(update, cx);
+                    }),
+                ));
+            }
+            if can_toggle && !busy {
                 let enabled = server.enabled;
                 let server = server.clone();
                 let path = project_path.clone();
@@ -1314,33 +1422,203 @@ impl HarnessApp {
                         this.apply_client_update(update, cx);
                     });
                 });
-                settings_switch(920_000 + index, enabled, theme, action)
-            } else {
-                let (label, ready) = mcp_status(server);
-                status_pill(label, ready, theme)
-            };
-            let (status, _) = mcp_status(server);
+                actions.push(settings_switch(920_000 + index, enabled, theme, action));
+            }
+            if can_edit && !busy {
+                let path = project_path.clone();
+                let server = server.clone();
+                actions.push(mcp_action_button(
+                    format!("mcp-edit-{}", server.id).into(),
+                    "Edit".into(),
+                    false,
+                    true,
+                    theme,
+                    cx.listener(move |this, _event, window, cx| {
+                        this.open_mcp_editor(
+                            McpEditorMode::Edit,
+                            provider,
+                            path.clone(),
+                            Some(server.clone()),
+                            window,
+                            cx,
+                        );
+                    }),
+                ));
+            }
+            if can_remove && !busy {
+                let path = project_path.clone();
+                let server_id = server.id.clone();
+                let server_name = server
+                    .display_name
+                    .clone()
+                    .unwrap_or_else(|| server.id.clone());
+                actions.push(mcp_action_button(
+                    format!("mcp-remove-{server_id}").into(),
+                    "Remove".into(),
+                    true,
+                    true,
+                    theme,
+                    cx.listener(move |this, _event, window, cx| {
+                        this.confirm_remove_mcp_server(
+                            provider,
+                            path.clone(),
+                            server_id.clone(),
+                            server_name.clone(),
+                            window,
+                            cx,
+                        );
+                    }),
+                ));
+            }
+
             let name = server
                 .display_name
                 .clone()
                 .unwrap_or_else(|| server.id.clone());
-            let detail = match &server.startup {
-                McpStartupStatus::Failed { message } => format!(
-                    "{status} · {message} · {} tools · {} resources",
-                    server.tools.len(),
-                    server.resources.len()
-                ),
-                _ => format!(
-                    "{status} · {} scope · {} tools · {} resources",
-                    match server.scope {
-                        harness_protocol::McpServerScope::Project => "project",
-                        harness_protocol::McpServerScope::Global => "global",
-                    },
-                    server.tools.len(),
-                    server.resources.len()
-                ),
+            let scope = match server.scope {
+                harness_protocol::McpServerScope::Project => "project",
+                harness_protocol::McpServerScope::Global => "global",
             };
-            rows.push(settings_row(index, name, detail, trailing, theme));
+            let (status, ready) = mcp_status(server);
+            let detail_key = (provider, project_path.clone(), server.id.clone());
+            let expanded = self.mcp_expanded_servers.contains(&detail_key);
+            let expand_view = cx.weak_entity();
+            let summary = format!(
+                "{} tools · {} resources · {} templates",
+                server.tools.len(),
+                server.resources.len(),
+                server.resource_templates.len()
+            );
+            let details = div()
+                .id(SharedString::from(format!("mcp-details-{}", server.id)))
+                .mt(px(9.0))
+                .text_size(px(10.5))
+                .text_color(theme.text_3.hsla())
+                .cursor_pointer()
+                .on_click(move |_event, _window, cx| {
+                    let detail_key = detail_key.clone();
+                    let _ = expand_view.update(cx, |this, cx| {
+                        if !this.mcp_expanded_servers.remove(&detail_key) {
+                            this.mcp_expanded_servers.insert(detail_key);
+                        }
+                        cx.notify();
+                    });
+                })
+                .child(if expanded {
+                    format!("Hide · {summary}")
+                } else {
+                    summary
+                });
+            let tool_list = expanded.then(|| {
+                if server.tools.is_empty() {
+                    div()
+                        .mt(px(8.0))
+                        .text_size(px(10.5))
+                        .text_color(theme.text_3.hsla())
+                        .child("No tools reported.")
+                        .into_any_element()
+                } else {
+                    div()
+                        .mt(px(8.0))
+                        .pl(px(10.0))
+                        .border_l_1()
+                        .border_color(theme.line.hsla())
+                        .flex()
+                        .flex_col()
+                        .gap(px(5.0))
+                        .children(server.tools.iter().map(|tool| {
+                            let title = tool.title.as_deref().unwrap_or(&tool.name);
+                            let line = tool.description.as_ref().map_or_else(
+                                || title.to_owned(),
+                                |description| format!("{title} — {description}"),
+                            );
+                            div()
+                                .text_size(px(10.5))
+                                .line_height(px(15.0))
+                                .text_color(theme.text_2.hsla())
+                                .child(line)
+                        }))
+                        .into_any_element()
+                }
+            });
+            let failure = match &server.startup {
+                McpStartupStatus::Failed { message } => Some(
+                    div()
+                        .mt(px(8.0))
+                        .text_size(px(10.5))
+                        .text_color(theme.error.hsla())
+                        .child(message.clone()),
+                ),
+                _ => None,
+            };
+            rows.push(
+                div()
+                    .min_h(px(76.0))
+                    .w_full()
+                    .flex()
+                    .items_start()
+                    .justify_between()
+                    .gap(px(20.0))
+                    .px(px(16.0))
+                    .py(px(14.0))
+                    .when(index > 0, |row| {
+                        row.border_t_1().border_color(theme.line.hsla())
+                    })
+                    .opacity(if server.enabled { 1.0 } else { 0.58 })
+                    .hover(move |style| style.bg(theme.surface.hsla()))
+                    .child(
+                        div()
+                            .min_w(px(0.0))
+                            .flex_1()
+                            .child(
+                                div()
+                                    .flex()
+                                    .items_center()
+                                    .flex_wrap()
+                                    .gap(px(7.0))
+                                    .child(
+                                        div()
+                                            .text_size(px(12.5))
+                                            .font_weight(FontWeight::MEDIUM)
+                                            .text_color(theme.text.hsla())
+                                            .child(name),
+                                    )
+                                    .child(mcp_badge(scope, theme))
+                                    .child(mcp_badge(status, theme))
+                                    .when(ready, |heading| {
+                                        heading.child(
+                                            div()
+                                                .size(px(5.0))
+                                                .rounded_full()
+                                                .bg(theme.success.hsla()),
+                                        )
+                                    }),
+                            )
+                            .child(
+                                div()
+                                    .mt(px(6.0))
+                                    .truncate()
+                                    .text_size(px(11.0))
+                                    .text_color(theme.text_3.hsla())
+                                    .child(mcp_transport_label(server.transport.as_ref())),
+                            )
+                            .when_some(failure, |copy, failure| copy.child(failure))
+                            .child(details)
+                            .when_some(tool_list, |copy, tools| copy.child(tools)),
+                    )
+                    .child(
+                        div()
+                            .max_w(px(250.0))
+                            .flex_none()
+                            .flex()
+                            .items_center()
+                            .justify_end()
+                            .flex_wrap()
+                            .gap(px(7.0))
+                            .children(actions),
+                    )
+                    .into_any_element(),
+            );
         }
         if rows.is_empty() {
             rows.push(settings_empty_row(
@@ -1350,6 +1628,246 @@ impl HarnessApp {
         }
         blocks.push(settings_group("Servers", rows, theme));
         settings_panel("MCP servers", blocks, theme)
+    }
+
+    fn mcp_editor_form(&self, cx: &mut Context<Self>) -> AnyElement {
+        let theme = self.theme;
+        let editor = self.mcp_editor.as_ref().expect("editor checked by caller");
+        let editing = editor.mode == McpEditorMode::Edit;
+        let saving = self.mcp_editor_submission_id.is_some();
+        let can_save = !saving
+            && !self.mcp_editor_id.read(cx).value().trim().is_empty()
+            && !self.mcp_editor_transport.read(cx).value().trim().is_empty();
+        let cancel = mcp_action_button(
+            "mcp-editor-cancel".into(),
+            "Cancel".into(),
+            false,
+            !saving,
+            theme,
+            cx.listener(|this, _event, _window, cx| {
+                this.mcp_editor = None;
+                this.mcp_editor_submission_id = None;
+                this.state.mcp_error = None;
+                cx.notify();
+            }),
+        );
+        let save = mcp_action_button(
+            "mcp-editor-save".into(),
+            if saving { "Saving…" } else { "Save server" }.into(),
+            false,
+            can_save,
+            theme,
+            cx.listener(|this, _event, window, cx| {
+                this.submit_mcp_editor(window, cx);
+            }),
+        );
+
+        div()
+            .w_full()
+            .child(
+                div()
+                    .mb(px(12.0))
+                    .text_size(px(12.5))
+                    .font_weight(FontWeight::MEDIUM)
+                    .text_color(theme.text_2.hsla())
+                    .child(if editing {
+                        "Edit MCP server"
+                    } else {
+                        "Add MCP server"
+                    }),
+            )
+            .child(
+                div()
+                    .w_full()
+                    .rounded(px(10.0))
+                    .border_1()
+                    .border_color(theme.line_strong.hsla())
+                    .bg(theme.rail.hsla())
+                    .p(px(16.0))
+                    .flex()
+                    .flex_col()
+                    .gap(px(14.0))
+                    .child(
+                        div()
+                            .w_full()
+                            .flex()
+                            .gap(px(14.0))
+                            .child(mcp_editor_field(
+                                "Server ID",
+                                &self.mcp_editor_id,
+                                editing,
+                                false,
+                                theme,
+                            ))
+                            .child(mcp_editor_field(
+                                "Display name",
+                                &self.mcp_editor_name,
+                                false,
+                                false,
+                                theme,
+                            )),
+                    )
+                    .child(mcp_editor_field(
+                        "Transport JSON",
+                        &self.mcp_editor_transport,
+                        false,
+                        true,
+                        theme,
+                    ))
+                    .child(
+                        div()
+                            .text_size(px(10.0))
+                            .line_height(px(15.0))
+                            .text_color(theme.text_3.hsla())
+                            .child(
+                                "Use stdio or HTTP transport fields. Reference secrets with a credentialRef instead of entering them here.",
+                            ),
+                    )
+                    .child(
+                        div()
+                            .flex()
+                            .items_center()
+                            .justify_end()
+                            .gap(px(8.0))
+                            .child(cancel)
+                            .child(save),
+                    ),
+            )
+            .into_any_element()
+    }
+
+    fn confirm_remove_mcp_server(
+        &mut self,
+        provider: ProviderId,
+        project_path: String,
+        server_id: String,
+        server_name: String,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.state.mcp_busy.is_some() {
+            return;
+        }
+        let message = format!("Remove {server_name} from this project?");
+        let answer = window.prompt(
+            PromptLevel::Warning,
+            &message,
+            Some(
+                "This removes the project configuration. It does not delete the MCP server itself.",
+            ),
+            &[PromptButton::cancel("Cancel"), PromptButton::new("Remove")],
+            cx,
+        );
+        cx.spawn(async move |view, cx| {
+            let Ok(1) = answer.await else {
+                return;
+            };
+            let _ = view.update(cx, |this, cx| {
+                let update = this
+                    .state
+                    .remove_mcp_server(provider, project_path, server_id);
+                this.apply_client_update(update, cx);
+            });
+        })
+        .detach();
+    }
+
+    fn open_mcp_editor(
+        &mut self,
+        mode: McpEditorMode,
+        provider: ProviderId,
+        project_path: String,
+        server: Option<McpServer>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.state.mcp_busy.is_some() {
+            return;
+        }
+        let server_id = server.as_ref().map(|server| server.id.clone());
+        let id = server_id.clone().unwrap_or_default();
+        let display_name = server
+            .as_ref()
+            .and_then(|server| server.display_name.clone())
+            .unwrap_or_default();
+        let transport = server
+            .as_ref()
+            .and_then(|server| server.transport.as_ref())
+            .and_then(|transport| serde_json::to_string_pretty(transport).ok())
+            .unwrap_or_else(|| {
+                "{\n  \"type\": \"http\",\n  \"url\": \"https://example.com/mcp\"\n}".into()
+            });
+        self.mcp_editor = Some(McpEditorState {
+            mode,
+            provider,
+            project_path,
+            server_id,
+        });
+        self.mcp_editor_submission_id = None;
+        self.state.mcp_error = None;
+        self.state.mcp_notice = None;
+        self.mcp_editor_id
+            .update(cx, |input, cx| input.set_value(id, window, cx));
+        self.mcp_editor_name
+            .update(cx, |input, cx| input.set_value(display_name, window, cx));
+        self.mcp_editor_transport
+            .update(cx, |input, cx| input.set_value(transport, window, cx));
+        if mode == McpEditorMode::Add {
+            self.mcp_editor_id
+                .update(cx, |input, cx| input.focus(window, cx));
+        } else {
+            self.mcp_editor_transport
+                .update(cx, |input, cx| input.focus(window, cx));
+        }
+        cx.notify();
+    }
+
+    fn submit_mcp_editor(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
+        if self.mcp_editor_submission_id.is_some() || self.state.mcp_busy.is_some() {
+            return;
+        }
+        let Some(editor) = self.mcp_editor.clone() else {
+            return;
+        };
+        let id = self.mcp_editor_id.read(cx).value().trim().to_owned();
+        let display_name = self.mcp_editor_name.read(cx).value().trim().to_owned();
+        let transport_json = self.mcp_editor_transport.read(cx).value().trim().to_owned();
+        if id.is_empty() || transport_json.is_empty() {
+            self.state.mcp_error = Some("Server ID and transport JSON are required.".into());
+            cx.notify();
+            return;
+        }
+        if editor.mode == McpEditorMode::Edit && editor.server_id.as_deref() != Some(id.as_str()) {
+            self.state.mcp_error = Some("An existing MCP server ID cannot be changed.".into());
+            cx.notify();
+            return;
+        }
+        let transport = match serde_json::from_str::<McpTransport>(&transport_json) {
+            Ok(transport) => transport,
+            Err(_) => {
+                self.state.mcp_error = Some("Transport must be valid MCP JSON.".into());
+                cx.notify();
+                return;
+            }
+        };
+        if let Err(message) = validate_mcp_transport(&transport) {
+            self.state.mcp_error = Some(message);
+            cx.notify();
+            return;
+        }
+        let update = self.state.save_mcp_server(
+            editor.provider,
+            editor.project_path,
+            McpServerConfig {
+                id: id.clone(),
+                enabled: true,
+                display_name: (!display_name.is_empty()).then_some(display_name),
+                transport: Some(transport),
+            },
+            editor.mode == McpEditorMode::Edit,
+        );
+        self.mcp_editor_submission_id = Some(id);
+        self.apply_client_update(update, cx);
     }
 
     fn skills_settings(&self, cx: &mut Context<Self>) -> gpui::Div {
@@ -2210,6 +2728,34 @@ fn settings_error_group(title: &str, message: String, theme: Theme) -> AnyElemen
         .into_any_element()
 }
 
+fn settings_notice_group(title: &str, message: String, theme: Theme) -> AnyElement {
+    div()
+        .w_full()
+        .child(
+            div()
+                .mb(px(12.0))
+                .text_size(px(12.5))
+                .font_weight(FontWeight::MEDIUM)
+                .text_color(theme.success.hsla())
+                .child(title.to_owned()),
+        )
+        .child(
+            div()
+                .w_full()
+                .rounded(px(10.0))
+                .border_1()
+                .border_color(theme.success.hsla().opacity(0.3))
+                .bg(theme.success.hsla().opacity(0.07))
+                .px(px(16.0))
+                .py(px(12.0))
+                .text_size(px(11.0))
+                .line_height(px(16.0))
+                .text_color(theme.text_2.hsla())
+                .child(message),
+        )
+        .into_any_element()
+}
+
 fn settings_row(
     index: usize,
     title: impl Into<SharedString>,
@@ -2514,6 +3060,112 @@ fn provider_action_button(
         .into_any_element()
 }
 
+fn mcp_action_button(
+    id: SharedString,
+    label: SharedString,
+    destructive: bool,
+    enabled: bool,
+    theme: Theme,
+    action: impl Fn(&gpui::ClickEvent, &mut Window, &mut App) + 'static,
+) -> AnyElement {
+    div()
+        .id(id)
+        .h(px(28.0))
+        .flex()
+        .items_center()
+        .px(px(10.0))
+        .rounded(px(7.0))
+        .border_1()
+        .border_color(if destructive {
+            theme.error.hsla().opacity(0.32)
+        } else {
+            theme.line_strong.hsla()
+        })
+        .bg(theme.surface.hsla())
+        .text_size(px(10.5))
+        .text_color(if destructive {
+            theme.error.hsla()
+        } else {
+            theme.text_2.hsla()
+        })
+        .opacity(if enabled { 1.0 } else { 0.48 })
+        .when(enabled, |button| {
+            button
+                .cursor_pointer()
+                .hover(move |style| {
+                    style.bg(if destructive {
+                        theme.error.hsla().opacity(0.09)
+                    } else {
+                        theme.surface_2.hsla()
+                    })
+                })
+                .active(|style| style.opacity(0.72))
+                .on_click(action)
+        })
+        .child(label)
+        .into_any_element()
+}
+
+fn mcp_badge(label: &'static str, theme: Theme) -> AnyElement {
+    div()
+        .px(px(6.0))
+        .py(px(1.0))
+        .rounded(px(8.0))
+        .bg(theme.surface_2.hsla())
+        .text_size(px(9.5))
+        .text_color(theme.text_3.hsla())
+        .child(label)
+        .into_any_element()
+}
+
+fn mcp_transport_label(transport: Option<&McpTransport>) -> String {
+    match transport {
+        Some(McpTransport::Http { url, .. }) => url.clone(),
+        Some(McpTransport::Stdio { command, args, .. }) => std::iter::once(command.as_str())
+            .chain(args.iter().flatten().map(String::as_str))
+            .collect::<Vec<_>>()
+            .join(" "),
+        None => "Configuration managed by provider".into(),
+    }
+}
+
+fn mcp_editor_field(
+    label: &'static str,
+    state: &Entity<InputState>,
+    disabled: bool,
+    multiline: bool,
+    theme: Theme,
+) -> AnyElement {
+    div()
+        .min_w(px(0.0))
+        .flex_1()
+        .when(multiline, |field| field.w_full())
+        .child(
+            div()
+                .mb(px(6.0))
+                .text_size(px(10.5))
+                .text_color(theme.text_2.hsla())
+                .child(label),
+        )
+        .child(
+            Input::new(state)
+                .appearance(false)
+                .bordered(false)
+                .focus_bordered(false)
+                .disabled(disabled)
+                .h(px(if multiline { 142.0 } else { 34.0 }))
+                .w_full()
+                .px(px(10.0))
+                .rounded(px(8.0))
+                .border_1()
+                .border_color(theme.line_strong.hsla())
+                .bg(theme.surface.hsla())
+                .text_size(px(11.5))
+                .text_color(theme.text.hsla()),
+        )
+        .into_any_element()
+}
+
 fn connection_field(
     label: &'static str,
     state: &Entity<InputState>,
@@ -2609,6 +3261,52 @@ fn validate_model_endpoint(value: &str) -> Result<(), String> {
         "http" if url.host_str() == Some("127.0.0.1") => Ok(()),
         _ => Err("Use HTTPS, or loopback HTTP on 127.0.0.1 for a local server.".into()),
     }
+}
+
+fn validate_mcp_transport(transport: &McpTransport) -> Result<(), String> {
+    match transport {
+        McpTransport::Stdio {
+            command,
+            cwd,
+            environment,
+            ..
+        } => {
+            if command.trim().is_empty() {
+                return Err("A stdio MCP transport needs a command.".into());
+            }
+            if cwd.as_ref().is_some_and(|cwd| cwd.trim().is_empty()) {
+                return Err("The MCP working directory cannot be empty.".into());
+            }
+            validate_mcp_values(environment.as_ref(), "environment variable")
+        }
+        McpTransport::Http { url, headers } => {
+            let parsed = url::Url::parse(url)
+                .map_err(|_| "The MCP HTTP transport needs a valid URL.".to_owned())?;
+            if !matches!(parsed.scheme(), "http" | "https") || parsed.host().is_none() {
+                return Err("The MCP transport URL must use HTTP or HTTPS.".into());
+            }
+            validate_mcp_values(headers.as_ref(), "header")
+        }
+    }
+}
+
+fn validate_mcp_values(
+    values: Option<&std::collections::BTreeMap<String, McpConfigValue>>,
+    label: &str,
+) -> Result<(), String> {
+    for (name, value) in values.into_iter().flatten() {
+        if name.trim().is_empty() {
+            return Err(format!("An MCP {label} name cannot be empty."));
+        }
+        if let McpConfigValue::Credential { credential_ref } = value
+            && credential_ref.trim().is_empty()
+        {
+            return Err(format!(
+                "The credentialRef for MCP {label} {name} is empty."
+            ));
+        }
+    }
+    Ok(())
 }
 
 fn status_pill(label: &'static str, ready: bool, theme: Theme) -> AnyElement {
@@ -2906,6 +3604,50 @@ mod tests {
         assert_eq!(
             connection_preset(ModelConnectionPreset::Custom).base_url,
             "http://127.0.0.1:11434/v1"
+        );
+    }
+
+    #[test]
+    fn mcp_transport_validation_matches_the_wire_contract() {
+        assert!(
+            validate_mcp_transport(&McpTransport::Http {
+                url: "https://example.com/mcp".into(),
+                headers: None,
+            })
+            .is_ok()
+        );
+        assert!(
+            validate_mcp_transport(&McpTransport::Http {
+                url: "file:///tmp/mcp".into(),
+                headers: None,
+            })
+            .is_err()
+        );
+        assert!(
+            validate_mcp_transport(&McpTransport::Stdio {
+                command: " ".into(),
+                args: None,
+                cwd: None,
+                environment: None,
+            })
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn mcp_credential_references_cannot_be_empty() {
+        let headers = std::collections::BTreeMap::from([(
+            "Authorization".into(),
+            McpConfigValue::Credential {
+                credential_ref: "".into(),
+            },
+        )]);
+        assert!(
+            validate_mcp_transport(&McpTransport::Http {
+                url: "https://example.com/mcp".into(),
+                headers: Some(headers),
+            })
+            .is_err()
         );
     }
 }
