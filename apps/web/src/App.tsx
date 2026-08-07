@@ -316,6 +316,21 @@ export function App() {
     return () => window.removeEventListener('hashchange', reconnectWithCurrentToken)
   }, [])
 
+  useEffect(() => {
+    const checkConnection = () => void transport.ensureHealthy()
+    const checkVisibleConnection = () => {
+      if (document.visibilityState === 'visible') checkConnection()
+    }
+    window.addEventListener('focus', checkConnection)
+    window.addEventListener('online', checkConnection)
+    document.addEventListener('visibilitychange', checkVisibleConnection)
+    return () => {
+      window.removeEventListener('focus', checkConnection)
+      window.removeEventListener('online', checkConnection)
+      document.removeEventListener('visibilitychange', checkVisibleConnection)
+    }
+  }, [transport])
+
   useLayoutEffect(() => {
     applyTheme(theme)
     void setDesktopTheme(theme)

@@ -13,6 +13,7 @@ const transport = vi.hoisted(() => ({
   urls: [] as string[],
   connect: vi.fn(),
   close: vi.fn(),
+  ensureHealthy: vi.fn(),
 }))
 
 const shellRenders = vi.hoisted(() => ({
@@ -37,6 +38,9 @@ vi.mock('./transport.js', () => ({
     }
     close() {
       transport.close()
+    }
+    ensureHealthy() {
+      return transport.ensureHealthy()
     }
     on(channel: string, listener: (data: unknown) => void) {
       transport.listeners.set(channel, listener)
@@ -508,6 +512,14 @@ describe('web client', () => {
     })
     expect(transport.close).toHaveBeenCalled()
     expect(transport.connect).toHaveBeenCalledTimes(2)
+  })
+
+  it('checks socket liveness when the app regains focus', () => {
+    render(<App />)
+
+    act(() => window.dispatchEvent(new Event('focus')))
+
+    expect(transport.ensureHealthy).toHaveBeenCalledTimes(1)
   })
 
   it('does not expose or initialize desktop dictation', async () => {
