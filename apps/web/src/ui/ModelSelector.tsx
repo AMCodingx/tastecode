@@ -87,11 +87,15 @@ type ModelGroup = {
   entries: ModelChoice[]
 }
 
+function modelSourceKey(entry: ModelChoice): string {
+  return `${entry.provider}:${entry.connectionId ?? ''}:${entry.sourceName}`
+}
+
 /** One section per source, in catalog order, so a provider's name renders once. */
 export function groupModelsBySource(models: ModelChoice[]): ModelGroup[] {
   const groups: ModelGroup[] = []
   for (const entry of models) {
-    const key = `${entry.provider}:${entry.connectionId ?? ''}:${entry.sourceName}`
+    const key = modelSourceKey(entry)
     const group = groups.find((candidate) => candidate.key === key)
     if (group) group.entries.push(entry)
     else groups.push({ key, name: entry.sourceName, mark: entry.mark, entries: [entry] })
@@ -130,6 +134,74 @@ function supportsServiceTier(
   serviceTier: string | undefined,
 ): boolean {
   return Boolean(serviceTier && model?.serviceTiers.some((tier) => tier.id === serviceTier))
+}
+
+function ProviderModelList(props: {
+  models: ModelChoice[]
+  selectedChoice: ModelChoice | undefined
+  onModelSelect: (choice: ModelChoice) => void
+}) {
+  const groups = groupModelsBySource(props.models)
+  const selectedGroupKey = props.selectedChoice
+    ? modelSourceKey(props.selectedChoice)
+    : groups[0]?.key
+  const [activeGroupKey, setActiveGroupKey] = useState(selectedGroupKey)
+  const activeGroup =
+    groups.find((group) => group.key === activeGroupKey) ??
+    groups.find((group) => group.key === selectedGroupKey) ??
+    groups[0]
+
+  return (
+    <div className="model-selector__catalog">
+      <div className="model-selector__providers" role="group" aria-label="Providers">
+        {groups.map((group) => {
+          const active = group.key === activeGroup?.key
+          return (
+            <button
+              key={group.key}
+              type="button"
+              className={`model-selector__provider${active ? ' is-active' : ''}`}
+              aria-label={`Show ${group.name} models`}
+              aria-pressed={active}
+              title={group.name}
+              onClick={() => setActiveGroupKey(group.key)}
+            >
+              <ProviderIcon mark={group.mark} size={18} />
+            </button>
+          )
+        })}
+      </div>
+
+      <div
+        key={activeGroup?.key}
+        className="model-selector__models"
+        role="group"
+        aria-label={activeGroup ? `${activeGroup.name} models` : 'Models'}
+      >
+        {activeGroup ? (
+          <section className="model-selector__group">
+            <p className="model-selector__group-title">{activeGroup.name}</p>
+            {activeGroup.entries.map((entry) => {
+              const selected = entry.key === props.selectedChoice?.key
+              return (
+                <button
+                  key={entry.key}
+                  type="button"
+                  className={`model-selector__model${selected ? ' is-selected' : ''}`}
+                  aria-pressed={selected}
+                  aria-label={`Use ${entry.model.displayName} through ${entry.sourceName}`}
+                  onClick={() => props.onModelSelect(entry)}
+                >
+                  <span className="model-selector__model-name">{entry.model.displayName}</span>
+                  {selected ? <Check size={14} aria-hidden /> : null}
+                </button>
+              )
+            })}
+          </section>
+        ) : null}
+      </div>
+    </div>
+  )
 }
 
 /** Carries fast *intent* across models whose fast tiers use different ids
@@ -381,32 +453,12 @@ export function ModelSelector(props: ModelSelectorProps) {
     >
       {() => (
         <div className="model-selector">
-          <div className="model-selector__models" role="group" aria-label="Models">
-            {groupModelsBySource(props.models).map((group) => (
-              <section className="model-selector__group" key={group.key}>
-                <p className="model-selector__group-title">
-                  <ProviderIcon mark={group.mark} size={13} />
-                  {group.name}
-                </p>
-                {group.entries.map((entry) => {
-                  const selected = entry.key === choice?.key
-                  return (
-                    <button
-                      key={entry.key}
-                      type="button"
-                      className={`model-selector__model${selected ? ' is-selected' : ''}`}
-                      aria-pressed={selected}
-                      aria-label={`Use ${entry.model.displayName} through ${entry.sourceName}`}
-                      onClick={() => handleModelSelect(entry)}
-                    >
-                      <span className="model-selector__model-name">{entry.model.displayName}</span>
-                      {selected ? <Check size={14} aria-hidden /> : null}
-                    </button>
-                  )
-                })}
-              </section>
-            ))}
-          </div>
+          <ProviderModelList
+            key={choice ? modelSourceKey(choice) : 'no-model'}
+            models={props.models}
+            selectedChoice={choice}
+            onModelSelect={handleModelSelect}
+          />
 
           <div className="model-selector__controls">
             <div className="model-selector__controls-head">
