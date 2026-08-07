@@ -12,6 +12,7 @@ use harness_protocol::{
 use harness_store::{NewCheckpoint, NewThread as StoreNewThread};
 use serde_json::{Value, json};
 use std::collections::HashMap;
+use std::fs;
 use std::net::{IpAddr, Ipv4Addr, TcpStream};
 use std::process::Command;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -93,6 +94,34 @@ fn start_test_server_with_services(
     )
     .unwrap();
     (directory, server)
+}
+
+fn start_test_server_with_native_runtimes() -> (TempDir, ServerHandle, Arc<MemoryCredentials>) {
+    let directory = tempfile::tempdir().unwrap();
+    let config = ServerConfig {
+        address: SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 0),
+        access_token: None,
+        store_path: directory.path().join("harness.db"),
+        mcp_config_path: directory.path().join("mcp.json"),
+        providers_config_path: directory.path().join("providers.json"),
+    };
+    Store::open(&config.store_path).unwrap().close().unwrap();
+    let credentials = Arc::new(MemoryCredentials::default());
+    let credential_store: Arc<dyn CredentialStore> = credentials.clone();
+    let model_connections = Arc::new(Mutex::new(
+        crate::model_connections::ModelConnectionStore::new(
+            config.providers_config_path.clone(),
+            Arc::clone(&credential_store),
+        ),
+    ));
+    let runtimes = Arc::new(crate::agents::NativeRuntimes::new(
+        Arc::clone(&model_connections),
+        credential_store.clone(),
+    ));
+    let server =
+        start_with_prepared_services(config, runtimes, credential_store, model_connections)
+            .unwrap();
+    (directory, server, credentials)
 }
 
 #[derive(Default)]
@@ -183,6 +212,55 @@ fn serve_json_once(
         write!(
             stream,
             "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+            body.len()
+        )
+        .unwrap();
+        stream.flush().unwrap();
+    });
+    (format!("http://{address}/v1"), receiver, join)
+}
+
+fn serve_sse_once(
+    body: String,
+) -> (
+    String,
+    std::sync::mpsc::Receiver<String>,
+    std::thread::JoinHandle<()>,
+) {
+    use std::io::{BufRead as _, BufReader, Read as _, Write as _};
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let address = listener.local_addr().unwrap();
+    let (sender, receiver) = std::sync::mpsc::channel();
+    let join = std::thread::spawn(move || {
+        let (mut stream, _) = listener.accept().unwrap();
+        let mut request = String::new();
+        {
+            let mut reader = BufReader::new(&mut stream);
+            loop {
+                let mut line = String::new();
+                reader.read_line(&mut line).unwrap();
+                request.push_str(&line);
+                if line == "\r\n" || line.is_empty() {
+                    break;
+                }
+            }
+            let content_length = request
+                .lines()
+                .find_map(|line| {
+                    line.to_ascii_lowercase()
+                        .strip_prefix("content-length:")
+                        .map(str::trim)
+                        .and_then(|value| value.parse::<usize>().ok())
+                })
+                .unwrap_or(0);
+            let mut payload = vec![0; content_length];
+            reader.read_exact(&mut payload).unwrap();
+            request.push_str(&String::from_utf8_lossy(&payload));
+        }
+        sender.send(request).unwrap();
+        write!(
+            stream,
+            "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
             body.len()
         )
         .unwrap();
@@ -846,6 +924,165 @@ fn live_connection_routes_keep_api_keys_only_in_the_credential_store() {
     assert_eq!(read_value(&mut socket)["result"], json!({}));
     assert!(!credentials.contains("model-connections/work-openrouter"));
 
+    socket.close(None).unwrap();
+    server.close().unwrap();
+}
+
+#[test]
+fn live_native_api_runtime_streams_through_the_shared_server() {
+    let stream = concat!(
+        "data: {\"choices\":[{\"delta\":{\"reasoning_content\":\"Checking.\",\"content\":\"Hello from Rust.\"},\"finish_reason\":null}]}\n\n",
+        "data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}],\"usage\":{\"prompt_tokens\":10,\"completion_tokens\":4,\"total_tokens\":14}}\n\n",
+        "data: [DONE]\n\n"
+    );
+    let (base_url, provider_request, provider_server) = serve_sse_once(stream.into());
+    let (directory, server, credentials) = start_test_server_with_native_runtimes();
+    let workspace = directory.path().join("workspace");
+    fs::create_dir(&workspace).unwrap();
+    fs::write(workspace.join("README.md"), "# Native\n").unwrap();
+    let mut socket = connect_native(&server, "");
+    assert_welcome(&mut socket);
+
+    send_request(
+        &mut socket,
+        "upsert",
+        "connections.upsert",
+        json!({
+            "id": "local-compatible",
+            "displayName": "Local Compatible",
+            "preset": "custom",
+            "transport": "openai-compatible",
+            "baseUrl": base_url,
+            "defaultModel": "test-model",
+            "enabled": true
+        }),
+    );
+    assert_eq!(
+        read_value(&mut socket)["result"]["connection"]["id"],
+        "local-compatible"
+    );
+    send_request(
+        &mut socket,
+        "credential",
+        "connections.setCredential",
+        json!({
+            "connectionId": "local-compatible",
+            "apiKey": "secret-live-key"
+        }),
+    );
+    assert_eq!(
+        read_value(&mut socket)["result"]["credentialConfigured"],
+        true
+    );
+    assert_eq!(
+        credentials
+            .read("model-connections/local-compatible")
+            .unwrap(),
+        "secret-live-key"
+    );
+
+    send_request(
+        &mut socket,
+        "start",
+        "thread.start",
+        json!({
+            "provider": "api",
+            "connectionId": "local-compatible",
+            "workspacePath": workspace.to_string_lossy(),
+            "approval": "full"
+        }),
+    );
+    let (_, started) = read_until_response(&mut socket, "start");
+    let thread_id = started["result"]["threadId"].as_str().unwrap().to_owned();
+    assert!(thread_id.starts_with("api-"));
+
+    send_request(
+        &mut socket,
+        "turn",
+        "thread.sendTurn",
+        json!({ "threadId": thread_id, "text": "Say hello" }),
+    );
+    let (mut pushes, turn) = read_until_response(&mut socket, "turn");
+    let turn_id = turn["result"]["turnId"].as_str().unwrap().to_owned();
+    while !pushes.iter().any(|push| {
+        push["channel"] == "thread.event"
+            && push["data"]["event"]["type"] == "turn.completed"
+            && push["data"]["event"]["turnId"] == turn_id
+    }) {
+        pushes.push(read_value(&mut socket));
+    }
+    let message_id = pushes
+        .iter()
+        .find(|push| {
+            push["channel"] == "thread.event"
+                && push["data"]["event"]["type"] == "item.completed"
+                && push["data"]["event"]["item"]["type"] == "message"
+        })
+        .and_then(|push| push["data"]["event"]["item"]["id"].as_str())
+        .unwrap();
+    let streamed = pushes
+        .iter()
+        .filter(|push| {
+            push["channel"] == "thread.event"
+                && push["data"]["event"]["type"] == "item.delta"
+                && push["data"]["event"]["itemId"] == message_id
+        })
+        .filter_map(|push| push["data"]["event"]["textDelta"].as_str())
+        .collect::<String>();
+    assert_eq!(streamed, "Hello from Rust.");
+    assert!(pushes.iter().any(|push| {
+        push["channel"] == "thread.event"
+            && push["data"]["event"]["type"] == "usage.updated"
+            && push["data"]["event"]["usage"]["totalTokens"].as_f64() == Some(14.0)
+    }));
+
+    let request = provider_request
+        .recv_timeout(Duration::from_secs(2))
+        .unwrap();
+    assert!(
+        request
+            .to_ascii_lowercase()
+            .contains("authorization: bearer secret-live-key")
+    );
+    let request_body = request.split("\r\n\r\n").nth(1).unwrap();
+    assert!(!request_body.contains("secret-live-key"));
+    let request_body: Value = serde_json::from_str(request_body).unwrap();
+    assert_eq!(request_body["model"], "test-model");
+    assert_eq!(request_body["tools"].as_array().unwrap().len(), 4);
+    assert!(
+        request_body["messages"][0]["content"]
+            .as_str()
+            .unwrap()
+            .contains("Say hello")
+    );
+    provider_server.join().unwrap();
+
+    send_request(
+        &mut socket,
+        "history",
+        "thread.history",
+        json!({ "threadId": thread_id }),
+    );
+    let (_, history) = read_until_response(&mut socket, "history");
+    assert!(
+        history["result"]["events"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|entry| {
+                entry["event"]["type"] == "item.completed"
+                    && entry["event"]["item"]["text"] == "Hello from Rust."
+            })
+    );
+
+    send_request(
+        &mut socket,
+        "close",
+        "thread.close",
+        json!({ "threadId": thread_id }),
+    );
+    let (_, closed) = read_until_response(&mut socket, "close");
+    assert_eq!(closed["result"], json!({}));
     socket.close(None).unwrap();
     server.close().unwrap();
 }

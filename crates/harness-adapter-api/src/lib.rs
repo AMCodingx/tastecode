@@ -5,9 +5,11 @@ use std::time::Duration;
 use thiserror::Error;
 use url::Url;
 
+mod runtime;
 mod session;
 mod transport;
 
+pub use runtime::{ApiRuntime, ApiToolFactory, ApiToolSet};
 pub use session::{
     API_CAPABILITIES, ApiAgentSession, ApiSessionOptions, ApiSessionState, ApiToolError,
     ApiToolExecutor, ApiToolResult, ApiToolReview,

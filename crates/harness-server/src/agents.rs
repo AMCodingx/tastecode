@@ -1,9 +1,13 @@
 use crate::ServerState;
+use crate::api_workspace_tools::ApiWorkspaceToolFactory;
+use crate::model_connections::ModelConnectionStore;
+use harness_adapter_api::{ApiRuntime, ApiToolFactory};
 use harness_adapter_codex::CodexRuntime;
 use harness_agent::{
     AgentError, AgentHandlers, AgentRuntime, AgentSession, ControlHandlers, CredentialValues,
     ProviderControl, StartOptions, TurnOptions,
 };
+use harness_credentials::CredentialStore;
 use harness_protocol::{
     Account, ApprovalDecision, AuthEventPush, AuthStartLoginResult, DomainEvent, McpAuth,
     McpConfigValue, McpListResult, McpOAuthPush, McpOAuthStartResult, McpServer, McpServerConfig,
@@ -32,12 +36,21 @@ pub(crate) trait RuntimeRegistry: Send + Sync {
 
 pub(crate) struct NativeRuntimes {
     codex: Arc<CodexRuntime>,
+    model_connections: Arc<Mutex<ModelConnectionStore>>,
+    credentials: Arc<dyn CredentialStore>,
+    api_tools: Arc<ApiWorkspaceToolFactory>,
 }
 
-impl Default for NativeRuntimes {
-    fn default() -> Self {
+impl NativeRuntimes {
+    pub(crate) fn new(
+        model_connections: Arc<Mutex<ModelConnectionStore>>,
+        credentials: Arc<dyn CredentialStore>,
+    ) -> Self {
         Self {
             codex: Arc::new(CodexRuntime::default()),
+            model_connections,
+            credentials,
+            api_tools: Arc::new(ApiWorkspaceToolFactory),
         }
     }
 }
@@ -55,6 +68,32 @@ impl RuntimeRegistry for NativeRuntimes {
             }
             ProviderId::Codex => Err(AgentError::Failed(
                 "Codex does not accept an ACP agent or model connection".into(),
+            )),
+            ProviderId::Api if agent.is_none() => {
+                let connection_id = connection_id.ok_or_else(|| {
+                    AgentError::Failed("connectionId is required for direct API sessions".into())
+                })?;
+                let connection = lock(&self.model_connections)
+                    .get(connection_id)
+                    .map_err(|error| AgentError::Failed(error.to_string()))?;
+                if !connection.enabled {
+                    return Err(AgentError::Failed(format!(
+                        "model connection \"{connection_id}\" is disabled"
+                    )));
+                }
+                let api_key = self
+                    .credentials
+                    .read(&connection.credential_ref)
+                    .map_err(|error| AgentError::Failed(error.to_string()))?;
+                let tools: Arc<dyn ApiToolFactory> = self.api_tools.clone();
+                Ok(Arc::new(ApiRuntime::new(
+                    connection.input(),
+                    api_key,
+                    tools,
+                )))
+            }
+            ProviderId::Api => Err(AgentError::Failed(
+                "direct API sessions do not accept an ACP agent".into(),
             )),
             provider => Err(AgentError::Failed(format!(
                 "provider \"{}\" is not implemented in the native server yet",

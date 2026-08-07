@@ -13,12 +13,14 @@ harness-adapter-api = { path = "../harness-adapter-api" }
 harness-agent = { path = "../harness-agent" }
 harness-credentials = { path = "../harness-credentials" }
 harness-protocol = { path = "../harness-protocol" }
+harness-proc = { path = "../harness-proc" }
 harness-providers = { path = "../harness-providers" }
 harness-store = { path = "../harness-store" }
 harness-terminal = { path = "../harness-terminal" }
 harness-workspace = { path = "../harness-workspace" }
 serde.workspace = true
 serde_json.workspace = true
+sha2.workspace = true
 subtle.workspace = true
 thiserror.workspace = true
 tungstenite.workspace = true

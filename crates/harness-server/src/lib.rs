@@ -6,6 +6,7 @@
 
 mod access;
 mod agents;
+mod api_workspace_tools;
 mod inbox;
 mod mcp_config;
 mod model_connections;
@@ -143,9 +144,19 @@ impl Drop for ServerHandle {
 }
 
 pub fn start(config: ServerConfig) -> Result<ServerHandle, ServerError> {
-    start_with_runtimes(config, Arc::new(agents::NativeRuntimes::default()))
+    let credentials: Arc<dyn CredentialStore> = Arc::new(SystemCredentialStore::new());
+    let model_connections = Arc::new(Mutex::new(model_connections::ModelConnectionStore::new(
+        config.providers_config_path.clone(),
+        Arc::clone(&credentials),
+    )));
+    let runtimes = Arc::new(agents::NativeRuntimes::new(
+        Arc::clone(&model_connections),
+        Arc::clone(&credentials),
+    ));
+    start_with_prepared_services(config, runtimes, credentials, model_connections)
 }
 
+#[cfg(test)]
 fn start_with_runtimes(
     config: ServerConfig,
     runtimes: Arc<dyn agents::RuntimeRegistry>,
@@ -153,10 +164,24 @@ fn start_with_runtimes(
     start_with_services(config, runtimes, Arc::new(SystemCredentialStore::new()))
 }
 
+#[cfg(test)]
 fn start_with_services(
     config: ServerConfig,
     runtimes: Arc<dyn agents::RuntimeRegistry>,
     credentials: Arc<dyn CredentialStore>,
+) -> Result<ServerHandle, ServerError> {
+    let model_connections = Arc::new(Mutex::new(model_connections::ModelConnectionStore::new(
+        config.providers_config_path.clone(),
+        Arc::clone(&credentials),
+    )));
+    start_with_prepared_services(config, runtimes, credentials, model_connections)
+}
+
+fn start_with_prepared_services(
+    config: ServerConfig,
+    runtimes: Arc<dyn agents::RuntimeRegistry>,
+    credentials: Arc<dyn CredentialStore>,
+    model_connections: Arc<Mutex<model_connections::ModelConnectionStore>>,
 ) -> Result<ServerHandle, ServerError> {
     assert_safe_bind(config.address.ip(), config.access_token.as_deref())
         .map_err(ServerError::UnsafeBind)?;
@@ -189,10 +214,7 @@ fn start_with_services(
         store: Mutex::new(store),
         inbox: Mutex::new(inbox::InboxProjections::default()),
         mcp_config: Mutex::new(mcp_config::McpConfigStore::new(config.mcp_config_path)),
-        model_connections: Mutex::new(model_connections::ModelConnectionStore::new(
-            config.providers_config_path,
-            Arc::clone(&credentials),
-        )),
+        model_connections,
         credentials,
         push,
         terminals,
@@ -242,7 +264,7 @@ pub(crate) struct ServerState {
     store: Mutex<Store>,
     inbox: Mutex<inbox::InboxProjections>,
     mcp_config: Mutex<mcp_config::McpConfigStore>,
-    model_connections: Mutex<model_connections::ModelConnectionStore>,
+    model_connections: Arc<Mutex<model_connections::ModelConnectionStore>>,
     credentials: Arc<dyn CredentialStore>,
     push: Arc<PushBus>,
     terminals: TerminalManager,
