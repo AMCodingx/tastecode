@@ -133,6 +133,8 @@ pub mod method {
     pub const THREAD_INTERRUPT: &str = "thread.interrupt";
     pub const THREAD_CLOSE: &str = "thread.close";
     pub const THREAD_CHECKPOINTS: &str = "thread.checkpoints";
+    pub const THREAD_UNSAVED_WORK: &str = "thread.unsavedWork";
+    pub const THREAD_DISCARD_WORKTREE: &str = "thread.discardWorktree";
     pub const THREAD_QUEUE: &str = "thread.queue";
     pub const THREAD_STEER_QUEUED_TURN: &str = "thread.steerQueuedTurn";
     pub const SIDEBAR_SETTINGS: &str = "sidebar.settings";
@@ -228,6 +230,8 @@ mod tests {
         assert_eq!(method::THREAD_DELETE, "thread.delete");
         assert_eq!(method::THREAD_CLOSE, "thread.close");
         assert_eq!(method::THREAD_CHECKPOINTS, "thread.checkpoints");
+        assert_eq!(method::THREAD_UNSAVED_WORK, "thread.unsavedWork");
+        assert_eq!(method::THREAD_DISCARD_WORKTREE, "thread.discardWorktree");
         assert_eq!(method::USAGE_SUMMARY, "usage.summary");
         assert_eq!(method::WORKSPACE_INFO, "workspace.info");
         assert_eq!(method::WORKSPACE_BRANCHES, "workspace.branches");

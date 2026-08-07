@@ -59,7 +59,7 @@ fn send_request(socket: &mut ClientSocket, id: &str, method: &str, params: Value
         .unwrap();
 }
 
-fn git(cwd: &std::path::Path, args: &[&str]) {
+fn git(cwd: &std::path::Path, args: &[&str]) -> String {
     let output = Command::new("git")
         .args(args)
         .current_dir(cwd)
@@ -71,6 +71,7 @@ fn git(cwd: &std::path::Path, args: &[&str]) {
         args,
         String::from_utf8_lossy(&output.stderr)
     );
+    String::from_utf8_lossy(&output.stdout).trim().into()
 }
 
 fn assert_welcome(socket: &mut ClientSocket) {
@@ -397,6 +398,111 @@ fn live_workspace_routes_report_and_switch_only_local_branches() {
             .as_str()
             .unwrap()
             .contains("unknown local branch")
+    );
+
+    socket.close(None).unwrap();
+    server.close().unwrap();
+}
+
+#[test]
+fn live_worktree_routes_refuse_unsaved_work_and_forced_discard_keeps_the_branch() {
+    let repository_root = tempfile::tempdir().unwrap();
+    let repository = repository_root.path().join("repo");
+    let worktree_root = repository_root.path().join("worktrees");
+    let output = Command::new("git")
+        .args(["init", "-b", "main"])
+        .arg(&repository)
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+    git(&repository, &["config", "user.email", "test@example.com"]);
+    git(&repository, &["config", "user.name", "Test"]);
+    std::fs::write(repository.join("file.txt"), "initial\n").unwrap();
+    git(&repository, &["add", "."]);
+    git(&repository, &["commit", "-m", "initial"]);
+    let worktree =
+        harness_workspace::create_worktree(&repository, "thread-aaaaaaaaaaaa", &worktree_root)
+            .unwrap();
+    let worktree_path = worktree.path.clone();
+    let worktree_branch = worktree.branch.clone();
+    let repository_text = repository.to_string_lossy().into_owned();
+    let worktree_text = worktree.path.to_string_lossy().into_owned();
+
+    let (_directory, server) = start_test_server(None, |store| {
+        store.add_project(&repository_text, None).unwrap();
+        store
+            .add_thread(StoreNewThread {
+                id: "thread-1".into(),
+                project_path: repository_text.clone(),
+                provider: ProviderId::Codex,
+                agent: None,
+                title: "Isolated".into(),
+                created_at: Some(10),
+                worktree_path: Some(worktree_text.clone()),
+                worktree_branch: Some(worktree_branch.clone()),
+            })
+            .unwrap();
+    });
+    let mut socket = connect_native(&server, "");
+    assert_welcome(&mut socket);
+
+    send_request(
+        &mut socket,
+        "clean",
+        "thread.unsavedWork",
+        json!({ "threadId": "thread-1" }),
+    );
+    assert_eq!(
+        read_value(&mut socket)["result"],
+        json!({ "isolated": true, "uncommitted": false })
+    );
+    std::fs::write(worktree_path.join("untracked.txt"), "unsaved\n").unwrap();
+    send_request(
+        &mut socket,
+        "dirty",
+        "thread.unsavedWork",
+        json!({ "threadId": "thread-1" }),
+    );
+    assert_eq!(read_value(&mut socket)["result"]["uncommitted"], true);
+
+    send_request(
+        &mut socket,
+        "refuse",
+        "thread.discardWorktree",
+        json!({ "threadId": "thread-1" }),
+    );
+    let refused = read_value(&mut socket);
+    assert_eq!(refused["error"]["code"], "internal");
+    assert!(
+        refused["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("uncommitted changes")
+    );
+    assert!(worktree_path.exists());
+
+    send_request(
+        &mut socket,
+        "discard",
+        "thread.discardWorktree",
+        json!({ "threadId": "thread-1", "force": true }),
+    );
+    assert_eq!(
+        read_value(&mut socket),
+        json!({ "id": "discard", "result": {} })
+    );
+    assert!(!worktree_path.exists());
+    assert!(git(&repository, &["branch", "--list", &worktree_branch]).contains(&worktree_branch));
+
+    send_request(
+        &mut socket,
+        "forgotten",
+        "thread.unsavedWork",
+        json!({ "threadId": "thread-1" }),
+    );
+    assert_eq!(
+        read_value(&mut socket)["result"],
+        json!({ "isolated": false, "uncommitted": false })
     );
 
     socket.close(None).unwrap();

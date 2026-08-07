@@ -1197,6 +1197,13 @@ pub struct ThreadCheckpointsResult {
     pub checkpoints: Vec<CheckpointSummary>,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ThreadUnsavedWorkResult {
+    pub isolated: bool,
+    pub uncommitted: bool,
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct QueuedTurn {
@@ -1650,6 +1657,14 @@ mod tests {
                 "removed": 1,
                 "dirtyFiles": 2
             })
+        );
+        assert_eq!(
+            serde_json::to_value(ThreadUnsavedWorkResult {
+                isolated: true,
+                uncommitted: false,
+            })
+            .unwrap(),
+            json!({ "isolated": true, "uncommitted": false })
         );
     }
 }

@@ -5,8 +5,8 @@ use harness_protocol::{
     CheckpointSummary, ErrorCode, ProjectAddedResult, ProjectSummary, ProjectsListResult,
     ProviderId, ServerWelcome, SessionSummary, SettleReason, SidebarMode, SystemInfo,
     SystemPlatform, ThreadCheckpointsResult, ThreadHistoryResult, ThreadInboxStatus,
-    ThreadLifecycle, ThreadLifecyclePush, ThreadLifecycleResult, Usage, UsageSummaryResult,
-    WireError, channel,
+    ThreadLifecycle, ThreadLifecyclePush, ThreadLifecycleResult, ThreadUnsavedWorkResult, Usage,
+    UsageSummaryResult, WireError, channel,
 };
 use harness_store::{SearchOptions, SidebarSettingsUpdate, Store, StoreError};
 use serde::Deserialize;
@@ -292,6 +292,38 @@ pub(crate) fn route(
                     })
                     .collect(),
             })
+        }
+        method::THREAD_UNSAVED_WORK => {
+            let params: ThreadIdParams = decode(method_name, params)?;
+            let stored = lock_store(state)?.thread(&params.thread_id)?;
+            let worktree_path = stored.and_then(|thread| thread.worktree_path);
+            encoded(ThreadUnsavedWorkResult {
+                isolated: worktree_path.is_some(),
+                uncommitted: worktree_path
+                    .as_deref()
+                    .is_some_and(harness_workspace::has_uncommitted_changes),
+            })
+        }
+        method::THREAD_DISCARD_WORKTREE => {
+            let params: ThreadDiscardWorktreeParams = decode(method_name, params)?;
+            let stored = lock_store(state)?.thread(&params.thread_id)?;
+            let Some(stored) = stored else {
+                return empty_result();
+            };
+            let (Some(path), Some(branch)) = (stored.worktree_path, stored.worktree_branch) else {
+                return empty_result();
+            };
+            harness_workspace::remove_worktree(
+                &harness_workspace::Worktree {
+                    path: path.into(),
+                    branch,
+                    repo_path: stored.project_path.into(),
+                },
+                params.force.unwrap_or(false),
+            )
+            .map_err(RouteError::internal)?;
+            lock_store(state)?.forget_worktree(&params.thread_id)?;
+            empty_result()
         }
         method::SIDEBAR_SETTINGS => {
             let _: EmptyParams = decode(method_name, params)?;
@@ -616,6 +648,14 @@ struct ThreadKeepActiveParams {
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
+struct ThreadDiscardWorktreeParams {
+    thread_id: String,
+    #[serde(default, deserialize_with = "deserialize_present")]
+    force: Option<bool>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
 struct ThreadHistoryParams {
     thread_id: String,
     #[serde(default, deserialize_with = "deserialize_present")]
@@ -694,6 +734,12 @@ mod tests {
         assert!(
             serde_json::from_value::<ThreadHistoryParams>(
                 json!({ "threadId": "thread", "afterSeq": null })
+            )
+            .is_err()
+        );
+        assert!(
+            serde_json::from_value::<ThreadDiscardWorktreeParams>(
+                json!({ "threadId": "thread", "force": null })
             )
             .is_err()
         );
