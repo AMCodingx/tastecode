@@ -13,6 +13,7 @@ use crate::client_state::{ChatUpdate, ModelChoice};
 use crate::model_selection::{
     fast_service_tier, filter_model_choices_by_query, is_fast_mode_enabled, source_key,
 };
+use crate::motion_icon::motion_icon;
 use crate::provider_icon::{provider_icon, provider_icon_color};
 use crate::theme::{CHAT_WIDTH, RADIUS_XL, Theme, ThemeMode, cubic_bezier_timing};
 use crate::zoom::px;
@@ -2793,8 +2794,14 @@ impl ChatView {
                 let steer_id = queued_turn.id.clone();
                 let edit_id = queued_turn.id.clone();
                 let delete_id = queued_turn.id.clone();
+                let move_up_group: SharedString = format!("queue-move-up-{index}").into();
+                let move_down_group: SharedString = format!("queue-move-down-{index}").into();
+                let steer_group: SharedString = format!("queue-steer-{index}").into();
+                let edit_group: SharedString = format!("queue-edit-{index}").into();
+                let delete_group: SharedString = format!("queue-delete-{index}").into();
                 let move_up = div()
                     .id(("queue-move-up", index))
+                    .group(move_up_group.clone())
                     .w(px(20.0))
                     .flex_1()
                     .flex()
@@ -2814,9 +2821,16 @@ impl ChatView {
                                 );
                             }))
                     })
-                    .child(svg_icon("icons/arrow-up.svg", 12.0));
+                    .child(motion_icon(
+                        ("queue-move-up-icon", index),
+                        "icons/arrow-up.svg",
+                        12.0,
+                        move_up_group,
+                        theme,
+                    ));
                 let move_down = div()
                     .id(("queue-move-down", index))
+                    .group(move_down_group.clone())
                     .w(px(20.0))
                     .flex_1()
                     .flex()
@@ -2836,10 +2850,17 @@ impl ChatView {
                                 );
                             }))
                     })
-                    .child(svg_icon("icons/arrow-down.svg", 12.0));
+                    .child(motion_icon(
+                        ("queue-move-down-icon", index),
+                        "icons/arrow-down.svg",
+                        12.0,
+                        move_down_group,
+                        theme,
+                    ));
                 let steer = can_steer.then(|| {
                     div()
                         .id(("queue-steer", index))
+                        .group(steer_group.clone())
                         .h(px(28.0))
                         .flex_none()
                         .px(px(6.0))
@@ -2860,11 +2881,18 @@ impl ChatView {
                         .on_click(cx.listener(move |this, _event, _window, cx| {
                             this.emit_steer_queued_turn(steer_id.clone(), cx);
                         }))
-                        .child(svg_icon("icons/corner-down-right.svg", 15.0))
+                        .child(motion_icon(
+                            ("queue-steer-icon", index),
+                            "icons/corner-down-right.svg",
+                            15.0,
+                            steer_group,
+                            theme,
+                        ))
                         .child("Steer")
                 });
                 let edit = div()
                     .id(("queue-edit", index))
+                    .group(edit_group.clone())
                     .size(px(28.0))
                     .flex_none()
                     .flex()
@@ -2882,9 +2910,16 @@ impl ChatView {
                     .on_click(cx.listener(move |this, _event, window, cx| {
                         this.edit_queued_turn(&edit_id, window, cx);
                     }))
-                    .child(svg_icon("icons/pencil.svg", 14.0));
+                    .child(motion_icon(
+                        ("queue-edit-icon", index),
+                        "icons/pencil.svg",
+                        14.0,
+                        edit_group,
+                        theme,
+                    ));
                 let delete = div()
                     .id(("queue-delete", index))
+                    .group(delete_group.clone())
                     .size(px(28.0))
                     .flex_none()
                     .flex()
@@ -2902,7 +2937,13 @@ impl ChatView {
                     .on_click(cx.listener(move |this, _event, _window, cx| {
                         this.emit_delete_queued_turn(delete_id.clone(), cx);
                     }))
-                    .child(svg_icon("icons/trash-2.svg", 15.0));
+                    .child(motion_icon(
+                        ("queue-delete-icon", index),
+                        "icons/trash-2.svg",
+                        15.0,
+                        delete_group,
+                        theme,
+                    ));
                 let row_animation_id = SharedString::from(format!("queue-row-{}", queued_turn.id));
                 div()
                     .relative()
@@ -3230,6 +3271,7 @@ impl ChatView {
                                                 .child(
                                                     div()
                                                         .id("composer-isolation")
+                                                        .group("composer-isolation-hover")
                                                         .flex_none()
                                                         .max_w(px(150.0))
                                                         .px(px(6.0))
@@ -3251,13 +3293,16 @@ impl ChatView {
                                                                 cx.emit(ChatEvent::ToggleIsolation);
                                                             },
                                                         ))
-                                                        .child(svg_icon(
+                                                        .child(motion_icon(
+                                                            "composer-isolation-icon",
                                                             if self.composer_settings.isolate {
                                                                 "icons/git-branch.svg"
                                                             } else {
                                                                 "icons/laptop.svg"
                                                             },
                                                             15.0,
+                                                            "composer-isolation-hover",
+                                                            theme,
                                                         ))
                                                         .child(
                                                             div().min_w(px(0.0)).truncate().child(
@@ -3416,6 +3461,7 @@ impl ChatView {
 
         div()
             .id("composer-design")
+            .group("composer-design-hover")
             .min_h(px(34.0))
             .px(px(12.0))
             .py(px(5.0))
@@ -3457,7 +3503,13 @@ impl ChatView {
                 }
             }))
             .on_click(move |_event, _window, cx| action(cx))
-            .child(svg_icon("icons/palette.svg", 13.0))
+            .child(motion_icon(
+                "composer-design-icon",
+                "icons/palette.svg",
+                13.0,
+                "composer-design-hover",
+                theme,
+            ))
             .child(label)
             .into_any_element()
     }
@@ -3466,6 +3518,7 @@ impl ChatView {
         let theme = self.theme;
         div()
             .id("composer-voice")
+            .group("composer-voice-hover")
             .size(px(30.0))
             .ml(px(2.0))
             .rounded(px(15.0))
@@ -3484,7 +3537,13 @@ impl ChatView {
             })
             .active(|style| style.opacity(0.72))
             .on_click(cx.listener(|this, _event, _window, cx| this.start_voice(cx)))
-            .child(svg_icon("icons/mic.svg", 15.0))
+            .child(motion_icon(
+                "composer-voice-icon",
+                "icons/mic.svg",
+                15.0,
+                "composer-voice-hover",
+                theme,
+            ))
             .into_any_element()
     }
 
@@ -3694,6 +3753,8 @@ impl ChatView {
                         let path = attachment.path.clone();
                         let name = attachment.name.clone();
                         let loading = path.is_none();
+                        let remove_group: SharedString =
+                            format!("attachment-preview-remove-{index}").into();
                         div()
                             .id(("attachment-preview", index))
                             .relative()
@@ -3720,6 +3781,7 @@ impl ChatView {
                             .child(
                                 div()
                                     .id(("attachment-preview-remove", index))
+                                    .group(remove_group.clone())
                                     .absolute()
                                     .top(px(4.0))
                                     .right(px(4.0))
@@ -3742,7 +3804,13 @@ impl ChatView {
                                             cx.notify();
                                         }
                                     }))
-                                    .child(svg_icon("icons/x.svg", 13.0)),
+                                    .child(motion_icon(
+                                        ("attachment-preview-remove-icon", index),
+                                        "icons/x.svg",
+                                        13.0,
+                                        remove_group,
+                                        theme,
+                                    )),
                             )
                             .when(loading, |preview| {
                                 preview.child(
@@ -3775,6 +3843,10 @@ impl ChatView {
                             .into_any_element()
                     } else {
                         let path = attachment.path.as_deref().unwrap_or_default();
+                        let remove_group: SharedString =
+                            format!("attachment-remove-{index}").into();
+                        let file_icon_group: SharedString =
+                            format!("attachment-file-icon-{index}").into();
                         div()
                             .id(("attachment-chip", index))
                             .h(px(25.0))
@@ -3788,13 +3860,16 @@ impl ChatView {
                             .bg(theme.surface_2.hsla())
                             .text_size(px(12.5))
                             .text_color(theme.text_2.hsla())
-                            .child(svg_icon(
+                            .child(motion_icon(
+                                ("attachment-file-icon", index),
                                 if is_image_path(path) {
                                     "icons/image.svg"
                                 } else {
                                     "icons/file.svg"
                                 },
                                 13.0,
+                                file_icon_group,
+                                theme,
                             ))
                             .child(
                                 div()
@@ -3806,6 +3881,7 @@ impl ChatView {
                             .child(
                                 div()
                                     .id(("attachment-remove", index))
+                                    .group(remove_group.clone())
                                     .size(px(17.0))
                                     .flex()
                                     .items_center()
@@ -3823,7 +3899,13 @@ impl ChatView {
                                             cx.notify();
                                         }
                                     }))
-                                    .child(svg_icon("icons/x.svg", 10.0)),
+                                    .child(motion_icon(
+                                        ("attachment-remove-icon", index),
+                                        "icons/x.svg",
+                                        10.0,
+                                        remove_group,
+                                        theme,
+                                    )),
                             )
                             .with_animation(
                                 ("attachment-chip-in", index),
@@ -3861,6 +3943,7 @@ impl ChatView {
         );
         div()
             .id("composer-project")
+            .group("composer-project-hover")
             .flex_none()
             .max_w(px(260.0))
             .flex()
@@ -3883,7 +3966,13 @@ impl ChatView {
             .on_click(cx.listener(|this, _event, _window, cx| {
                 this.toggle_composer_menu(ComposerMenu::Project, cx);
             }))
-            .child(svg_icon("icons/folder.svg", 15.0))
+            .child(motion_icon(
+                "composer-project-icon",
+                "icons/folder.svg",
+                15.0,
+                "composer-project-hover",
+                theme,
+            ))
             .child(div().min_w(px(0.0)).truncate().child(label))
             .into_any_element()
     }
@@ -3899,6 +3988,7 @@ impl ChatView {
             .unwrap_or_else(|| "No branch".into());
         div()
             .id("composer-branch")
+            .group("composer-branch-hover")
             .flex_none()
             .max_w(px(220.0))
             .flex()
@@ -3929,7 +4019,13 @@ impl ChatView {
                         this.toggle_composer_menu(ComposerMenu::Branch, cx);
                     }))
             })
-            .child(svg_icon("icons/git-branch.svg", 15.0))
+            .child(motion_icon(
+                "composer-branch-icon",
+                "icons/git-branch.svg",
+                15.0,
+                "composer-branch-hover",
+                theme,
+            ))
             .child(div().min_w(px(0.0)).truncate().child(label))
             .into_any_element()
     }
@@ -3991,9 +4087,15 @@ impl ChatView {
                 div()
                     .text_color(icon_color)
                     .when(semantic_color.is_none(), |icon| {
-                        icon.group_hover(group, |style| style.text_color(theme.text.hsla()))
+                        icon.group_hover(group.clone(), |style| style.text_color(theme.text.hsla()))
                     })
-                    .child(svg_icon(icon_path, 13.0)),
+                    .child(motion_icon(
+                        "composer-permissions-icon",
+                        icon_path,
+                        13.0,
+                        group,
+                        theme,
+                    )),
             )
             .child(label)
             .into_any_element()
@@ -5426,6 +5528,8 @@ fn icon_tool_button(
     theme: Theme,
     action: Option<UiAction>,
 ) -> impl IntoElement {
+    let hover_group: SharedString = format!("{id}:hover").into();
+    let icon_id: SharedString = format!("{id}:icon").into();
     let background = if theme.mode == ThemeMode::Dark {
         theme.surface_3.hsla()
     } else {
@@ -5433,6 +5537,7 @@ fn icon_tool_button(
     };
     div()
         .id(id)
+        .group(hover_group.clone())
         .min_h(px(34.0))
         .min_w(px(34.0))
         .px(px(if label.is_some() { 12.0 } else { 0.0 }))
@@ -5471,9 +5576,12 @@ fn icon_tool_button(
         .when_some(action, |button, action| {
             button.on_click(move |_event, _window, cx| action(cx))
         })
-        .child(svg_icon(
+        .child(motion_icon(
+            icon_id,
             icon_path,
             if label.is_some() { 13.0 } else { 15.0 },
+            hover_group,
+            theme,
         ))
         .when_some(label, |button, label| button.child(label))
 }
