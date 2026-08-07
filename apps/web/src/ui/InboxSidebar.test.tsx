@@ -151,7 +151,7 @@ describe('InboxSidebar', () => {
       <InboxSidebar {...props([project])} activeProjectPath="/alpha" onNewSession={onNewSession} />,
     )
 
-    fireEvent.click(screen.getByRole('button', { name: 'New Thread' }))
+    fireEvent.click(screen.getByRole('button', { name: 'New chat' }))
     expect(onNewSession).toHaveBeenCalledWith('/alpha', false)
     expect(screen.getByRole('button', { name: 'Add Project' })).toBeTruthy()
 

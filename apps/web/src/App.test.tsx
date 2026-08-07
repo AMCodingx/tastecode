@@ -1510,7 +1510,7 @@ describe('inbox lifecycle', () => {
     fireEvent.change(await screen.findByRole('combobox', { name: 'Sidebar project filter' }), {
       target: { value: '/work/beta' },
     })
-    fireEvent.click(screen.getByRole('button', { name: 'New Thread' }))
+    fireEvent.click(screen.getByRole('button', { name: 'New chat' }))
 
     const picker = screen.getByRole('dialog', { name: 'Choose a project for the new thread' })
     expect(
