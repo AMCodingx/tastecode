@@ -51,6 +51,8 @@ pub struct ClaudeSessionState {
     pub version: u32,
     pub thread: Thread,
     pub model: Option<String>,
+    #[serde(default)]
+    pub effort: Option<String>,
     pub approval: Option<ApprovalMode>,
     pub instructions: Option<String>,
     pub session_id: Option<String>,
@@ -65,6 +67,7 @@ struct SessionInner {
     thread: Thread,
     workspace: PathBuf,
     model: Option<String>,
+    effort: Option<String>,
     approval: Option<ApprovalMode>,
     instructions: Option<String>,
     instructions_dir: Mutex<Option<PathBuf>>,
@@ -110,6 +113,7 @@ impl ClaudeCodeSession {
                 version: SESSION_STATE_VERSION,
                 thread: thread.clone(),
                 model: options.model.clone(),
+                effort: options.effort.clone(),
                 approval: options.approval,
                 instructions: options.instructions.clone(),
                 session_id: None,
@@ -162,6 +166,7 @@ impl ClaudeCodeSession {
                 thread: state.thread,
                 workspace,
                 model: state.model,
+                effort: state.effort,
                 approval: state.approval,
                 instructions: state.instructions,
                 instructions_dir: Mutex::new(instructions_dir),
@@ -185,6 +190,7 @@ impl ClaudeCodeSession {
             version: SESSION_STATE_VERSION,
             thread: self.inner.thread.clone(),
             model: self.inner.model.clone(),
+            effort: self.inner.effort.clone(),
             approval: self.inner.approval,
             instructions: self.inner.instructions.clone(),
             session_id: state.session_id.clone(),
@@ -248,6 +254,7 @@ impl ClaudeCodeSession {
         let turn_id = format!("{}-turn-{next_counter}", self.inner.thread.id);
         let turn_args = claude_turn_args(
             self.inner.model.as_deref(),
+            self.inner.effort.as_deref(),
             self.inner.approval,
             state.session_id.as_deref(),
             self.inner.instructions_file.as_deref(),
@@ -583,6 +590,7 @@ pub(crate) fn claude_user_message(text: &str) -> String {
 
 pub(crate) fn claude_turn_args(
     model: Option<&str>,
+    effort: Option<&str>,
     approval: Option<ApprovalMode>,
     session_id: Option<&str>,
     instructions_file: Option<&Path>,
@@ -605,6 +613,9 @@ pub(crate) fn claude_turn_args(
     ];
     if let Some(model) = model {
         args.extend([OsString::from("--model"), OsString::from(model)]);
+    }
+    if let Some(effort) = effort {
+        args.extend([OsString::from("--effort"), OsString::from(effort)]);
     }
     if let Some(permission) = permission {
         args.extend([
@@ -698,6 +709,7 @@ mod tests {
         let instructions = directory.path().join("system-prompt.md");
         let args = claude_turn_args(
             Some("haiku"),
+            Some("xhigh"),
             Some(ApprovalMode::Ask),
             Some("session-1"),
             Some(&instructions),
@@ -708,13 +720,18 @@ mod tests {
         assert_eq!(args[args.len() - 1], OsStr::new("session-1"));
         assert!(args.iter().any(|arg| arg == OsStr::new("default")));
         assert!(
-            claude_turn_args(None, Some(ApprovalMode::Auto), None, None)
+            args.windows(2).any(|pair| {
+                pair[0] == OsStr::new("--effort") && pair[1] == OsStr::new("xhigh")
+            })
+        );
+        assert!(
+            claude_turn_args(None, None, Some(ApprovalMode::Auto), None, None)
                 .unwrap()
                 .iter()
                 .any(|arg| arg == OsStr::new("acceptEdits"))
         );
         assert!(
-            claude_turn_args(None, Some(ApprovalMode::Full), None, None)
+            claude_turn_args(None, None, Some(ApprovalMode::Full), None, None)
                 .unwrap()
                 .iter()
                 .any(|arg| arg == OsStr::new("bypassPermissions"))
@@ -726,7 +743,7 @@ mod tests {
             decoded["message"]["content"][0]["text"],
             "first line\nsecond line"
         );
-        assert!(claude_turn_args(None, Some(ApprovalMode::AutoReview), None, None).is_err());
+        assert!(claude_turn_args(None, None, Some(ApprovalMode::AutoReview), None, None).is_err());
     }
 
     #[test]
@@ -750,6 +767,7 @@ mod tests {
                 &StartOptions {
                     instructions: Some("Answer plainly.\n- Keep context.".into()),
                     model: Some("haiku".into()),
+                    effort: Some("high".into()),
                     approval: Some(ApprovalMode::Ask),
                     ..StartOptions::default()
                 },
@@ -760,6 +778,7 @@ mod tests {
             serde_json::from_value(session.export_state().unwrap().unwrap().into_value()).unwrap();
         assert_eq!(initial.turn_counter, 0);
         assert_eq!(initial.session_id, None);
+        assert_eq!(initial.effort.as_deref(), Some("high"));
 
         let first = session
             .send_turn(
