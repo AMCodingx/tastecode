@@ -9,6 +9,9 @@ use thiserror::Error;
 type EventHandler = dyn Fn(DomainEvent) + Send + Sync;
 type LogHandler = dyn Fn(String) + Send + Sync;
 type LoginHandler = dyn Fn(LoginEvent) + Send + Sync;
+type McpOAuthHandler = dyn Fn(McpOAuthEvent) + Send + Sync;
+type McpChangedHandler = dyn Fn(Option<String>) + Send + Sync;
+type ChangedHandler = dyn Fn() + Send + Sync;
 
 /// Provider-neutral callbacks installed before an agent process is started.
 /// Events can arrive during initialization, so attaching them afterwards has
@@ -17,6 +20,7 @@ type LoginHandler = dyn Fn(LoginEvent) + Send + Sync;
 pub struct AgentHandlers {
     event: Arc<EventHandler>,
     log: Arc<LogHandler>,
+    control: ControlHandlers,
 }
 
 impl AgentHandlers {
@@ -27,7 +31,13 @@ impl AgentHandlers {
         Self {
             event: Arc::new(event),
             log: Arc::new(log),
+            control: ControlHandlers::default(),
         }
+    }
+
+    pub fn with_control_handlers(mut self, control: ControlHandlers) -> Self {
+        self.control = control;
+        self
     }
 
     pub fn emit_event(&self, event: DomainEvent) {
@@ -36,6 +46,22 @@ impl AgentHandlers {
 
     pub fn emit_log(&self, line: impl Into<String>) {
         (self.log)(line.into());
+    }
+
+    pub fn emit_login(&self, event: LoginEvent) {
+        self.control.emit_login(event);
+    }
+
+    pub fn emit_mcp_o_auth(&self, event: McpOAuthEvent) {
+        self.control.emit_mcp_o_auth(event);
+    }
+
+    pub fn emit_mcp_changed(&self, thread_id: Option<String>) {
+        self.control.emit_mcp_changed(thread_id);
+    }
+
+    pub fn emit_skills_changed(&self) {
+        self.control.emit_skills_changed();
     }
 }
 
@@ -52,9 +78,20 @@ pub struct LoginEvent {
     pub error: Option<String>,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct McpOAuthEvent {
+    pub server_id: String,
+    pub login_id: String,
+    pub success: bool,
+    pub error: Option<String>,
+}
+
 #[derive(Clone)]
 pub struct ControlHandlers {
     login: Arc<LoginHandler>,
+    mcp_o_auth: Arc<McpOAuthHandler>,
+    mcp_changed: Arc<McpChangedHandler>,
+    skills_changed: Arc<ChangedHandler>,
     log: Arc<LogHandler>,
 }
 
@@ -65,12 +102,48 @@ impl ControlHandlers {
     ) -> Self {
         Self {
             login: Arc::new(login),
+            mcp_o_auth: Arc::new(|_| {}),
+            mcp_changed: Arc::new(|_| {}),
+            skills_changed: Arc::new(|| {}),
             log: Arc::new(log),
         }
     }
 
+    pub fn with_mcp_o_auth(
+        mut self,
+        handler: impl Fn(McpOAuthEvent) + Send + Sync + 'static,
+    ) -> Self {
+        self.mcp_o_auth = Arc::new(handler);
+        self
+    }
+
+    pub fn with_mcp_changed(
+        mut self,
+        handler: impl Fn(Option<String>) + Send + Sync + 'static,
+    ) -> Self {
+        self.mcp_changed = Arc::new(handler);
+        self
+    }
+
+    pub fn with_skills_changed(mut self, handler: impl Fn() + Send + Sync + 'static) -> Self {
+        self.skills_changed = Arc::new(handler);
+        self
+    }
+
     pub fn emit_login(&self, event: LoginEvent) {
         (self.login)(event);
+    }
+
+    pub fn emit_mcp_o_auth(&self, event: McpOAuthEvent) {
+        (self.mcp_o_auth)(event);
+    }
+
+    pub fn emit_mcp_changed(&self, thread_id: Option<String>) {
+        (self.mcp_changed)(thread_id);
+    }
+
+    pub fn emit_skills_changed(&self) {
+        (self.skills_changed)();
     }
 
     pub fn emit_log(&self, line: impl Into<String>) {

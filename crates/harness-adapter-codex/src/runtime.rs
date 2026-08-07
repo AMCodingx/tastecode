@@ -1,31 +1,31 @@
 use crate::{
     map_domain_notification,
-    mcp::{CODEX_MCP_CAPABILITIES, map_server_status},
+    mcp::{CODEX_MCP_CAPABILITIES, map_server_status, map_startup_status},
     skills::map_skill_list,
 };
 use harness_agent::{
     AgentError, AgentHandlers, AgentResult, AgentRuntime, AgentSession, ControlHandlers,
-    LoginEvent, ProviderControl, StartOptions, TurnOptions,
+    LoginEvent, McpOAuthEvent, ProviderControl, StartOptions, TurnOptions,
 };
 use harness_proc::{
     JsonRpcError, ProcessError, RpcResponder, SpawnOptions, StdioJsonRpc, spawn_cli,
 };
 use harness_protocol::{
     Account, ApprovalDecision, ApprovalKind, ApprovalMode, ApprovalRequest, AuthStartLoginResult,
-    Capabilities, DomainEvent, McpListResult, McpServer, Model, ProviderId, ServiceTier,
-    SkillsListResult, Thread, UserInputOption, UserInputQuestion, UserInputRequest,
+    Capabilities, DomainEvent, McpListResult, McpOAuthStartResult, McpServer, McpStartupStatus,
+    Model, ProviderId, ServiceTier, SkillsListResult, Thread, UserInputOption, UserInputQuestion,
+    UserInputRequest,
 };
 use serde_json::{Map, Value, json};
 use std::collections::HashMap;
 use std::ffi::{OsStr, OsString};
-use std::sync::{Arc, Mutex, RwLock};
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use thiserror::Error;
 use uuid::Uuid;
 
 const CLIENT_NAME: &str = "personal-harness";
 const DEFAULT_REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
-type CodexLoginHandler = dyn Fn(LoginEvent) + Send + Sync;
 
 pub const CODEX_CAPABILITIES: Capabilities = Capabilities {
     steer: true,
@@ -106,11 +106,18 @@ struct PendingRequests {
     user_inputs: HashMap<String, RpcResponder>,
 }
 
+struct McpLogin {
+    key: String,
+    server_id: String,
+    login_id: String,
+}
+
 pub struct CodexAdapter {
     rpc: StdioJsonRpc,
     pending: Arc<Mutex<PendingRequests>>,
+    mcp_startup: Arc<Mutex<HashMap<String, McpStartupStatus>>>,
+    mcp_logins: Arc<Mutex<Vec<McpLogin>>>,
     handlers: CodexHandlers,
-    login_handler: Arc<RwLock<Arc<CodexLoginHandler>>>,
     request_timeout: Duration,
 }
 
@@ -148,12 +155,13 @@ impl CodexAdapter {
         let child = spawn_cli(program, args, spawn_options)?;
         let rpc = StdioJsonRpc::new(child, "codex app-server")?;
         let pending = Arc::new(Mutex::new(PendingRequests::default()));
-        let login_handler: Arc<RwLock<Arc<CodexLoginHandler>>> =
-            Arc::new(RwLock::new(Arc::new(|_| {})));
+        let mcp_startup = Arc::new(Mutex::new(HashMap::new()));
+        let mcp_logins = Arc::new(Mutex::new(Vec::new()));
         configure_handlers(
             &rpc,
             Arc::clone(&pending),
-            Arc::clone(&login_handler),
+            Arc::clone(&mcp_startup),
+            Arc::clone(&mcp_logins),
             handlers.clone(),
         );
         rpc.request(
@@ -171,8 +179,9 @@ impl CodexAdapter {
         Ok(Self {
             rpc,
             pending,
+            mcp_startup,
+            mcp_logins,
             handlers,
-            login_handler,
             request_timeout,
         })
     }
@@ -222,10 +231,6 @@ impl CodexAdapter {
                 plan: None,
             },
         }
-    }
-
-    pub fn on_login(&self, handler: impl Fn(LoginEvent) + Send + Sync + 'static) {
-        *write_lock(&self.login_handler) = Arc::new(handler);
     }
 
     pub fn start_login(&self) -> Result<AuthStartLoginResult, CodexAdapterError> {
@@ -290,8 +295,13 @@ impl CodexAdapter {
                 .and_then(Value::as_array)
                 .ok_or_else(|| invalid(method, "missing data array"))?;
             for status in data {
+                let server_id = status.get("name").and_then(Value::as_str).unwrap_or("");
+                let startup = lock(&self.mcp_startup)
+                    .get(&mcp_startup_key(thread_id, server_id))
+                    .cloned();
                 servers.push(
-                    map_server_status(status, None).map_err(|message| invalid(method, &message))?,
+                    map_server_status(status, startup.as_ref())
+                        .map_err(|message| invalid(method, &message))?,
                 );
             }
             cursor = match response.get("nextCursor") {
@@ -307,6 +317,38 @@ impl CodexAdapter {
             }
         }
         Ok(servers)
+    }
+
+    pub fn start_mcp_o_auth(
+        &self,
+        server_id: &str,
+        thread_id: &str,
+    ) -> Result<McpOAuthStartResult, CodexAdapterError> {
+        let method = "mcpServer/oauth/login";
+        let key = mcp_startup_key(Some(thread_id), server_id);
+        let login_id = Uuid::new_v4().to_string();
+        {
+            let mut logins = lock(&self.mcp_logins);
+            logins.retain(|login| login.key != key);
+            logins.push(McpLogin {
+                key: key.clone(),
+                server_id: server_id.into(),
+                login_id: login_id.clone(),
+            });
+        }
+        let response = match self.call(method, json!({ "name": server_id, "threadId": thread_id }))
+        {
+            Ok(response) => response,
+            Err(error) => {
+                lock(&self.mcp_logins)
+                    .retain(|login| login.key != key || login.login_id != login_id);
+                return Err(error);
+            }
+        };
+        Ok(McpOAuthStartResult {
+            login_id,
+            auth_url: response_str(method, &response, &["authorizationUrl"])?.into(),
+        })
     }
 
     pub fn list_skills(&self, project_path: &str) -> Result<SkillsListResult, CodexAdapterError> {
@@ -629,12 +671,11 @@ impl AgentRuntime for CodexRuntime {
         let adapter = Arc::new(
             CodexAdapter::launch(
                 self.launch_options(),
-                AgentHandlers::new(|_| {}, move |line| log_handlers.emit_log(line)),
+                AgentHandlers::new(|_| {}, move |line| log_handlers.emit_log(line))
+                    .with_control_handlers(handlers),
             )
             .map_err(agent_error)?,
         );
-        let login_handlers = handlers;
-        adapter.on_login(move |event| login_handlers.emit_login(event));
         Ok(adapter)
     }
 }
@@ -642,7 +683,8 @@ impl AgentRuntime for CodexRuntime {
 fn configure_handlers(
     rpc: &StdioJsonRpc,
     pending: Arc<Mutex<PendingRequests>>,
-    login_handler: Arc<RwLock<Arc<CodexLoginHandler>>>,
+    mcp_startup: Arc<Mutex<HashMap<String, McpStartupStatus>>>,
+    mcp_logins: Arc<Mutex<Vec<McpLogin>>>,
     handlers: CodexHandlers,
 ) {
     let stderr_handlers = handlers.clone();
@@ -656,14 +698,75 @@ fn configure_handlers(
     let notification_pending = Arc::clone(&pending);
     let notification_handlers = handlers.clone();
     rpc.on_notification(move |method, params| {
+        if method == "skills/changed" {
+            notification_handlers.emit_skills_changed();
+            return;
+        }
+        if method == "mcpServer/startupStatus/updated" {
+            let Some(name) = params.get("name").and_then(Value::as_str) else {
+                notification_handlers.emit_log(
+                    "invalid notification: mcpServer/startupStatus/updated is missing name",
+                );
+                return;
+            };
+            let thread_id = params
+                .get("threadId")
+                .and_then(Value::as_str)
+                .map(str::to_owned);
+            match map_startup_status(&params) {
+                Ok(status) => {
+                    lock(&mcp_startup).insert(mcp_startup_key(thread_id.as_deref(), name), status);
+                    notification_handlers.emit_mcp_changed(thread_id);
+                }
+                Err(error) => notification_handlers.emit_log(format!(
+                    "invalid notification: mcpServer/startupStatus/updated {error}"
+                )),
+            }
+            return;
+        }
+        if method == "mcpServer/oauthLogin/completed" {
+            let Some(name) = params.get("name").and_then(Value::as_str) else {
+                notification_handlers.emit_log(
+                    "invalid notification: mcpServer/oauthLogin/completed is missing name",
+                );
+                return;
+            };
+            let Some(success) = params.get("success").and_then(Value::as_bool) else {
+                notification_handlers.emit_log(
+                    "invalid notification: mcpServer/oauthLogin/completed is missing success",
+                );
+                return;
+            };
+            let thread_id = params.get("threadId").and_then(Value::as_str);
+            let mut logins = lock(&mcp_logins);
+            let position = if let Some(thread_id) = thread_id {
+                let key = mcp_startup_key(Some(thread_id), name);
+                logins.iter().position(|login| login.key == key)
+            } else {
+                logins.iter().position(|login| login.server_id == name)
+            };
+            if let Some(position) = position {
+                let login = logins.remove(position);
+                drop(logins);
+                notification_handlers.emit_mcp_o_auth(McpOAuthEvent {
+                    server_id: login.server_id,
+                    login_id: login.login_id,
+                    success,
+                    error: params
+                        .get("error")
+                        .and_then(Value::as_str)
+                        .map(str::to_owned),
+                });
+            }
+            return;
+        }
         if method == "account/login/completed" {
             let Some(success) = params.get("success").and_then(Value::as_bool) else {
                 notification_handlers
                     .emit_log("invalid notification: account/login/completed is missing success");
                 return;
             };
-            let handler = Arc::clone(&read_lock(&login_handler));
-            handler(LoginEvent {
+            notification_handlers.emit_login(LoginEvent {
                 login_id: params
                     .get("loginId")
                     .and_then(Value::as_str)
@@ -954,6 +1057,10 @@ fn basename(path: &str) -> &str {
         .unwrap_or(path)
 }
 
+fn mcp_startup_key(thread_id: Option<&str>, server_id: &str) -> String {
+    format!("{}\0{server_id}", thread_id.unwrap_or(""))
+}
+
 fn insert_option(params: &mut Map<String, Value>, field: &str, value: Option<&str>) {
     if let Some(value) = value {
         params.insert(field.into(), Value::String(value.into()));
@@ -1013,16 +1120,6 @@ fn lock<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
         .unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
-fn read_lock<T>(lock: &RwLock<T>) -> std::sync::RwLockReadGuard<'_, T> {
-    lock.read()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
-}
-
-fn write_lock<T>(lock: &RwLock<T>) -> std::sync::RwLockWriteGuard<'_, T> {
-    lock.write()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1036,6 +1133,25 @@ mod tests {
     fn drives_handshake_models_thread_turn_and_approval_over_real_stdio() {
         let (event_tx, event_rx) = mpsc::channel();
         let (log_tx, _log_rx) = mpsc::channel();
+        let (login_tx, login_rx) = mpsc::channel();
+        let (mcp_changed_tx, mcp_changed_rx) = mpsc::channel();
+        let (mcp_o_auth_tx, mcp_o_auth_rx) = mpsc::channel();
+        let (skills_changed_tx, skills_changed_rx) = mpsc::channel();
+        let control_handlers = ControlHandlers::new(
+            move |event| {
+                let _ = login_tx.send(event);
+            },
+            |_| {},
+        )
+        .with_mcp_changed(move |thread_id| {
+            let _ = mcp_changed_tx.send(thread_id);
+        })
+        .with_mcp_o_auth(move |event| {
+            let _ = mcp_o_auth_tx.send(event);
+        })
+        .with_skills_changed(move || {
+            let _ = skills_changed_tx.send(());
+        });
         let handlers = CodexHandlers::new(
             move |event| {
                 let _ = event_tx.send(event);
@@ -1043,7 +1159,8 @@ mod tests {
             move |line| {
                 let _ = log_tx.send(line);
             },
-        );
+        )
+        .with_control_handlers(control_handlers);
         let adapter = Arc::new(test_adapter(handlers));
         assert_eq!(
             adapter.account(),
@@ -1053,10 +1170,6 @@ mod tests {
                 plan: Some("Pro".into()),
             }
         );
-        let (login_tx, login_rx) = mpsc::channel();
-        adapter.on_login(move |event| {
-            let _ = login_tx.send(event);
-        });
         assert_eq!(
             adapter.start_login().unwrap(),
             AuthStartLoginResult {
@@ -1088,13 +1201,32 @@ mod tests {
             ["docs", "files"]
         );
         assert_eq!(mcp[0].tools[0].name, "search");
+        assert_eq!(mcp[0].startup, McpStartupStatus::Ready);
+        assert_eq!(
+            mcp_changed_rx.recv_timeout(Duration::from_secs(2)).unwrap(),
+            Some("thread-1".into())
+        );
         let skills = adapter.list_skills("/repo").unwrap();
         assert_eq!(skills.skills[0].name, "docs");
         assert_eq!(skills.errors[0].message, "invalid frontmatter");
+        skills_changed_rx
+            .recv_timeout(Duration::from_secs(2))
+            .unwrap();
         assert!(
             adapter
                 .set_skill_enabled("/repo/docs/SKILL.md", true)
                 .unwrap()
+        );
+        let oauth = adapter.start_mcp_o_auth("docs", "thread-1").unwrap();
+        assert_eq!(oauth.auth_url, "https://auth.example/mcp");
+        assert_eq!(
+            mcp_o_auth_rx.recv_timeout(Duration::from_secs(2)).unwrap(),
+            McpOAuthEvent {
+                server_id: "docs".into(),
+                login_id: oauth.login_id,
+                success: true,
+                error: None,
+            }
         );
 
         let thread = adapter
@@ -1272,6 +1404,20 @@ mod tests {
                 "mcpServerStatus/list" if request["params"].get("cursor").is_none() => {
                     assert_eq!(request["params"]["detail"], "full");
                     assert_eq!(request["params"]["threadId"], "thread-1");
+                    write_frame(
+                        &mut stdout,
+                        json!({
+                            "jsonrpc": "2.0",
+                            "method": "mcpServer/startupStatus/updated",
+                            "params": {
+                                "threadId": "thread-1",
+                                "name": "docs",
+                                "status": "ready",
+                                "error": null,
+                                "failureReason": null
+                            }
+                        }),
+                    );
                     respond(
                         &mut stdout,
                         id.unwrap(),
@@ -1320,6 +1466,14 @@ mod tests {
                 "skills/list" => {
                     assert_eq!(request["params"]["cwds"], json!(["/repo"]));
                     assert_eq!(request["params"]["forceReload"], true);
+                    write_frame(
+                        &mut stdout,
+                        json!({
+                            "jsonrpc": "2.0",
+                            "method": "skills/changed",
+                            "params": {}
+                        }),
+                    );
                     respond(
                         &mut stdout,
                         id.unwrap(),
@@ -1350,6 +1504,28 @@ mod tests {
                         &mut stdout,
                         id.unwrap(),
                         json!({ "effectiveEnabled": true }),
+                    );
+                }
+                "mcpServer/oauth/login" => {
+                    assert_eq!(request["params"]["name"], "docs");
+                    assert_eq!(request["params"]["threadId"], "thread-1");
+                    respond(
+                        &mut stdout,
+                        id.unwrap(),
+                        json!({ "authorizationUrl": "https://auth.example/mcp" }),
+                    );
+                    write_frame(
+                        &mut stdout,
+                        json!({
+                            "jsonrpc": "2.0",
+                            "method": "mcpServer/oauthLogin/completed",
+                            "params": {
+                                "threadId": null,
+                                "name": "docs",
+                                "success": true,
+                                "error": null
+                            }
+                        }),
                     );
                 }
                 "thread/start" => {
