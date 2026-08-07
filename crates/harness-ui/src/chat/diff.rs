@@ -1,4 +1,5 @@
 use super::*;
+use gpui_component::scroll::ScrollableElement;
 use harness_protocol::{DiffFile, DiffFileStatus, DiffHunk, DiffLine, PlanStepStatus, SessionDiff};
 
 #[derive(Default)]
@@ -276,6 +277,7 @@ impl ChatView {
                                 .child(diff_pill_button(
                                     "diff-toggle-review",
                                     if reviewing { "Close" } else { "Review" },
+                                    None,
                                     false,
                                     theme,
                                     Some({
@@ -370,7 +372,8 @@ impl ChatView {
                     }))
                     .child(diff_pill_button(
                         "diff-refresh",
-                        "↻ Refresh",
+                        "Refresh",
+                        Some("icons/rotate-ccw.svg"),
                         false,
                         theme,
                         refresh_action,
@@ -458,13 +461,14 @@ impl ChatView {
     ) -> AnyElement {
         let theme = self.theme;
         let busy = self.diff_ui.busy;
+        let highlights = word_highlights(&hunk.lines);
         let decisions = [
-            ("✓ Accept", DiffDecision::Accept),
-            ("× Reject", DiffDecision::Reject),
+            ("Accept", "icons/check.svg", DiffDecision::Accept),
+            ("Reject", "icons/x.svg", DiffDecision::Reject),
         ]
         .into_iter()
         .enumerate()
-        .map(|(index, (label, decision))| {
+        .map(|(index, (label, icon, decision))| {
             let selected = hunk.decision == Some(decision);
             let enabled = !busy && !selected;
             let action: Option<UiAction> = enabled.then(|| {
@@ -489,6 +493,7 @@ impl ChatView {
                     file_index * 1_000 + hunk_index,
                 ),
                 label,
+                Some(icon),
                 selected,
                 theme,
                 action,
@@ -499,16 +504,13 @@ impl ChatView {
 
         div()
             .id(("diff-hunk", file_index * 1_000 + hunk_index))
+            .relative()
             .border_t_1()
             .border_color(theme.line.hsla())
-            .bg(if reviewed {
-                theme.surface.hsla().opacity(0.45)
-            } else {
-                theme.background.hsla()
-            })
+            .bg(theme.background.hsla())
             .child(
                 div()
-                    .min_h(px(48.0))
+                    .min_h(px(42.0))
                     .flex()
                     .items_center()
                     .gap(px(10.0))
@@ -527,7 +529,23 @@ impl ChatView {
                     )
                     .child(div().flex().items_center().gap(px(6.0)).children(decisions)),
             )
-            .children(hunk.lines.iter().map(|line| diff_line(line, theme)))
+            .children(
+                hunk.lines
+                    .iter()
+                    .enumerate()
+                    .map(|(index, line)| diff_line(line, highlights.get(&index), theme)),
+            )
+            .when(reviewed, |section| {
+                section.child(
+                    div()
+                        .absolute()
+                        .top_0()
+                        .bottom_0()
+                        .left_0()
+                        .w(px(3.0))
+                        .bg(theme.line_strong.hsla()),
+                )
+            })
             .into_any_element()
     }
 }
@@ -578,6 +596,7 @@ fn diff_stat(added: usize, removed: usize, theme: Theme) -> impl IntoElement {
 fn diff_pill_button(
     id: impl Into<gpui::ElementId>,
     label: &'static str,
+    icon: Option<&'static str>,
     selected: bool,
     theme: Theme,
     action: Option<UiAction>,
@@ -591,6 +610,7 @@ fn diff_pill_button(
         .flex()
         .items_center()
         .justify_center()
+        .gap(px(5.0))
         .rounded(px(15.0))
         .border_1()
         .border_color(if selected && reject {
@@ -625,6 +645,9 @@ fn diff_pill_button(
         .when_some(action, |button, action| {
             button.on_click(move |_event, _window, cx| action(cx))
         })
+        .when_some(icon, |button, icon| {
+            button.child(svg().path(icon).size(px(13.0)))
+        })
         .child(label)
 }
 
@@ -637,7 +660,7 @@ fn diff_review_status(status: impl Into<SharedString>, theme: Theme) -> impl Int
         .child(status.into())
 }
 
-fn diff_line(line: &DiffLine, theme: Theme) -> AnyElement {
+fn diff_line(line: &DiffLine, highlight: Option<&DiffWordHighlight>, theme: Theme) -> AnyElement {
     let (old_line, new_line, marker, text, background, color) = match line {
         DiffLine::Context {
             old_line,
@@ -681,30 +704,157 @@ fn diff_line(line: &DiffLine, theme: Theme) -> AnyElement {
         .child(diff_line_number(new_line, theme))
         .child(
             div()
-                .w(px(20.0))
-                .flex_none()
-                .text_color(if marker == "+" {
-                    theme.success.hsla()
-                } else if marker == "−" {
-                    theme.error.hsla()
-                } else {
-                    theme.text_3.hsla()
-                })
-                .child(marker),
-        )
-        .child(
-            div()
                 .min_w(px(0.0))
                 .flex_1()
+                .flex()
+                .items_center()
+                .overflow_x_scrollbar()
+                .px(px(10.0))
                 .text_color(color)
                 .whitespace_nowrap()
-                .child(if text.is_empty() {
-                    " ".into()
-                } else {
-                    text.clone()
-                }),
+                .child(
+                    div()
+                        .w(px(16.0))
+                        .flex_none()
+                        .text_color(if marker == "+" {
+                            theme.success.hsla()
+                        } else if marker == "−" {
+                            theme.error.hsla()
+                        } else {
+                            theme.text_3.hsla()
+                        })
+                        .child(marker),
+                )
+                .child(diff_line_text(text, highlight, theme)),
         )
         .into_any_element()
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct DiffWordHighlight {
+    before: String,
+    changed: String,
+    after: String,
+    addition: bool,
+}
+
+fn diff_line_text(text: &str, highlight: Option<&DiffWordHighlight>, theme: Theme) -> AnyElement {
+    let fallback = if text.is_empty() { " " } else { text };
+    let Some(highlight) = highlight else {
+        return div()
+            .flex_none()
+            .child(fallback.to_owned())
+            .into_any_element();
+    };
+    div()
+        .flex_none()
+        .flex()
+        .whitespace_nowrap()
+        .child(div().flex_none().child(highlight.before.clone()))
+        .child(
+            div()
+                .flex_none()
+                .bg(if highlight.addition {
+                    theme.success.hsla().opacity(0.28)
+                } else {
+                    theme.error.hsla().opacity(0.28)
+                })
+                .child(highlight.changed.clone()),
+        )
+        .child(div().flex_none().child(highlight.after.clone()))
+        .into_any_element()
+}
+
+fn word_highlights(lines: &[DiffLine]) -> HashMap<usize, DiffWordHighlight> {
+    let mut result = HashMap::new();
+    let mut start = 0;
+    while start < lines.len() {
+        if matches!(lines[start], DiffLine::Context { .. }) {
+            start += 1;
+            continue;
+        }
+        let mut end = start;
+        while end < lines.len() && !matches!(lines[end], DiffLine::Context { .. }) {
+            end += 1;
+        }
+        let deleted = (start..end)
+            .filter(|index| matches!(lines[*index], DiffLine::Deletion { .. }))
+            .collect::<Vec<_>>();
+        let added = (start..end)
+            .filter(|index| matches!(lines[*index], DiffLine::Addition { .. }))
+            .collect::<Vec<_>>();
+        for (deleted_index, added_index) in deleted.into_iter().zip(added) {
+            let before = diff_line_source(&lines[deleted_index]);
+            let after = diff_line_source(&lines[added_index]);
+            let (old_highlight, new_highlight) = changed_words(before, after);
+            result.insert(deleted_index, old_highlight);
+            result.insert(added_index, new_highlight);
+        }
+        start = end;
+    }
+    result
+}
+
+fn diff_line_source(line: &DiffLine) -> &str {
+    match line {
+        DiffLine::Context { text, .. }
+        | DiffLine::Addition { text, .. }
+        | DiffLine::Deletion { text, .. } => text,
+    }
+}
+
+fn changed_words(before: &str, after: &str) -> (DiffWordHighlight, DiffWordHighlight) {
+    let old_words = diff_words(before);
+    let new_words = diff_words(after);
+    let mut prefix = 0;
+    while prefix < old_words.len()
+        && prefix < new_words.len()
+        && old_words[prefix] == new_words[prefix]
+    {
+        prefix += 1;
+    }
+    let mut suffix = 0;
+    while suffix < old_words.len().saturating_sub(prefix)
+        && suffix < new_words.len().saturating_sub(prefix)
+        && old_words[old_words.len() - 1 - suffix] == new_words[new_words.len() - 1 - suffix]
+    {
+        suffix += 1;
+    }
+    let highlight = |words: &[String], addition| DiffWordHighlight {
+        before: words[..prefix].concat(),
+        changed: words[prefix..words.len() - suffix].concat(),
+        after: words[words.len() - suffix..].concat(),
+        addition,
+    };
+    (highlight(&old_words, false), highlight(&new_words, true))
+}
+
+fn diff_words(text: &str) -> Vec<String> {
+    let mut words = Vec::new();
+    let mut start = 0;
+    while start < text.len() {
+        let character = text[start..].chars().next().expect("valid UTF-8 boundary");
+        let word = character.is_ascii_alphanumeric() || character == '_';
+        let whitespace = character.is_whitespace();
+        let mut end = start + character.len_utf8();
+        while end < text.len() {
+            let next = text[end..].chars().next().expect("valid UTF-8 boundary");
+            let same_group = if word {
+                next.is_ascii_alphanumeric() || next == '_'
+            } else if whitespace {
+                next.is_whitespace()
+            } else {
+                !(next.is_ascii_alphanumeric() || next == '_')
+            };
+            if !same_group {
+                break;
+            }
+            end += next.len_utf8();
+        }
+        words.push(text[start..end].to_owned());
+        start = end;
+    }
+    words
 }
 
 fn diff_line_number(line: Option<u32>, theme: Theme) -> impl IntoElement {
@@ -842,5 +992,80 @@ mod tests {
         assert_eq!(summary.files.len(), 2);
         assert_eq!((summary.added, summary.removed), (2, 1));
         assert_eq!((summary.files[1].added, summary.files[1].removed), (1, 0));
+    }
+
+    #[test]
+    fn review_highlights_only_the_changed_words() {
+        let lines = vec![
+            DiffLine::Deletion {
+                old_line: 1,
+                text: "const host = process.env.HARNESS_HOST ?? '127.0.0.1'".into(),
+                no_newline_at_end: None,
+            },
+            DiffLine::Addition {
+                new_line: 1,
+                text: "const host = configuredHost ?? '127.0.0.1'".into(),
+                no_newline_at_end: None,
+            },
+        ];
+
+        let highlights = word_highlights(&lines);
+        assert_eq!(
+            highlights.get(&0),
+            Some(&DiffWordHighlight {
+                before: "const host = ".into(),
+                changed: "process.env.HARNESS_HOST".into(),
+                after: " ?? '127.0.0.1'".into(),
+                addition: false,
+            })
+        );
+        assert_eq!(
+            highlights.get(&1),
+            Some(&DiffWordHighlight {
+                before: "const host = ".into(),
+                changed: "configuredHost".into(),
+                after: " ?? '127.0.0.1'".into(),
+                addition: true,
+            })
+        );
+    }
+
+    #[test]
+    fn review_pairs_deletions_and_additions_within_each_change_block() {
+        let lines = vec![
+            DiffLine::Deletion {
+                old_line: 1,
+                text: "old one".into(),
+                no_newline_at_end: None,
+            },
+            DiffLine::Addition {
+                new_line: 1,
+                text: "new one".into(),
+                no_newline_at_end: None,
+            },
+            DiffLine::Context {
+                old_line: 2,
+                new_line: 2,
+                text: "same".into(),
+                no_newline_at_end: None,
+            },
+            DiffLine::Deletion {
+                old_line: 3,
+                text: "old two".into(),
+                no_newline_at_end: None,
+            },
+            DiffLine::Addition {
+                new_line: 3,
+                text: "new two".into(),
+                no_newline_at_end: None,
+            },
+        ];
+
+        let highlights = word_highlights(&lines);
+        assert_eq!(highlights.len(), 4);
+        assert_eq!(highlights[&0].changed, "old");
+        assert_eq!(highlights[&1].changed, "new");
+        assert_eq!(highlights[&3].changed, "old");
+        assert_eq!(highlights[&4].changed, "new");
     }
 }
