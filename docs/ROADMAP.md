@@ -10,8 +10,8 @@ Order matters; dates do not.
 ### M0 — Skeleton ✅
 
 Monorepo, CI on Windows + macOS, hardened Electron shell, wire protocol, core server.
-**First adapter: Codex app-server.** Thread UI, prompt bar, onboarding with real
-browser sign-in.
+**First adapter: Codex app-server.** Thread UI, prompt bar, and real browser sign-in
+from Settings.
 → _A real agent turn streams into a window._ **Done.**
 
 Shipped beyond the original plan, because building it demanded them: real vendor OAuth
@@ -46,7 +46,7 @@ output.
 ### M2 — Many agents, many sessions ✅
 
 ACP adapter (unlocks ~25 engines), Claude Code adapter, session manager, worktrees,
-checkpoints, provider setup wizard, cost accounting.
+checkpoints, provider discovery and setup in Settings, cost accounting.
 → _Three agents on three worktrees in one repo, no confusion._ **Done.**
 
 Shipped: **Claude Code and ACP adapters**, provider discovery, SQLite-owned projects and
@@ -96,7 +96,7 @@ prompt bar; TasteSkill v2 runtime work continues separately.
 ### M5 — Visual pass
 
 Full design system, every screen redesigned, empty/loading/error states, both themes,
-density modes, keybindings, command palette, onboarding, brand and icon.
+density modes, keybindings, command palette, brand and icon.
 → _A screenshot is convincing with no explanation._
 
 ### M6 — Ship Windows

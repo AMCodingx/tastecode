@@ -3,6 +3,7 @@ import {
   memo,
   Suspense,
   useCallback,
+  useDeferredValue,
   useEffect,
   useRef,
   useState,
@@ -39,6 +40,7 @@ import {
 import {
   agentMark,
   connectionMark,
+  filterModelChoicesByQuery,
   providerMark,
   type ModelChoice,
   type ProviderMark,
@@ -64,6 +66,7 @@ import type {
 } from '../theme.js'
 import { McpSettings } from './McpSettings.js'
 import { Menu, MenuItem } from './Menu.js'
+import { ModelSearchField } from './ModelSearchField.js'
 import { SkillsSettings } from './SkillsSettings.js'
 import { ProviderIcon } from './ProviderIcon.js'
 
@@ -824,66 +827,15 @@ function ModelSettings(props: {
 
       {sources.size > 0 ? (
         <div className="model-settings__sources">
-          {[...sources.entries()].map(([source, choices]) => {
-            const visibleCount = choices.filter(
-              (choice) => !props.hiddenModels.has(choice.key),
-            ).length
-            const anyVisible = visibleCount > 0
-
-            return (
-              <section className="model-visibility" aria-label={source} key={source}>
-                <header className="model-visibility__source">
-                  <div className="model-visibility__source-copy">
-                    {choices[0] ? <ProviderIcon mark={choices[0].mark} size={18} /> : null}
-                    <h3>{source}</h3>
-                    <span className="settings__status">
-                      {visibleCount}/{choices.length}
-                    </span>
-                  </div>
-                  <button
-                    className={`switch switch--source${anyVisible ? ' is-on' : ''}`}
-                    type="button"
-                    role="switch"
-                    aria-label={`Show any models from ${source}`}
-                    aria-checked={anyVisible}
-                    onClick={() => {
-                      // One master switch per provider: off hides every model, on
-                      // brings them all back — "deselect a provider" without
-                      // disconnecting it.
-                      for (const choice of choices)
-                        props.onModelVisibilityChange(choice.key, !anyVisible)
-                    }}
-                  >
-                    <span className="switch__thumb" />
-                  </button>
-                </header>
-
-                <div className="model-visibility__models">
-                  {choices.map((choice) => {
-                    const visible = !props.hiddenModels.has(choice.key)
-                    return (
-                      <SettingsRow
-                        className={`model-visibility__model${visible ? '' : ' is-hidden'}`}
-                        key={choice.key}
-                        title={choice.model.displayName}
-                      >
-                        <button
-                          className={`switch${visible ? ' is-on' : ''}`}
-                          type="button"
-                          role="switch"
-                          aria-label={`Show ${choice.model.displayName}`}
-                          aria-checked={visible}
-                          onClick={() => props.onModelVisibilityChange(choice.key, !visible)}
-                        >
-                          <span className="switch__thumb" />
-                        </button>
-                      </SettingsRow>
-                    )
-                  })}
-                </div>
-              </section>
-            )
-          })}
+          {[...sources.entries()].map(([source, choices]) => (
+            <ModelVisibilityGroup
+              key={source}
+              source={source}
+              choices={choices}
+              hiddenModels={props.hiddenModels}
+              onModelVisibilityChange={props.onModelVisibilityChange}
+            />
+          ))}
         </div>
       ) : (
         <div className="model-settings__empty">
@@ -892,6 +844,85 @@ function ModelSettings(props: {
         </div>
       )}
     </SettingsPanel>
+  )
+}
+
+function ModelVisibilityGroup(props: {
+  source: string
+  choices: ModelChoice[]
+  hiddenModels: Set<string>
+  onModelVisibilityChange: (key: string, visible: boolean) => void
+}) {
+  const [query, setQuery] = useState('')
+  const deferredQuery = useDeferredValue(query)
+  const visibleCount = props.choices.filter((choice) => !props.hiddenModels.has(choice.key)).length
+  const anyVisible = visibleCount > 0
+  const filteredChoices = filterModelChoicesByQuery(props.choices, deferredQuery)
+
+  return (
+    <section className="model-visibility" aria-label={props.source}>
+      <header className="model-visibility__source">
+        <div className="model-visibility__source-copy">
+          {props.choices[0] ? <ProviderIcon mark={props.choices[0].mark} size={18} /> : null}
+          <h3>{props.source}</h3>
+          <span className="settings__status">
+            {visibleCount}/{props.choices.length}
+          </span>
+        </div>
+        <ModelSearchField
+          className="model-visibility__search"
+          value={query}
+          label={`Search ${props.source} models`}
+          onChange={setQuery}
+        />
+        <button
+          className={`switch switch--source${anyVisible ? ' is-on' : ''}`}
+          type="button"
+          role="switch"
+          aria-label={`Show any models from ${props.source}`}
+          aria-checked={anyVisible}
+          onClick={() => {
+            // One master switch per provider: off hides every model, on
+            // brings them all back — "deselect a provider" without
+            // disconnecting it.
+            for (const choice of props.choices)
+              props.onModelVisibilityChange(choice.key, !anyVisible)
+          }}
+        >
+          <span className="switch__thumb" />
+        </button>
+      </header>
+
+      <div className="model-visibility__models">
+        {filteredChoices.length > 0 ? (
+          filteredChoices.map((choice) => {
+            const visible = !props.hiddenModels.has(choice.key)
+            return (
+              <SettingsRow
+                className={`model-visibility__model${visible ? '' : ' is-hidden'}`}
+                key={choice.key}
+                title={choice.model.displayName}
+              >
+                <button
+                  className={`switch${visible ? ' is-on' : ''}`}
+                  type="button"
+                  role="switch"
+                  aria-label={`Show ${choice.model.displayName}`}
+                  aria-checked={visible}
+                  onClick={() => props.onModelVisibilityChange(choice.key, !visible)}
+                >
+                  <span className="switch__thumb" />
+                </button>
+              </SettingsRow>
+            )
+          })
+        ) : (
+          <p className="model-visibility__empty" role="status">
+            No matching models.
+          </p>
+        )}
+      </div>
+    </section>
   )
 }
 

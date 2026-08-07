@@ -1,57 +1,19 @@
 import { memo } from 'react'
-import { ChevronDown, GitBranch, History, SquareTerminal } from 'lucide-react'
-import { SHORTCUTS, shortcutAria } from '../shortcuts.js'
-import type { Project } from './Sidebar.js'
-import { Menu, MenuItem } from './Menu.js'
+import { GitBranch, History, SquareTerminal } from 'lucide-react'
 
 /**
- * Header above the thread: which project this session belongs to, and the
- * switcher for moving between them. It sits at the top because "where am I
- * working" must never require a glance elsewhere.
+ * Header above the thread: the session title and its workspace tools.
  */
 function StageHeaderComponent(props: {
-  projects: Project[]
-  activePath: string | undefined
   title: string | undefined
   checkpointCount: number
   worktreeBranch: string | undefined
   terminalOpen: boolean
-  onSelectProject: (path: string) => void
   onOpenRollback: () => void
   onToggleTerminal: () => void
 }) {
   return (
     <header className="stagehead">
-      <Menu
-        label="Project"
-        drop="down"
-        disabled={props.projects.length === 0}
-        shortcutAria={shortcutAria(SHORTCUTS.switchProject)}
-        trigger={() => (
-          <span className="picker">
-            <span>{props.activePath ? basename(props.activePath) : 'No project'}</span>
-            <ChevronDown size={11} aria-hidden />
-          </span>
-        )}
-      >
-        {(close) => (
-          <>
-            {props.projects.map((project) => (
-              <MenuItem
-                key={project.path}
-                title={basename(project.path)}
-                detail={project.path}
-                active={project.path === props.activePath}
-                onClick={() => {
-                  props.onSelectProject(project.path)
-                  close()
-                }}
-              />
-            ))}
-          </>
-        )}
-      </Menu>
-
       {props.title ? <span className="stagehead__title">{props.title}</span> : null}
 
       <div className="stagehead__tools">
@@ -82,14 +44,9 @@ function StageHeaderComponent(props: {
   )
 }
 
-function basename(path: string): string {
-  const parts = path.split(/[\\/]/).filter(Boolean)
-  return parts[parts.length - 1] ?? path
-}
-
 /**
  * Memoised: the app root re-renders on every streamed frame, and this subtree
  * does not change while an answer arrives. Stable owner callbacks let the
- * shallow comparison keep project menus and header controls out of that path.
+ * shallow comparison keep header controls out of that path.
  */
 export const StageHeader = memo(StageHeaderComponent)

@@ -21,7 +21,7 @@ const session = (id: string, title: string) => ({
 })
 
 describe('Sidebar chat actions', () => {
-  it('keeps the inbox version switch out of the sidebar', () => {
+  it('uses the classic account footer in the inbox sidebar', () => {
     const onAddProject = vi.fn()
     const onOpenSettings = vi.fn()
     render(
@@ -46,7 +46,7 @@ describe('Sidebar chat actions', () => {
             reasoningTokens: 0,
             totalTokens: 5_000,
           },
-          limits: [{ label: 'Weekly', usedPercent: 87 }],
+          limits: [{ label: '7 days', usedPercent: 85 }],
         }}
         mode="inbox"
         inbox={{
@@ -81,8 +81,14 @@ describe('Sidebar chat actions', () => {
     expect(screen.getByRole('button', { name: 'Add Project' })).toBeTruthy()
     fireEvent.click(screen.getByRole('button', { name: 'New chat' }))
     expect(onAddProject).toHaveBeenCalledOnce()
-    expect(screen.queryByRole('button', { name: 'Account' })).toBeNull()
-    fireEvent.click(screen.getByRole('button', { name: 'Settings' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Account' }))
+    expect(screen.getByText('Limits')).toBeTruthy()
+    expect(screen.getByText('7 days')).toBeTruthy()
+    expect(screen.getByText('15% left')).toBeTruthy()
+    const limitBar = screen.getByRole('progressbar', { name: '7 days left' })
+    expect(limitBar.getAttribute('aria-valuenow')).toBe('15')
+    expect((limitBar.firstElementChild as HTMLElement).style.width).toBe('15%')
+    fireEvent.click(screen.getByRole('menuitem', { name: /Settings/ }))
     expect(onOpenSettings).toHaveBeenCalledOnce()
   })
 

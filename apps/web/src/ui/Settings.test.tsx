@@ -2,6 +2,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import type { Account, ProviderId } from '@harness/contracts'
+import type { ModelChoice } from '../model-catalog.js'
 import { resetInstalls } from '../provider-install.js'
 import type { Transport } from '../transport.js'
 import { Settings } from './Settings.js'
@@ -19,6 +20,98 @@ afterEach(() => {
   cleanup()
   vi.restoreAllMocks()
   resetInstalls()
+})
+
+describe('model settings', () => {
+  it('filters each provider locally while its master switch still controls every model', () => {
+    const models: ModelChoice[] = [
+      {
+        key: 'opencode:ling',
+        provider: 'opencode',
+        sourceName: 'OpenCode',
+        mark: 'opencode',
+        model: {
+          id: 'zen/ling-3.0-tiny',
+          displayName: 'OpenCode Zen · Ling-3.0-tiny Free',
+          description: '',
+          isDefault: false,
+          reasoningEfforts: [],
+          serviceTiers: [],
+        },
+      },
+      {
+        key: 'opencode:qwen',
+        provider: 'opencode',
+        sourceName: 'OpenCode',
+        mark: 'opencode',
+        model: {
+          id: 'go/qwen3.8-max',
+          displayName: 'OpenCode Go · Qwen3.8 Max',
+          description: '',
+          isDefault: false,
+          reasoningEfforts: [],
+          serviceTiers: [],
+        },
+      },
+    ]
+    const onModelVisibilityChange = vi.fn()
+    const transport = {
+      request: vi.fn(),
+      on: vi.fn(() => () => {}),
+    } as unknown as Transport
+
+    render(
+      <Settings
+        provider="codex"
+        providerName="Codex"
+        transport={transport}
+        projectPath={undefined}
+        projectName={undefined}
+        account={undefined}
+        providerStatuses={[]}
+        acpAgents={[]}
+        modelConnections={[]}
+        models={models}
+        hiddenModels={new Set(['opencode:ling'])}
+        onModelVisibilityChange={onModelVisibilityChange}
+        onConnectionsChanged={() => {}}
+        projectCount={0}
+        sidebarSettings={{ mode: 'classic', autoSettleDays: 3 }}
+        onSidebarSettingsChange={() => {}}
+        themePreference="system"
+        onThemePreferenceChange={() => {}}
+        fontPreference="geist"
+        onFontPreferenceChange={() => {}}
+        accentPreference="neutral"
+        onAccentPreferenceChange={() => {}}
+        backdropPreference="default"
+        onBackdropPreferenceChange={() => {}}
+        sidebarGlass={0}
+        onSidebarGlassChange={() => {}}
+        showMacOSFontSmoothing={false}
+        macOSFontSmoothing={true}
+        onMacOSFontSmoothingChange={() => {}}
+        onAccountChange={() => {}}
+        onReset={() => {}}
+        onClose={() => {}}
+      />,
+    )
+
+    fireEvent.click(screen.getByRole('button', { name: 'Models' }))
+    const search = screen.getByRole('searchbox', { name: 'Search OpenCode models' })
+    fireEvent.change(search, { target: { value: 'qwen 3.8' } })
+
+    expect(screen.queryByText('OpenCode Zen · Ling-3.0-tiny Free')).toBeNull()
+    expect(screen.getByText('OpenCode Go · Qwen3.8 Max')).toBeTruthy()
+
+    fireEvent.click(screen.getByRole('switch', { name: 'Show any models from OpenCode' }))
+    expect(onModelVisibilityChange).toHaveBeenCalledTimes(2)
+    expect(onModelVisibilityChange).toHaveBeenNthCalledWith(1, 'opencode:ling', false)
+    expect(onModelVisibilityChange).toHaveBeenNthCalledWith(2, 'opencode:qwen', false)
+
+    fireEvent.click(screen.getByRole('button', { name: 'Clear Search OpenCode models' }))
+    expect(screen.getByText('OpenCode Zen · Ling-3.0-tiny Free')).toBeTruthy()
+  })
 })
 
 describe('provider settings', () => {
