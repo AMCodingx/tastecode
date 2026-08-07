@@ -1646,15 +1646,23 @@ impl HarnessApp {
 
     fn titlebar(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = self.theme;
+        let left_padding = if cfg!(target_os = "macos") {
+            80.0
+        } else {
+            12.0
+        };
 
         div()
+            .relative()
             .h(px(TITLEBAR_HEIGHT))
             .w_full()
             .flex_none()
             .flex()
             .items_center()
-            .px(px(12.0))
+            .pl(px(left_padding))
+            .pr(px(12.0))
             .bg(theme.titlebar.hsla())
+            .child(crate::chrome::top_highlight(theme))
             .on_mouse_down(MouseButton::Left, |event, window, _cx| {
                 if event.click_count == 2 {
                     window.titlebar_double_click();
