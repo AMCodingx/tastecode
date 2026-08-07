@@ -2715,6 +2715,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "harness-adapter-codex"
+version = "0.1.0"
+dependencies = [
+ "harness-protocol",
+ "serde_json",
+ "uuid",
+]
+
+[[package]]
 name = "harness-client"
 version = "0.1.0"
 dependencies = [

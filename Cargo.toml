@@ -3,6 +3,7 @@ resolver = "2"
 members = [
   "apps/native",
   "crates/harness-client",
+  "crates/harness-adapter-codex",
   "crates/harness-proc",
   "crates/harness-protocol",
   "crates/harness-providers",
