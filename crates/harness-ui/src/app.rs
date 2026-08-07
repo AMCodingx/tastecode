@@ -180,6 +180,10 @@ impl HarnessApp {
                 NativePreferences::default()
             }
         };
+        if !fixture {
+            state.restore_model_catalog_snapshot(preferences.restored_model_catalog());
+        }
+        let has_boot_model_catalog = !state.model_catalog.is_empty();
         let sidebar_width = f32::from(preferences.rail_width);
         let system_theme_mode = theme_mode_for_appearance(window.appearance());
         let mode = match preferences.theme {
@@ -574,7 +578,7 @@ impl HarnessApp {
         })
         .detach();
 
-        Self {
+        let mut app = Self {
             theme,
             sidebar_collapsed: false,
             sidebar_transition: 0,
@@ -643,10 +647,16 @@ impl HarnessApp {
             image_viewer: None,
             app_zoom: zoom_hud::AppZoomState::default(),
             fixture,
+        };
+        if has_boot_model_catalog {
+            app.sync_model_selection();
+            app.sync_composer_settings(cx);
         }
+        app
     }
 
     fn apply_client_update(&mut self, update: ClientUpdate, cx: &mut Context<Self>) {
+        let completed_model_catalog = self.state.take_completed_model_catalog_snapshot();
         let shell_changed = update.shell_changed;
         let mut refresh_stage = false;
         for chat_update in update.chat {
@@ -715,6 +725,9 @@ impl HarnessApp {
             self.sync_stage_settings(cx);
             cx.notify();
         }
+        if let Some(catalog) = completed_model_catalog {
+            let _ = NativePreferences::save_model_catalog_cache(&catalog);
+        }
     }
 
     fn sync_model_selection(&mut self) {
@@ -742,12 +755,15 @@ impl HarnessApp {
             })
             .cloned()
         else {
-            self.selected_model_key = None;
-            self.effort = None;
-            self.service_tier = None;
-            if self.preferences.selected_model_key.take().is_some() {
-                self.persist_native_preferences();
-            }
+            self.selected_model_key = self.preferences.selected_model_key.clone();
+            let remembered = self.selected_model_key.as_ref().and_then(|selected| {
+                self.preferences
+                    .model_by_source
+                    .values()
+                    .find(|selection| selection.model_key == *selected)
+            });
+            self.effort = remembered.and_then(|selection| selection.effort.clone());
+            self.service_tier = remembered.and_then(|selection| selection.service_tier.clone());
             return;
         };
         let (effort, service_tier) = self.remembered_model_settings(&choice);

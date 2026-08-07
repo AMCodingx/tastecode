@@ -52,6 +52,7 @@ pub(crate) struct ClientState {
     pending_acp_agents: Vec<AcpAgent>,
     pending_model_catalog: Vec<ModelChoice>,
     catalog_refresh_failed: bool,
+    completed_catalog_snapshot_pending: bool,
     pub(crate) mcp_inventory: Option<ScopedMcpInventory>,
     pub(crate) mcp_loading: bool,
     pub(crate) mcp_busy: Option<String>,
@@ -85,7 +86,7 @@ pub(crate) struct ModelChoice {
     pub(crate) agent_id: Option<String>,
     pub(crate) agent_name: Option<String>,
     pub(crate) model: Model,
-    catalog_order: (u8, usize, usize),
+    pub(crate) catalog_order: (u8, usize, usize),
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -747,6 +748,7 @@ impl ClientState {
             pending_acp_agents: Vec::new(),
             pending_model_catalog: Vec::new(),
             catalog_refresh_failed: false,
+            completed_catalog_snapshot_pending: false,
             mcp_inventory: None,
             mcp_loading: false,
             mcp_busy: None,
@@ -784,6 +786,21 @@ impl ClientState {
                 None
             }
         }
+    }
+
+    pub(crate) fn restore_model_catalog_snapshot(&mut self, snapshot: Option<Vec<ModelChoice>>) {
+        if let Some(snapshot) = snapshot {
+            self.model_catalog = snapshot;
+            self.model_catalog_loaded = true;
+        }
+    }
+
+    pub(crate) fn take_completed_model_catalog_snapshot(&mut self) -> Option<Vec<ModelChoice>> {
+        if !self.completed_catalog_snapshot_pending {
+            return None;
+        }
+        self.completed_catalog_snapshot_pending = false;
+        Some(self.model_catalog.clone())
     }
 
     pub(crate) fn set_preview_capture_available(&mut self, available: bool) {
@@ -3796,6 +3813,7 @@ impl ClientState {
         self.acp_agents = std::mem::take(&mut self.pending_acp_agents);
         self.model_catalog = std::mem::take(&mut self.pending_model_catalog);
         self.model_catalog_loaded = true;
+        self.completed_catalog_snapshot_pending = true;
     }
 
     fn clear_orphaned_provider_terminal_events(&mut self) {
@@ -5194,6 +5212,11 @@ mod tests {
                 .collect::<Vec<_>>(),
             ["fresh-one", "fresh-two"]
         );
+        assert_eq!(
+            state.take_completed_model_catalog_snapshot().unwrap().len(),
+            2
+        );
+        assert!(state.take_completed_model_catalog_snapshot().is_none());
     }
 
     #[test]
@@ -5210,6 +5233,7 @@ mod tests {
         assert!(state.model_catalog_loaded);
         assert_eq!(state.model_catalog[0].model.id, "cached");
         assert!(state.pending_model_catalog.is_empty());
+        assert!(state.take_completed_model_catalog_snapshot().is_none());
     }
 
     #[test]
