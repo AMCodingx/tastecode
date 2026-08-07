@@ -649,9 +649,9 @@ fn diff_pill_button(
         .rounded(px(15.0))
         .border_1()
         .border_color(if selected && reject {
-            theme.error.hsla().opacity(0.55)
+            theme.error.mix_oklab(theme.line, 0.45).hsla()
         } else if selected {
-            theme.success.hsla().opacity(0.55)
+            theme.success.mix_oklab(theme.line, 0.45).hsla()
         } else {
             theme.line_strong.hsla()
         })
@@ -713,16 +713,16 @@ fn diff_line(line: &DiffLine, highlight: Option<&DiffWordHighlight>, theme: Them
             Some(*new_line),
             "+",
             text,
-            theme.success.hsla().opacity(0.11),
-            theme.response_text.hsla(),
+            theme.success.hsla().opacity(0.10),
+            theme.text.hsla(),
         ),
         DiffLine::Deletion { old_line, text, .. } => (
             Some(*old_line),
             None,
             "−",
             text,
-            theme.error.hsla().opacity(0.11),
-            theme.response_text.hsla(),
+            theme.error.hsla().opacity(0.10),
+            theme.text.hsla(),
         ),
     };
     div()
@@ -896,7 +896,7 @@ fn diff_line_number(line: Option<u32>, theme: Theme) -> impl IntoElement {
         .flex_none()
         .flex()
         .justify_end()
-        .pr(px(7.0))
+        .pr(px(8.0))
         .text_color(theme.text_3.hsla())
         .child(line.map_or_else(String::new, |line| line.to_string()))
 }

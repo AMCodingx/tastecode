@@ -83,6 +83,61 @@ impl ColorToken {
         };
         Self((channel(16) << 16) | (channel(8) << 8) | channel(0))
     }
+
+    pub fn mix_oklab(self, other: Self, weight: f32) -> Self {
+        let weight = f64::from(weight.clamp(0.0, 1.0));
+        let first = token_to_oklab(self);
+        let second = token_to_oklab(other);
+        let mixed = [
+            first[0] * weight + second[0] * (1.0 - weight),
+            first[1] * weight + second[1] * (1.0 - weight),
+            first[2] * weight + second[2] * (1.0 - weight),
+        ];
+        oklab_to_token(mixed)
+    }
+}
+
+fn token_to_oklab(color: ColorToken) -> [f64; 3] {
+    let channel = |shift: u32| {
+        let channel = f64::from((color.0 >> shift) & 0xff_u32) / 255.0;
+        if channel <= 0.04045 {
+            channel / 12.92
+        } else {
+            ((channel + 0.055) / 1.055).powf(2.4)
+        }
+    };
+    let red = channel(16);
+    let green = channel(8);
+    let blue = channel(0);
+    let long = (0.412_221_470_8 * red + 0.536_332_536_3 * green + 0.051_445_992_9 * blue).cbrt();
+    let medium = (0.211_903_498_2 * red + 0.680_699_545_1 * green + 0.107_396_956_6 * blue).cbrt();
+    let short = (0.088_302_461_9 * red + 0.281_718_837_6 * green + 0.629_978_700_5 * blue).cbrt();
+    [
+        0.210_454_255_3 * long + 0.793_617_785 * medium - 0.004_072_046_8 * short,
+        1.977_998_495_1 * long - 2.428_592_205 * medium + 0.450_593_709_9 * short,
+        0.025_904_037_1 * long + 0.782_771_766_2 * medium - 0.808_675_766 * short,
+    ]
+}
+
+fn oklab_to_token(color: [f64; 3]) -> ColorToken {
+    let [lightness, green_red, blue_yellow] = color;
+    let long = (lightness + 0.396_337_777_4 * green_red + 0.215_803_757_3 * blue_yellow).powi(3);
+    let medium = (lightness - 0.105_561_345_8 * green_red - 0.063_854_172_8 * blue_yellow).powi(3);
+    let short = (lightness - 0.089_484_177_5 * green_red - 1.291_485_548 * blue_yellow).powi(3);
+    let linear = [
+        4.076_741_662_1 * long - 3.307_711_591_3 * medium + 0.230_969_929_2 * short,
+        -1.268_438_004_6 * long + 2.609_757_401_1 * medium - 0.341_319_396_5 * short,
+        -0.004_196_086_3 * long - 0.703_418_614_7 * medium + 1.707_614_701 * short,
+    ];
+    let channel = |channel: f64| {
+        let srgb = if channel <= 0.003_130_8 {
+            12.92 * channel
+        } else {
+            1.055 * channel.powf(1.0 / 2.4) - 0.055
+        };
+        (srgb.clamp(0.0, 1.0) * 255.0).round() as u32
+    };
+    ColorToken((channel(linear[0]) << 16) | (channel(linear[1]) << 8) | channel(linear[2]))
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -470,6 +525,26 @@ mod tests {
         assert_eq!(
             light.attention.mix_srgb(light.line_strong, 0.55),
             ColorToken(0x789ae7)
+        );
+    }
+
+    #[test]
+    fn oklab_mix_matches_css_semantic_color_interpolation() {
+        let dark = Theme::dark();
+        let light = Theme::light();
+
+        assert_eq!(
+            dark.success.mix_oklab(dark.line, 0.45),
+            ColorToken(0x476652)
+        );
+        assert_eq!(dark.error.mix_oklab(dark.line, 0.45), ColorToken(0x77454a));
+        assert_eq!(
+            light.success.mix_oklab(light.line, 0.45),
+            ColorToken(0x94bb9c)
+        );
+        assert_eq!(
+            light.error.mix_oklab(light.line, 0.45),
+            ColorToken(0xe0979a)
         );
     }
 

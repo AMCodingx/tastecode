@@ -2334,7 +2334,10 @@ fn active_inbox_row(
         .w_full()
         .border_1()
         .border_color(if multi_selected {
-            chrome_border.blend(theme.attention.hsla().opacity(0.35))
+            theme
+                .attention
+                .mix_oklab(chrome_border_token(theme), 0.35)
+                .hsla()
         } else if current {
             chrome_border
         } else {
@@ -2694,24 +2697,27 @@ fn inbox_card_background(theme: Theme, multi_selected: bool) -> Background {
     if !multi_selected {
         return chrome_raised(theme);
     }
-    let (from, to): (Hsla, Hsla) = if theme.mode == crate::theme::ThemeMode::Dark {
-        (gpui::rgb(0x242424).into(), gpui::rgb(0x1b1b1b).into())
+    let (from, to) = if theme.mode == crate::theme::ThemeMode::Dark {
+        (ColorToken(0x242424), ColorToken(0x1b1b1b))
     } else {
-        (gpui::white(), gpui::rgb(0xfafafa).into())
+        (ColorToken(0xffffff), ColorToken(0xfafafa))
     };
-    let attention = theme.attention.hsla().opacity(0.07);
     linear_gradient(
         180.0,
-        linear_color_stop(from.blend(attention), 0.0),
-        linear_color_stop(to.blend(attention), 1.0),
+        linear_color_stop(theme.attention.mix_oklab(from, 0.07).hsla(), 0.0),
+        linear_color_stop(theme.attention.mix_oklab(to, 0.07).hsla(), 1.0),
     )
 }
 
 fn chrome_border(theme: Theme) -> Hsla {
+    chrome_border_token(theme).hsla()
+}
+
+fn chrome_border_token(theme: Theme) -> ColorToken {
     if theme.mode == crate::theme::ThemeMode::Dark {
-        gpui::rgb(0x303030).into()
+        ColorToken(0x303030)
     } else {
-        gpui::rgb(0xe3e3e6).into()
+        ColorToken(0xe3e3e6)
     }
 }
 
@@ -2960,10 +2966,7 @@ fn inbox_shelf_row(
     let open_context_menu = actions.open_menu.clone();
     let action_id = thread_id.clone();
     let row_background = if multi_selected {
-        theme
-            .surface
-            .hsla()
-            .blend(theme.attention.hsla().opacity(0.07))
+        theme.attention.mix_oklab(theme.surface, 0.07).hsla()
     } else {
         theme.surface.hsla()
     };
@@ -2980,7 +2983,7 @@ fn inbox_shelf_row(
         .gap(px(1.0))
         .border_1()
         .border_color(if multi_selected {
-            gpui::transparent_black().blend(theme.attention.hsla().opacity(0.30))
+            theme.attention.hsla().opacity(0.30)
         } else {
             gpui::transparent_black()
         })

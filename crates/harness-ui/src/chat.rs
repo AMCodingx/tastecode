@@ -5713,7 +5713,7 @@ fn model_picker_selected_shadows(theme: Theme) -> Vec<BoxShadow> {
 fn fast_toggle_background(theme: Theme, fast: bool) -> Background {
     if fast {
         if theme.mode == ThemeMode::Dark {
-            mix_color(theme.surface_3.hsla(), theme.text.hsla(), 0.15).into()
+            theme.text.mix_oklab(theme.surface_3, 0.15).hsla().into()
         } else {
             gpui::rgb(0xf3f3f5).into()
         }
@@ -5740,7 +5740,7 @@ fn fast_toggle_background(theme: Theme, fast: bool) -> Background {
 
 fn fast_toggle_border(theme: Theme, fast: bool) -> gpui::Hsla {
     match (theme.mode, fast) {
-        (ThemeMode::Dark, true) => mix_color(theme.line_strong.hsla(), theme.text.hsla(), 0.28),
+        (ThemeMode::Dark, true) => theme.text.mix_oklab(theme.line_strong, 0.28).hsla(),
         (ThemeMode::Dark, false) => theme.line_strong.hsla().opacity(0.8),
         (ThemeMode::Light, true) => theme.line_strong.hsla(),
         (ThemeMode::Light, false) => gpui::rgb(0xe3e3e6).into(),
