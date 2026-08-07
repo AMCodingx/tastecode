@@ -2824,8 +2824,11 @@ dependencies = [
  "harness-agent",
  "harness-proc",
  "harness-protocol",
+ "reqwest",
  "serde",
  "serde_json",
+ "tempfile",
+ "url",
  "uuid",
 ]
 

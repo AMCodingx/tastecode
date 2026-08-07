@@ -9,6 +9,11 @@ publish.workspace = true
 harness-agent = { path = "../harness-agent" }
 harness-proc = { path = "../harness-proc" }
 harness-protocol = { path = "../harness-protocol" }
+reqwest.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+url.workspace = true
 uuid.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
