@@ -156,6 +156,12 @@ const PROVIDERS: &[ProviderDefinition] = &[
     },
 ];
 
+/// Public-beta discovery exposes the same three subscription plans as the
+/// TypeScript server. The remaining definitions stay available to existing
+/// sessions and return to discovery after the beta.
+const BETA_PROVIDERS: &[ProviderId] =
+    &[ProviderId::Codex, ProviderId::ClaudeCode, ProviderId::Grok];
+
 struct AcpDefinition {
     id: &'static str,
     name: &'static str,
@@ -250,21 +256,16 @@ pub fn detect_providers() -> Vec<ProviderStatus> {
 }
 
 pub fn detect_providers_with(system: &dyn SystemProbe) -> Vec<ProviderStatus> {
-    let (direct, acp) = thread::scope(|scope| {
-        let direct = PROVIDERS
+    thread::scope(|scope| {
+        PROVIDERS
             .iter()
+            .filter(|definition| BETA_PROVIDERS.contains(&definition.id))
             .map(|definition| scope.spawn(move || probe_provider(definition, system)))
-            .collect::<Vec<_>>();
-        let acp = scope.spawn(|| acp_status(system));
-        (
-            direct
-                .into_iter()
-                .map(|probe| probe.join().expect("provider probe panicked"))
-                .collect::<Vec<_>>(),
-            acp.join().expect("ACP probe panicked"),
-        )
-    });
-    direct.into_iter().chain([acp]).collect()
+            .collect::<Vec<_>>()
+            .into_iter()
+            .map(|probe| probe.join().expect("provider probe panicked"))
+            .collect()
+    })
 }
 
 pub fn detect_agents() -> Vec<AcpAgent> {
@@ -377,26 +378,6 @@ fn probe_provider(definition: &ProviderDefinition, system: &dyn SystemProbe) -> 
     }
 }
 
-fn acp_status(system: &dyn SystemProbe) -> ProviderStatus {
-    let present = detect_agents_with(system)
-        .into_iter()
-        .filter(|agent| agent.installed)
-        .map(|agent| agent.name)
-        .collect::<Vec<_>>();
-    ProviderStatus {
-        id: ProviderId::Acp,
-        display_name: "ACP agents".into(),
-        installed: !present.is_empty(),
-        version: (!present.is_empty()).then(|| present.join(", ")),
-        auth: ProviderAuth::Unknown,
-        capabilities: None,
-        setup: None,
-        problem: present
-            .is_empty()
-            .then(|| "No ACP agent found on PATH".into()),
-    }
-}
-
 fn provider_setup(definition: &ProviderDefinition) -> ProviderSetup {
     ProviderSetup {
         install_url: definition.install_url.into(),
@@ -456,22 +437,14 @@ mod tests {
     }
 
     #[test]
-    fn reports_every_provider_without_claiming_credential_knowledge() {
+    fn reports_the_public_beta_roster_without_claiming_credential_knowledge() {
         let providers = detect_providers_with(&FakeSystem::default());
         assert_eq!(
             providers
                 .iter()
                 .map(|provider| provider.id)
                 .collect::<Vec<_>>(),
-            [
-                ProviderId::Codex,
-                ProviderId::ClaudeCode,
-                ProviderId::Grok,
-                ProviderId::Cursor,
-                ProviderId::OpenCode,
-                ProviderId::Antigravity,
-                ProviderId::Acp,
-            ]
+            [ProviderId::Codex, ProviderId::ClaudeCode, ProviderId::Grok,]
         );
         assert!(
             providers
@@ -504,10 +477,10 @@ mod tests {
         assert_eq!(codex.version.as_deref(), Some("codex-cli 1.4.0"));
         assert_eq!(codex.capabilities, Some(CODEX_CAPABILITIES));
         assert!(codex.problem.is_none());
-        let cursor = providers
-            .iter()
-            .find(|provider| provider.id == ProviderId::Cursor)
-            .unwrap();
+        let cursor = probe_provider(
+            find_provider(ProviderId::Cursor).expect("parked Cursor definition"),
+            &system,
+        );
         assert!(
             cursor
                 .problem
@@ -518,18 +491,17 @@ mod tests {
     }
 
     #[test]
-    fn acp_status_lists_only_agents_available_for_new_sessions() {
+    fn acp_discovery_stays_available_while_the_roster_is_parked() {
         let system = FakeSystem {
             installed: ["gemini", "kimi"].into_iter().map(str::to_owned).collect(),
             ..FakeSystem::default()
         };
         let providers = detect_providers_with(&system);
-        let acp = providers
-            .iter()
-            .find(|provider| provider.id == ProviderId::Acp)
-            .unwrap();
-        assert_eq!(acp.version.as_deref(), Some("Kimi CLI"));
-        assert!(acp.problem.is_none());
+        assert!(
+            providers
+                .iter()
+                .all(|provider| provider.id != ProviderId::Acp)
+        );
         let agents = detect_agents_with(&system);
         assert_eq!(agents.len(), 1);
         assert_eq!(agents[0].id, "kimi");

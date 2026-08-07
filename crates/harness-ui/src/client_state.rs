@@ -3575,39 +3575,6 @@ impl ClientState {
         match serde_json::from_value::<ModelConnectionsResult>(result) {
             Ok(result) => {
                 self.model_connections = result.connections;
-                for (source_index, connection) in self
-                    .model_connections
-                    .clone()
-                    .into_iter()
-                    .filter(|connection| connection.enabled && connection.credential_configured)
-                    .enumerate()
-                {
-                    let fallback_model = connection.default_model.as_ref().map(|id| Model {
-                        id: id.clone(),
-                        display_name: id.clone(),
-                        description: None,
-                        is_default: true,
-                        reasoning_efforts: Vec::new(),
-                        default_reasoning_effort: None,
-                        service_tiers: Vec::new(),
-                        default_service_tier: None,
-                    });
-                    let connection_id = connection.id;
-                    self.request_models(
-                        ModelSource {
-                            key: format!("api:{connection_id}"),
-                            provider: ProviderId::Api,
-                            source_name: connection.display_name,
-                            connection_id: Some(connection_id.clone()),
-                            agent_id: None,
-                            agent_name: None,
-                            fallback_model,
-                            catalog_group: 2,
-                            source_index,
-                        },
-                        Some(json!({ "connectionId": connection_id })),
-                    );
-                }
             }
             Err(error) => {
                 self.notice = Some(format!("connections.list was invalid: {error}"));
@@ -3621,38 +3588,6 @@ impl ClientState {
         match serde_json::from_value::<AcpAgentsResult>(result) {
             Ok(result) => {
                 self.acp_agents = result.agents;
-                let auth_targets = self
-                    .acp_agents
-                    .iter()
-                    .filter(|agent| agent.installed)
-                    .map(|agent| AuthTarget::agent(ProviderId::Acp, agent.id.clone()))
-                    .collect::<Vec<_>>();
-                for target in auth_targets {
-                    self.request_auth_status(target);
-                }
-                for (source_index, agent) in self
-                    .acp_agents
-                    .clone()
-                    .into_iter()
-                    .filter(|agent| agent.installed)
-                    .enumerate()
-                {
-                    let agent_id = agent.id;
-                    self.request_models(
-                        ModelSource {
-                            key: format!("acp:{agent_id}"),
-                            provider: ProviderId::Acp,
-                            source_name: agent.name.clone(),
-                            connection_id: None,
-                            agent_id: Some(agent_id.clone()),
-                            agent_name: Some(agent.name),
-                            fallback_model: None,
-                            catalog_group: 1,
-                            source_index,
-                        },
-                        Some(json!({ "provider": "acp", "agent": agent_id })),
-                    );
-                }
             }
             Err(error) => {
                 self.notice = Some(format!("acp.agents was invalid: {error}"));
