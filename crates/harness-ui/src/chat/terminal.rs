@@ -501,12 +501,16 @@ impl ChatView {
             .is_some_and(|session| session.thread_id.is_some());
         let open = self.terminal_ui.visible;
         let theme = self.theme;
+        if !enabled {
+            return div().into_any_element();
+        }
         div()
             .id("header-terminal")
             .h(px(28.0))
             .px(px(7.0))
             .flex()
             .items_center()
+            .gap(px(5.0))
             .rounded(px(7.0))
             .text_size(px(11.5))
             .text_color(if open {
@@ -514,17 +518,12 @@ impl ChatView {
             } else {
                 theme.text_3.hsla()
             })
-            .opacity(if enabled { 1.0 } else { 0.42 })
-            .when(enabled, |button| {
-                button
-                    .cursor_pointer()
-                    .hover(move |style| {
-                        style.bg(theme.surface.hsla()).text_color(theme.text.hsla())
-                    })
-                    .on_click(cx.listener(|this, _event, _window, cx| {
-                        this.toggle_terminal(cx);
-                    }))
-            })
+            .cursor_pointer()
+            .hover(move |style| style.bg(theme.surface.hsla()).text_color(theme.text.hsla()))
+            .on_click(cx.listener(|this, _event, _window, cx| {
+                this.toggle_terminal(cx);
+            }))
+            .child(super::svg_icon("icons/square-terminal.svg", 13.0))
             .child("Terminal")
             .into_any_element()
     }

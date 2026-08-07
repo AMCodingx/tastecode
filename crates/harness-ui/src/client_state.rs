@@ -5,16 +5,17 @@ use harness_protocol::{
     AuthStartLoginResult, CredentialConfiguredResult, DiffDecision, DomainEvent, ErrorCode,
     McpListResult, McpOAuthPush, McpOAuthStartResult, McpServer, McpServerConfig, Model,
     ModelConnection, ModelConnectionInput, ModelConnectionResult, ModelConnectionsResult,
-    ModelsListResult, PROTOCOL_VERSION, PreviewCaptureRequest, PreviewCaptureResult,
-    ProjectAddedResult, ProjectSummary, ProjectsListResult, ProviderId, ProviderStatus,
-    ProvidersListResult, QueueDirection, Response, ReviewDiffResult, SendTurnResult, ServerWelcome,
-    SessionDiff, SessionSearchPage, SessionSummary, SidebarMode, SidebarSettings,
-    SkillEnabledResult, SkillInstalledResult, SkillsListResult, SystemInfo, TerminalExitPush,
-    TerminalOpenedResult, TerminalOutputPush, ThreadEventPush, ThreadHistoryResult,
-    ThreadInboxStatus, ThreadLifecycle, ThreadLifecyclePush, ThreadLifecycleResult,
-    ThreadQueuePush, ThreadQueueResult, ThreadStartResult, ThreadUnsavedWorkResult,
-    UpdateCheckResult, VoiceStatusResult, VoiceTranscribeParams, VoiceTranscriptionResult, channel,
-    method,
+    ModelsListResult, PROTOCOL_VERSION, PanicStopSessionResult, PreviewCaptureRequest,
+    PreviewCaptureResult, ProjectAddedResult, ProjectSummary, ProjectsListResult, ProviderId,
+    ProviderStatus, ProvidersListResult, QueueDirection, Response, ReviewDiffResult,
+    SendTurnResult, ServerWelcome, SessionDiff, SessionSearchPage, SessionSummary, SidebarMode,
+    SidebarSettings, SkillEnabledResult, SkillInstalledResult, SkillsListResult, SystemInfo,
+    TerminalExitPush, TerminalOpenedResult, TerminalOutputPush, ThreadChangedSinceResult,
+    ThreadCheckpointsResult, ThreadEventPush, ThreadHistoryResult, ThreadInboxStatus,
+    ThreadLifecycle, ThreadLifecyclePush, ThreadLifecycleResult, ThreadQueuePush,
+    ThreadQueueResult, ThreadRestoreResult, ThreadStartResult, ThreadUnsavedWorkResult,
+    UpdateCheckResult, UsageSummaryResult, VoiceStatusResult, VoiceTranscribeParams,
+    VoiceTranscriptionResult, WorkspaceBranchesResult, WorkspaceInfo, channel, method,
 };
 use serde::Deserialize;
 use serde_json::{Value, json};
@@ -252,10 +253,32 @@ pub(crate) struct SessionSearchRequest {
     pub(crate) append: bool,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum UsageScope {
+    Thread(String),
+    Provider(ProviderId),
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum WorkspaceOperation {
+    Info,
+    Branches,
+    Switch,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum RollbackOperation {
+    Checkpoints,
+    Inspect,
+    Restore,
+    Undo,
+}
+
 enum PendingRequest {
     Capabilities,
     PreviewCaptureResult,
     SystemInfo,
+    PanicStop,
     UpdateCheck,
     VoiceStatus {
         provider: ProviderId,
@@ -345,6 +368,41 @@ enum PendingRequest {
     SearchSessions {
         revision: u64,
         append: bool,
+    },
+    WorkspaceInfo {
+        path: String,
+        generation: u64,
+    },
+    WorkspaceBranches {
+        path: String,
+        generation: u64,
+    },
+    WorkspaceSwitch {
+        path: String,
+        branch: String,
+        generation: u64,
+    },
+    Checkpoints {
+        thread_id: String,
+        generation: u64,
+    },
+    ChangedSince {
+        thread_id: String,
+        checkpoint_id: u64,
+        generation: u64,
+    },
+    Restore {
+        thread_id: String,
+        checkpoint_id: u64,
+        generation: u64,
+    },
+    UndoRestore {
+        thread_id: String,
+        generation: u64,
+    },
+    Usage {
+        scope: UsageScope,
+        generation: u64,
     },
     StartThread {
         request: NewThreadRequest,
@@ -476,6 +534,71 @@ pub(crate) enum ShellEvent {
     },
     SessionSearchError {
         revision: u64,
+        message: String,
+    },
+    WorkspaceInfo {
+        path: String,
+        generation: u64,
+        info: WorkspaceInfo,
+    },
+    WorkspaceBranches {
+        path: String,
+        generation: u64,
+        branches: Vec<String>,
+    },
+    WorkspaceSwitched {
+        path: String,
+        branch: String,
+        generation: u64,
+        info: WorkspaceInfo,
+    },
+    WorkspaceError {
+        path: String,
+        generation: u64,
+        operation: WorkspaceOperation,
+        message: String,
+    },
+    Checkpoints {
+        thread_id: String,
+        generation: u64,
+        checkpoints: Vec<harness_protocol::CheckpointSummary>,
+    },
+    ChangedSince {
+        thread_id: String,
+        checkpoint_id: u64,
+        generation: u64,
+        files: Vec<String>,
+    },
+    CheckpointRestored {
+        thread_id: String,
+        checkpoint_id: u64,
+        generation: u64,
+        undo: String,
+    },
+    RestoreUndone {
+        thread_id: String,
+        generation: u64,
+    },
+    RollbackError {
+        thread_id: String,
+        generation: u64,
+        operation: RollbackOperation,
+        message: String,
+    },
+    UsageSummary {
+        scope: UsageScope,
+        generation: u64,
+        summary: UsageSummaryResult,
+    },
+    UsageError {
+        scope: UsageScope,
+        generation: u64,
+        message: String,
+    },
+    PanicStopped {
+        result: harness_protocol::PanicStopResult,
+    },
+    PanicStopError {
         message: String,
     },
 }
@@ -1282,6 +1405,213 @@ impl ClientState {
         }
     }
 
+    pub(crate) fn request_workspace(&mut self, path: String, generation: u64) -> ClientUpdate {
+        let mut shell_events = Vec::new();
+        if !self.send_request(
+            method::WORKSPACE_INFO,
+            json!({ "path": path }),
+            PendingRequest::WorkspaceInfo {
+                path: path.clone(),
+                generation,
+            },
+        ) {
+            shell_events.push(ShellEvent::WorkspaceError {
+                path: path.clone(),
+                generation,
+                operation: WorkspaceOperation::Info,
+                message: self.request_start_error("Workspace status could not be loaded."),
+            });
+        }
+        if !self.send_request(
+            method::WORKSPACE_BRANCHES,
+            json!({ "path": path }),
+            PendingRequest::WorkspaceBranches {
+                path: path.clone(),
+                generation,
+            },
+        ) {
+            shell_events.push(ShellEvent::WorkspaceError {
+                path,
+                generation,
+                operation: WorkspaceOperation::Branches,
+                message: self.request_start_error("Branches could not be loaded."),
+            });
+        }
+        ClientUpdate {
+            shell_changed: !shell_events.is_empty(),
+            chat: Vec::new(),
+            shell_events,
+        }
+    }
+
+    pub(crate) fn switch_workspace_branch(
+        &mut self,
+        path: String,
+        branch: String,
+        generation: u64,
+    ) -> ClientUpdate {
+        if self.send_request(
+            method::WORKSPACE_SWITCH_BRANCH,
+            json!({ "path": path, "branch": branch }),
+            PendingRequest::WorkspaceSwitch {
+                path: path.clone(),
+                branch,
+                generation,
+            },
+        ) {
+            ClientUpdate::default()
+        } else {
+            ClientUpdate::shell_event(ShellEvent::WorkspaceError {
+                path,
+                generation,
+                operation: WorkspaceOperation::Switch,
+                message: self.request_start_error("The branch could not be switched."),
+            })
+        }
+    }
+
+    pub(crate) fn request_checkpoints(
+        &mut self,
+        thread_id: String,
+        generation: u64,
+    ) -> ClientUpdate {
+        if self.send_request(
+            method::THREAD_CHECKPOINTS,
+            json!({ "threadId": thread_id }),
+            PendingRequest::Checkpoints {
+                thread_id: thread_id.clone(),
+                generation,
+            },
+        ) {
+            ClientUpdate::default()
+        } else {
+            ClientUpdate::shell_event(ShellEvent::RollbackError {
+                thread_id,
+                generation,
+                operation: RollbackOperation::Checkpoints,
+                message: self.request_start_error("Checkpoints could not be loaded."),
+            })
+        }
+    }
+
+    pub(crate) fn request_changed_since(
+        &mut self,
+        thread_id: String,
+        checkpoint_id: u64,
+        generation: u64,
+    ) -> ClientUpdate {
+        if self.send_request(
+            method::THREAD_CHANGED_SINCE,
+            json!({ "threadId": thread_id, "checkpointId": checkpoint_id }),
+            PendingRequest::ChangedSince {
+                thread_id: thread_id.clone(),
+                checkpoint_id,
+                generation,
+            },
+        ) {
+            ClientUpdate::default()
+        } else {
+            ClientUpdate::shell_event(ShellEvent::RollbackError {
+                thread_id,
+                generation,
+                operation: RollbackOperation::Inspect,
+                message: self.request_start_error("The checkpoint could not be inspected."),
+            })
+        }
+    }
+
+    pub(crate) fn restore_checkpoint(
+        &mut self,
+        thread_id: String,
+        checkpoint_id: u64,
+        generation: u64,
+    ) -> ClientUpdate {
+        if self.send_request(
+            method::THREAD_RESTORE,
+            json!({ "threadId": thread_id, "checkpointId": checkpoint_id }),
+            PendingRequest::Restore {
+                thread_id: thread_id.clone(),
+                checkpoint_id,
+                generation,
+            },
+        ) {
+            ClientUpdate::default()
+        } else {
+            ClientUpdate::shell_event(ShellEvent::RollbackError {
+                thread_id,
+                generation,
+                operation: RollbackOperation::Restore,
+                message: self.request_start_error("The checkpoint could not be restored."),
+            })
+        }
+    }
+
+    pub(crate) fn undo_restore(
+        &mut self,
+        thread_id: String,
+        undo: String,
+        generation: u64,
+    ) -> ClientUpdate {
+        if self.send_request(
+            method::THREAD_UNDO_RESTORE,
+            json!({ "threadId": thread_id, "undo": undo }),
+            PendingRequest::UndoRestore {
+                thread_id: thread_id.clone(),
+                generation,
+            },
+        ) {
+            ClientUpdate::default()
+        } else {
+            ClientUpdate::shell_event(ShellEvent::RollbackError {
+                thread_id,
+                generation,
+                operation: RollbackOperation::Undo,
+                message: self.request_start_error("The restore could not be undone."),
+            })
+        }
+    }
+
+    pub(crate) fn request_usage(&mut self, scope: UsageScope, generation: u64) -> ClientUpdate {
+        let params = match &scope {
+            UsageScope::Thread(thread_id) => json!({ "threadId": thread_id }),
+            UsageScope::Provider(provider) => json!({ "provider": provider }),
+        };
+        if self.send_request(
+            method::USAGE_SUMMARY,
+            params,
+            PendingRequest::Usage {
+                scope: scope.clone(),
+                generation,
+            },
+        ) {
+            ClientUpdate::default()
+        } else {
+            ClientUpdate::shell_event(ShellEvent::UsageError {
+                scope,
+                generation,
+                message: self.request_start_error("Usage could not be loaded."),
+            })
+        }
+    }
+
+    pub(crate) fn panic_stop(&mut self) -> ClientUpdate {
+        if self.send_request(
+            method::SYSTEM_PANIC_STOP,
+            json!({}),
+            PendingRequest::PanicStop,
+        ) {
+            ClientUpdate::default()
+        } else {
+            ClientUpdate::shell_event(ShellEvent::PanicStopError {
+                message: self.request_start_error("The emergency stop could not be started."),
+            })
+        }
+    }
+
+    fn request_start_error(&self, fallback: &str) -> String {
+        self.notice.clone().unwrap_or_else(|| fallback.into())
+    }
+
     pub(crate) fn send_turn(&mut self, thread_id: &str, request: SendTurnRequest) {
         let steer = request.steer;
         let restore_text = request.text.clone();
@@ -2017,6 +2347,78 @@ impl ClientState {
                             message,
                         })
                     }
+                    Some(PendingRequest::WorkspaceInfo { path, generation }) => {
+                        ClientUpdate::shell_event(ShellEvent::WorkspaceError {
+                            path,
+                            generation,
+                            operation: WorkspaceOperation::Info,
+                            message,
+                        })
+                    }
+                    Some(PendingRequest::WorkspaceBranches { path, generation }) => {
+                        ClientUpdate::shell_event(ShellEvent::WorkspaceError {
+                            path,
+                            generation,
+                            operation: WorkspaceOperation::Branches,
+                            message,
+                        })
+                    }
+                    Some(PendingRequest::WorkspaceSwitch {
+                        path, generation, ..
+                    }) => ClientUpdate::shell_event(ShellEvent::WorkspaceError {
+                        path,
+                        generation,
+                        operation: WorkspaceOperation::Switch,
+                        message,
+                    }),
+                    Some(PendingRequest::Checkpoints {
+                        thread_id,
+                        generation,
+                    }) => ClientUpdate::shell_event(ShellEvent::RollbackError {
+                        thread_id,
+                        generation,
+                        operation: RollbackOperation::Checkpoints,
+                        message,
+                    }),
+                    Some(PendingRequest::ChangedSince {
+                        thread_id,
+                        generation,
+                        ..
+                    }) => ClientUpdate::shell_event(ShellEvent::RollbackError {
+                        thread_id,
+                        generation,
+                        operation: RollbackOperation::Inspect,
+                        message,
+                    }),
+                    Some(PendingRequest::Restore {
+                        thread_id,
+                        generation,
+                        ..
+                    }) => ClientUpdate::shell_event(ShellEvent::RollbackError {
+                        thread_id,
+                        generation,
+                        operation: RollbackOperation::Restore,
+                        message,
+                    }),
+                    Some(PendingRequest::UndoRestore {
+                        thread_id,
+                        generation,
+                    }) => ClientUpdate::shell_event(ShellEvent::RollbackError {
+                        thread_id,
+                        generation,
+                        operation: RollbackOperation::Undo,
+                        message,
+                    }),
+                    Some(PendingRequest::Usage { scope, generation }) => {
+                        ClientUpdate::shell_event(ShellEvent::UsageError {
+                            scope,
+                            generation,
+                            message,
+                        })
+                    }
+                    Some(PendingRequest::PanicStop) => {
+                        ClientUpdate::shell_event(ShellEvent::PanicStopError { message })
+                    }
                     Some(
                         PendingRequest::ProjectMutation { .. }
                         | PendingRequest::ThreadSummaryMutation
@@ -2251,6 +2653,149 @@ impl ClientState {
                         Err(error) => ClientUpdate::shell_event(ShellEvent::SessionSearchError {
                             revision,
                             message: format!("search.sessions was invalid: {error}"),
+                        }),
+                    }
+                }
+                Some(PendingRequest::WorkspaceInfo { path, generation }) => {
+                    match serde_json::from_value::<WorkspaceInfo>(result) {
+                        Ok(info) => ClientUpdate::shell_event(ShellEvent::WorkspaceInfo {
+                            path,
+                            generation,
+                            info,
+                        }),
+                        Err(error) => ClientUpdate::shell_event(ShellEvent::WorkspaceError {
+                            path,
+                            generation,
+                            operation: WorkspaceOperation::Info,
+                            message: format!("workspace.info was invalid: {error}"),
+                        }),
+                    }
+                }
+                Some(PendingRequest::WorkspaceBranches { path, generation }) => {
+                    match serde_json::from_value::<WorkspaceBranchesResult>(result) {
+                        Ok(result) => ClientUpdate::shell_event(ShellEvent::WorkspaceBranches {
+                            path,
+                            generation,
+                            branches: result.branches,
+                        }),
+                        Err(error) => ClientUpdate::shell_event(ShellEvent::WorkspaceError {
+                            path,
+                            generation,
+                            operation: WorkspaceOperation::Branches,
+                            message: format!("workspace.branches was invalid: {error}"),
+                        }),
+                    }
+                }
+                Some(PendingRequest::WorkspaceSwitch {
+                    path,
+                    branch,
+                    generation,
+                }) => match serde_json::from_value::<WorkspaceInfo>(result) {
+                    Ok(info) => ClientUpdate::shell_event(ShellEvent::WorkspaceSwitched {
+                        path,
+                        branch,
+                        generation,
+                        info,
+                    }),
+                    Err(error) => ClientUpdate::shell_event(ShellEvent::WorkspaceError {
+                        path,
+                        generation,
+                        operation: WorkspaceOperation::Switch,
+                        message: format!("workspace.switchBranch was invalid: {error}"),
+                    }),
+                },
+                Some(PendingRequest::Checkpoints {
+                    thread_id,
+                    generation,
+                }) => match serde_json::from_value::<ThreadCheckpointsResult>(result) {
+                    Ok(result) => ClientUpdate::shell_event(ShellEvent::Checkpoints {
+                        thread_id,
+                        generation,
+                        checkpoints: result.checkpoints,
+                    }),
+                    Err(error) => ClientUpdate::shell_event(ShellEvent::RollbackError {
+                        thread_id,
+                        generation,
+                        operation: RollbackOperation::Checkpoints,
+                        message: format!("thread.checkpoints was invalid: {error}"),
+                    }),
+                },
+                Some(PendingRequest::ChangedSince {
+                    thread_id,
+                    checkpoint_id,
+                    generation,
+                }) => match serde_json::from_value::<ThreadChangedSinceResult>(result) {
+                    Ok(result) => ClientUpdate::shell_event(ShellEvent::ChangedSince {
+                        thread_id,
+                        checkpoint_id,
+                        generation,
+                        files: result.files,
+                    }),
+                    Err(error) => ClientUpdate::shell_event(ShellEvent::RollbackError {
+                        thread_id,
+                        generation,
+                        operation: RollbackOperation::Inspect,
+                        message: format!("thread.changedSince was invalid: {error}"),
+                    }),
+                },
+                Some(PendingRequest::Restore {
+                    thread_id,
+                    checkpoint_id,
+                    generation,
+                }) => match serde_json::from_value::<ThreadRestoreResult>(result) {
+                    Ok(result) => ClientUpdate::shell_event(ShellEvent::CheckpointRestored {
+                        thread_id,
+                        checkpoint_id,
+                        generation,
+                        undo: result.undo,
+                    }),
+                    Err(error) => ClientUpdate::shell_event(ShellEvent::RollbackError {
+                        thread_id,
+                        generation,
+                        operation: RollbackOperation::Restore,
+                        message: format!("thread.restore was invalid: {error}"),
+                    }),
+                },
+                Some(PendingRequest::UndoRestore {
+                    thread_id,
+                    generation,
+                }) => ClientUpdate::shell_event(ShellEvent::RestoreUndone {
+                    thread_id,
+                    generation,
+                }),
+                Some(PendingRequest::Usage { scope, generation }) => {
+                    match serde_json::from_value::<UsageSummaryResult>(result) {
+                        Ok(summary) => ClientUpdate::shell_event(ShellEvent::UsageSummary {
+                            scope,
+                            generation,
+                            summary,
+                        }),
+                        Err(error) => ClientUpdate::shell_event(ShellEvent::UsageError {
+                            scope,
+                            generation,
+                            message: format!("usage.summary was invalid: {error}"),
+                        }),
+                    }
+                }
+                Some(PendingRequest::PanicStop) => {
+                    match serde_json::from_value::<harness_protocol::PanicStopResult>(result) {
+                        Ok(result) => {
+                            for session_result in &result.sessions {
+                                let PanicStopSessionResult::Interrupted { thread_id } =
+                                    session_result
+                                else {
+                                    continue;
+                                };
+                                if let Some(session) = self.session_mut(thread_id) {
+                                    session.running = false;
+                                    session.status = Some(ThreadInboxStatus::Ready);
+                                }
+                            }
+                            self.request_projects();
+                            ClientUpdate::shell_event(ShellEvent::PanicStopped { result })
+                        }
+                        Err(error) => ClientUpdate::shell_event(ShellEvent::PanicStopError {
+                            message: format!("system.panicStop was invalid: {error}"),
                         }),
                     }
                 }
@@ -2547,6 +3092,79 @@ impl ClientState {
                     message: "The server connection was lost during search.".into(),
                 })
             }
+            PendingRequest::WorkspaceInfo { path, generation } => {
+                ClientUpdate::shell_event(ShellEvent::WorkspaceError {
+                    path,
+                    generation,
+                    operation: WorkspaceOperation::Info,
+                    message: "The server connection was lost while loading workspace status."
+                        .into(),
+                })
+            }
+            PendingRequest::WorkspaceBranches { path, generation } => {
+                ClientUpdate::shell_event(ShellEvent::WorkspaceError {
+                    path,
+                    generation,
+                    operation: WorkspaceOperation::Branches,
+                    message: "The server connection was lost while loading branches.".into(),
+                })
+            }
+            PendingRequest::WorkspaceSwitch {
+                path, generation, ..
+            } => ClientUpdate::shell_event(ShellEvent::WorkspaceError {
+                path,
+                generation,
+                operation: WorkspaceOperation::Switch,
+                message: "The server connection was lost while switching branches.".into(),
+            }),
+            PendingRequest::Checkpoints {
+                thread_id,
+                generation,
+            } => ClientUpdate::shell_event(ShellEvent::RollbackError {
+                thread_id,
+                generation,
+                operation: RollbackOperation::Checkpoints,
+                message: "The server connection was lost while loading checkpoints.".into(),
+            }),
+            PendingRequest::ChangedSince {
+                thread_id,
+                generation,
+                ..
+            } => ClientUpdate::shell_event(ShellEvent::RollbackError {
+                thread_id,
+                generation,
+                operation: RollbackOperation::Inspect,
+                message: "The server connection was lost while inspecting the checkpoint.".into(),
+            }),
+            PendingRequest::Restore {
+                thread_id,
+                generation,
+                ..
+            } => ClientUpdate::shell_event(ShellEvent::RollbackError {
+                thread_id,
+                generation,
+                operation: RollbackOperation::Restore,
+                message: "The server connection was lost while restoring the checkpoint.".into(),
+            }),
+            PendingRequest::UndoRestore {
+                thread_id,
+                generation,
+            } => ClientUpdate::shell_event(ShellEvent::RollbackError {
+                thread_id,
+                generation,
+                operation: RollbackOperation::Undo,
+                message: "The server connection was lost while undoing the restore.".into(),
+            }),
+            PendingRequest::Usage { scope, generation } => {
+                ClientUpdate::shell_event(ShellEvent::UsageError {
+                    scope,
+                    generation,
+                    message: "The server connection was lost while loading usage.".into(),
+                })
+            }
+            PendingRequest::PanicStop => ClientUpdate::shell_event(ShellEvent::PanicStopError {
+                message: "The server connection was lost during the emergency stop.".into(),
+            }),
             PendingRequest::ProjectMutation { .. }
             | PendingRequest::ThreadSummaryMutation
             | PendingRequest::ThreadLifecycle { .. }
@@ -3763,10 +4381,15 @@ impl PendingRequest {
             | Self::ArchiveClose { thread_id, .. }
             | Self::ArchiveDiscard { thread_id }
             | Self::ArchiveDelete { thread_id }
+            | Self::Checkpoints { thread_id, .. }
+            | Self::ChangedSince { thread_id, .. }
+            | Self::Restore { thread_id, .. }
+            | Self::UndoRestore { thread_id, .. }
             | Self::TerminalOpen { thread_id } => Some(thread_id),
             Self::Capabilities
             | Self::PreviewCaptureResult
             | Self::SystemInfo
+            | Self::PanicStop
             | Self::UpdateCheck
             | Self::VoiceStatus { .. }
             | Self::VoiceTranscribe { .. }
@@ -3777,6 +4400,10 @@ impl PendingRequest {
             | Self::AddProject { .. }
             | Self::ProjectMutation { .. }
             | Self::SearchSessions { .. }
+            | Self::WorkspaceInfo { .. }
+            | Self::WorkspaceBranches { .. }
+            | Self::WorkspaceSwitch { .. }
+            | Self::Usage { .. }
             | Self::StartThread { .. }
             | Self::RenameThread
             | Self::ThreadSummaryMutation
@@ -4115,6 +4742,246 @@ mod tests {
             update.shell_events.as_slice(),
             [ShellEvent::ThreadArchived { thread_id }] if thread_id == "thread-1"
         ));
+    }
+
+    #[test]
+    fn workspace_responses_keep_the_requested_scope_and_generation() {
+        let mut state = ClientState::new(true);
+        state.pending.insert(
+            "workspace-info".into(),
+            PendingRequest::WorkspaceInfo {
+                path: "/workspace".into(),
+                generation: 7,
+            },
+        );
+        state.pending.insert(
+            "workspace-branches".into(),
+            PendingRequest::WorkspaceBranches {
+                path: "/workspace".into(),
+                generation: 7,
+            },
+        );
+        state.pending.insert(
+            "workspace-switch".into(),
+            PendingRequest::WorkspaceSwitch {
+                path: "/workspace".into(),
+                branch: "feature/native".into(),
+                generation: 8,
+            },
+        );
+
+        let info = state.handle_response(Response::Success {
+            id: "workspace-info".into(),
+            result: json!({ "branch": "main", "added": 3, "removed": 1, "dirtyFiles": 2 }),
+        });
+        let branches = state.handle_response(Response::Success {
+            id: "workspace-branches".into(),
+            result: json!({ "branches": ["main", "feature/native"] }),
+        });
+        let switched = state.handle_response(Response::Success {
+            id: "workspace-switch".into(),
+            result: json!({
+                "branch": "feature/native",
+                "added": 0,
+                "removed": 0,
+                "dirtyFiles": 0
+            }),
+        });
+
+        assert!(matches!(
+            info.shell_events.as_slice(),
+            [ShellEvent::WorkspaceInfo { path, generation: 7, info }]
+                if path == "/workspace" && info.branch.as_deref() == Some("main")
+        ));
+        assert!(matches!(
+            branches.shell_events.as_slice(),
+            [ShellEvent::WorkspaceBranches { path, generation: 7, branches }]
+                if path == "/workspace" && branches == &["main", "feature/native"]
+        ));
+        assert!(matches!(
+            switched.shell_events.as_slice(),
+            [ShellEvent::WorkspaceSwitched {
+                path,
+                branch,
+                generation: 8,
+                info,
+            }] if path == "/workspace"
+                && branch == "feature/native"
+                && info.branch.as_deref() == Some("feature/native")
+        ));
+    }
+
+    #[test]
+    fn rollback_responses_keep_thread_checkpoint_and_undo_identity() {
+        let mut state = ClientState::new(true);
+        state.pending.insert(
+            "checkpoints".into(),
+            PendingRequest::Checkpoints {
+                thread_id: "thread-1".into(),
+                generation: 4,
+            },
+        );
+        state.pending.insert(
+            "changed-since".into(),
+            PendingRequest::ChangedSince {
+                thread_id: "thread-1".into(),
+                checkpoint_id: 11,
+                generation: 5,
+            },
+        );
+        state.pending.insert(
+            "restore".into(),
+            PendingRequest::Restore {
+                thread_id: "thread-1".into(),
+                checkpoint_id: 11,
+                generation: 5,
+            },
+        );
+        state.pending.insert(
+            "undo".into(),
+            PendingRequest::UndoRestore {
+                thread_id: "thread-1".into(),
+                generation: 6,
+            },
+        );
+
+        let checkpoints = state.handle_response(Response::Success {
+            id: "checkpoints".into(),
+            result: json!({
+                "checkpoints": [{
+                    "id": 11,
+                    "seq": 20,
+                    "label": "change header",
+                    "createdAt": 1_786_000_000_000_f64
+                }]
+            }),
+        });
+        let changed = state.handle_response(Response::Success {
+            id: "changed-since".into(),
+            result: json!({ "files": ["src/app.rs"] }),
+        });
+        let restored = state.handle_response(Response::Success {
+            id: "restore".into(),
+            result: json!({ "undo": "restore-token" }),
+        });
+        let undone = state.handle_response(Response::Success {
+            id: "undo".into(),
+            result: json!({}),
+        });
+
+        assert!(matches!(
+            checkpoints.shell_events.as_slice(),
+            [ShellEvent::Checkpoints { thread_id, generation: 4, checkpoints }]
+                if thread_id == "thread-1" && checkpoints[0].id == 11
+        ));
+        assert!(matches!(
+            changed.shell_events.as_slice(),
+            [ShellEvent::ChangedSince {
+                thread_id,
+                checkpoint_id: 11,
+                generation: 5,
+                files,
+            }] if thread_id == "thread-1" && files == &["src/app.rs"]
+        ));
+        assert!(matches!(
+            restored.shell_events.as_slice(),
+            [ShellEvent::CheckpointRestored {
+                thread_id,
+                checkpoint_id: 11,
+                generation: 5,
+                undo,
+            }] if thread_id == "thread-1" && undo == "restore-token"
+        ));
+        assert!(matches!(
+            undone.shell_events.as_slice(),
+            [ShellEvent::RestoreUndone { thread_id, generation: 6 }]
+                if thread_id == "thread-1"
+        ));
+    }
+
+    #[test]
+    fn usage_and_panic_stop_responses_reach_the_native_shell() {
+        let mut state = ClientState::new(true);
+        state.projects.push(ProjectSummary {
+            path: "/tmp/project".into(),
+            name: "project".into(),
+            pinned: false,
+            created_at: 0.0,
+            sessions: vec![SessionSummary {
+                id: "thread-1".into(),
+                title: "Running".into(),
+                provider: ProviderId::Codex,
+                agent: None,
+                created_at: 0.0,
+                running: true,
+                pinned: false,
+                status: Some(ThreadInboxStatus::Working),
+                unread: Some(false),
+                lifecycle: None,
+                closed_at: None,
+                worktree_branch: None,
+            }],
+        });
+        state.pending.insert(
+            "usage".into(),
+            PendingRequest::Usage {
+                scope: UsageScope::Thread("thread-1".into()),
+                generation: 9,
+            },
+        );
+        state
+            .pending
+            .insert("panic".into(), PendingRequest::PanicStop);
+
+        let usage = state.handle_response(Response::Success {
+            id: "usage".into(),
+            result: json!({
+                "session": {
+                    "inputTokens": 10,
+                    "cachedInputTokens": 2,
+                    "outputTokens": 3,
+                    "reasoningTokens": 1,
+                    "totalTokens": 16,
+                    "costUsd": 0.01
+                },
+                "today": {
+                    "inputTokens": 20,
+                    "cachedInputTokens": 4,
+                    "outputTokens": 6,
+                    "reasoningTokens": 2,
+                    "totalTokens": 32,
+                    "costUsd": 0.02
+                },
+                "limits": [{ "label": "Weekly", "usedPercent": 37.5 }]
+            }),
+        });
+        let panic = state.handle_response(Response::Success {
+            id: "panic".into(),
+            result: json!({
+                "sessions": [
+                    { "status": "interrupted", "threadId": "thread-1" },
+                    { "status": "failed", "threadId": "thread-2", "error": "gone" }
+                ]
+            }),
+        });
+
+        assert!(matches!(
+            usage.shell_events.as_slice(),
+            [ShellEvent::UsageSummary {
+                scope: UsageScope::Thread(thread_id),
+                generation: 9,
+                summary,
+            }] if thread_id == "thread-1"
+                && summary.limits[0].label == "Weekly"
+                && summary.limits[0].used_percent == 37.5
+        ));
+        assert!(matches!(
+            panic.shell_events.as_slice(),
+            [ShellEvent::PanicStopped { result }] if result.sessions.len() == 2
+        ));
+        let session = state.session("thread-1").unwrap();
+        assert!(!session.running);
+        assert_eq!(session.status, Some(ThreadInboxStatus::Ready));
     }
 
     #[test]

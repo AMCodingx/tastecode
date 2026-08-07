@@ -1016,6 +1016,12 @@ pub struct WorkspaceInfo {
     pub dirty_files: u64,
 }
 
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkspaceBranchesResult {
+    pub branches: Vec<String>,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct UpdateRemote {
@@ -1200,6 +1206,18 @@ pub struct CheckpointSummary {
 #[serde(rename_all = "camelCase")]
 pub struct ThreadCheckpointsResult {
     pub checkpoints: Vec<CheckpointSummary>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ThreadChangedSinceResult {
+    pub files: Vec<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ThreadRestoreResult {
+    pub undo: String,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -1737,6 +1755,27 @@ mod tests {
             })
             .unwrap(),
             json!({ "isolated": true, "uncommitted": false })
+        );
+        assert_eq!(
+            serde_json::to_value(WorkspaceBranchesResult {
+                branches: vec!["main".into(), "feature/native".into()],
+            })
+            .unwrap(),
+            json!({ "branches": ["main", "feature/native"] })
+        );
+        assert_eq!(
+            serde_json::to_value(ThreadChangedSinceResult {
+                files: vec!["src/app.rs".into()],
+            })
+            .unwrap(),
+            json!({ "files": ["src/app.rs"] })
+        );
+        assert_eq!(
+            serde_json::to_value(ThreadRestoreResult {
+                undo: "restore-token".into(),
+            })
+            .unwrap(),
+            json!({ "undo": "restore-token" })
         );
     }
 

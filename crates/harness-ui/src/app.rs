@@ -2,6 +2,7 @@ mod provider_terminal;
 mod session_search;
 mod settings;
 mod sidebar_controls;
+mod stage_controls;
 
 use crate::assets::{HarnessAssets, register_fonts};
 use crate::chat::{ChatEvent, ChatView, ComposerSettings, SessionContext};
@@ -26,6 +27,7 @@ use harness_protocol::{ApprovalMode, Model, ModelConnectionPreset, ProviderId};
 use provider_terminal::{ProviderTerminalKey, ProviderTerminalView};
 use session_search::SessionSearchState;
 use sidebar_controls::SidebarControlsState;
+use stage_controls::StageControlsState;
 use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 
@@ -93,10 +95,12 @@ struct HarnessApp {
     session_search: SessionSearchState,
     pending_reveal_turn: Option<(String, String)>,
     sidebar_controls: SidebarControlsState,
+    stage_controls: StageControlsState,
     collapsed_projects: HashSet<String>,
     expanded_project_sessions: HashSet<String>,
     snoozed_expanded: bool,
     settled_expanded: bool,
+    account_menu_open: bool,
     system_theme_mode: ThemeMode,
     preferences: NativePreferences,
     connection_editor_open: bool,
@@ -292,6 +296,15 @@ impl HarnessApp {
                 this.design_mode = !this.design_mode;
                 this.sync_composer_settings(cx);
             }
+            ChatEvent::SelectProject { path } => {
+                if this.active_project_path.as_deref() != Some(path.as_str()) {
+                    this.begin_new_chat(path.clone(), cx);
+                }
+            }
+            ChatEvent::SelectBranch { branch } => {
+                this.select_workspace_branch(branch.clone(), cx);
+            }
+            ChatEvent::OpenRollback => this.open_rollback(cx),
             ChatEvent::PickAttachments => this.pick_attachments(cx),
             ChatEvent::TranscribeVoice { params } => {
                 let update = this.state.transcribe_voice(params.clone());
@@ -424,10 +437,12 @@ impl HarnessApp {
             session_search: SessionSearchState::new(session_search_input),
             pending_reveal_turn: None,
             sidebar_controls: SidebarControlsState::new(sidebar_editor_input),
+            stage_controls: StageControlsState::default(),
             collapsed_projects: HashSet::new(),
             expanded_project_sessions: HashSet::new(),
             snoozed_expanded: false,
             settled_expanded: false,
+            account_menu_open: false,
             system_theme_mode,
             preferences,
             connection_editor_open: false,
@@ -452,7 +467,19 @@ impl HarnessApp {
 
     fn apply_client_update(&mut self, update: ClientUpdate, cx: &mut Context<Self>) {
         let shell_changed = update.shell_changed;
+        let mut refresh_stage = false;
         for chat_update in update.chat {
+            refresh_stage |= match &chat_update {
+                ChatUpdate::Refresh => true,
+                ChatUpdate::Event(push) => {
+                    self.selected_thread_id.as_deref() == Some(push.thread_id.as_str())
+                        && matches!(
+                            push.event,
+                            harness_protocol::DomainEvent::TurnCompleted { .. }
+                        )
+                }
+                _ => false,
+            };
             let reveal_turn = match (&chat_update, self.pending_reveal_turn.as_ref()) {
                 (
                     ChatUpdate::History {
@@ -486,6 +513,9 @@ impl HarnessApp {
         for event in update.shell_events {
             self.apply_shell_event(event, cx);
         }
+        if refresh_stage {
+            self.refresh_stage_context(cx);
+        }
         if self.connection_submission_id.is_some() && self.state.connection_busy.is_none() {
             if self.state.connection_error.is_none() {
                 self.connection_editor_open = false;
@@ -500,6 +530,7 @@ impl HarnessApp {
         }
         if shell_changed {
             self.sync_composer_settings(cx);
+            self.sync_stage_settings(cx);
             cx.notify();
         }
     }
@@ -558,6 +589,8 @@ impl HarnessApp {
                     self.active_project_path = None;
                     self.pending_reveal_turn = None;
                     self.chat_visible = false;
+                    self.stage_controls.clear_restore_undo();
+                    self.refresh_stage_context(cx);
                 }
                 cx.notify();
             }
@@ -586,6 +619,8 @@ impl HarnessApp {
                     .map_or_else(|| project_path.clone(), |project| project.name.clone());
                 self.selected_thread_id = Some(thread_id.clone());
                 self.active_project_path = Some(project_path.clone());
+                self.stage_controls.clear_restore_undo();
+                self.account_menu_open = false;
                 self.chat_visible = true;
                 self.settings_open = false;
                 self.chat.update(cx, |chat, cx| {
@@ -602,6 +637,7 @@ impl HarnessApp {
                     );
                 });
                 self.state.select_thread(&thread_id);
+                self.refresh_stage_context(cx);
             }
             ShellEvent::OpenUrl { url } => cx.open_url(&url),
             ShellEvent::ProviderTerminalOpened {
@@ -678,6 +714,69 @@ impl HarnessApp {
                     cx.notify();
                 }
             }
+            ShellEvent::WorkspaceInfo {
+                path,
+                generation,
+                info,
+            } => self.apply_workspace_info(path, generation, info, cx),
+            ShellEvent::WorkspaceBranches {
+                path,
+                generation,
+                branches,
+            } => self.apply_workspace_branches(path, generation, branches, cx),
+            ShellEvent::WorkspaceSwitched {
+                path,
+                branch,
+                generation,
+                info,
+            } => self.apply_workspace_switched(path, branch, generation, info, cx),
+            ShellEvent::WorkspaceError {
+                path,
+                generation,
+                operation,
+                message,
+            } => self.apply_workspace_error(path, generation, operation, message, cx),
+            ShellEvent::Checkpoints {
+                thread_id,
+                generation,
+                checkpoints,
+            } => self.apply_checkpoints(thread_id, generation, checkpoints, cx),
+            ShellEvent::ChangedSince {
+                thread_id,
+                checkpoint_id,
+                generation,
+                files,
+            } => self.apply_changed_since(thread_id, checkpoint_id, generation, files, cx),
+            ShellEvent::CheckpointRestored {
+                thread_id,
+                checkpoint_id,
+                generation,
+                undo,
+            } => self.apply_checkpoint_restored(thread_id, checkpoint_id, generation, undo, cx),
+            ShellEvent::RestoreUndone {
+                thread_id,
+                generation,
+            } => self.apply_restore_undone(thread_id, generation, cx),
+            ShellEvent::RollbackError {
+                thread_id,
+                generation,
+                operation,
+                message,
+            } => self.apply_rollback_error(thread_id, generation, operation, message, cx),
+            ShellEvent::UsageSummary {
+                scope,
+                generation,
+                summary,
+            } => self.apply_usage_summary(scope, generation, summary, cx),
+            ShellEvent::UsageError {
+                scope,
+                generation,
+                message,
+            } => self.apply_usage_error(scope, generation, message, cx),
+            ShellEvent::PanicStopped { result } => {
+                self.apply_panic_stopped(result.sessions, cx);
+            }
+            ShellEvent::PanicStopError { message } => self.apply_panic_stop_error(message, cx),
         }
     }
 
@@ -721,12 +820,15 @@ impl HarnessApp {
 
         self.selected_thread_id = Some(thread_id.clone());
         self.active_project_path = Some(context.project_path.clone());
+        self.stage_controls.clear_restore_undo();
+        self.account_menu_open = false;
         self.chat_visible = true;
         self.settings_open = false;
         self.chat.update(cx, |chat, cx| {
             chat.begin_session(context, cx);
         });
         self.state.select_thread(&thread_id);
+        self.refresh_stage_context(cx);
         cx.notify();
     }
 
@@ -833,12 +935,15 @@ impl HarnessApp {
         self.pending_new_chat_path = None;
         self.chat_visible = true;
         self.settings_open = false;
+        self.account_menu_open = false;
         self.scope_open = false;
         self.new_thread_picker = false;
         self.state.notice = None;
         self.chat.update(cx, |chat, cx| {
             chat.begin_draft(context, cx);
         });
+        self.stage_controls.clear_restore_undo();
+        self.refresh_stage_context(cx);
         cx.notify();
     }
 
@@ -1059,6 +1164,8 @@ impl HarnessApp {
         let open_menu_view = select_view.clone();
         let toggle_snoozed_view = select_view.clone();
         let toggle_settled_view = select_view.clone();
+        let toggle_account_view = select_view.clone();
+        let panic_stop_view = select_view.clone();
         SidebarActions {
             select_session: Rc::new(move |thread_id, cx| {
                 let _ = select_view.update(cx, |this, cx| this.select_session(thread_id, cx));
@@ -1141,6 +1248,18 @@ impl HarnessApp {
                 let _ = toggle_settled_view.update(cx, |this, cx| {
                     this.settled_expanded = !this.settled_expanded;
                     cx.notify();
+                });
+            }),
+            toggle_account: Rc::new(move |cx| {
+                let _ = toggle_account_view.update(cx, |this, cx| {
+                    this.account_menu_open = !this.account_menu_open;
+                    cx.notify();
+                });
+            }),
+            panic_stop: Rc::new(move |cx| {
+                let _ = panic_stop_view.update(cx, |this, cx| {
+                    this.account_menu_open = false;
+                    this.request_panic_stop(cx);
                 });
             }),
         }
@@ -1247,6 +1366,11 @@ impl Render for HarnessApp {
             self.stage().into_any_element()
         };
         let sidebar_actions = self.sidebar_actions(cx);
+        let provider_name = self
+            .selected_model_choice()
+            .map(|choice| choice.source_name.clone())
+            .unwrap_or_else(|| "Personal Harness".into());
+        let usage_left = self.stage_controls.primary_usage_left();
         let rail = sidebar(
             SidebarProps {
                 theme: self.theme,
@@ -1263,6 +1387,10 @@ impl Render for HarnessApp {
                 expanded_project_sessions: &self.expanded_project_sessions,
                 snoozed_expanded: self.snoozed_expanded,
                 settled_expanded: self.settled_expanded,
+                account_menu_open: self.account_menu_open,
+                provider_name: &provider_name,
+                usage_left,
+                panic_stopping: self.stage_controls.panic_stopping(),
                 glass: self.preferences.sidebar_glass,
             },
             sidebar_actions,
@@ -1312,6 +1440,9 @@ impl Render for HarnessApp {
         let search_overlay = self.session_search_overlay(window, cx);
         let sidebar_controls_open = self.sidebar_controls.is_open();
         let sidebar_controls_overlay = self.sidebar_controls_overlay(window, cx);
+        let rollback_open = self.stage_controls.overlay_open();
+        let rollback_overlay = self.rollback_overlay(cx);
+        let global_notice = self.global_notice(cx);
         div()
             .size_full()
             .relative()
@@ -1333,7 +1464,7 @@ impl Render for HarnessApp {
                 }
             }))
             .when(
-                settings_open && !search_open && !sidebar_controls_open,
+                settings_open && !search_open && !sidebar_controls_open && !rollback_open,
                 |root| {
                     root.track_focus(&self.settings_focus)
                         .on_key_down(cx.listener(|this, event: &KeyDownEvent, _window, cx| {
@@ -1344,19 +1475,30 @@ impl Render for HarnessApp {
                         }))
                 },
             )
-            .when(search_open && !sidebar_controls_open, |root| {
-                root.on_key_down(cx.listener(|this, event: &KeyDownEvent, _window, cx| {
-                    if event.keystroke.key.eq_ignore_ascii_case("escape") {
-                        cx.stop_propagation();
-                        this.close_session_search(cx);
-                    }
-                }))
-            })
-            .when(sidebar_controls_open, |root| {
+            .when(
+                search_open && !sidebar_controls_open && !rollback_open,
+                |root| {
+                    root.on_key_down(cx.listener(|this, event: &KeyDownEvent, _window, cx| {
+                        if event.keystroke.key.eq_ignore_ascii_case("escape") {
+                            cx.stop_propagation();
+                            this.close_session_search(cx);
+                        }
+                    }))
+                },
+            )
+            .when(sidebar_controls_open && !rollback_open, |root| {
                 root.on_key_down(cx.listener(|this, event: &KeyDownEvent, _window, cx| {
                     if event.keystroke.key.eq_ignore_ascii_case("escape") {
                         cx.stop_propagation();
                         this.close_sidebar_controls(cx);
+                    }
+                }))
+            })
+            .when(rollback_open, |root| {
+                root.on_key_down(cx.listener(|this, event: &KeyDownEvent, _window, cx| {
+                    if event.keystroke.key.eq_ignore_ascii_case("escape") {
+                        cx.stop_propagation();
+                        this.close_rollback(cx);
                     }
                 }))
             })
@@ -1370,6 +1512,8 @@ impl Render for HarnessApp {
             .when_some(sidebar_controls_overlay, |root, overlay| {
                 root.child(overlay)
             })
+            .when_some(rollback_overlay, |root, overlay| root.child(overlay))
+            .when_some(global_notice, |root, notice| root.child(notice))
     }
 }
 

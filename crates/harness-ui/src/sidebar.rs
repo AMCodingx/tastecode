@@ -38,6 +38,8 @@ pub(crate) struct SidebarActions {
     pub(crate) open_menu: OpenSidebarMenu,
     pub(crate) toggle_snoozed: SidebarAction,
     pub(crate) toggle_settled: SidebarAction,
+    pub(crate) toggle_account: SidebarAction,
+    pub(crate) panic_stop: SidebarAction,
 }
 
 pub(crate) struct SidebarProps<'a> {
@@ -55,6 +57,10 @@ pub(crate) struct SidebarProps<'a> {
     pub(crate) expanded_project_sessions: &'a std::collections::HashSet<String>,
     pub(crate) snoozed_expanded: bool,
     pub(crate) settled_expanded: bool,
+    pub(crate) account_menu_open: bool,
+    pub(crate) provider_name: &'a str,
+    pub(crate) usage_left: Option<u8>,
+    pub(crate) panic_stopping: bool,
     pub(crate) glass: u8,
 }
 
@@ -74,9 +80,14 @@ pub fn sidebar(props: SidebarProps<'_>, actions: SidebarActions) -> impl IntoEle
         expanded_project_sessions,
         snoozed_expanded,
         settled_expanded,
+        account_menu_open,
+        provider_name,
+        usage_left,
+        panic_stopping,
         glass,
     } = props;
     div()
+        .relative()
         .w(px(RAIL_WIDTH))
         .h_full()
         .flex_none()
@@ -129,21 +140,198 @@ pub fn sidebar(props: SidebarProps<'_>, actions: SidebarActions) -> impl IntoEle
             )
             .into_any_element()
         })
+        .child(sidebar_footer(
+            theme,
+            mode,
+            provider_name,
+            usage_left,
+            account_menu_open,
+            panic_stopping,
+            &actions,
+        ))
+}
+
+fn sidebar_footer(
+    theme: Theme,
+    mode: SidebarMode,
+    provider_name: &str,
+    usage_left: Option<u8>,
+    account_menu_open: bool,
+    panic_stopping: bool,
+    actions: &SidebarActions,
+) -> AnyElement {
+    if mode == SidebarMode::Inbox {
+        return div()
+            .flex_none()
+            .border_t_1()
+            .border_color(theme.line.hsla())
+            .p(px(8.0))
+            .child(nav_item(
+                "settings",
+                "icons/settings.svg",
+                "Settings",
+                "Ctrl ,",
+                theme,
+                Some(actions.open_settings.clone()),
+            ))
+            .into_any_element();
+    }
+
+    let toggle = actions.toggle_account.clone();
+    let initial = provider_name
+        .chars()
+        .find(|character| character.is_alphanumeric())
+        .map(|character| character.to_uppercase().to_string())
+        .unwrap_or_else(|| "H".into());
+    div()
+        .relative()
+        .flex_none()
+        .border_t_1()
+        .border_color(theme.line.hsla())
+        .px(px(10.0))
+        .pt(px(8.0))
+        .pb(px(10.0))
+        .when(account_menu_open, |footer| {
+            footer.child(
+                div()
+                    .id("account-menu")
+                    .occlude()
+                    .absolute()
+                    .left(px(10.0))
+                    .right(px(10.0))
+                    .bottom(px(53.0))
+                    .rounded(px(10.0))
+                    .border_1()
+                    .border_color(theme.line_strong.hsla())
+                    .bg(theme.surface_2.hsla())
+                    .shadow_lg()
+                    .p(px(5.0))
+                    .child(
+                        div()
+                            .h(px(34.0))
+                            .flex()
+                            .items_center()
+                            .gap(px(8.0))
+                            .px(px(9.0))
+                            .text_size(px(12.0))
+                            .text_color(theme.text_2.hsla())
+                            .child(icon("icons/gauge.svg", 14.0))
+                            .child(usage_left.map_or_else(
+                                || SharedString::from("Limits unavailable"),
+                                |left| SharedString::from(format!("{left}% left")),
+                            )),
+                    )
+                    .child(footer_menu_action(
+                        "account-stop-all",
+                        "icons/octagon-x.svg",
+                        if panic_stopping {
+                            "Stopping sessions…"
+                        } else {
+                            "Stop all sessions"
+                        },
+                        true,
+                        panic_stopping,
+                        theme,
+                        actions.panic_stop.clone(),
+                    ))
+                    .child(footer_menu_action(
+                        "account-settings",
+                        "icons/settings.svg",
+                        "Settings",
+                        false,
+                        false,
+                        theme,
+                        actions.open_settings.clone(),
+                    )),
+            )
+        })
         .child(
             div()
-                .flex_none()
-                .border_t_1()
-                .border_color(theme.line.hsla())
-                .p(px(8.0))
-                .child(nav_item(
-                    "settings",
-                    "icons/settings.svg",
-                    "Settings",
-                    "Ctrl ,",
-                    theme,
-                    Some(actions.open_settings.clone()),
-                )),
+                .id("account-trigger")
+                .h(px(38.0))
+                .w_full()
+                .flex()
+                .items_center()
+                .gap(px(8.0))
+                .px(px(8.0))
+                .rounded(px(8.0))
+                .border_1()
+                .border_color(if account_menu_open {
+                    theme.line_strong.hsla()
+                } else {
+                    theme.line.hsla()
+                })
+                .bg(theme.surface.hsla())
+                .text_size(px(12.0))
+                .text_color(theme.text_2.hsla())
+                .cursor_pointer()
+                .hover(move |style| {
+                    style
+                        .bg(theme.surface_2.hsla())
+                        .border_color(theme.line_strong.hsla())
+                        .text_color(theme.text.hsla())
+                })
+                .active(|style| style.top(px(1.0)))
+                .on_click(move |_event, _window, cx| toggle(cx))
+                .child(
+                    div()
+                        .size(px(22.0))
+                        .flex_none()
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .rounded(px(11.0))
+                        .bg(theme.surface_3.hsla())
+                        .text_size(px(10.0))
+                        .font_weight(FontWeight::SEMIBOLD)
+                        .child(initial),
+                )
+                .child(
+                    div()
+                        .min_w(px(0.0))
+                        .flex_1()
+                        .truncate()
+                        .child(provider_name.to_owned()),
+                )
+                .child(icon("icons/chevron-down.svg", 11.0)),
         )
+        .into_any_element()
+}
+
+#[allow(clippy::too_many_arguments)]
+fn footer_menu_action(
+    id: &'static str,
+    icon_path: &'static str,
+    label: &'static str,
+    destructive: bool,
+    disabled: bool,
+    theme: Theme,
+    action: SidebarAction,
+) -> AnyElement {
+    div()
+        .id(id)
+        .h(px(31.0))
+        .w_full()
+        .flex()
+        .items_center()
+        .gap(px(8.0))
+        .px(px(8.0))
+        .rounded(px(7.0))
+        .text_size(px(11.5))
+        .text_color(if destructive {
+            theme.error.hsla()
+        } else {
+            theme.text_2.hsla()
+        })
+        .opacity(if disabled { 0.5 } else { 1.0 })
+        .when(!disabled, |row| {
+            row.cursor_pointer()
+                .hover(move |style| style.bg(theme.surface_3.hsla()))
+                .on_click(move |_event, _window, cx| action(cx))
+        })
+        .child(icon(icon_path, 14.0))
+        .child(label)
+        .into_any_element()
 }
 
 fn classic_sidebar_actions(theme: Theme, actions: &SidebarActions) -> impl IntoElement {

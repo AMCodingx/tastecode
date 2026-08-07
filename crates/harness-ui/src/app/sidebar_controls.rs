@@ -68,6 +68,8 @@ impl HarnessApp {
         position: Point<Pixels>,
         cx: &mut Context<Self>,
     ) {
+        self.close_rollback(cx);
+        self.account_menu_open = false;
         self.sidebar_controls.dialog = None;
         self.sidebar_controls.menu = Some(SidebarMenuState { request, position });
         cx.notify();

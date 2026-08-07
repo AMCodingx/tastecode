@@ -101,6 +101,8 @@ impl HarnessApp {
         if self.sidebar_controls.is_open() {
             self.close_sidebar_controls(cx);
         }
+        self.close_rollback(cx);
+        self.account_menu_open = false;
         self.settings_return_to_chat = self.chat_visible;
         self.settings_open = true;
         self.settings_section = SettingsSection::Providers;

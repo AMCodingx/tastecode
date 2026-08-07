@@ -44,6 +44,14 @@ impl AssetSource for HarnessAssets {
             "icons/info.svg" => Some(include_bytes!("../assets/icons/info.svg")),
             "icons/network.svg" => Some(include_bytes!("../assets/icons/network.svg")),
             "icons/user-round.svg" => Some(include_bytes!("../assets/icons/user-round.svg")),
+            "icons/git-branch.svg" => Some(include_bytes!("../assets/icons/git-branch.svg")),
+            "icons/history.svg" => Some(include_bytes!("../assets/icons/history.svg")),
+            "icons/square-terminal.svg" => {
+                Some(include_bytes!("../assets/icons/square-terminal.svg"))
+            }
+            "icons/folder.svg" => Some(include_bytes!("../assets/icons/folder.svg")),
+            "icons/gauge.svg" => Some(include_bytes!("../assets/icons/gauge.svg")),
+            "icons/octagon-x.svg" => Some(include_bytes!("../assets/icons/octagon-x.svg")),
             _ => None,
         };
         Ok(bytes.map(Cow::Borrowed))

@@ -14,8 +14,9 @@ use gpui_component::RopeExt;
 use gpui_component::input::{Input, InputEvent, InputState};
 use harness_protocol::{
     ApprovalDecision, ApprovalKind, ApprovalMode, ApprovalReview, ApprovalReviewStatus,
-    DiffDecision, Item, ItemStatus, ItemType, MessageRole, ProviderId, QueueDirection, RiskLevel,
-    ThreadEventPush, ThreadQueueResult, UserInputQuestion, VoiceMimeType, VoiceTranscribeParams,
+    CheckpointSummary, DiffDecision, Item, ItemStatus, ItemType, MessageRole, ProviderId,
+    QueueDirection, RiskLevel, ThreadEventPush, ThreadQueueResult, UserInputQuestion,
+    VoiceMimeType, VoiceTranscribeParams,
 };
 use harness_state::{ApplyOutcome, HistoryError, ThreadState};
 use std::collections::{HashMap, HashSet};
@@ -82,6 +83,13 @@ pub(crate) enum ChatEvent {
     },
     ToggleIsolation,
     ToggleDesign,
+    SelectProject {
+        path: String,
+    },
+    SelectBranch {
+        branch: String,
+    },
+    OpenRollback,
     PickAttachments,
     TranscribeVoice {
         params: VoiceTranscribeParams,
@@ -159,10 +167,32 @@ impl Default for ComposerSettings {
     }
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct StageProject {
+    pub(crate) path: String,
+    pub(crate) name: String,
+}
+
+#[derive(Clone, Default)]
+pub(crate) struct StageSettings {
+    pub(crate) projects: Vec<StageProject>,
+    pub(crate) workspace_branch: Option<String>,
+    pub(crate) branches: Vec<String>,
+    pub(crate) checkpoints: Vec<CheckpointSummary>,
+    pub(crate) branch_switching: bool,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum ComposerMenu {
     Permissions,
     Model,
+    Project,
+    Branch,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum HeaderMenu {
+    Project,
 }
 
 struct InputFieldSync {
@@ -201,7 +231,9 @@ pub(crate) struct ChatView {
     pending_live: Vec<ThreadEventPush>,
     delta_flush_scheduled: bool,
     composer_settings: ComposerSettings,
+    stage_settings: StageSettings,
     composer_menu: Option<ComposerMenu>,
+    header_menu: Option<HeaderMenu>,
     attachments: Vec<String>,
     active_user_input_id: Option<String>,
     user_input_step: usize,
@@ -271,7 +303,9 @@ impl ChatView {
             pending_live: Vec::new(),
             delta_flush_scheduled: false,
             composer_settings: ComposerSettings::default(),
+            stage_settings: StageSettings::default(),
             composer_menu: None,
+            header_menu: None,
             attachments: Vec::new(),
             active_user_input_id: None,
             user_input_step: 0,
@@ -316,6 +350,7 @@ impl ChatView {
         self.delta_flush_scheduled = false;
         self.attachments.clear();
         self.composer_menu = None;
+        self.header_menu = None;
         self.active_user_input_id = None;
         self.user_input_step = 0;
         self.user_input_answers.clear();
@@ -358,6 +393,15 @@ impl ChatView {
         if !self.composer_settings.voice_available && self.voice_phase != VoicePhase::Idle {
             self.cancel_voice(cx);
         }
+        cx.notify();
+    }
+
+    pub(crate) fn update_stage_settings(
+        &mut self,
+        settings: StageSettings,
+        cx: &mut Context<Self>,
+    ) {
+        self.stage_settings = settings;
         cx.notify();
     }
 
@@ -1198,6 +1242,29 @@ impl ChatView {
         cx.notify();
     }
 
+    fn toggle_header_menu(&mut self, menu: HeaderMenu, cx: &mut Context<Self>) {
+        self.header_menu = if self.header_menu == Some(menu) {
+            None
+        } else {
+            Some(menu)
+        };
+        self.composer_menu = None;
+        cx.notify();
+    }
+
+    fn choose_project(&mut self, path: String, cx: &mut Context<Self>) {
+        self.header_menu = None;
+        self.composer_menu = None;
+        cx.emit(ChatEvent::SelectProject { path });
+        cx.notify();
+    }
+
+    fn choose_branch(&mut self, branch: String, cx: &mut Context<Self>) {
+        self.composer_menu = None;
+        cx.emit(ChatEvent::SelectBranch { branch });
+        cx.notify();
+    }
+
     fn choose_model(&mut self, key: String, cx: &mut Context<Self>) {
         cx.emit(ChatEvent::SelectModel { key });
     }
@@ -1224,6 +1291,7 @@ impl ChatView {
         let theme = self.theme;
         let session = self.session.clone();
         div()
+            .relative()
             .h(px(44.0))
             .min_h(px(44.0))
             .w_full()
@@ -1231,6 +1299,7 @@ impl ChatView {
             .items_center()
             .gap(px(10.0))
             .px(px(16.0))
+            .child(self.header_project_picker(cx))
             .child(
                 div()
                     .min_w(px(0.0))
@@ -1240,7 +1309,13 @@ impl ChatView {
                     .text_color(theme.text_3.hsla())
                     .child(session.as_ref().map_or_else(
                         || SharedString::from(""),
-                        |value| value.title.clone().into(),
+                        |value| {
+                            if value.thread_id.is_some() {
+                                value.title.clone().into()
+                            } else {
+                                SharedString::from("")
+                            }
+                        },
                     )),
             )
             .when_some(
@@ -1259,6 +1334,177 @@ impl ChatView {
             )
             .child(self.terminal_header_button(cx))
             .child(self.review_header_button(cx))
+            .when(
+                !self.state.running && !self.stage_settings.checkpoints.is_empty(),
+                |row| row.child(self.rollback_header_button(cx)),
+            )
+            .when(self.header_menu == Some(HeaderMenu::Project), |row| {
+                row.child(self.header_project_menu(cx))
+            })
+    }
+
+    fn header_project_picker(&self, cx: &Context<Self>) -> AnyElement {
+        let theme = self.theme;
+        let enabled = !self.stage_settings.projects.is_empty();
+        let open = self.header_menu == Some(HeaderMenu::Project);
+        let label = self.session.as_ref().map_or_else(
+            || SharedString::from("No project"),
+            |session| SharedString::from(path_label(&session.project_path).to_owned()),
+        );
+        div()
+            .id("header-project")
+            .h(px(28.0))
+            .max_w(px(190.0))
+            .flex_none()
+            .flex()
+            .items_center()
+            .gap(px(6.0))
+            .px(px(7.0))
+            .rounded(px(7.0))
+            .border_1()
+            .border_color(if open {
+                theme.line_strong.hsla()
+            } else {
+                theme.line.hsla().opacity(0.0)
+            })
+            .text_size(px(12.5))
+            .font_weight(FontWeight::MEDIUM)
+            .text_color(theme.text.hsla())
+            .opacity(if enabled { 1.0 } else { 0.48 })
+            .when(enabled, |picker| {
+                picker
+                    .cursor_pointer()
+                    .hover(move |style| style.bg(theme.surface.hsla()))
+                    .on_click(cx.listener(|this, event, _window, cx| {
+                        cx.stop_propagation();
+                        let _ = event;
+                        this.toggle_header_menu(HeaderMenu::Project, cx);
+                    }))
+            })
+            .child(div().min_w(px(0.0)).truncate().child(label))
+            .child(
+                div()
+                    .flex_none()
+                    .text_color(theme.text_3.hsla())
+                    .child(svg_icon("icons/chevron-down.svg", 11.0)),
+            )
+            .into_any_element()
+    }
+
+    fn header_project_menu(&self, cx: &Context<Self>) -> AnyElement {
+        let theme = self.theme;
+        let active_path = self
+            .session
+            .as_ref()
+            .map(|session| session.project_path.clone());
+        div()
+            .id("header-project-menu")
+            .occlude()
+            .absolute()
+            .left(px(16.0))
+            .top(px(38.0))
+            .w(px(330.0))
+            .max_h(px(300.0))
+            .overflow_y_scroll()
+            .rounded(px(11.0))
+            .border_1()
+            .border_color(theme.line_strong.hsla())
+            .bg(theme.surface_2.hsla())
+            .shadow_lg()
+            .p(px(5.0))
+            .children(
+                self.stage_settings
+                    .projects
+                    .iter()
+                    .cloned()
+                    .enumerate()
+                    .map(|(index, project)| {
+                        let selected = active_path.as_deref() == Some(project.path.as_str());
+                        let path = project.path.clone();
+                        div()
+                            .id(("header-project-option", index))
+                            .min_h(px(45.0))
+                            .w_full()
+                            .flex()
+                            .items_center()
+                            .gap(px(8.0))
+                            .px(px(8.0))
+                            .rounded(px(8.0))
+                            .when(selected, |row| row.bg(theme.surface_3.hsla()))
+                            .cursor_pointer()
+                            .hover(move |style| style.bg(theme.surface_3.hsla()))
+                            .on_click(cx.listener(move |this, _event, _window, cx| {
+                                this.choose_project(path.clone(), cx);
+                            }))
+                            .child(
+                                div()
+                                    .flex_none()
+                                    .text_color(theme.text_3.hsla())
+                                    .child(svg_icon("icons/folder.svg", 14.0)),
+                            )
+                            .child(
+                                div()
+                                    .min_w(px(0.0))
+                                    .flex_1()
+                                    .flex()
+                                    .flex_col()
+                                    .child(
+                                        div()
+                                            .truncate()
+                                            .text_size(px(12.0))
+                                            .font_weight(FontWeight::MEDIUM)
+                                            .text_color(theme.text.hsla())
+                                            .child(path_label(&project.path).to_owned()),
+                                    )
+                                    .child(
+                                        div()
+                                            .mt(px(1.0))
+                                            .truncate()
+                                            .font_family("Geist Mono")
+                                            .text_size(px(9.5))
+                                            .text_color(theme.text_3.hsla())
+                                            .child(project.path),
+                                    ),
+                            )
+                            .when(selected, |row| row.child(svg_icon("icons/check.svg", 12.0)))
+                    }),
+            )
+            .with_animation(
+                "header-project-menu",
+                Animation::new(theme.motion.fast).with_easing(ease_out_quint()),
+                |menu, delta| menu.top(px(34.0 + 4.0 * delta)).opacity(delta),
+            )
+            .into_any_element()
+    }
+
+    fn rollback_header_button(&self, cx: &Context<Self>) -> AnyElement {
+        let theme = self.theme;
+        let count = self.stage_settings.checkpoints.len();
+        div()
+            .id("header-checkpoints")
+            .h(px(28.0))
+            .px(px(7.0))
+            .flex()
+            .items_center()
+            .gap(px(5.0))
+            .rounded(px(7.0))
+            .text_size(px(11.5))
+            .text_color(theme.text_3.hsla())
+            .cursor_pointer()
+            .hover(move |style| style.bg(theme.surface.hsla()).text_color(theme.text.hsla()))
+            .active(|style| style.opacity(0.72))
+            .on_click(cx.listener(|this, _event, _window, cx| {
+                this.header_menu = None;
+                this.composer_menu = None;
+                cx.emit(ChatEvent::OpenRollback);
+                cx.notify();
+            }))
+            .child(svg_icon("icons/history.svg", 12.0))
+            .child(format!(
+                "{count} checkpoint{}",
+                if count == 1 { "" } else { "s" }
+            ))
+            .into_any_element()
     }
 
     fn timeline(&self, cx: &mut Context<Self>) -> AnyElement {
@@ -2111,23 +2357,20 @@ impl ChatView {
                                         .h(px(36.0))
                                         .flex()
                                         .items_center()
-                                        .gap(px(7.0))
-                                        .px(px(12.0))
+                                        .gap(px(4.0))
+                                        .px(px(8.0))
                                         .bg(theme.surface_2.hsla())
                                         .text_size(px(12.0))
                                         .text_color(theme.text_2.hsla())
-                                        .child(session.as_ref().map_or_else(
-                                            || SharedString::from("Project"),
-                                            |value| value.project_name.clone().into(),
-                                        ))
-                                        .child("·")
+                                        .child(self.project_shelf_trigger(cx))
                                         .child(
                                             div()
                                                 .id("composer-isolation")
-                                                .h(px(26.0))
-                                                .px(px(5.0))
+                                                .h(px(28.0))
+                                                .px(px(8.0))
                                                 .flex()
                                                 .items_center()
+                                                .gap(px(6.0))
                                                 .rounded(px(7.0))
                                                 .cursor_pointer()
                                                 .hover(move |style| {
@@ -2140,17 +2383,23 @@ impl ChatView {
                                                         cx.emit(ChatEvent::ToggleIsolation);
                                                     },
                                                 ))
+                                                .child(svg_icon(
+                                                    if self.composer_settings.isolate {
+                                                        "icons/git-branch.svg"
+                                                    } else {
+                                                        "icons/folder.svg"
+                                                    },
+                                                    14.0,
+                                                ))
                                                 .child(if self.composer_settings.isolate {
                                                     "Isolated"
                                                 } else {
                                                     "Local"
                                                 }),
                                         )
-                                        .child("·")
-                                        .child(session.as_ref().map_or_else(
-                                            || SharedString::from("Provider"),
-                                            |value| provider_label(value.provider).into(),
-                                        )),
+                                        .when(!self.stage_settings.branches.is_empty(), |shelf| {
+                                            shelf.child(self.branch_shelf_trigger(cx))
+                                        }),
                                 )
                             })
                             .when_some(self.attachment_chips(cx), |prompt, chips| {
@@ -2435,6 +2684,92 @@ impl ChatView {
         )
     }
 
+    fn project_shelf_trigger(&self, cx: &Context<Self>) -> AnyElement {
+        let theme = self.theme;
+        let open = self.composer_menu == Some(ComposerMenu::Project);
+        let label = self.session.as_ref().map_or_else(
+            || SharedString::from("Choose project"),
+            |session| session.project_name.clone().into(),
+        );
+        div()
+            .id("composer-project")
+            .h(px(28.0))
+            .max_w(px(230.0))
+            .flex()
+            .items_center()
+            .gap(px(6.0))
+            .px(px(8.0))
+            .rounded(px(7.0))
+            .border_1()
+            .border_color(if open {
+                theme.line_strong.hsla()
+            } else {
+                theme.line.hsla().opacity(0.0)
+            })
+            .text_color(theme.text_2.hsla())
+            .cursor_pointer()
+            .hover(move |style| {
+                style
+                    .bg(theme.surface_3.hsla())
+                    .text_color(theme.text.hsla())
+            })
+            .on_click(cx.listener(|this, _event, _window, cx| {
+                this.toggle_composer_menu(ComposerMenu::Project, cx);
+            }))
+            .child(svg_icon("icons/folder.svg", 14.0))
+            .child(div().min_w(px(0.0)).truncate().child(label))
+            .child(svg_icon("icons/chevron-down.svg", 11.0))
+            .into_any_element()
+    }
+
+    fn branch_shelf_trigger(&self, cx: &Context<Self>) -> AnyElement {
+        let theme = self.theme;
+        let open = self.composer_menu == Some(ComposerMenu::Branch);
+        let label = self
+            .stage_settings
+            .workspace_branch
+            .clone()
+            .or_else(|| self.stage_settings.branches.first().cloned())
+            .unwrap_or_else(|| "No branch".into());
+        div()
+            .id("composer-branch")
+            .h(px(28.0))
+            .max_w(px(220.0))
+            .flex()
+            .items_center()
+            .gap(px(6.0))
+            .px(px(8.0))
+            .rounded(px(7.0))
+            .border_1()
+            .border_color(if open {
+                theme.line_strong.hsla()
+            } else {
+                theme.line.hsla().opacity(0.0)
+            })
+            .text_color(theme.text_2.hsla())
+            .opacity(if self.stage_settings.branch_switching {
+                0.48
+            } else {
+                1.0
+            })
+            .when(!self.stage_settings.branch_switching, |trigger| {
+                trigger
+                    .cursor_pointer()
+                    .hover(move |style| {
+                        style
+                            .bg(theme.surface_3.hsla())
+                            .text_color(theme.text.hsla())
+                    })
+                    .on_click(cx.listener(|this, _event, _window, cx| {
+                        this.toggle_composer_menu(ComposerMenu::Branch, cx);
+                    }))
+            })
+            .child(svg_icon("icons/git-branch.svg", 14.0))
+            .child(div().min_w(px(0.0)).truncate().child(label))
+            .child(svg_icon("icons/chevron-down.svg", 11.0))
+            .into_any_element()
+    }
+
     fn permission_trigger(&self, running: bool, cx: &Context<Self>) -> AnyElement {
         let theme = self.theme;
         let approval = self.composer_settings.approval;
@@ -2552,8 +2887,157 @@ impl ChatView {
         match self.composer_menu {
             Some(ComposerMenu::Permissions) => Some(self.permission_popover(is_new_session, cx)),
             Some(ComposerMenu::Model) => Some(self.model_popover(is_new_session, cx)),
+            Some(ComposerMenu::Project) => Some(self.project_popover(cx)),
+            Some(ComposerMenu::Branch) => Some(self.branch_popover(cx)),
             None => None,
         }
+    }
+
+    fn project_popover(&self, cx: &Context<Self>) -> AnyElement {
+        let theme = self.theme;
+        let active_path = self
+            .session
+            .as_ref()
+            .map(|session| session.project_path.clone());
+        div()
+            .id("composer-project-menu")
+            .occlude()
+            .absolute()
+            .left(px(8.0))
+            .bottom(px(183.0))
+            .w(px(350.0))
+            .max_h(px(290.0))
+            .overflow_y_scroll()
+            .rounded(px(13.0))
+            .border_1()
+            .border_color(theme.line_strong.hsla())
+            .bg(theme.surface_2.hsla())
+            .shadow_lg()
+            .p(px(5.0))
+            .children(
+                self.stage_settings
+                    .projects
+                    .iter()
+                    .cloned()
+                    .enumerate()
+                    .map(|(index, project)| {
+                        let selected = active_path.as_deref() == Some(project.path.as_str());
+                        let path = project.path.clone();
+                        div()
+                            .id(("composer-project-option", index))
+                            .min_h(px(45.0))
+                            .w_full()
+                            .flex()
+                            .items_center()
+                            .gap(px(8.0))
+                            .px(px(8.0))
+                            .rounded(px(8.0))
+                            .when(selected, |row| row.bg(theme.surface_3.hsla()))
+                            .cursor_pointer()
+                            .hover(move |style| style.bg(theme.surface_3.hsla()))
+                            .on_click(cx.listener(move |this, _event, _window, cx| {
+                                this.choose_project(path.clone(), cx);
+                            }))
+                            .child(svg_icon("icons/folder.svg", 14.0))
+                            .child(
+                                div()
+                                    .min_w(px(0.0))
+                                    .flex_1()
+                                    .flex()
+                                    .flex_col()
+                                    .child(
+                                        div()
+                                            .truncate()
+                                            .text_size(px(12.0))
+                                            .font_weight(FontWeight::MEDIUM)
+                                            .text_color(theme.text.hsla())
+                                            .child(project.name),
+                                    )
+                                    .child(
+                                        div()
+                                            .mt(px(1.0))
+                                            .truncate()
+                                            .font_family("Geist Mono")
+                                            .text_size(px(9.5))
+                                            .text_color(theme.text_3.hsla())
+                                            .child(project.path),
+                                    ),
+                            )
+                            .when(selected, |row| row.child(svg_icon("icons/check.svg", 12.0)))
+                    }),
+            )
+            .with_animation(
+                "composer-project-menu",
+                Animation::new(theme.motion.fast).with_easing(ease_out_quint()),
+                |menu, delta| menu.opacity(delta),
+            )
+            .into_any_element()
+    }
+
+    fn branch_popover(&self, cx: &Context<Self>) -> AnyElement {
+        let theme = self.theme;
+        let selected = self.stage_settings.workspace_branch.clone();
+        div()
+            .id("composer-branch-menu")
+            .occlude()
+            .absolute()
+            .left(px(175.0))
+            .bottom(px(183.0))
+            .w(px(280.0))
+            .max_h(px(290.0))
+            .overflow_y_scroll()
+            .rounded(px(13.0))
+            .border_1()
+            .border_color(theme.line_strong.hsla())
+            .bg(theme.surface_2.hsla())
+            .shadow_lg()
+            .p(px(5.0))
+            .children(
+                self.stage_settings
+                    .branches
+                    .iter()
+                    .cloned()
+                    .enumerate()
+                    .map(|(index, branch)| {
+                        let active = selected.as_deref() == Some(branch.as_str());
+                        let value = branch.clone();
+                        div()
+                            .id(("composer-branch-option", index))
+                            .h(px(34.0))
+                            .w_full()
+                            .flex()
+                            .items_center()
+                            .gap(px(8.0))
+                            .px(px(8.0))
+                            .rounded(px(8.0))
+                            .when(active, |row| row.bg(theme.surface_3.hsla()))
+                            .text_size(px(11.5))
+                            .font_family("Geist Mono")
+                            .text_color(if active {
+                                theme.text.hsla()
+                            } else {
+                                theme.text_2.hsla()
+                            })
+                            .cursor_pointer()
+                            .hover(move |style| {
+                                style
+                                    .bg(theme.surface_3.hsla())
+                                    .text_color(theme.text.hsla())
+                            })
+                            .on_click(cx.listener(move |this, _event, _window, cx| {
+                                this.choose_branch(value.clone(), cx);
+                            }))
+                            .child(svg_icon("icons/git-branch.svg", 13.0))
+                            .child(div().min_w(px(0.0)).flex_1().truncate().child(branch))
+                            .when(active, |row| row.child(svg_icon("icons/check.svg", 12.0)))
+                    }),
+            )
+            .with_animation(
+                "composer-branch-menu",
+                Animation::new(theme.motion.fast).with_easing(ease_out_quint()),
+                |menu, delta| menu.opacity(delta),
+            )
+            .into_any_element()
     }
 
     fn permission_popover(&self, is_new_session: bool, cx: &Context<Self>) -> AnyElement {
@@ -3309,17 +3793,6 @@ fn path_label(path: &str) -> &str {
     path.rsplit(['/', '\\'])
         .find(|component| !component.is_empty())
         .unwrap_or(path)
-}
-
-fn provider_label(provider: ProviderId) -> &'static str {
-    match provider {
-        ProviderId::Codex => "Codex",
-        ProviderId::ClaudeCode => "Claude Code",
-        ProviderId::Cursor => "Cursor",
-        ProviderId::OpenCode => "OpenCode",
-        ProviderId::Acp => "ACP",
-        ProviderId::Api => "API",
-    }
 }
 
 fn design_phase_label(text: &str) -> Option<&'static str> {
