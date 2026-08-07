@@ -892,8 +892,8 @@ impl HarnessApp {
             }
         }
 
-        let panel_width = px(218.0);
-        let panel_height = px((items.len() as f32 * 31.0 + 8.0).min(430.0));
+        let panel_width = px(210.0);
+        let panel_height = px((items.len() as f32 * 33.0 + 8.0).min(430.0));
         let viewport = window.viewport_size();
         let left = position
             .x
@@ -927,13 +927,21 @@ impl HarnessApp {
                         .max_h(px(430.0))
                         .overflow_y_scroll()
                         .occlude()
-                        .rounded(px(9.0))
+                        .rounded(px(8.0))
                         .border_1()
-                        .border_color(theme.line_strong.hsla())
-                        .bg(theme.surface_2.hsla())
-                        .shadow_lg()
+                        .border_color(chrome::menu_border(theme))
+                        .bg(chrome::menu_background(theme))
+                        .shadow(chrome::flyout_shadows(theme))
                         .p(px(4.0))
-                        .children(items),
+                        .children(items)
+                        .with_animation(
+                            "sidebar-context-panel-in",
+                            Animation::new(theme.motion.fast)
+                                .with_easing(crate::theme::web_ease_out),
+                            move |panel, delta| {
+                                panel.top(top + px(2.0 * (1.0 - delta))).opacity(delta)
+                            },
+                        ),
                 )
                 .into_any_element(),
         )
@@ -1307,14 +1315,14 @@ fn sidebar_menu_item(
 ) -> AnyElement {
     div()
         .id(id.into())
-        .h(px(30.0))
         .w_full()
         .flex()
         .items_center()
         .gap(px(8.0))
-        .px(px(8.0))
-        .rounded(px(6.0))
-        .text_size(px(11.5))
+        .px(px(9.0))
+        .py(px(6.0))
+        .rounded(px(5.0))
+        .text_size(px(13.5))
         .text_color(if danger {
             theme.error.hsla()
         } else {
@@ -1324,9 +1332,9 @@ fn sidebar_menu_item(
         .hover(move |style| {
             style
                 .bg(if danger {
-                    theme.error.hsla().opacity(0.1)
+                    theme.error.hsla().opacity(0.12).into()
                 } else {
-                    theme.surface_3.hsla()
+                    chrome::menu_hover_background(theme)
                 })
                 .text_color(if danger {
                     theme.error.hsla()
@@ -1336,7 +1344,7 @@ fn sidebar_menu_item(
         })
         .on_click(listener)
         .when_some(icon_path, |item, icon_path| {
-            item.child(super::icon(icon_path, 12.0))
+            item.child(super::icon(icon_path, 13.0))
         })
         .child(label.into())
         .into_any_element()
@@ -1360,10 +1368,10 @@ fn thread_count(count: usize) -> String {
 
 fn sidebar_menu_rule(theme: crate::Theme) -> AnyElement {
     div()
-        .h(px(7.0))
-        .my(px(2.0))
-        .border_t_1()
-        .border_color(theme.line.hsla())
+        .h(px(1.0))
+        .mx(px(2.0))
+        .my(px(4.0))
+        .bg(chrome::menu_border(theme))
         .into_any_element()
 }
 

@@ -1,3 +1,4 @@
+use crate::chrome;
 use crate::shortcuts::{NEW_CHAT, NEW_PROJECT, SETTINGS, label as shortcut_label};
 use crate::theme::{RADIUS_MD, RADIUS_SM, Theme};
 use crate::zoom::px;
@@ -393,12 +394,12 @@ fn sidebar_footer(
                     .left(px(10.0))
                     .right(px(10.0))
                     .bottom(px(54.0))
-                    .rounded(px(10.0))
+                    .rounded(px(8.0))
                     .border_1()
-                    .border_color(theme.line_strong.hsla())
-                    .bg(theme.surface_2.hsla())
-                    .shadow_lg()
-                    .p(px(5.0))
+                    .border_color(chrome::menu_border(theme))
+                    .bg(chrome::menu_background(theme))
+                    .shadow(chrome::flyout_shadows(theme))
+                    .p(px(4.0))
                     .child(account_limits(provider_name, usage_limits, theme))
                     .child(footer_menu_action(
                         "account-settings",
@@ -410,7 +411,7 @@ fn sidebar_footer(
                     .with_animation(
                         "account-menu",
                         Animation::new(theme.motion.fast).with_easing(crate::theme::web_ease_out),
-                        |menu, delta| menu.bottom(px(51.0 + 3.0 * delta)).opacity(delta),
+                        |menu, delta| menu.bottom(px(52.0 + 2.0 * delta)).opacity(delta),
                     ),
             )
         })
@@ -479,16 +480,20 @@ fn account_limits(provider_name: &str, limits: &[UsageLimit], theme: Theme) -> A
         .pb(px(9.0))
         .mb(px(4.0))
         .border_b_1()
-        .border_color(theme.line.hsla())
-        .text_size(px(11.0))
+        .border_color(chrome::menu_border(theme))
+        .text_size(px(12.5))
         .text_color(theme.text_2.hsla())
         .child(
             div()
                 .flex()
                 .items_center()
                 .gap(px(8.0))
-                .text_size(px(12.0))
-                .child(icon("icons/gauge.svg", 14.0))
+                .text_size(px(13.5))
+                .child(
+                    div()
+                        .text_color(theme.text_3.hsla())
+                        .child(icon("icons/gauge.svg", 14.0)),
+                )
                 .child("Limits"),
         )
         .when(limits.is_empty(), |usage| {
@@ -534,7 +539,7 @@ fn usage_limit(limit: &UsageLimit, now_ms: f64, theme: Theme) -> AnyElement {
                         .h_full()
                         .w(relative(used / 100.0))
                         .rounded(px(2.0))
-                        .bg(theme.attention.hsla()),
+                        .bg(theme.running.hsla()),
                 ),
         )
         .when_some(limit.resets_at, |window, resets_at| {
@@ -573,18 +578,18 @@ fn footer_menu_action(
     div()
         .id(id)
         .group("account-menu-action")
-        .h(px(31.0))
         .w_full()
         .flex()
         .items_center()
         .justify_between()
         .gap(px(6.0))
         .px(px(9.0))
-        .rounded(px(7.0))
-        .text_size(px(12.0))
+        .py(px(7.0))
+        .rounded(px(5.0))
+        .text_size(px(13.5))
         .text_color(theme.text.hsla())
         .cursor_pointer()
-        .hover(move |style| style.bg(theme.surface_3.hsla()))
+        .hover(move |style| style.bg(chrome::menu_hover_background(theme)))
         .on_click(move |_event, _window, cx| action(cx))
         .child(label)
         .child(
@@ -1843,11 +1848,6 @@ fn classic_session_status(status: Status, thread_id: &str, theme: Theme) -> Opti
 }
 
 fn classic_session_spinner(thread_id: &str, theme: Theme) -> AnyElement {
-    let color = if theme.mode == crate::theme::ThemeMode::Dark {
-        gpui::rgb(0xd4d4d4)
-    } else {
-        gpui::rgb(0x52525b)
-    };
     let spinner = div()
         .absolute()
         .top(relative(0.5))
@@ -1861,7 +1861,7 @@ fn classic_session_spinner(thread_id: &str, theme: Theme) -> AnyElement {
         .font_family("Geist Mono")
         .text_size(px(14.0))
         .line_height(relative(1.0))
-        .text_color(color);
+        .text_color(theme.running.hsla());
     if theme.reduced_motion {
         return spinner.child(BRAILLE_SPINNER_FRAMES[0]).into_any_element();
     }
@@ -2196,7 +2196,7 @@ impl Status {
 
     fn color(self, theme: Theme) -> Hsla {
         match self {
-            Self::Starting | Self::Working => theme.text.hsla(),
+            Self::Starting | Self::Working => theme.running.hsla(),
             Self::Queued | Self::Idle => theme.text_3.hsla(),
             Self::Approval | Self::Input => theme.attention.hsla(),
             Self::Ready => theme.success.hsla(),
@@ -2469,13 +2469,7 @@ fn active_inbox_row(
 fn status_badge(status: StatusPresentation, theme: Theme) -> gpui::Stateful<gpui::Div> {
     let color = match status.tone {
         StatusTone::Quiet => theme.text_3.hsla(),
-        StatusTone::Working => {
-            if theme.mode == crate::theme::ThemeMode::Dark {
-                gpui::rgb(0xd4d4d4).into()
-            } else {
-                gpui::rgb(0x52525b).into()
-            }
-        }
+        StatusTone::Working => theme.running.hsla(),
         StatusTone::Attention | StatusTone::Woke => theme.attention.hsla(),
         StatusTone::Failed => theme.error.hsla(),
         StatusTone::Done => theme.success.hsla(),

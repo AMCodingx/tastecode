@@ -131,6 +131,7 @@ pub struct Theme {
     pub text_3: ColorToken,
     pub titlebar: ColorToken,
     pub titlebar_symbol: ColorToken,
+    pub running: ColorToken,
     pub attention: ColorToken,
     pub file_reference: ColorToken,
     pub effort: ColorToken,
@@ -179,6 +180,7 @@ impl Theme {
             text_3: ColorToken(0x6f6f6f),
             titlebar: ColorToken(0x151515),
             titlebar_symbol: ColorToken(0xf4f4f5),
+            running: ColorToken(0xd4d4d4),
             attention: ColorToken(0x4c9dff),
             file_reference: ColorToken(0x515aad),
             effort: ColorToken(0xef706e),
@@ -217,6 +219,7 @@ impl Theme {
             text_3: ColorToken(0x71717a),
             titlebar: ColorToken(0xffffff),
             titlebar_symbol: ColorToken(0x27272a),
+            running: ColorToken(0x52525b),
             attention: ColorToken(0x2563eb),
             file_reference: ColorToken(0x4a53a8),
             effort: ColorToken(0xc2413d),
@@ -408,6 +411,7 @@ mod tests {
         assert_eq!(dark.composer_orb, ColorToken(0xededed));
         assert_eq!(dark.composer_on_orb, ColorToken(0x101010));
         assert_eq!(dark.composer_stop, ColorToken(0x2b2b2b));
+        assert_eq!(dark.running, ColorToken(0xd4d4d4));
         assert_eq!(dark.file_reference, ColorToken(0x515aad));
         assert_eq!(dark.effort, ColorToken(0xef706e));
         assert_eq!(light.background, ColorToken(0xfdfdfd));
@@ -422,6 +426,7 @@ mod tests {
         assert_eq!(light.composer_orb, ColorToken(0x1d1d1f));
         assert_eq!(light.composer_on_orb, ColorToken(0xffffff));
         assert_eq!(light.composer_stop, ColorToken(0x1d1d1f));
+        assert_eq!(light.running, ColorToken(0x52525b));
         assert_eq!(light.file_reference, ColorToken(0x4a53a8));
         assert_eq!(light.effort, ColorToken(0xc2413d));
     }

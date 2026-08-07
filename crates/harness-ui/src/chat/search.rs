@@ -1,4 +1,5 @@
 use super::ChatView;
+use crate::chrome;
 use crate::zoom::px;
 use gpui::{
     Animation, AnimationExt, AnyElement, Context, Entity, Focusable, FontWeight, KeyDownEvent,
@@ -357,11 +358,11 @@ impl ChatView {
                 .pl(px(10.0))
                 .pr(px(6.0))
                 .py(px(4.0))
-                .rounded(px(8.0))
+                .rounded(px(5.0))
                 .border_1()
                 .border_color(theme.line_strong.hsla())
                 .bg(theme.surface_2.hsla())
-                .shadow_lg()
+                .shadow(chrome::flyout_shadows(theme))
                 .child(
                     Input::new(&self.thread_search.input)
                         .w(px(170.0))
@@ -387,7 +388,7 @@ impl ChatView {
                 .with_animation(
                     ("thread-find-in", self.thread_search.open_transition),
                     Animation::new(theme.motion.fast).with_easing(crate::theme::web_ease_out),
-                    |find, delta| find.top(px(6.0 + 4.0 * delta)).opacity(delta),
+                    |find, delta| find.top(px(12.0 - 2.0 * delta)).opacity(delta),
                 )
                 .into_any_element(),
         )
