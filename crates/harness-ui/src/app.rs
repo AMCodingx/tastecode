@@ -228,8 +228,7 @@ impl HarnessApp {
             cx.new(|cx| InputState::new(window, cx).placeholder("Optional display name"));
         let mcp_editor_transport = cx.new(|cx| {
             InputState::new(window, cx)
-                .code_editor("json")
-                .line_number(false)
+                .multi_line(true)
                 .rows(8)
                 .placeholder("MCP transport JSON")
         });

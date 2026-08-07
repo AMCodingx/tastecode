@@ -271,7 +271,7 @@ impl HarnessApp {
         match self.settings_section {
             SettingsSection::Providers => self.provider_settings(cx),
             SettingsSection::Models => self.model_settings(window, cx),
-            SettingsSection::Mcp => self.mcp_settings(cx),
+            SettingsSection::Mcp => self.mcp_settings(window, cx),
             SettingsSection::Skills => self.skills_settings(cx),
             SettingsSection::Workflows => self.workflow_settings(cx),
             SettingsSection::Appearance => self.appearance_settings(cx),
@@ -1531,7 +1531,7 @@ impl HarnessApp {
         settings_panel("Models", blocks, theme)
     }
 
-    fn mcp_settings(&self, cx: &mut Context<Self>) -> gpui::Div {
+    fn mcp_settings(&self, window: &Window, cx: &mut Context<Self>) -> gpui::Div {
         let theme = self.theme;
         let Some((provider, project_path)) = self.settings_scope() else {
             return inventory_settings_panel(
@@ -1581,11 +1581,9 @@ impl HarnessApp {
         if let Some(notice) = &self.state.mcp_notice {
             blocks.push(inventory_message(notice.clone(), false, theme));
         }
-        if self.mcp_editor.as_ref().is_some_and(|editor| {
+        let editor_open = self.mcp_editor.as_ref().is_some_and(|editor| {
             editor.provider == provider && editor.project_path == project_path
-        }) {
-            blocks.push(self.mcp_editor_form(cx));
-        }
+        });
         let Some(inventory) = inventory else {
             blocks.push(inventory_empty(
                 if self.state.mcp_loading {
@@ -1595,6 +1593,9 @@ impl HarnessApp {
                 },
                 theme,
             ));
+            if editor_open {
+                blocks.push(self.mcp_editor_form(window, cx));
+            }
             return inventory_settings_panel(
                 "MCP servers",
                 format!("Available in {project_name}"),
@@ -1608,6 +1609,9 @@ impl HarnessApp {
                 format!("{provider_name} does not expose MCP servers here yet."),
                 theme,
             ));
+            if editor_open {
+                blocks.push(self.mcp_editor_form(window, cx));
+            }
             return inventory_settings_panel(
                 "MCP servers",
                 format!("Available in {project_name}"),
@@ -1902,7 +1906,13 @@ impl HarnessApp {
                 "No MCP servers are configured for this project.",
                 theme,
             ));
+            if editor_open {
+                blocks.push(self.mcp_editor_form(window, cx));
+            }
         } else {
+            if editor_open {
+                blocks.push(self.mcp_editor_form(window, cx));
+            }
             blocks.push(settings_group("", rows, theme));
         }
         inventory_settings_panel(
@@ -1914,7 +1924,7 @@ impl HarnessApp {
         )
     }
 
-    fn mcp_editor_form(&self, cx: &mut Context<Self>) -> AnyElement {
+    fn mcp_editor_form(&self, window: &Window, cx: &mut Context<Self>) -> AnyElement {
         let theme = self.theme;
         let editor = self.mcp_editor.as_ref().expect("editor checked by caller");
         let editing = editor.mode == McpEditorMode::Edit;
@@ -1950,74 +1960,67 @@ impl HarnessApp {
 
         div()
             .w_full()
-            .child(
-                div()
-                    .mb(px(12.0))
-                    .text_size(px(12.5))
-                    .font_weight(FontWeight::MEDIUM)
-                    .text_color(theme.text_2.hsla())
-                    .child(if editing {
-                        "Edit MCP server"
-                    } else {
-                        "Add MCP server"
-                    }),
-            )
+            .mb(px(6.0))
+            .rounded(px(8.0))
+            .border_1()
+            .border_color(theme.line_strong.hsla())
+            .bg(theme.rail.hsla())
+            .p(px(16.0))
+            .flex()
+            .flex_col()
+            .gap(px(14.0))
             .child(
                 div()
                     .w_full()
-                    .rounded(px(10.0))
-                    .border_1()
-                    .border_color(theme.line_strong.hsla())
-                    .bg(theme.rail.hsla())
-                    .p(px(16.0))
                     .flex()
-                    .flex_col()
                     .gap(px(14.0))
-                    .child(
-                        div()
-                            .w_full()
-                            .flex()
-                            .gap(px(14.0))
-                            .child(mcp_editor_field(
-                                "Server ID",
-                                &self.mcp_editor_id,
-                                editing,
-                                false,
-                                theme,
-                            ))
-                            .child(mcp_editor_field(
-                                "Display name",
-                                &self.mcp_editor_name,
-                                false,
-                                false,
-                                theme,
-                            )),
-                    )
                     .child(mcp_editor_field(
-                        "Transport JSON",
-                        &self.mcp_editor_transport,
-                        false,
-                        true,
+                        McpEditorFieldSpec {
+                            label: "Server ID",
+                            disabled: editing,
+                            multiline: false,
+                            help: None,
+                        },
+                        &self.mcp_editor_id,
                         theme,
+                        window,
+                        cx,
                     ))
-                    .child(
-                        div()
-                            .text_size(px(10.0))
-                            .line_height(px(15.0))
-                            .text_color(theme.text_3.hsla())
-                            .child(
-                                "Use stdio or HTTP transport fields. Reference secrets with a credentialRef instead of entering them here.",
-                            ),
-                    )
-                    .child(
-                        div()
-                            .flex()
-                            .items_center()
-                            .justify_end()
-                            .gap(px(8.0))
-                            .child(cancel)
-                            .child(save),
+                    .child(mcp_editor_field(
+                        McpEditorFieldSpec {
+                            label: "Display name",
+                            disabled: false,
+                            multiline: false,
+                            help: None,
+                        },
+                        &self.mcp_editor_name,
+                        theme,
+                        window,
+                        cx,
+                    )),
+            )
+            .child(mcp_editor_field(
+                McpEditorFieldSpec {
+                    label: "Transport JSON",
+                    disabled: false,
+                    multiline: true,
+                    help: Some(
+                        "Use stdio or HTTP transport fields. Reference secrets as { \"source\": \"credential\", \"credentialRef\": \"…\" }.",
                     ),
+                },
+                &self.mcp_editor_transport,
+                theme,
+                window,
+                cx,
+            ))
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .justify_end()
+                    .gap(px(8.0))
+                    .child(cancel)
+                    .child(save),
             )
             .into_any_element()
     }
@@ -2098,13 +2101,6 @@ impl HarnessApp {
             .update(cx, |input, cx| input.set_value(display_name, window, cx));
         self.mcp_editor_transport
             .update(cx, |input, cx| input.set_value(transport, window, cx));
-        if mode == McpEditorMode::Add {
-            self.mcp_editor_id
-                .update(cx, |input, cx| input.focus(window, cx));
-        } else {
-            self.mcp_editor_transport
-                .update(cx, |input, cx| input.focus(window, cx));
-        }
         cx.notify();
     }
 
@@ -3850,40 +3846,97 @@ fn mcp_transport_label(transport: Option<&McpTransport>) -> String {
     }
 }
 
-fn mcp_editor_field(
+#[derive(Clone, Copy)]
+struct McpEditorFieldSpec {
     label: &'static str,
-    state: &Entity<InputState>,
     disabled: bool,
     multiline: bool,
+    help: Option<&'static str>,
+}
+
+fn mcp_editor_field(
+    spec: McpEditorFieldSpec,
+    state: &Entity<InputState>,
     theme: Theme,
+    window: &Window,
+    cx: &App,
 ) -> AnyElement {
+    let focused = state.read(cx).focus_handle(cx).is_focused(window);
+    let border = if focused {
+        theme.text_3.hsla()
+    } else {
+        theme.line_strong.hsla()
+    };
+    let input = if spec.multiline {
+        Input::new(state)
+            .appearance(false)
+            .bordered(false)
+            .focus_bordered(false)
+            .disabled(spec.disabled)
+            .h(px(130.0))
+            .w_full()
+            .px(px(9.0))
+            .py(px(8.0))
+            .line_height(relative(1.55))
+            .rounded(px(5.0))
+            .border_1()
+            .border_color(border)
+            .bg(theme.surface_2.hsla())
+            .text_size(px(13.5))
+            .text_color(theme.text.hsla())
+            .into_any_element()
+    } else {
+        div()
+            .h(px(38.925))
+            .w_full()
+            .flex()
+            .items_center()
+            .px(px(9.0))
+            .py(px(8.0))
+            .rounded(px(5.0))
+            .border_1()
+            .border_color(border)
+            .bg(theme.surface_2.hsla())
+            .child(
+                Input::new(state)
+                    .xsmall()
+                    .appearance(false)
+                    .bordered(false)
+                    .focus_bordered(false)
+                    .disabled(spec.disabled)
+                    .w_full()
+                    .px(px(0.0))
+                    .py(px(0.0))
+                    .line_height(relative(1.55))
+                    .text_size(px(13.5))
+                    .text_color(theme.text.hsla()),
+            )
+            .into_any_element()
+    };
+
     div()
         .min_w(px(0.0))
         .flex_1()
-        .when(multiline, |field| field.w_full())
+        .flex()
+        .flex_col()
+        .gap(px(6.0))
+        .when(spec.multiline, |field| field.w_full())
         .child(
             div()
-                .mb(px(6.0))
                 .text_size(px(12.5))
                 .text_color(theme.text_2.hsla())
-                .child(label),
+                .child(spec.label),
         )
-        .child(
-            Input::new(state)
-                .appearance(false)
-                .bordered(false)
-                .focus_bordered(false)
-                .disabled(disabled)
-                .h(px(if multiline { 142.0 } else { 34.0 }))
-                .w_full()
-                .px(px(10.0))
-                .rounded(px(5.0))
-                .border_1()
-                .border_color(theme.line_strong.hsla())
-                .bg(theme.surface_2.hsla())
-                .text_size(px(13.5))
-                .text_color(theme.text.hsla()),
-        )
+        .child(input)
+        .when_some(spec.help, |field, help| {
+            field.child(
+                div()
+                    .text_size(px(11.5))
+                    .line_height(relative(1.55))
+                    .text_color(theme.text_3.hsla())
+                    .child(help),
+            )
+        })
         .into_any_element()
 }
 
