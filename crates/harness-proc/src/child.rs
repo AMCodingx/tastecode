@@ -121,7 +121,28 @@ pub fn spawn_cli(
     options: &SpawnOptions,
 ) -> Result<SpawnedChild, ProcessError> {
     let label = program.to_string_lossy().into_owned();
-    let mut command = platform_command(program, args);
+    spawn_command(platform_command(program, args), label, options)
+}
+
+/// Spawn a real executable directly on every platform. Use this only when the
+/// target is known not to be a Windows `.cmd` shim and argv must bypass
+/// `cmd.exe`, such as a prompt containing newlines.
+pub fn spawn_direct(
+    program: &OsStr,
+    args: &[&OsStr],
+    options: &SpawnOptions,
+) -> Result<SpawnedChild, ProcessError> {
+    let label = program.to_string_lossy().into_owned();
+    let mut command = Command::new(program);
+    command.args(args);
+    spawn_command(command, label, options)
+}
+
+fn spawn_command(
+    mut command: Command,
+    label: String,
+    options: &SpawnOptions,
+) -> Result<SpawnedChild, ProcessError> {
     command
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
@@ -154,7 +175,35 @@ pub fn run_cli(
     timeout: Duration,
     max_output: usize,
 ) -> Result<CliOutput, ProcessError> {
-    let mut child = spawn_cli(program, args, options)?;
+    collect_output(
+        program,
+        spawn_cli(program, args, options)?,
+        timeout,
+        max_output,
+    )
+}
+
+pub fn run_direct(
+    program: &OsStr,
+    args: &[&OsStr],
+    options: &SpawnOptions,
+    timeout: Duration,
+    max_output: usize,
+) -> Result<CliOutput, ProcessError> {
+    collect_output(
+        program,
+        spawn_direct(program, args, options)?,
+        timeout,
+        max_output,
+    )
+}
+
+fn collect_output(
+    program: &OsStr,
+    mut child: SpawnedChild,
+    timeout: Duration,
+    max_output: usize,
+) -> Result<CliOutput, ProcessError> {
     child.stdin.take();
     let stdout = child.stdout.take().expect("piped stdout missing");
     let stderr = child.stderr.take().expect("piped stderr missing");
