@@ -51,7 +51,7 @@ build it. This exists so nothing gets forgotten and so we can argue about scope 
 
 ## Providers
 
-- [ ] `v1` Setup wizard: detect CLIs, detect auth state, guide install
+- [ ] `v1` Provider setup in Settings: detect CLIs, detect auth state, guide install
 - [ ] `v1` Claude Code subscription
 - [ ] `v1` Codex / ChatGPT subscription
 - [ ] `v1` Cursor Agent
