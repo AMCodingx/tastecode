@@ -1505,7 +1505,7 @@ impl Render for HarnessApp {
             .selected_model_choice()
             .map(|choice| choice.source_name.clone())
             .unwrap_or_else(|| "Personal Harness".into());
-        let usage_left = self.stage_controls.primary_usage_left();
+        let usage_limits = self.stage_controls.usage_limits();
         let rail = sidebar(
             SidebarProps {
                 theme: self.theme,
@@ -1524,7 +1524,7 @@ impl Render for HarnessApp {
                 settled_expanded: self.settled_expanded,
                 account_menu_open: self.account_menu_open,
                 provider_name: &provider_name,
-                usage_left,
+                usage_limits,
                 panic_stopping: self.stage_controls.panic_stopping(),
                 glass: self.preferences.sidebar_glass,
             },

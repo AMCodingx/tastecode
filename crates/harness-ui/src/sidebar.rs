@@ -1,10 +1,14 @@
 use crate::shortcuts::{NEW_CHAT, NEW_PROJECT, SEARCH_SESSIONS, SETTINGS, label as shortcut_label};
 use crate::theme::{RAIL_WIDTH, Theme};
 use crate::zoom::px;
-use gpui::{AnyElement, App, FontWeight, Hsla, Pixels, Point, SharedString, div, prelude::*, svg};
+use chrono::{DateTime, Datelike, Local};
+use gpui::{
+    AnyElement, App, FontWeight, Hsla, Pixels, Point, SharedString, div, prelude::*, relative, svg,
+};
 use harness_client::ConnectionState;
 use harness_protocol::{
     ProjectSummary, ProviderId, SessionSummary, SidebarMode, ThreadInboxStatus, ThreadLifecycle,
+    UsageLimit,
 };
 use std::rc::Rc;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -59,7 +63,7 @@ pub(crate) struct SidebarProps<'a> {
     pub(crate) settled_expanded: bool,
     pub(crate) account_menu_open: bool,
     pub(crate) provider_name: &'a str,
-    pub(crate) usage_left: Option<u8>,
+    pub(crate) usage_limits: &'a [UsageLimit],
     pub(crate) panic_stopping: bool,
     pub(crate) glass: u8,
 }
@@ -82,7 +86,7 @@ pub fn sidebar(props: SidebarProps<'_>, actions: SidebarActions) -> impl IntoEle
         settled_expanded,
         account_menu_open,
         provider_name,
-        usage_left,
+        usage_limits,
         panic_stopping,
         glass,
     } = props;
@@ -145,7 +149,7 @@ pub fn sidebar(props: SidebarProps<'_>, actions: SidebarActions) -> impl IntoEle
             theme,
             mode,
             provider_name,
-            usage_left,
+            usage_limits,
             account_menu_open,
             panic_stopping,
             &actions,
@@ -160,7 +164,7 @@ fn sidebar_footer(
     theme: Theme,
     mode: SidebarMode,
     provider_name: &str,
-    usage_left: Option<u8>,
+    usage_limits: &[UsageLimit],
     account_menu_open: bool,
     panic_stopping: bool,
     actions: &SidebarActions,
@@ -211,21 +215,7 @@ fn sidebar_footer(
                     .bg(theme.surface_2.hsla())
                     .shadow_lg()
                     .p(px(5.0))
-                    .child(
-                        div()
-                            .h(px(34.0))
-                            .flex()
-                            .items_center()
-                            .gap(px(8.0))
-                            .px(px(9.0))
-                            .text_size(px(12.0))
-                            .text_color(theme.text_2.hsla())
-                            .child(icon("icons/gauge.svg", 14.0))
-                            .child(usage_left.map_or_else(
-                                || SharedString::from("Limits unavailable"),
-                                |left| SharedString::from(format!("{left}% left")),
-                            )),
-                    )
+                    .child(account_limits(provider_name, usage_limits, theme))
                     .child(footer_menu_action(
                         "account-stop-all",
                         "icons/octagon-x.svg",
@@ -301,6 +291,103 @@ fn sidebar_footer(
                 .child(icon("icons/chevron-down.svg", 11.0)),
         )
         .into_any_element()
+}
+
+fn account_limits(provider_name: &str, limits: &[UsageLimit], theme: Theme) -> AnyElement {
+    let now_ms = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0.0, |duration| duration.as_secs_f64() * 1_000.0);
+    div()
+        .flex()
+        .flex_col()
+        .gap(px(7.0))
+        .px(px(9.0))
+        .pt(px(7.0))
+        .pb(px(9.0))
+        .mb(px(4.0))
+        .border_b_1()
+        .border_color(theme.line.hsla())
+        .text_size(px(11.0))
+        .text_color(theme.text_2.hsla())
+        .child(
+            div()
+                .flex()
+                .items_center()
+                .gap(px(8.0))
+                .text_size(px(12.0))
+                .child(icon("icons/gauge.svg", 14.0))
+                .child("Limits"),
+        )
+        .when(limits.is_empty(), |usage| {
+            usage.child(
+                div()
+                    .text_color(theme.text_3.hsla())
+                    .child(format!("{provider_name} reports no limits")),
+            )
+        })
+        .children(limits.iter().map(|limit| usage_limit(limit, now_ms, theme)))
+        .into_any_element()
+}
+
+fn usage_limit(limit: &UsageLimit, now_ms: f64, theme: Theme) -> AnyElement {
+    let used = limit.used_percent.clamp(0.0, 100.0) as f32;
+    let left = (100.0 - limit.used_percent).round().clamp(0.0, 100.0) as u8;
+    div()
+        .flex()
+        .flex_col()
+        .gap(px(4.0))
+        .child(
+            div()
+                .flex()
+                .items_center()
+                .justify_between()
+                .gap(px(8.0))
+                .child(
+                    div()
+                        .text_color(theme.text.hsla())
+                        .child(limit.label.clone()),
+                )
+                .child(format!("{left}% left")),
+        )
+        .child(
+            div()
+                .h(px(4.0))
+                .w_full()
+                .overflow_hidden()
+                .rounded(px(2.0))
+                .bg(theme.surface_3.hsla())
+                .child(
+                    div()
+                        .h_full()
+                        .w(relative(used / 100.0))
+                        .rounded(px(2.0))
+                        .bg(theme.attention.hsla()),
+                ),
+        )
+        .when_some(limit.resets_at, |window, resets_at| {
+            window.child(
+                div()
+                    .text_size(px(10.0))
+                    .text_color(theme.text_3.hsla())
+                    .child(format!("Resets {}", reset_label(resets_at, now_ms))),
+            )
+        })
+        .into_any_element()
+}
+
+fn reset_label(timestamp_ms: f64, now_ms: f64) -> String {
+    let timestamp = timestamp_ms.round() as i64;
+    DateTime::from_timestamp_millis(timestamp).map_or_else(
+        || "later".into(),
+        |date| {
+            let local = date.with_timezone(&Local);
+            if timestamp_ms - now_ms < 6.0 * 86_400_000.0 {
+                local.format("%a %H:%M").to_string()
+            } else {
+                format!("{} {}", local.format("%b"), local.day())
+            }
+        },
+    )
 }
 
 #[allow(clippy::too_many_arguments)]

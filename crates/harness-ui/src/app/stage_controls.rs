@@ -8,7 +8,7 @@ use gpui::{
     relative, svg,
 };
 use harness_protocol::{
-    CheckpointSummary, PanicStopSessionResult, UsageSummaryResult, WorkspaceInfo,
+    CheckpointSummary, PanicStopSessionResult, UsageLimit, UsageSummaryResult, WorkspaceInfo,
 };
 
 #[derive(Default)]
@@ -67,9 +67,10 @@ impl StageControlsState {
         self.undo_busy = false;
     }
 
-    pub(super) fn primary_usage_left(&self) -> Option<u8> {
-        let used = self.usage.as_ref()?.limits.first()?.used_percent;
-        Some((100.0 - used).round().clamp(0.0, 100.0) as u8)
+    pub(super) fn usage_limits(&self) -> &[UsageLimit] {
+        self.usage
+            .as_ref()
+            .map_or(&[], |summary| summary.limits.as_slice())
     }
 
     pub(super) fn panic_stopping(&self) -> bool {
