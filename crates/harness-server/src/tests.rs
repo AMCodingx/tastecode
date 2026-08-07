@@ -480,6 +480,50 @@ fn native_opencode_runtime_is_registered_without_acp_or_api_routing() {
 }
 
 #[test]
+fn native_acp_runtime_routes_models_and_control_by_agent() {
+    let (_directory, server, _credentials) = start_test_server_with_native_runtimes();
+    let mut socket = connect_native(&server, "");
+    assert_welcome(&mut socket);
+
+    send_request(
+        &mut socket,
+        "models",
+        "models.list",
+        json!({ "provider": "acp", "agent": "gemini" }),
+    );
+    let models = read_value(&mut socket);
+    assert_eq!(
+        models["result"]["models"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|model| model["id"].as_str().unwrap())
+            .collect::<Vec<_>>(),
+        [
+            "gemini-3-pro-preview",
+            "gemini-3-flash-preview",
+            "gemini-2.5-pro",
+            "gemini-2.5-flash",
+            "gemini-2.5-flash-lite",
+        ]
+    );
+
+    send_request(
+        &mut socket,
+        "account",
+        "auth.status",
+        json!({ "provider": "acp", "agent": "gemini" }),
+    );
+    assert_eq!(
+        read_value(&mut socket),
+        json!({ "id": "account", "result": { "signedIn": false } })
+    );
+
+    socket.close(None).unwrap();
+    server.close().unwrap();
+}
+
+#[test]
 fn live_agent_routes_persist_stream_queue_and_resume_draining() {
     let runtime = Arc::new(FakeRuntime::default());
     let registry = Arc::new(FakeRuntimes {

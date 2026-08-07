@@ -1,6 +1,7 @@
 use crate::ServerState;
 use crate::api_workspace_tools::ApiWorkspaceToolFactory;
 use crate::model_connections::ModelConnectionStore;
+use harness_adapter_acp::AcpRuntime;
 use harness_adapter_api::{ApiRuntime, ApiToolFactory};
 use harness_adapter_claude_code::ClaudeCodeRuntime;
 use harness_adapter_codex::CodexRuntime;
@@ -42,6 +43,7 @@ pub(crate) struct NativeRuntimes {
     claude: Arc<ClaudeCodeRuntime>,
     cursor: Arc<CursorRuntime>,
     opencode: Arc<OpenCodeRuntime>,
+    acp: Mutex<HashMap<String, Arc<AcpRuntime>>>,
     model_connections: Arc<Mutex<ModelConnectionStore>>,
     credentials: Arc<dyn CredentialStore>,
     api_tools: Arc<ApiWorkspaceToolFactory>,
@@ -57,6 +59,7 @@ impl NativeRuntimes {
             claude: Arc::new(ClaudeCodeRuntime::default()),
             cursor: Arc::new(CursorRuntime::default()),
             opencode: Arc::new(OpenCodeRuntime::default()),
+            acp: Mutex::new(HashMap::new()),
             model_connections,
             credentials,
             api_tools: Arc::new(ApiWorkspaceToolFactory),
@@ -96,6 +99,21 @@ impl RuntimeRegistry for NativeRuntimes {
             ProviderId::OpenCode => Err(AgentError::Failed(
                 "OpenCode does not accept an ACP agent or model connection".into(),
             )),
+            ProviderId::Acp if connection_id.is_some() => Err(AgentError::Failed(
+                "ACP sessions do not accept a model connection".into(),
+            )),
+            ProviderId::Acp => {
+                let agent = agent
+                    .filter(|agent| !agent.is_empty())
+                    .ok_or_else(|| AgentError::Failed("no ACP agent chosen".into()))?;
+                let mut runtimes = lock(&self.acp);
+                if let Some(runtime) = runtimes.get(agent) {
+                    return Ok(runtime.clone());
+                }
+                let runtime = Arc::new(AcpRuntime::new(agent, Default::default())?);
+                runtimes.insert(agent.into(), runtime.clone());
+                Ok(runtime)
+            }
             ProviderId::Api if agent.is_none() => {
                 let connection_id = connection_id.ok_or_else(|| {
                     AgentError::Failed("connectionId is required for direct API sessions".into())
@@ -122,10 +140,6 @@ impl RuntimeRegistry for NativeRuntimes {
             ProviderId::Api => Err(AgentError::Failed(
                 "direct API sessions do not accept an ACP agent".into(),
             )),
-            provider => Err(AgentError::Failed(format!(
-                "provider \"{}\" is not implemented in the native server yet",
-                provider_key(provider)
-            ))),
         }
     }
 }
