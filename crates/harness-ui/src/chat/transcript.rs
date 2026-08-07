@@ -216,6 +216,14 @@ impl ChatView {
         let show_jump = self.transcript_scroll_mode.get() == TranscriptScrollMode::Free;
         let view: Entity<Self> = cx.entity();
         let transcript = list(self.list_state.clone(), move |row, window, cx| {
+            let timeline_len = view.read(cx).state.timeline_len();
+            if row == timeline_len {
+                let weak = view.downgrade();
+                return view
+                    .read(cx)
+                    .transcript_footer(&weak)
+                    .unwrap_or_else(|| div().into_any_element());
+            }
             let snapshot = view.read(cx).transcript_row_snapshot(row);
             snapshot.map_or_else(
                 || div().into_any_element(),

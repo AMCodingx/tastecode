@@ -637,7 +637,7 @@ impl ChatView {
         self.scale_terminal_for_app_zoom(next / previous);
         let mode = self.transcript_scroll_mode.get();
         let logical_scroll = self.list_state.logical_scroll_top();
-        self.list_state.reset(self.state.timeline_len());
+        self.list_state.reset(self.transcript_list_len());
         match mode {
             TranscriptScrollMode::FollowEnd => {}
             TranscriptScrollMode::AnchorTurn { start_row } => {
@@ -678,6 +678,7 @@ impl ChatView {
                 replace,
             } if self.is_selected(&thread_id) => {
                 let old_len = self.state.timeline_len();
+                let was_footer_visible = self.transcript_footer_visible();
                 let was_running = self.state.running;
                 let previous_active_turn_id =
                     self.state.active_turn().map(|turn| turn.turn.id.clone());
@@ -732,6 +733,11 @@ impl ChatView {
                         self.error = None;
                         self.sync_structured_requests();
                         self.sync_diff_summary();
+                        if replace {
+                            self.list_state.reset(self.transcript_list_len());
+                        } else {
+                            self.reconcile_transcript_footer(was_footer_visible);
+                        }
                         self.refresh_work_label();
                         self.refresh_thread_search_hits(cx);
                         self.flush_pending_live(cx);
@@ -817,6 +823,7 @@ impl ChatView {
             } if self.is_selected(&thread_id) => {
                 self.pending_approvals.remove(&approval_id);
                 self.action_errors.insert(approval_id, message);
+                self.remeasure_transcript_footer();
                 cx.notify();
             }
             ChatUpdate::UserInputError {
@@ -830,6 +837,7 @@ impl ChatView {
             }
             ChatUpdate::DiffSnapshot { thread_id, diff } if self.is_selected(&thread_id) => {
                 self.diff_ui.apply_snapshot(diff);
+                self.remeasure_transcript_footer();
                 cx.notify();
             }
             ChatUpdate::DiffError {
@@ -838,6 +846,7 @@ impl ChatView {
                 stale,
             } if self.is_selected(&thread_id) => {
                 let refresh = self.diff_ui.apply_error(message, stale);
+                self.remeasure_transcript_footer();
                 if refresh {
                     cx.emit(ChatEvent::RequestDiff { thread_id });
                 }
@@ -923,6 +932,7 @@ impl ChatView {
 
     fn apply_live_events(&mut self, events: Vec<ThreadEventPush>, cx: &mut Context<Self>) {
         let old_len = self.state.timeline_len();
+        let was_footer_visible = self.transcript_footer_visible();
         let mut changed_items = HashSet::new();
         let mut transcript_changed = false;
         let mut presentation_turns = HashSet::new();
@@ -1116,6 +1126,7 @@ impl ChatView {
             self.error = None;
             self.sync_structured_requests();
             self.sync_diff_summary();
+            self.reconcile_transcript_footer(was_footer_visible);
             self.refresh_work_label();
             self.refresh_thread_search_rows(&search_rows, cx);
             cx.notify();
@@ -2040,7 +2051,7 @@ impl ChatView {
             .into_any_element()
     }
 
-    fn structured_surfaces(&self, cx: &Context<Self>) -> Option<AnyElement> {
+    fn structured_surfaces(&self, weak: &gpui::WeakEntity<Self>) -> Option<AnyElement> {
         if self.state.approvals.is_empty() && self.state.reviews.is_empty() {
             return None;
         }
@@ -2050,7 +2061,7 @@ impl ChatView {
             .approvals
             .iter()
             .enumerate()
-            .map(|(index, request)| self.approval_card(request, index, cx));
+            .map(|(index, request)| self.approval_card(request, index, weak));
         let reviews = self
             .state
             .reviews
@@ -2061,18 +2072,77 @@ impl ChatView {
         Some(
             div()
                 .id("structured-surfaces")
-                .flex_none()
-                .max_h(px(290.0))
-                .overflow_y_scroll()
-                .px(px(24.0))
-                .pb(px(7.0))
+                .w_full()
+                .flex()
+                .flex_col()
+                .gap(px(12.0))
+                .children(approvals)
+                .children(reviews)
+                .into_any_element(),
+        )
+    }
+
+    fn transcript_footer_visible(&self) -> bool {
+        !self.state.approvals.is_empty()
+            || !self.state.reviews.is_empty()
+            || if self.state.running {
+                self.state.plan.as_ref().is_some_and(|(_, steps)| {
+                    steps.iter().any(|step| {
+                        matches!(
+                            step.status,
+                            harness_protocol::PlanStepStatus::Running
+                                | harness_protocol::PlanStepStatus::Pending
+                        )
+                    })
+                })
+            } else {
+                self.diff_ui.has_summary()
+            }
+    }
+
+    fn transcript_list_len(&self) -> usize {
+        self.state.timeline_len() + usize::from(self.transcript_footer_visible())
+    }
+
+    fn reconcile_transcript_footer(&mut self, was_visible: bool) {
+        let row = self.state.timeline_len();
+        match (was_visible, self.transcript_footer_visible()) {
+            (false, true) => self.list_state.splice(row..row, 1),
+            (true, false) => self.list_state.splice(row..row + 1, 0),
+            (true, true) => self.list_state.splice(row..row + 1, 1),
+            (false, false) => {}
+        }
+    }
+
+    fn remeasure_transcript_footer(&mut self) {
+        if self.transcript_footer_visible() {
+            let row = self.state.timeline_len();
+            self.list_state.splice(row..row + 1, 1);
+        }
+    }
+
+    fn transcript_footer(&self, weak: &gpui::WeakEntity<Self>) -> Option<AnyElement> {
+        let structured = self.structured_surfaces(weak);
+        let control = self.control_surface(weak);
+        if structured.is_none() && control.is_none() {
+            return None;
+        }
+        Some(
+            div()
+                .w_full()
+                .max_w(px(CHAT_WIDTH + 48.0))
+                .mx_auto()
+                .pb(px(4.0))
                 .child(
                     div()
                         .w_full()
                         .max_w(px(CHAT_WIDTH))
                         .mx_auto()
-                        .children(approvals)
-                        .children(reviews),
+                        .flex()
+                        .flex_col()
+                        .gap(px(12.0))
+                        .when_some(structured, |footer, structured| footer.child(structured))
+                        .when_some(control, |footer, control| footer.child(control)),
                 )
                 .into_any_element(),
         )
@@ -2082,11 +2152,11 @@ impl ChatView {
         &self,
         request: &harness_protocol::ApprovalRequest,
         card_index: usize,
-        cx: &Context<Self>,
+        weak: &gpui::WeakEntity<Self>,
     ) -> AnyElement {
         let theme = self.theme;
         let pending = self.pending_approvals.contains(&request.id);
-        let weak = cx.weak_entity();
+        let weak = weak.clone();
         let actions = [
             ("Deny", ApprovalDecision::Deny, true),
             ("Stop the turn", ApprovalDecision::Abort, false),
@@ -2124,7 +2194,6 @@ impl ChatView {
 
         div()
             .w_full()
-            .mb(px(12.0))
             .rounded(px(5.0))
             .border_1()
             .border_color(theme.line_strong.hsla())
@@ -2237,7 +2306,6 @@ impl ChatView {
         div()
             .id(("approval-review", card_index))
             .w_full()
-            .mb(px(12.0))
             .rounded(px(5.0))
             .border_1()
             .border_color(theme.line_strong.hsla())
@@ -4302,8 +4370,6 @@ impl Render for ChatView {
                 input.set_value(sync.value, window, cx);
             });
         }
-        let structured_surfaces = self.structured_surfaces(cx);
-        let control_surface = self.control_surface(cx);
         let terminal_pane = self.terminal_pane(window, cx);
         let thread_search = self.thread_search_overlay(cx);
         let markdown_table_overlay = self.markdown_table_overlay(window, cx);
@@ -4338,8 +4404,6 @@ impl Render for ChatView {
                     .child(self.timeline(cx))
                     .when_some(thread_search, |thread, search| thread.child(search)),
             )
-            .when_some(structured_surfaces, |view, surfaces| view.child(surfaces))
-            .when_some(control_surface, |view, surface| view.child(surface))
             .when_some(terminal_pane, |view, terminal| view.child(terminal))
             .child(self.composer(window, cx))
             .when_some(markdown_table_overlay, |view, overlay| view.child(overlay))

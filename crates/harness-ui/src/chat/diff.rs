@@ -14,9 +14,14 @@ pub(super) struct DiffUiState {
     status: Option<String>,
     stale_refresh: bool,
     show_all_files: bool,
+    files_toggle_transition: u64,
 }
 
 impl DiffUiState {
+    pub(super) fn has_summary(&self) -> bool {
+        self.summary.is_some()
+    }
+
     pub(super) fn reset(&mut self) {
         *self = Self::default();
     }
@@ -35,6 +40,7 @@ impl DiffUiState {
         self.status = None;
         self.stale_refresh = false;
         self.show_all_files = false;
+        self.files_toggle_transition = 0;
     }
 
     pub(super) fn apply_snapshot(&mut self, diff: SessionDiff) {
@@ -85,7 +91,7 @@ impl ChatView {
             .sync_summary(self.state.diff.as_ref().map(|(_, source)| source.as_str()));
     }
 
-    pub(super) fn control_surface(&self, cx: &Context<Self>) -> Option<AnyElement> {
+    pub(super) fn control_surface(&self, weak: &gpui::WeakEntity<Self>) -> Option<AnyElement> {
         if self.state.running {
             let steps = &self.state.plan.as_ref()?.1;
             let current = steps
@@ -100,21 +106,15 @@ impl ChatView {
                 div()
                     .flex_none()
                     .w_full()
-                    .px(px(24.0))
+                    .pt(px(1.0))
                     .pb(px(4.0))
-                    .child(
-                        div()
-                            .w_full()
-                            .max_w(px(CHAT_WIDTH))
-                            .mx_auto()
-                            .text_size(px(14.0))
-                            .text_color(self.theme.text_3.hsla())
-                            .child(current.text.clone()),
-                    )
+                    .text_size(px(15.0))
+                    .text_color(self.theme.text_3.hsla())
+                    .child(current.text.clone())
                     .into_any_element(),
             );
         }
-        self.diff_card(cx)
+        self.diff_card(weak)
     }
 
     fn toggle_diff_review(&mut self, cx: &mut Context<Self>) {
@@ -130,6 +130,7 @@ impl ChatView {
             self.diff_ui.show_slow_load = false;
             self.diff_ui.busy = false;
         }
+        self.remeasure_transcript_footer();
         cx.notify();
     }
 
@@ -143,6 +144,7 @@ impl ChatView {
         };
         self.diff_ui.loading = true;
         self.diff_ui.show_slow_load = false;
+        self.remeasure_transcript_footer();
         cx.emit(ChatEvent::RequestDiff { thread_id });
         cx.spawn(async move |view, cx| {
             cx.background_executor()
@@ -152,6 +154,7 @@ impl ChatView {
                 if this.diff_ui.reviewing && this.diff_ui.loading && this.diff_ui.snapshot.is_none()
                 {
                     this.diff_ui.show_slow_load = true;
+                    this.remeasure_transcript_footer();
                     cx.notify();
                 }
             });
@@ -181,6 +184,7 @@ impl ChatView {
         let Some(snapshot) = &self.diff_ui.snapshot else {
             return;
         };
+        let version = snapshot.version.clone();
         let Some(thread_id) = self
             .session
             .as_ref()
@@ -190,9 +194,10 @@ impl ChatView {
         };
         self.diff_ui.busy = true;
         self.diff_ui.status = None;
+        self.remeasure_transcript_footer();
         cx.emit(ChatEvent::ReviewHunk {
             thread_id,
-            version: snapshot.version.clone(),
+            version,
             path,
             hunk_id,
             decision,
@@ -202,10 +207,12 @@ impl ChatView {
 
     fn toggle_all_diff_files(&mut self, cx: &mut Context<Self>) {
         self.diff_ui.show_all_files = !self.diff_ui.show_all_files;
+        self.diff_ui.files_toggle_transition = self.diff_ui.files_toggle_transition.wrapping_add(1);
+        self.remeasure_transcript_footer();
         cx.notify();
     }
 
-    fn diff_card(&self, cx: &Context<Self>) -> Option<AnyElement> {
+    fn diff_card(&self, weak: &gpui::WeakEntity<Self>) -> Option<AnyElement> {
         let summary = self.diff_ui.summary.as_ref()?;
         let theme = self.theme;
         let visible_files = if self.diff_ui.show_all_files {
@@ -225,15 +232,11 @@ impl ChatView {
             div()
                 .flex_none()
                 .w_full()
-                .px(px(24.0))
-                .pb(px(7.0))
                 .child(
                     div()
                         .w_full()
-                        .max_w(px(CHAT_WIDTH))
-                        .mx_auto()
                         .overflow_hidden()
-                        .rounded(px(12.0))
+                        .rounded(px(8.0))
                         .border_1()
                         .border_color(theme.line.hsla())
                         .child(
@@ -251,7 +254,7 @@ impl ChatView {
                                         .flex()
                                         .items_center()
                                         .justify_center()
-                                        .rounded(px(9.0))
+                                        .rounded(px(5.0))
                                         .bg(theme.surface.hsla())
                                         .text_color(theme.text_2.hsla())
                                         .child(svg_icon("icons/file-diff.svg", 20.0)),
@@ -264,8 +267,8 @@ impl ChatView {
                                         .flex_col()
                                         .child(
                                             div()
-                                                .text_size(px(14.0))
-                                                .font_weight(FontWeight::MEDIUM)
+                                                .text_size(px(15.0))
+                                                .font_weight(FontWeight(560.0))
                                                 .child(format!(
                                                     "Edited {} file{}",
                                                     summary.files.len(),
@@ -281,7 +284,7 @@ impl ChatView {
                                     false,
                                     theme,
                                     Some({
-                                        let weak = cx.weak_entity();
+                                        let weak = weak.clone();
                                         Rc::new(move |cx: &mut App| {
                                             let _ = weak.update(cx, |this, cx| {
                                                 this.toggle_diff_review(cx);
@@ -295,13 +298,14 @@ impl ChatView {
                                 .border_t_1()
                                 .border_color(theme.line.hsla())
                                 .px(px(18.0))
-                                .py(px(11.0))
+                                .pt(px(11.0))
+                                .pb(px(13.0))
                                 .flex()
                                 .flex_col()
                                 .gap(px(9.0))
                                 .children(file_rows)
                                 .when(summary.files.len() > 3, |list| {
-                                    let weak = cx.weak_entity();
+                                    let weak = weak.clone();
                                     list.child(
                                         div()
                                             .id("diff-toggle-files")
@@ -309,7 +313,7 @@ impl ChatView {
                                             .flex()
                                             .items_center()
                                             .gap(px(7.0))
-                                            .text_size(px(12.0))
+                                            .text_size(px(15.0))
                                             .text_color(theme.text_2.hsla())
                                             .cursor_pointer()
                                             .hover(move |style| style.text_color(theme.text.hsla()))
@@ -325,20 +329,25 @@ impl ChatView {
                                                     "Show {hidden} more file{}",
                                                     if hidden == 1 { "" } else { "s" }
                                                 )
-                                            }),
+                                            })
+                                            .child(diff_files_chevron(
+                                                self.diff_ui.show_all_files,
+                                                self.diff_ui.files_toggle_transition,
+                                                theme,
+                                            )),
                                     )
                                 }),
                         )
-                        .when(reviewing, |card| card.child(self.diff_review(cx))),
+                        .when(reviewing, |card| card.child(self.diff_review(weak))),
                 )
                 .into_any_element(),
         )
     }
 
-    fn diff_review(&self, cx: &Context<Self>) -> AnyElement {
+    fn diff_review(&self, weak: &gpui::WeakEntity<Self>) -> AnyElement {
         let theme = self.theme;
         let refresh_action: Option<UiAction> = (!self.diff_ui.busy).then(|| {
-            let weak = cx.weak_entity();
+            let weak = weak.clone();
             Rc::new(move |cx: &mut App| {
                 let _ = weak.update(cx, |this, cx| this.refresh_diff(cx));
             }) as UiAction
@@ -360,7 +369,7 @@ impl ChatView {
                     .gap(px(12.0))
                     .px(px(14.0))
                     .py(px(7.0))
-                    .text_size(px(11.5))
+                    .text_size(px(12.5))
                     .text_color(theme.text_3.hsla())
                     .child(div().flex_1().child(if snapshot.is_some() {
                         format!(
@@ -396,7 +405,7 @@ impl ChatView {
                         .files
                         .iter()
                         .enumerate()
-                        .map(|(index, file)| self.diff_review_file(file, index, cx)),
+                        .map(|(index, file)| self.diff_review_file(file, index, weak)),
                 )
             })
             .into_any_element()
@@ -406,7 +415,7 @@ impl ChatView {
         &self,
         file: &DiffFile,
         file_index: usize,
-        cx: &Context<Self>,
+        weak: &gpui::WeakEntity<Self>,
     ) -> AnyElement {
         let theme = self.theme;
         let status = if let Some(previous) = &file.previous_path {
@@ -431,13 +440,13 @@ impl ChatView {
                             .flex_1()
                             .truncate()
                             .font_family("Geist Mono")
-                            .text_size(px(11.5))
+                            .text_size(px(12.5))
                             .font_weight(FontWeight::SEMIBOLD)
                             .child(file.path.clone()),
                     )
                     .child(
                         div()
-                            .text_size(px(10.5))
+                            .text_size(px(11.5))
                             .text_color(theme.text_3.hsla())
                             .child(status),
                     ),
@@ -446,7 +455,7 @@ impl ChatView {
                 section.child(diff_review_status("Binary file", theme))
             })
             .children(file.hunks.iter().enumerate().map(|(hunk_index, hunk)| {
-                self.diff_hunk(&file.path, hunk, file_index, hunk_index, cx)
+                self.diff_hunk(&file.path, hunk, file_index, hunk_index, weak)
             }))
             .into_any_element()
     }
@@ -457,7 +466,7 @@ impl ChatView {
         hunk: &DiffHunk,
         file_index: usize,
         hunk_index: usize,
-        cx: &Context<Self>,
+        weak: &gpui::WeakEntity<Self>,
     ) -> AnyElement {
         let theme = self.theme;
         let busy = self.diff_ui.busy;
@@ -472,7 +481,7 @@ impl ChatView {
             let selected = hunk.decision == Some(decision);
             let enabled = !busy && !selected;
             let action: Option<UiAction> = enabled.then(|| {
-                let weak = cx.weak_entity();
+                let weak = weak.clone();
                 let path = path.to_owned();
                 let hunk_id = hunk.id.clone();
                 Rc::new(move |cx: &mut App| {
@@ -523,7 +532,7 @@ impl ChatView {
                             .flex_1()
                             .truncate()
                             .font_family("Geist Mono")
-                            .text_size(px(10.5))
+                            .text_size(px(11.5))
                             .text_color(theme.text_3.hsla())
                             .child(hunk.header.clone()),
                     )
@@ -550,6 +559,32 @@ impl ChatView {
     }
 }
 
+fn diff_files_chevron(open: bool, transition: u64, theme: Theme) -> AnyElement {
+    let icon = svg().path("icons/chevron-down.svg").size(px(14.0));
+    if transition == 0 {
+        return icon
+            .with_transformation(gpui::Transformation::rotate(gpui::percentage(if open {
+                0.5
+            } else {
+                0.0
+            })))
+            .into_any_element();
+    }
+    icon.with_animation(
+        ("diff-files-chevron", transition),
+        Animation::new(theme.motion.fast).with_easing(crate::theme::web_ease_out),
+        move |icon, delta| {
+            let rotation = if open {
+                delta * 0.5
+            } else {
+                (1.0 - delta) * 0.5
+            };
+            icon.with_transformation(gpui::Transformation::rotate(gpui::percentage(rotation)))
+        },
+    )
+    .into_any_element()
+}
+
 fn diff_summary_file(file: &DiffSummaryFile, theme: Theme) -> AnyElement {
     let (directory, name) = split_path(&file.path);
     div()
@@ -557,7 +592,7 @@ fn diff_summary_file(file: &DiffSummaryFile, theme: Theme) -> AnyElement {
         .flex()
         .items_center()
         .gap(px(14.0))
-        .text_size(px(12.0))
+        .text_size(px(13.5))
         .child(
             div()
                 .min_w(px(0.0))
@@ -580,7 +615,7 @@ fn diff_stat(added: usize, removed: usize, theme: Theme) -> impl IntoElement {
         .items_center()
         .gap(px(6.0))
         .font_family("Geist Mono")
-        .text_size(px(11.5))
+        .text_size(px(12.5))
         .child(
             div()
                 .text_color(theme.success.hsla())
@@ -627,7 +662,7 @@ fn diff_pill_button(
         } else {
             theme.background.hsla()
         })
-        .text_size(px(11.5))
+        .text_size(px(15.0))
         .text_color(if selected && reject {
             theme.error.hsla()
         } else if selected {
@@ -655,7 +690,7 @@ fn diff_review_status(status: impl Into<SharedString>, theme: Theme) -> impl Int
     div()
         .px(px(14.0))
         .py(px(12.0))
-        .text_size(px(11.5))
+        .text_size(px(12.5))
         .text_color(theme.text_3.hsla())
         .child(status.into())
 }
@@ -699,7 +734,7 @@ fn diff_line(line: &DiffLine, highlight: Option<&DiffWordHighlight>, theme: Them
         .items_center()
         .bg(background)
         .font_family("Geist Mono")
-        .text_size(px(10.5))
+        .text_size(px(11.5))
         .child(diff_line_number(old_line, theme))
         .child(diff_line_number(new_line, theme))
         .child(
