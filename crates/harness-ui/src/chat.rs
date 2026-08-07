@@ -3148,28 +3148,64 @@ impl ChatView {
                                     .when(is_new_session, |prompt| {
                                         prompt.child(
                                             div()
-                                                .h(px(36.0))
+                                                .relative()
+                                                .min_w(px(0.0))
+                                                .min_h(px(36.0))
                                                 .flex()
                                                 .items_center()
-                                                .gap(px(4.0))
-                                                .px(px(8.0))
-                                                .bg(theme.surface_2.hsla())
-                                                .text_size(px(12.0))
+                                                .gap(px(6.0))
+                                                .px(px(12.0))
+                                                .py(px(2.0))
+                                                .rounded_t(px(crate::RADIUS_2XL))
+                                                .bg(theme.shelf.hsla())
+                                                .text_size(px(13.5))
+                                                .line_height(relative(1.55))
                                                 .text_color(theme.text_2.hsla())
+                                                .child(
+                                                    div()
+                                                        .absolute()
+                                                        .left_0()
+                                                        .right_0()
+                                                        .bottom(px(-18.0))
+                                                        .h(px(20.0))
+                                                        .bg(theme.shelf.hsla()),
+                                                )
+                                                .child(
+                                                    div()
+                                                        .absolute()
+                                                        .top_0()
+                                                        .left_0()
+                                                        .right_0()
+                                                        .h(px(1.0))
+                                                        .bg(gpui::white().opacity(0.07)),
+                                                )
+                                                .child(
+                                                    div()
+                                                        .absolute()
+                                                        .bottom_0()
+                                                        .left_0()
+                                                        .right_0()
+                                                        .h(px(1.0))
+                                                        .bg(gpui::black().opacity(0.18)),
+                                                )
                                                 .child(self.project_shelf_trigger(cx))
                                                 .child(
                                                     div()
                                                         .id("composer-isolation")
-                                                        .h(px(28.0))
-                                                        .px(px(8.0))
+                                                        .flex_none()
+                                                        .max_w(px(150.0))
+                                                        .px(px(6.0))
+                                                        .py(px(4.0))
                                                         .flex()
                                                         .items_center()
-                                                        .gap(px(6.0))
-                                                        .rounded(px(7.0))
+                                                        .gap(px(7.0))
                                                         .cursor_pointer()
                                                         .hover(move |style| {
                                                             style
-                                                                .bg(theme.surface_3.hsla())
+                                                                .bg(theme
+                                                                    .surface_3
+                                                                    .hsla()
+                                                                    .opacity(0.88))
                                                                 .text_color(theme.text.hsla())
                                                         })
                                                         .on_click(cx.listener(
@@ -3181,15 +3217,19 @@ impl ChatView {
                                                             if self.composer_settings.isolate {
                                                                 "icons/git-branch.svg"
                                                             } else {
-                                                                "icons/folder.svg"
+                                                                "icons/laptop.svg"
                                                             },
-                                                            14.0,
+                                                            15.0,
                                                         ))
-                                                        .child(if self.composer_settings.isolate {
-                                                            "Isolated"
-                                                        } else {
-                                                            "Local"
-                                                        }),
+                                                        .child(
+                                                            div().min_w(px(0.0)).truncate().child(
+                                                                if self.composer_settings.isolate {
+                                                                    "Isolated"
+                                                                } else {
+                                                                    "Local"
+                                                                },
+                                                            ),
+                                                        ),
                                                 )
                                                 .when(
                                                     !self.stage_settings.branches.is_empty(),
@@ -3783,32 +3823,30 @@ impl ChatView {
         );
         div()
             .id("composer-project")
-            .h(px(28.0))
-            .max_w(px(230.0))
+            .flex_none()
+            .max_w(px(260.0))
             .flex()
             .items_center()
-            .gap(px(6.0))
-            .px(px(8.0))
-            .rounded(px(7.0))
-            .border_1()
-            .border_color(if open {
-                theme.line_strong.hsla()
+            .gap(px(7.0))
+            .px(px(6.0))
+            .py(px(4.0))
+            .rounded(px(crate::RADIUS_MD))
+            .text_color(if open {
+                theme.text.hsla()
             } else {
-                theme.line.hsla().opacity(0.0)
+                theme.text_2.hsla()
             })
-            .text_color(theme.text_2.hsla())
             .cursor_pointer()
             .hover(move |style| {
                 style
-                    .bg(theme.surface_3.hsla())
+                    .bg(theme.surface_3.hsla().opacity(0.88))
                     .text_color(theme.text.hsla())
             })
             .on_click(cx.listener(|this, _event, _window, cx| {
                 this.toggle_composer_menu(ComposerMenu::Project, cx);
             }))
-            .child(svg_icon("icons/folder.svg", 14.0))
+            .child(svg_icon("icons/folder.svg", 15.0))
             .child(div().min_w(px(0.0)).truncate().child(label))
-            .child(svg_icon("icons/chevron-down.svg", 11.0))
             .into_any_element()
     }
 
@@ -3823,20 +3861,19 @@ impl ChatView {
             .unwrap_or_else(|| "No branch".into());
         div()
             .id("composer-branch")
-            .h(px(28.0))
+            .flex_none()
             .max_w(px(220.0))
             .flex()
             .items_center()
-            .gap(px(6.0))
-            .px(px(8.0))
-            .rounded(px(7.0))
-            .border_1()
-            .border_color(if open {
-                theme.line_strong.hsla()
+            .gap(px(7.0))
+            .px(px(6.0))
+            .py(px(4.0))
+            .rounded(px(crate::RADIUS_MD))
+            .text_color(if open {
+                theme.text.hsla()
             } else {
-                theme.line.hsla().opacity(0.0)
+                theme.text_2.hsla()
             })
-            .text_color(theme.text_2.hsla())
             .opacity(if self.stage_settings.branch_switching {
                 0.48
             } else {
@@ -3847,16 +3884,15 @@ impl ChatView {
                     .cursor_pointer()
                     .hover(move |style| {
                         style
-                            .bg(theme.surface_3.hsla())
+                            .bg(theme.surface_3.hsla().opacity(0.88))
                             .text_color(theme.text.hsla())
                     })
                     .on_click(cx.listener(|this, _event, _window, cx| {
                         this.toggle_composer_menu(ComposerMenu::Branch, cx);
                     }))
             })
-            .child(svg_icon("icons/git-branch.svg", 14.0))
+            .child(svg_icon("icons/git-branch.svg", 15.0))
             .child(div().min_w(px(0.0)).truncate().child(label))
-            .child(svg_icon("icons/chevron-down.svg", 11.0))
             .into_any_element()
     }
 

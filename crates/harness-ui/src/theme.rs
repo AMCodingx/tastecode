@@ -120,6 +120,7 @@ pub struct Theme {
     pub background: ColorToken,
     pub rail: ColorToken,
     pub prompt: ColorToken,
+    pub shelf: ColorToken,
     pub surface: ColorToken,
     pub surface_2: ColorToken,
     pub surface_3: ColorToken,
@@ -169,6 +170,7 @@ impl Theme {
             background: ColorToken(0x0f0f0f),
             rail: ColorToken(0x131313),
             prompt: ColorToken(0x1a1a1a),
+            shelf: ColorToken(0x222222),
             surface: ColorToken(0x1a1a1a),
             surface_2: ColorToken(0x222222),
             surface_3: ColorToken(0x2b2b2b),
@@ -208,6 +210,7 @@ impl Theme {
             background: ColorToken(0xfdfdfd),
             rail: ColorToken(0xffffff),
             prompt: ColorToken(0xffffff),
+            shelf: ColorToken(0xfafafa),
             surface: ColorToken(0xfafafa),
             surface_2: ColorToken(0xf5f5f6),
             surface_3: ColorToken(0xececef),
@@ -412,6 +415,7 @@ mod tests {
 
         assert_eq!(dark.background, ColorToken(0x0f0f0f));
         assert_eq!(dark.rail, ColorToken(0x131313));
+        assert_eq!(dark.shelf, ColorToken(0x222222));
         assert_eq!(dark.text, ColorToken(0xededed));
         assert_eq!(dark.queue_background, ColorToken(0x222222));
         assert_eq!(dark.queue_line, ColorToken(0x2b2b2b));
@@ -426,6 +430,7 @@ mod tests {
         assert_eq!(dark.file_reference, ColorToken(0x515aad));
         assert_eq!(dark.effort, ColorToken(0xef706e));
         assert_eq!(light.background, ColorToken(0xfdfdfd));
+        assert_eq!(light.shelf, ColorToken(0xfafafa));
         assert_eq!(light.text, ColorToken(0x27272a));
         assert_eq!(light.line, ColorToken(0xebebed));
         assert_eq!(light.queue_background, ColorToken(0xffffff));
@@ -440,6 +445,17 @@ mod tests {
         assert_eq!(light.running, ColorToken(0x52525b));
         assert_eq!(light.file_reference, ColorToken(0x4a53a8));
         assert_eq!(light.effort, ColorToken(0xc2413d));
+    }
+
+    #[test]
+    fn backdrops_do_not_recolor_fixed_composer_surfaces() {
+        let dark = Theme::new(ThemeMode::Dark, Backdrop::Slate, Accent::Neutral);
+        let light = Theme::new(ThemeMode::Light, Backdrop::Plum, Accent::Neutral);
+
+        assert_eq!(dark.shelf, ColorToken(0x222222));
+        assert_eq!(dark.queue_background, ColorToken(0x222222));
+        assert_eq!(light.shelf, ColorToken(0xfafafa));
+        assert_eq!(light.queue_background, ColorToken(0xffffff));
     }
 
     #[test]
