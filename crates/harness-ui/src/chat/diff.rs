@@ -257,7 +257,13 @@ impl ChatView {
                                         .rounded(px(5.0))
                                         .bg(theme.surface.hsla())
                                         .text_color(theme.text_2.hsla())
-                                        .child(svg_icon("icons/file-diff.svg", 20.0)),
+                                        .child(motion_icon(
+                                            "diff-summary-icon",
+                                            "icons/file-diff.svg",
+                                            20.0,
+                                            "diff-summary-icon-direct-hover",
+                                            theme,
+                                        )),
                                 )
                                 .child(
                                     div()

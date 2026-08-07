@@ -2240,7 +2240,13 @@ impl ChatView {
                     .items_center()
                     .gap(px(8.0))
                     .text_color(theme.text_2.hsla())
-                    .child(svg_icon("icons/shield-alert.svg", 14.0))
+                    .child(motion_icon(
+                        ("approval-icon", card_index),
+                        "icons/shield-alert.svg",
+                        14.0,
+                        "approval-icon-direct-hover",
+                        theme,
+                    ))
                     .child(
                         div()
                             .text_color(theme.text.hsla())
@@ -2367,7 +2373,14 @@ impl ChatView {
                             )
                             .into_any_element()
                     } else {
-                        svg_icon(icon_path, 14.0).into_any_element()
+                        motion_icon(
+                            ("approval-review-icon", card_index),
+                            icon_path,
+                            14.0,
+                            "approval-review-icon-direct-hover",
+                            theme,
+                        )
+                        .into_any_element()
                     })
                     .child(
                         div()
@@ -6028,10 +6041,6 @@ fn fast_bolt_off_state(progress: f32) -> (f32, f32) {
 }
 
 type UiAction = Rc<dyn Fn(&mut App)>;
-
-fn svg_icon(path: &'static str, size: f32) -> impl IntoElement {
-    svg().path(path).size(px(size))
-}
 
 fn approval_meta(approval: ApprovalMode) -> (&'static str, &'static str) {
     match approval {
