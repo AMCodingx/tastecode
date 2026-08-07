@@ -5,10 +5,12 @@ use crate::{
         prepare_mcp_config,
     },
     skills::map_skill_list,
+    voice::{self, AuthStatus},
 };
 use harness_agent::{
-    AgentError, AgentHandlers, AgentResult, AgentRuntime, AgentSession, ControlHandlers,
-    CredentialValues, LoginEvent, McpOAuthEvent, ProviderControl, StartOptions, TurnOptions,
+    AgentError, AgentHandlers, AgentResult, AgentRuntime, AgentSession, CancellationToken,
+    ControlHandlers, CredentialValues, LoginEvent, McpOAuthEvent, ProviderControl, StartOptions,
+    TurnOptions,
 };
 use harness_proc::{
     JsonRpcError, ProcessError, RpcResponder, SpawnOptions, StdioJsonRpc, spawn_cli,
@@ -17,7 +19,7 @@ use harness_protocol::{
     Account, ApprovalDecision, ApprovalKind, ApprovalMode, ApprovalRequest, AuthStartLoginResult,
     Capabilities, DomainEvent, McpListResult, McpOAuthStartResult, McpServer, McpServerConfig,
     McpStartupStatus, Model, ProviderId, ServiceTier, SkillsListResult, Thread, UserInputOption,
-    UserInputQuestion, UserInputRequest,
+    UserInputQuestion, UserInputRequest, VoiceStatusResult, VoiceTranscribeParams,
 };
 use serde_json::{Map, Value, json};
 use std::collections::{BTreeMap, HashMap};
@@ -98,6 +100,8 @@ pub enum CodexAdapterError {
     },
     #[error("{0}")]
     Configuration(String),
+    #[error("{0}")]
+    Voice(String),
 }
 
 struct PendingApproval {
@@ -270,6 +274,23 @@ impl CodexAdapter {
     pub fn sign_out(&self) -> Result<(), CodexAdapterError> {
         self.call("account/logout", json!({}))?;
         Ok(())
+    }
+
+    pub fn voice_status(&self) -> VoiceStatusResult {
+        voice::capability(|include_token, refresh_token| {
+            self.voice_auth_status(include_token, refresh_token)
+        })
+    }
+
+    pub fn transcribe_voice(
+        &self,
+        input: &VoiceTranscribeParams,
+        cancellation: &CancellationToken,
+    ) -> Result<String, CodexAdapterError> {
+        voice::transcribe(input, cancellation, |include_token, refresh_token| {
+            self.voice_auth_status(include_token, refresh_token)
+        })
+        .map_err(|error| CodexAdapterError::Voice(error.to_string()))
     }
 
     pub fn list_models(&self) -> Result<Vec<Model>, CodexAdapterError> {
@@ -578,6 +599,27 @@ impl CodexAdapter {
         Ok(self.rpc.request(method, params, self.request_timeout)?)
     }
 
+    fn voice_auth_status(
+        &self,
+        include_token: bool,
+        refresh_token: bool,
+    ) -> Result<AuthStatus, CodexAdapterError> {
+        let method = "getAuthStatus";
+        let response = self.call(
+            method,
+            json!({
+                "includeToken": include_token,
+                "refreshToken": refresh_token
+            }),
+        )?;
+        let auth_method = optional_nullable_string(method, &response, "authMethod")?;
+        let auth_token = optional_nullable_string(method, &response, "authToken")?;
+        Ok(AuthStatus {
+            method: auth_method,
+            token: auth_token,
+        })
+    }
+
     fn session_config(&self, effort: Option<&str>) -> Value {
         let mut config = Map::new();
         if let Some(effort) = effort {
@@ -706,6 +748,18 @@ impl ProviderControl for CodexAdapter {
 
     fn set_skill_enabled(&self, skill_id: &str, enabled: bool) -> AgentResult<bool> {
         CodexAdapter::set_skill_enabled(self, skill_id, enabled).map_err(agent_error)
+    }
+
+    fn voice_status(&self) -> AgentResult<VoiceStatusResult> {
+        Ok(CodexAdapter::voice_status(self))
+    }
+
+    fn transcribe_voice(
+        &self,
+        input: &VoiceTranscribeParams,
+        cancellation: &CancellationToken,
+    ) -> AgentResult<String> {
+        CodexAdapter::transcribe_voice(self, input, cancellation).map_err(agent_error)
     }
 
     fn dispose(&self) {
@@ -1184,6 +1238,18 @@ fn optional_str(value: &Value, field: &str) -> Option<String> {
     value.get(field).and_then(Value::as_str).map(str::to_owned)
 }
 
+fn optional_nullable_string(
+    method: &'static str,
+    value: &Value,
+    field: &str,
+) -> Result<Option<String>, CodexAdapterError> {
+    match value.get(field) {
+        None | Some(Value::Null) => Ok(None),
+        Some(Value::String(value)) => Ok(Some(value.clone())),
+        Some(_) => Err(invalid(method, &format!("{field} is not a string or null"))),
+    }
+}
+
 fn response_str<'a>(
     method: &'static str,
     value: &'a Value,
@@ -1281,6 +1347,13 @@ mod tests {
                 signed_in: true,
                 email: Some("developer@example.com".into()),
                 plan: Some("Pro".into()),
+            }
+        );
+        assert_eq!(
+            adapter.voice_status(),
+            VoiceStatusResult {
+                available: true,
+                reason: None,
             }
         );
         assert_eq!(
@@ -1472,6 +1545,15 @@ mod tests {
                         }
                     }),
                 ),
+                "getAuthStatus" => {
+                    assert_eq!(request["params"]["includeToken"], false);
+                    assert_eq!(request["params"]["refreshToken"], false);
+                    respond(
+                        &mut stdout,
+                        id.unwrap(),
+                        json!({ "authMethod": "chatgpt", "authToken": null }),
+                    );
+                }
                 "account/login/start" if request["params"]["type"] == "chatgpt" => {
                     respond(
                         &mut stdout,

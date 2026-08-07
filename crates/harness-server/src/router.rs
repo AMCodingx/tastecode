@@ -9,7 +9,7 @@ use harness_protocol::{
     SidebarMode, SystemInfo, SystemPlatform, TerminalOpenedResult, ThreadCheckpointsResult,
     ThreadHistoryResult, ThreadInboxStatus, ThreadLifecycle, ThreadLifecyclePush,
     ThreadLifecycleResult, ThreadStartResult, ThreadUnsavedWorkResult, Usage, UsageSummaryResult,
-    WireError, channel,
+    VoiceTranscribeParams, VoiceTranscriptionResult, WireError, channel,
 };
 use harness_store::{SearchOptions, SidebarSettingsUpdate, Store, StoreError};
 use serde::Deserialize;
@@ -70,7 +70,7 @@ impl From<DiffReviewError> for RouteError {
 
 pub(crate) fn route(
     state: &Arc<ServerState>,
-    _connection_id: u64,
+    connection_id: u64,
     method_name: &str,
     params: Value,
 ) -> Result<Value, RouteError> {
@@ -90,6 +90,33 @@ pub(crate) fn route(
         method::SYSTEM_UPDATE_CHECK => {
             let _: EmptyParams = decode(method_name, params)?;
             encoded(crate::update_check::check())
+        }
+        method::VOICE_STATUS => {
+            let params: VoiceStatusParams = decode(method_name, params)?;
+            encoded(
+                state
+                    .agents
+                    .voice_status(state, params.provider)
+                    .map_err(RouteError::internal)?,
+            )
+        }
+        method::VOICE_TRANSCRIBE => {
+            let params: VoiceTranscribeParams = decode(method_name, params)?;
+            validate_voice_transcription(method_name, &params)?;
+            let request = state
+                .start_voice_request(connection_id, &params.request_id)
+                .map_err(RouteError::internal)?;
+            let text = state
+                .agents
+                .transcribe_voice(state, &params, request.cancellation())
+                .map_err(RouteError::internal)?;
+            encoded(VoiceTranscriptionResult { text })
+        }
+        method::VOICE_CANCEL => {
+            let params: VoiceCancelParams = decode(method_name, params)?;
+            validate_uuid(method_name, "requestId", &params.request_id)?;
+            state.cancel_voice_request(&params.request_id);
+            empty_result()
         }
         method::SEARCH_SESSIONS => {
             let params: SearchParams = decode(method_name, params)?;
@@ -1087,6 +1114,44 @@ fn validate_review_params(
     require_non_empty(method, "path", path)
 }
 
+fn validate_voice_transcription(
+    method: &str,
+    params: &VoiceTranscribeParams,
+) -> Result<(), RouteError> {
+    validate_uuid(method, "requestId", &params.request_id)?;
+    if params.provider != ProviderId::Codex
+        || params.audio_base64.is_empty()
+        || params.audio_base64.len() > 13_981_016
+        || !valid_base64_shape(&params.audio_base64)
+        || params.sample_rate_hz != 24_000
+        || !(1..=120_000).contains(&params.duration_ms)
+    {
+        return Err(RouteError::bad_params(
+            method,
+            "provider, audioBase64, sampleRateHz, or durationMs is outside the voice contract",
+        ));
+    }
+    Ok(())
+}
+
+fn validate_uuid(method: &str, field: &str, value: &str) -> Result<(), RouteError> {
+    uuid::Uuid::parse_str(value)
+        .map(|_| ())
+        .map_err(|_| RouteError::bad_params(method, format!("{field}: expected a UUID")))
+}
+
+fn valid_base64_shape(value: &str) -> bool {
+    let bytes = value.as_bytes();
+    let padding = bytes.iter().rev().take_while(|byte| **byte == b'=').count();
+    padding <= 2
+        && bytes[..bytes.len().saturating_sub(padding)]
+            .iter()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(*byte, b'+' | b'/'))
+        && bytes[bytes.len().saturating_sub(padding)..]
+            .iter()
+            .all(|byte| *byte == b'=')
+}
+
 fn validate_terminal_size(method: &str, columns: u16, rows: u16) -> Result<(), RouteError> {
     if !(1..=1_000).contains(&columns) || !(1..=1_000).contains(&rows) {
         return Err(RouteError::bad_params(
@@ -1373,6 +1438,17 @@ struct ModelsListParams {
     provider: ProviderId,
     #[serde(default, deserialize_with = "deserialize_present")]
     agent: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct VoiceStatusParams {
+    provider: ProviderId,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct VoiceCancelParams {
+    request_id: String,
 }
 
 #[derive(Deserialize)]

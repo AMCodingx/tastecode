@@ -1,10 +1,12 @@
 use harness_protocol::{
     Account, ApprovalDecision, ApprovalMode, AuthStartLoginResult, Capabilities, DomainEvent,
     McpListResult, McpOAuthStartResult, McpServerConfig, Model, SkillsListResult, Thread,
+    VoiceStatusResult, VoiceTranscribeParams,
 };
 use serde_json::Value;
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use thiserror::Error;
 
 type EventHandler = dyn Fn(DomainEvent) + Send + Sync;
@@ -237,6 +239,19 @@ pub enum AgentError {
 
 pub type AgentResult<T> = Result<T, AgentError>;
 
+#[derive(Clone, Default)]
+pub struct CancellationToken(Arc<AtomicBool>);
+
+impl CancellationToken {
+    pub fn cancel(&self) {
+        self.0.store(true, Ordering::Release);
+    }
+
+    pub fn is_cancelled(&self) -> bool {
+        self.0.load(Ordering::Acquire)
+    }
+}
+
 /// One live provider session. Shared orchestration reads declared capabilities
 /// and drives this interface; vendor wire details stay in adapter crates.
 pub trait AgentSession: Send + Sync {
@@ -316,6 +331,16 @@ pub trait ProviderControl: Send + Sync {
     }
     fn set_skill_enabled(&self, _skill_id: &str, _enabled: bool) -> AgentResult<bool> {
         Err(AgentError::Unsupported("skill configuration"))
+    }
+    fn voice_status(&self) -> AgentResult<VoiceStatusResult> {
+        Err(AgentError::Unsupported("voice transcription"))
+    }
+    fn transcribe_voice(
+        &self,
+        _input: &VoiceTranscribeParams,
+        _cancellation: &CancellationToken,
+    ) -> AgentResult<String> {
+        Err(AgentError::Unsupported("voice transcription"))
     }
     fn dispose(&self);
 }

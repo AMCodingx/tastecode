@@ -19,6 +19,7 @@ mod update_check;
 pub use access::{allowed_origin, assert_safe_bind, has_access};
 pub use router::SERVER_VERSION;
 
+use harness_agent::CancellationToken;
 use harness_credentials::{CredentialStore, SystemCredentialStore};
 use harness_protocol::{
     ErrorCode, Push, Request, Response, TerminalExitPush, TerminalOutputPush, WireError, channel,
@@ -27,7 +28,7 @@ use harness_store::Store;
 use harness_terminal::TerminalManager;
 use push::{PendingPush, PushBus};
 use serde_json::Value;
-use std::collections::{BTreeSet, HashSet};
+use std::collections::{BTreeSet, HashMap, HashSet};
 use std::io::ErrorKind;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr, TcpListener, TcpStream};
 use std::path::PathBuf;
@@ -225,6 +226,7 @@ fn start_with_prepared_services(
         terminals,
         agents: agents::AgentManager::new(runtimes),
         reviewing_diffs: Mutex::new(HashSet::new()),
+        voice_requests: Mutex::new(HashMap::new()),
         shutdown: AtomicBool::new(false),
         access_token: config.access_token,
     });
@@ -276,8 +278,82 @@ pub(crate) struct ServerState {
     terminals: TerminalManager,
     agents: agents::AgentManager,
     reviewing_diffs: Mutex<HashSet<String>>,
+    voice_requests: Mutex<HashMap<String, ActiveVoiceRequest>>,
     shutdown: AtomicBool,
     access_token: Option<String>,
+}
+
+struct ActiveVoiceRequest {
+    connection_id: u64,
+    cancellation: CancellationToken,
+}
+
+struct VoiceRequestGuard<'a> {
+    state: &'a ServerState,
+    request_id: String,
+    cancellation: CancellationToken,
+}
+
+impl VoiceRequestGuard<'_> {
+    fn cancellation(&self) -> &CancellationToken {
+        &self.cancellation
+    }
+}
+
+impl Drop for VoiceRequestGuard<'_> {
+    fn drop(&mut self) {
+        if let Ok(mut requests) = self.state.voice_requests.lock() {
+            requests.remove(&self.request_id);
+        }
+    }
+}
+
+impl ServerState {
+    fn start_voice_request(
+        &self,
+        connection_id: u64,
+        request_id: &str,
+    ) -> Result<VoiceRequestGuard<'_>, &'static str> {
+        let cancellation = CancellationToken::default();
+        let mut requests = self
+            .voice_requests
+            .lock()
+            .map_err(|_| "voice request mutex poisoned")?;
+        if requests.contains_key(request_id) {
+            return Err("A voice transcription with this request id is already running.");
+        }
+        requests.insert(
+            request_id.into(),
+            ActiveVoiceRequest {
+                connection_id,
+                cancellation: cancellation.clone(),
+            },
+        );
+        Ok(VoiceRequestGuard {
+            state: self,
+            request_id: request_id.into(),
+            cancellation,
+        })
+    }
+
+    fn cancel_voice_request(&self, request_id: &str) {
+        if let Ok(requests) = self.voice_requests.lock()
+            && let Some(request) = requests.get(request_id)
+        {
+            request.cancellation.cancel();
+        }
+    }
+
+    fn cancel_connection_voice(&self, connection_id: u64) {
+        if let Ok(requests) = self.voice_requests.lock() {
+            for request in requests
+                .values()
+                .filter(|request| request.connection_id == connection_id)
+            {
+                request.cancellation.cancel();
+            }
+        }
+    }
 }
 
 fn run_listener(listener: TcpListener, state: Arc<ServerState>) {
@@ -401,6 +477,7 @@ fn run_connection(
             Err(_) => break,
         }
     }
+    state.cancel_connection_voice(connection_id);
     for worker in workers {
         let _ = worker.join();
     }

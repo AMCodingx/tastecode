@@ -8,8 +8,8 @@ use harness_adapter_codex::CodexRuntime;
 use harness_adapter_cursor::CursorRuntime;
 use harness_adapter_opencode::OpenCodeRuntime;
 use harness_agent::{
-    AgentError, AgentHandlers, AgentRuntime, AgentSession, AgentSessionState, ControlHandlers,
-    CredentialValues, ProviderControl, StartOptions, TurnOptions,
+    AgentError, AgentHandlers, AgentRuntime, AgentSession, AgentSessionState, CancellationToken,
+    ControlHandlers, CredentialValues, ProviderControl, StartOptions, TurnOptions,
 };
 use harness_credentials::CredentialStore;
 use harness_protocol::{
@@ -17,7 +17,8 @@ use harness_protocol::{
     McpConfigValue, McpListResult, McpOAuthPush, McpOAuthStartResult, McpServer, McpServerConfig,
     McpServerScope, McpStartupStatus, McpTransport, Model, ProviderId, QueuedTurn, SendTurnResult,
     Skill, SkillSource, SkillsListResult, Thread, ThreadEventPush, ThreadInboxStatus,
-    ThreadLifecyclePush, ThreadQueuePush, ThreadQueueResult, channel,
+    ThreadLifecyclePush, ThreadQueuePush, ThreadQueueResult, VoiceStatusReason, VoiceStatusResult,
+    VoiceTranscribeParams, channel,
 };
 use harness_store::{NewCheckpoint, NewThread};
 use harness_workspace::Worktree;
@@ -295,6 +296,36 @@ impl AgentManager {
     ) -> Result<(), String> {
         self.control(state, provider, agent)?
             .sign_out()
+            .map_err(|error| error.to_string())
+    }
+
+    pub(crate) fn voice_status(
+        &self,
+        state: &Arc<ServerState>,
+        provider: ProviderId,
+    ) -> Result<VoiceStatusResult, String> {
+        if provider != ProviderId::Codex {
+            return Ok(VoiceStatusResult {
+                available: false,
+                reason: Some(VoiceStatusReason::ProviderUnsupported),
+            });
+        }
+        self.control(state, provider, None)?
+            .voice_status()
+            .map_err(|error| error.to_string())
+    }
+
+    pub(crate) fn transcribe_voice(
+        &self,
+        state: &Arc<ServerState>,
+        input: &VoiceTranscribeParams,
+        cancellation: &CancellationToken,
+    ) -> Result<String, String> {
+        if input.provider != ProviderId::Codex {
+            return Err("voice transcription is only available through Codex".into());
+        }
+        self.control(state, ProviderId::Codex, None)?
+            .transcribe_voice(input, cancellation)
             .map_err(|error| error.to_string())
     }
 

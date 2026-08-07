@@ -1,13 +1,14 @@
 use super::*;
 use harness_agent::{
-    AgentError, AgentHandlers, AgentResult, AgentRuntime, AgentSession, ControlHandlers,
-    CredentialValues, LoginEvent, McpOAuthEvent, ProviderControl, StartOptions, TurnOptions,
+    AgentError, AgentHandlers, AgentResult, AgentRuntime, AgentSession, CancellationToken,
+    ControlHandlers, CredentialValues, LoginEvent, McpOAuthEvent, ProviderControl, StartOptions,
+    TurnOptions,
 };
 use harness_credentials::{CredentialError, CredentialStore};
 use harness_protocol::{
     Account, ApprovalDecision, AuthStartLoginResult, Capabilities, DomainEvent, Item, ItemStatus,
     ItemType, McpOAuthStartResult, McpServerConfig, MessageRole, Model, ProviderId, ServiceTier,
-    Thread, Turn, TurnStatus,
+    Thread, Turn, TurnStatus, VoiceStatusResult, VoiceTranscribeParams,
 };
 use harness_store::{NewCheckpoint, NewThread as StoreNewThread};
 use serde_json::{Value, json};
@@ -979,6 +980,80 @@ fn one_slow_request_does_not_block_later_requests_on_the_same_connection() {
 
     assert_eq!(read_value(&mut socket)["id"], "system");
     assert_eq!(read_value(&mut socket)["id"], "models");
+    socket.close(None).unwrap();
+    server.close().unwrap();
+}
+
+#[test]
+fn live_voice_routes_report_provider_support_and_cancel_on_the_same_connection() {
+    let runtime = Arc::new(FakeRuntime::default());
+    let runtimes = Arc::new(FakeRuntimes {
+        runtime: Arc::clone(&runtime),
+    });
+    let (_directory, server) = start_test_server_with_runtimes(runtimes);
+    let mut socket = connect_native(&server, "");
+    assert_welcome(&mut socket);
+
+    send_request(
+        &mut socket,
+        "unsupported",
+        "voice.status",
+        json!({ "provider": "claude-code" }),
+    );
+    assert_eq!(
+        read_value(&mut socket)["result"],
+        json!({ "available": false, "reason": "provider_unsupported" })
+    );
+    send_request(
+        &mut socket,
+        "status",
+        "voice.status",
+        json!({ "provider": "codex" }),
+    );
+    assert_eq!(
+        read_value(&mut socket)["result"],
+        json!({ "available": true })
+    );
+    let control = runtime.control();
+    let request_id = "00000000-0000-4000-8000-000000000001";
+    send_request(
+        &mut socket,
+        "transcribe",
+        "voice.transcribe",
+        json!({
+            "requestId": request_id,
+            "provider": "codex",
+            "audioBase64": "AA==",
+            "mimeType": "audio/wav",
+            "sampleRateHz": 24_000,
+            "durationMs": 1
+        }),
+    );
+    let deadline = Instant::now() + Duration::from_secs(1);
+    while !control.voice_started.load(Ordering::Acquire) && Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    assert!(control.voice_started.load(Ordering::Acquire));
+    send_request(
+        &mut socket,
+        "cancel",
+        "voice.cancel",
+        json!({ "requestId": request_id }),
+    );
+
+    let first = read_value(&mut socket);
+    let second = read_value(&mut socket);
+    let responses = HashMap::from([
+        (first["id"].as_str().unwrap().to_owned(), first),
+        (second["id"].as_str().unwrap().to_owned(), second),
+    ]);
+    assert_eq!(responses["cancel"]["result"], json!({}));
+    assert_eq!(responses["transcribe"]["error"]["code"], "internal");
+    assert_eq!(
+        responses["transcribe"]["error"]["message"],
+        "Voice transcription was cancelled."
+    );
+
     socket.close(None).unwrap();
     server.close().unwrap();
 }
@@ -3088,6 +3163,7 @@ impl AgentRuntime for FakeRuntime {
             cancelled: Mutex::new(Vec::new()),
             api_keys: Mutex::new(Vec::new()),
             skill_toggles: Mutex::new(Vec::new()),
+            voice_started: AtomicBool::new(false),
             disposed: AtomicBool::new(false),
         });
         self.controls.lock().unwrap().push(Arc::clone(&control));
@@ -3103,6 +3179,7 @@ struct FakeControl {
     cancelled: Mutex<Vec<String>>,
     api_keys: Mutex<Vec<String>>,
     skill_toggles: Mutex<Vec<(String, bool)>>,
+    voice_started: AtomicBool,
     disposed: AtomicBool,
 }
 
@@ -3244,6 +3321,27 @@ impl ProviderControl for FakeControl {
             .unwrap()
             .push((skill_id.into(), enabled));
         Ok(enabled)
+    }
+
+    fn voice_status(&self) -> AgentResult<VoiceStatusResult> {
+        Ok(VoiceStatusResult {
+            available: true,
+            reason: None,
+        })
+    }
+
+    fn transcribe_voice(
+        &self,
+        _input: &VoiceTranscribeParams,
+        cancellation: &CancellationToken,
+    ) -> AgentResult<String> {
+        self.voice_started.store(true, Ordering::Release);
+        while !cancellation.is_cancelled() {
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        Err(AgentError::Failed(
+            "Voice transcription was cancelled.".into(),
+        ))
     }
 
     fn dispose(&self) {

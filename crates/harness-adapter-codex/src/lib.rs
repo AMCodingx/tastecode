@@ -6,6 +6,7 @@ mod mcp;
 mod notification;
 mod runtime;
 mod skills;
+mod voice;
 
 pub use harness_agent::{AgentHandlers as CodexHandlers, StartOptions, TurnOptions};
 pub use mcp::{CODEX_MCP_CAPABILITIES, map_startup_status};
@@ -14,6 +15,7 @@ pub use runtime::{
     CODEX_CAPABILITIES, CodexAdapter, CodexAdapterError, CodexLaunchOptions, CodexRuntime,
 };
 pub use skills::CODEX_SKILL_CAPABILITIES;
+pub use voice::{MAX_VOICE_BYTES, MAX_VOICE_DURATION_MS, VOICE_SAMPLE_RATE};
 
 /// Context supplied by the Codex lifecycle notification around a thread item.
 #[derive(Clone, Copy, Debug, PartialEq)]
