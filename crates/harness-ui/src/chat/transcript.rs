@@ -87,7 +87,7 @@ impl ChatView {
         item_ids: Vec<String>,
         cx: &mut gpui::Context<Self>,
     ) {
-        if item_ids.is_empty() {
+        if item_ids.is_empty() || self.theme.reduced_motion {
             return;
         }
         self.entering_transcript_items
@@ -112,6 +112,9 @@ impl ChatView {
     }
 
     pub(super) fn start_turn_settle(&mut self, turn_id: String, cx: &mut gpui::Context<Self>) {
+        if self.theme.reduced_motion {
+            return;
+        }
         self.settled_turn_id = Some(turn_id.clone());
         self.settle_generation = self.settle_generation.wrapping_add(1);
         let generation = self.settle_generation;
@@ -134,6 +137,9 @@ impl ChatView {
         turn_id: String,
         cx: &mut gpui::Context<Self>,
     ) {
+        if self.theme.reduced_motion {
+            return;
+        }
         self.working_rail_entering_turn_id = Some(turn_id.clone());
         self.working_rail_entry_generation = self.working_rail_entry_generation.wrapping_add(1);
         let generation = self.working_rail_entry_generation;
@@ -483,7 +489,7 @@ fn render_transcript_row(
     };
     let activity_lead = matches!(snapshot.presentation, RowPresentation::ActivityLead { .. });
     let body = if snapshot.entering && !(activity_lead && snapshot.settling) {
-        animate_transcript_entry(body, &snapshot.item, snapshot.motion_epoch)
+        animate_transcript_entry(body, &snapshot.item, snapshot.motion_epoch, snapshot.theme)
     } else {
         body
     };
@@ -508,7 +514,12 @@ fn render_transcript_row(
         .into_any_element()
 }
 
-fn animate_transcript_entry(body: AnyElement, item: &Item, motion_epoch: u64) -> AnyElement {
+fn animate_transcript_entry(
+    body: AnyElement,
+    item: &Item,
+    motion_epoch: u64,
+    theme: Theme,
+) -> AnyElement {
     let prompt = item.item_type == ItemType::Message && item.role == Some(MessageRole::User);
     let (duration, offset) = if prompt {
         (PROMPT_ENTRY_DURATION, 6.0)
@@ -521,7 +532,7 @@ fn animate_transcript_entry(body: AnyElement, item: &Item, motion_epoch: u64) ->
         .child(body)
         .with_animation(
             SharedString::from(format!("transcript-entry:{motion_epoch}:{}", item.id)),
-            Animation::new(duration).with_easing(crate::theme::web_ease_out),
+            Animation::new(theme.motion_duration(duration)).with_easing(crate::theme::web_ease_out),
             move |entry, delta| entry.top(px(offset * (1.0 - delta))).opacity(delta),
         )
         .into_any_element()
@@ -656,7 +667,12 @@ fn assistant_message(
             None,
         );
         if snapshot.settling {
-            animate_activity_settle(summary, &snapshot.item.turn_id, snapshot.settle_generation)
+            animate_activity_settle(
+                summary,
+                &snapshot.item.turn_id,
+                snapshot.settle_generation,
+                theme,
+            )
         } else {
             summary
         }
@@ -791,6 +807,7 @@ fn completion_rail(
             rail.into_any_element(),
             &snapshot.turn_id,
             snapshot.settle_generation,
+            theme,
         )
     } else {
         rail.into_any_element()
@@ -801,6 +818,7 @@ fn animate_activity_settle(
     activity: AnyElement,
     turn_id: &str,
     settle_generation: u64,
+    theme: Theme,
 ) -> AnyElement {
     div()
         .relative()
@@ -808,7 +826,8 @@ fn animate_activity_settle(
         .child(activity)
         .with_animation(
             SharedString::from(format!("activity-settle:{settle_generation}:{turn_id}")),
-            Animation::new(TURN_SETTLE_DURATION).with_easing(crate::theme::web_ease_out),
+            Animation::new(theme.motion_duration(TURN_SETTLE_DURATION))
+                .with_easing(crate::theme::web_ease_out),
             |activity, delta| activity.top(px(4.0 * (1.0 - delta))).opacity(delta),
         )
         .into_any_element()
@@ -879,11 +898,14 @@ fn working_rail(working: WorkingSnapshot, theme: Theme) -> AnyElement {
                 .justify_center()
                 .child(thinking_orb(orb_state, theme)),
         )
-        .child(div().relative().child(working.label).with_animation(
-            label_animation_id,
-            Animation::new(Duration::from_millis(180)).with_easing(crate::theme::web_ease_out),
-            |label, delta| label.top(px(3.0 * (1.0 - delta))).opacity(delta),
-        ))
+        .child(
+            div().relative().child(working.label).with_animation(
+                label_animation_id,
+                Animation::new(theme.motion_duration(Duration::from_millis(180)))
+                    .with_easing(crate::theme::web_ease_out),
+                |label, delta| label.top(px(3.0 * (1.0 - delta))).opacity(delta),
+            ),
+        )
         .child(
             div()
                 .text_color(theme.text_3.hsla().opacity(0.72))
@@ -896,7 +918,8 @@ fn working_rail(working: WorkingSnapshot, theme: Theme) -> AnyElement {
                     "working-rail-entry:{}:{}",
                     working.motion_epoch, working.turn_id
                 )),
-                Animation::new(WORKING_RAIL_ENTRY_DURATION).with_easing(crate::theme::web_ease_out),
+                Animation::new(theme.motion_duration(WORKING_RAIL_ENTRY_DURATION))
+                    .with_easing(crate::theme::web_ease_out),
                 |rail, delta| rail.top(px(3.0 * (1.0 - delta))).opacity(delta),
             )
             .into_any_element()
@@ -999,7 +1022,7 @@ fn auxiliary_item(snapshot: &TranscriptRowSnapshot, view: Entity<ChatView>) -> A
                             .text_color(theme.text_3.hsla())
                             .with_animation(
                                 SharedString::from(format!("aux-spinner:{}", item.id)),
-                                Animation::new(Duration::from_millis(900)).repeat(),
+                                theme.repeating_animation(Duration::from_millis(900)),
                                 |spinner, delta| {
                                     spinner.with_transformation(Transformation::rotate(percentage(
                                         delta,

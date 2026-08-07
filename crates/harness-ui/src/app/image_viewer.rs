@@ -147,7 +147,7 @@ impl HarnessApp {
             frame
                 .with_animation(
                     ("image-viewer-zoom", transition),
-                    Animation::new(Duration::from_millis(180))
+                    Animation::new(self.theme.motion_duration(Duration::from_millis(180)))
                         .with_easing(crate::theme::web_ease_out),
                     move |frame, delta| {
                         let scale = previous_zoom + (zoom - previous_zoom) * delta;
@@ -273,7 +273,7 @@ impl HarnessApp {
                 )
                 .with_animation(
                     ("image-viewer-in", image_id),
-                    Animation::new(Duration::from_millis(180))
+                    Animation::new(self.theme.motion_duration(Duration::from_millis(180)))
                         .with_easing(crate::theme::web_ease_out),
                     |viewer, delta| viewer.opacity(delta),
                 )

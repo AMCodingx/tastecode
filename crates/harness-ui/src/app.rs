@@ -36,6 +36,7 @@ use sidebar_controls::SidebarControlsState;
 use stage_controls::StageControlsState;
 use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
+use std::time::Duration;
 
 const APP_WIDTH: f32 = 1180.0;
 const APP_HEIGHT: f32 = 820.0;
@@ -113,6 +114,7 @@ struct HarnessApp {
     onboarding: Option<onboarding::OnboardingState>,
     onboarding_api_key: Entity<InputState>,
     system_theme_mode: ThemeMode,
+    reduced_motion: bool,
     preferences: NativePreferences,
     connection_editor_open: bool,
     connection_submission_id: Option<String>,
@@ -154,7 +156,9 @@ impl HarnessApp {
             ThemePreference::Light => ThemeMode::Light,
             ThemePreference::Dark => ThemeMode::Dark,
         };
-        let theme = Theme::new(mode, preferences.backdrop, preferences.accent);
+        let reduced_motion = crate::accessibility::prefers_reduced_motion();
+        let theme = Theme::new(mode, preferences.backdrop, preferences.accent)
+            .with_reduced_motion(reduced_motion);
         sync_component_theme(theme, cx);
         let chat = cx.new(|cx| ChatView::new(theme, window, cx));
         let connection_name = cx.new(|cx| {
@@ -442,6 +446,23 @@ impl HarnessApp {
         })
         .detach();
 
+        cx.spawn(async move |view, cx| {
+            loop {
+                cx.background_executor().timer(Duration::from_secs(2)).await;
+                let result = view.update(cx, |this, cx| {
+                    let reduced_motion = crate::accessibility::prefers_reduced_motion();
+                    if this.reduced_motion != reduced_motion {
+                        this.reduced_motion = reduced_motion;
+                        this.apply_native_theme(cx);
+                    }
+                });
+                if result.is_err() {
+                    break;
+                }
+            }
+        })
+        .detach();
+
         Self {
             theme,
             sidebar_collapsed: false,
@@ -483,6 +504,7 @@ impl HarnessApp {
                 .then(onboarding::OnboardingState::default),
             onboarding_api_key,
             system_theme_mode,
+            reduced_motion,
             preferences,
             connection_editor_open: false,
             connection_submission_id: None,

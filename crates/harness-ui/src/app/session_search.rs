@@ -522,7 +522,8 @@ impl HarnessApp {
             .when_some(provider_menu, |panel, menu| panel.child(menu))
             .with_animation(
                 ("session-search-panel", self.session_search.open_transition),
-                Animation::new(Duration::from_millis(220)).with_easing(crate::theme::web_ease_out),
+                Animation::new(theme.motion_duration(Duration::from_millis(220)))
+                    .with_easing(crate::theme::web_ease_out),
                 |panel, delta| panel.top(px(6.0 * (1.0 - delta))).opacity(delta),
             );
 

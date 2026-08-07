@@ -207,7 +207,7 @@ impl HarnessApp {
         let transition = self.settings_transition ^ self.settings_section.index() as u64;
         let content = self.settings_content(cx).with_animation(
             ("settings-section", transition),
-            Animation::new(std::time::Duration::from_millis(220))
+            Animation::new(theme.motion_duration(std::time::Duration::from_millis(220)))
                 .with_easing(crate::theme::web_ease_out),
             |panel, delta| panel.opacity(delta).mt(px(4.0 * (1.0 - delta))),
         );
@@ -2655,7 +2655,8 @@ impl HarnessApp {
             ThemePreference::Light => ThemeMode::Light,
             ThemePreference::Dark => ThemeMode::Dark,
         };
-        self.theme = Theme::new(mode, self.preferences.backdrop, self.preferences.accent);
+        self.theme = Theme::new(mode, self.preferences.backdrop, self.preferences.accent)
+            .with_reduced_motion(self.reduced_motion);
         super::sync_component_theme(self.theme, cx);
         let theme = self.theme;
         self.chat

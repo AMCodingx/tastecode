@@ -3013,10 +3013,12 @@ dependencies = [
  "html5ever",
  "markdown",
  "markup5ever_rcdom",
+ "objc2-app-kit",
  "serde",
  "serde_json",
  "url",
  "uuid",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]

@@ -569,6 +569,9 @@ impl ChatView {
 
     pub(crate) fn update_theme(&mut self, theme: Theme, cx: &mut Context<Self>) {
         if self.theme != theme {
+            if theme.reduced_motion && !self.theme.reduced_motion {
+                self.reset_transcript_motion();
+            }
             self.theme = theme;
             cx.notify();
         }
@@ -2460,7 +2463,7 @@ impl ChatView {
                 )
                 .with_animation(
                     ("brief-input", request_animation_id),
-                    Animation::new(Duration::from_millis(220))
+                    Animation::new(theme.motion_duration(Duration::from_millis(220)))
                         .with_easing(crate::theme::web_ease_out),
                     move |card, delta| {
                         card.bottom(px(bottom - (8.0 * (1.0 - delta))))
@@ -2637,7 +2640,7 @@ impl ChatView {
                     .child(delete)
                     .with_animation(
                         row_animation_id,
-                        Animation::new(Duration::from_millis(240))
+                        Animation::new(theme.motion_duration(Duration::from_millis(240)))
                             .with_easing(crate::theme::web_ease_out),
                         |row, delta| row.top(px(4.0 * (1.0 - delta))).opacity(delta),
                     )
@@ -3172,7 +3175,7 @@ impl ChatView {
                                         .text_color(gpui::white())
                                         .with_animation(
                                             ("pasted-image-loading", index),
-                                            Animation::new(Duration::from_millis(700)).repeat(),
+                                            theme.repeating_animation(Duration::from_millis(700)),
                                             |spinner, delta| {
                                                 spinner.with_transformation(
                                                     gpui::Transformation::rotate(gpui::percentage(

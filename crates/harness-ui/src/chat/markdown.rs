@@ -53,7 +53,7 @@ impl ChatView {
         text: &str,
         cx: &mut gpui::Context<Self>,
     ) {
-        if from >= to {
+        if from >= to || self.theme.reduced_motion {
             return;
         }
         let word_count = text.split_whitespace().count().max(1) as u64;
@@ -3468,7 +3468,7 @@ fn render_inline_unit(unit: InlineUnit, context: &RenderContext<'_>) -> AnyEleme
         element
             .with_animation(
                 animation_id,
-                Animation::new(Duration::from_millis(total)),
+                Animation::new(context.theme.motion_duration(Duration::from_millis(total))),
                 move |word, delta| {
                     let elapsed = delta * total as f32;
                     let local =

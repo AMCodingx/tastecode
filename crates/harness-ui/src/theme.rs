@@ -1,4 +1,4 @@
-use gpui::{Hsla, rgb};
+use gpui::{Animation, Hsla, rgb};
 use serde::{Deserialize, Serialize};
 use std::time::Duration;
 
@@ -18,6 +18,12 @@ impl Motion {
         press: Duration::from_millis(140),
         fast: Duration::from_millis(180),
         slow: Duration::from_millis(260),
+    };
+
+    pub const REDUCED: Self = Self {
+        press: Duration::from_millis(1),
+        fast: Duration::from_millis(1),
+        slow: Duration::from_millis(1),
     };
 }
 
@@ -115,6 +121,7 @@ pub struct Theme {
     pub error: ColorToken,
     pub success: ColorToken,
     pub motion: Motion,
+    pub reduced_motion: bool,
 }
 
 impl Theme {
@@ -155,6 +162,7 @@ impl Theme {
             error: ColorToken(0xe5687a),
             success: ColorToken(0x6fbf8e),
             motion: Motion::WEB_PARITY,
+            reduced_motion: false,
         }
     }
 
@@ -185,6 +193,34 @@ impl Theme {
             error: ColorToken(0xbe123c),
             success: ColorToken(0x16803c),
             motion: Motion::WEB_PARITY,
+            reduced_motion: false,
+        }
+    }
+
+    pub fn with_reduced_motion(mut self, reduced: bool) -> Self {
+        self.reduced_motion = reduced;
+        self.motion = if reduced {
+            Motion::REDUCED
+        } else {
+            Motion::WEB_PARITY
+        };
+        self
+    }
+
+    pub fn motion_duration(self, duration: Duration) -> Duration {
+        if self.reduced_motion {
+            Duration::from_millis(1)
+        } else {
+            duration
+        }
+    }
+
+    pub fn repeating_animation(self, duration: Duration) -> Animation {
+        let animation = Animation::new(self.motion_duration(duration));
+        if self.reduced_motion {
+            animation
+        } else {
+            animation.repeat()
         }
     }
 
@@ -276,8 +312,29 @@ mod tests {
         assert_eq!(Motion::WEB_PARITY.press, Duration::from_millis(140));
         assert_eq!(Motion::WEB_PARITY.fast, Duration::from_millis(180));
         assert_eq!(Motion::WEB_PARITY.slow, Duration::from_millis(260));
+        assert_eq!(Motion::REDUCED.press, Duration::from_millis(1));
+        assert_eq!(Motion::REDUCED.fast, Duration::from_millis(1));
+        assert_eq!(Motion::REDUCED.slow, Duration::from_millis(1));
         assert!((web_ease_out(0.157_656_25) - 0.578_125).abs() < 0.000_1);
         assert!((web_ease_out(0.331_25) - 0.875).abs() < 0.000_1);
+    }
+
+    #[test]
+    fn reduced_motion_collapses_every_animation_duration() {
+        let theme = Theme::dark().with_reduced_motion(true);
+
+        assert!(theme.reduced_motion);
+        assert_eq!(theme.motion, Motion::REDUCED);
+        assert_eq!(
+            theme.motion_duration(Duration::from_secs(30)),
+            Duration::from_millis(1)
+        );
+        assert!(theme.repeating_animation(Duration::from_secs(1)).oneshot);
+        assert!(
+            !Theme::dark()
+                .repeating_animation(Duration::from_secs(1))
+                .oneshot
+        );
     }
 
     #[test]

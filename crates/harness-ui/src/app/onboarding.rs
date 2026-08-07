@@ -135,7 +135,7 @@ impl HarnessApp {
                     .child(panel)
                     .with_animation(
                         ("onboarding-step", transition),
-                        Animation::new(Duration::from_millis(300))
+                        Animation::new(self.theme.motion_duration(Duration::from_millis(300)))
                             .with_easing(crate::theme::web_ease_out),
                         |panel, delta| panel.opacity(delta).mt(px(10.0 * (1.0 - delta))),
                     ),
@@ -1370,7 +1370,8 @@ fn selection_check(index: usize, theme: Theme) -> AnyElement {
         .child(svg().path("icons/check.svg").size(px(12.0)))
         .with_animation(
             ("onboarding-check-in", index),
-            Animation::new(Duration::from_millis(240)).with_easing(crate::theme::web_ease_out),
+            Animation::new(theme.motion_duration(Duration::from_millis(240)))
+                .with_easing(crate::theme::web_ease_out),
             |check, delta| check.opacity(delta),
         )
         .into_any_element()
@@ -1398,7 +1399,7 @@ fn onboarding_spinner(theme: Theme) -> AnyElement {
         .text_color(theme.text_2.hsla())
         .with_animation(
             "onboarding-spinner",
-            Animation::new(Duration::from_millis(900)).repeat(),
+            theme.repeating_animation(Duration::from_millis(900)),
             |spinner, delta| spinner.with_transformation(Transformation::rotate(percentage(delta))),
         )
         .into_any_element()

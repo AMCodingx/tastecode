@@ -1187,7 +1187,7 @@ impl ChatView {
                 .child(viewport)
                 .with_animation(
                     ("terminal-in", open_generation),
-                    Animation::new(Duration::from_millis(200))
+                    Animation::new(theme.motion_duration(Duration::from_millis(200)))
                         .with_easing(crate::theme::web_ease_out),
                     |pane, delta| pane.bottom(px(-8.0 * (1.0 - delta))).opacity(delta),
                 )

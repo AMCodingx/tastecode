@@ -1,3 +1,4 @@
+mod accessibility;
 mod app;
 mod assets;
 mod chat;

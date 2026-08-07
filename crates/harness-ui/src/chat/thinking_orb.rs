@@ -6,8 +6,7 @@
 use crate::theme::{Theme, ThemeMode};
 use crate::zoom::px;
 use gpui::{
-    Animation, AnimationExt, AnyElement, Bounds, SharedString, canvas, fill, point, prelude::*,
-    rgba, size,
+    AnimationExt, AnyElement, Bounds, SharedString, canvas, fill, point, prelude::*, rgba, size,
 };
 use std::f64::consts::PI;
 use std::sync::OnceLock;
@@ -43,7 +42,11 @@ pub(super) fn thinking_orb(state: ThinkingOrbState, theme: Theme) -> AnyElement 
         ThinkingOrbState::Working => 3.9,
         ThinkingOrbState::Searching => 2.665,
     };
-    let time = elapsed * speed;
+    let time = if theme.reduced_motion {
+        0.6
+    } else {
+        elapsed * speed
+    };
     let dark = theme.mode == ThemeMode::Dark;
     let animation_id = match state {
         ThinkingOrbState::Working => "thinking-orb-working",
@@ -61,7 +64,7 @@ pub(super) fn thinking_orb(state: ThinkingOrbState, theme: Theme) -> AnyElement 
     .overflow_hidden()
     .with_animation(
         SharedString::from(animation_id),
-        Animation::new(Duration::from_secs(1)).repeat(),
+        theme.repeating_animation(Duration::from_secs(1)),
         |orb, _delta| orb,
     )
     .into_any_element()
