@@ -16,6 +16,7 @@ use harness_protocol::{Push, Request, Response, channel};
 use harness_store::Store;
 use push::{PendingPush, PushBus};
 use serde_json::Value;
+use std::collections::BTreeSet;
 use std::io::ErrorKind;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr, TcpListener, TcpStream};
 use std::path::PathBuf;
@@ -126,8 +127,10 @@ pub fn start(config: ServerConfig) -> Result<ServerHandle, ServerError> {
     let listener = TcpListener::bind(config.address)?;
     listener.set_nonblocking(true)?;
     let address = listener.local_addr()?;
+    let store = Store::open(&config.store_path)?;
+    recover_worktree_metadata(&store);
     let state = Arc::new(ServerState {
-        store: Mutex::new(Store::open(&config.store_path)?),
+        store: Mutex::new(store),
         inbox: Mutex::new(inbox::InboxProjections::default()),
         push: PushBus::new(),
         shutdown: AtomicBool::new(false),
@@ -142,6 +145,24 @@ pub fn start(config: ServerConfig) -> Result<ServerHandle, ServerError> {
         state,
         join: Some(join),
     })
+}
+
+fn recover_worktree_metadata(store: &Store) {
+    let Ok(worktrees) = store.worktrees() else {
+        return;
+    };
+    let repositories = worktrees
+        .iter()
+        .map(|worktree| PathBuf::from(&worktree.repo_path))
+        .collect::<BTreeSet<_>>();
+    for repository in repositories {
+        harness_workspace::prune_worktrees(repository);
+    }
+    for worktree in worktrees {
+        if !std::path::Path::new(&worktree.path).exists() {
+            let _ = store.forget_worktree(&worktree.thread_id);
+        }
+    }
 }
 
 pub fn store_location() -> Result<PathBuf, ServerError> {

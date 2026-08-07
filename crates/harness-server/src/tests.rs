@@ -530,6 +530,72 @@ fn live_worktree_routes_refuse_unsaved_work_and_forced_discard_keeps_the_branch(
 }
 
 #[test]
+fn startup_forgets_only_worktrees_whose_directories_are_already_gone() {
+    let repository_root = tempfile::tempdir().unwrap();
+    let repository = repository_root.path().join("repo");
+    let worktree_root = repository_root.path().join("worktrees");
+    let output = Command::new("git")
+        .args(["init", "-b", "main"])
+        .arg(&repository)
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+    git(&repository, &["config", "user.email", "test@example.com"]);
+    git(&repository, &["config", "user.name", "Test"]);
+    std::fs::write(repository.join("file.txt"), "initial\n").unwrap();
+    git(&repository, &["add", "."]);
+    git(&repository, &["commit", "-m", "initial"]);
+    let missing =
+        harness_workspace::create_worktree(&repository, "thread-aaaaaaaaaaaa", &worktree_root)
+            .unwrap();
+    let present =
+        harness_workspace::create_worktree(&repository, "thread-bbbbbbbbbbbb", &worktree_root)
+            .unwrap();
+    std::fs::write(present.path.join("uncommitted.txt"), "keep\n").unwrap();
+    std::fs::remove_dir_all(&missing.path).unwrap();
+    let repository_text = repository.to_string_lossy().into_owned();
+
+    let (_directory, server) = start_test_server(None, |store| {
+        store.add_project(&repository_text, None).unwrap();
+        for (id, worktree) in [("missing", &missing), ("present", &present)] {
+            store
+                .add_thread(StoreNewThread {
+                    id: id.into(),
+                    project_path: repository_text.clone(),
+                    provider: ProviderId::Codex,
+                    agent: None,
+                    title: id.into(),
+                    created_at: Some(if id == "missing" { 10 } else { 20 }),
+                    worktree_path: Some(worktree.path.to_string_lossy().into_owned()),
+                    worktree_branch: Some(worktree.branch.clone()),
+                })
+                .unwrap();
+        }
+    });
+    let mut socket = connect_native(&server, "");
+    assert_welcome(&mut socket);
+    send_request(&mut socket, "projects", "projects.list", json!({}));
+    let projects = read_value(&mut socket);
+    let sessions = projects["result"]["projects"][0]["sessions"]
+        .as_array()
+        .unwrap();
+    let missing_session = sessions
+        .iter()
+        .find(|session| session["id"] == "missing")
+        .unwrap();
+    let present_session = sessions
+        .iter()
+        .find(|session| session["id"] == "present")
+        .unwrap();
+    assert!(missing_session.get("worktreeBranch").is_none());
+    assert_eq!(present_session["worktreeBranch"], present.branch);
+    assert!(present.path.join("uncommitted.txt").exists());
+
+    socket.close(None).unwrap();
+    server.close().unwrap();
+}
+
+#[test]
 fn live_checkpoint_restore_keeps_files_and_conversation_reversible_together() {
     let repository = tempfile::tempdir().unwrap();
     git(repository.path(), &["init", "--initial-branch=main"]);
