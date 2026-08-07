@@ -59,6 +59,9 @@ impl HarnessApp {
         project_path: Option<String>,
         cx: &mut Context<Self>,
     ) {
+        if self.sidebar_controls.is_open() {
+            self.close_sidebar_controls(cx);
+        }
         self.settings_open = false;
         self.session_search.open = true;
         self.session_search.open_transition = self.session_search.open_transition.wrapping_add(1);

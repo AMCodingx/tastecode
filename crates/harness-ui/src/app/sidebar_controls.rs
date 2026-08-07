@@ -1,0 +1,955 @@
+use super::HarnessApp;
+use crate::sidebar::SidebarMenuRequest;
+use chrono::{Datelike, Duration as ChronoDuration, Local, Timelike};
+use gpui::{
+    AnyElement, ClipboardItem, Context, Entity, Pixels, Point, SharedString, Window, div,
+    prelude::*, px,
+};
+use gpui_component::input::{Input, InputState};
+use harness_protocol::{SessionSummary, ThreadInboxStatus, ThreadLifecycle};
+use std::collections::VecDeque;
+use std::process::Command;
+
+pub(super) struct SidebarControlsState {
+    pub(super) menu: Option<SidebarMenuState>,
+    dialog: Option<SidebarDialog>,
+    pub(super) input: Entity<InputState>,
+    reset_value: Option<String>,
+    focus_pending: bool,
+    archive_queue: VecDeque<String>,
+}
+
+pub(super) struct SidebarMenuState {
+    request: SidebarMenuRequest,
+    position: Point<Pixels>,
+}
+
+#[derive(Clone)]
+enum SidebarDialog {
+    RenameProject {
+        path: String,
+    },
+    RenameThread {
+        thread_id: String,
+    },
+    RemoveProject {
+        path: String,
+    },
+    ArchiveProject {
+        path: String,
+        thread_ids: Vec<String>,
+    },
+    DiscardCheckout {
+        thread_id: String,
+    },
+}
+
+impl SidebarControlsState {
+    pub(super) fn new(input: Entity<InputState>) -> Self {
+        Self {
+            menu: None,
+            dialog: None,
+            input,
+            reset_value: None,
+            focus_pending: false,
+            archive_queue: VecDeque::new(),
+        }
+    }
+
+    pub(super) fn is_open(&self) -> bool {
+        self.menu.is_some() || self.dialog.is_some()
+    }
+}
+
+impl HarnessApp {
+    pub(super) fn open_sidebar_menu(
+        &mut self,
+        request: SidebarMenuRequest,
+        position: Point<Pixels>,
+        cx: &mut Context<Self>,
+    ) {
+        self.sidebar_controls.dialog = None;
+        self.sidebar_controls.menu = Some(SidebarMenuState { request, position });
+        cx.notify();
+    }
+
+    pub(super) fn close_sidebar_controls(&mut self, cx: &mut Context<Self>) {
+        self.sidebar_controls.menu = None;
+        if let Some(SidebarDialog::DiscardCheckout { thread_id }) =
+            self.sidebar_controls.dialog.take()
+            && self.sidebar_controls.archive_queue.front() == Some(&thread_id)
+        {
+            self.sidebar_controls.archive_queue.clear();
+        }
+        cx.notify();
+    }
+
+    pub(super) fn prepare_sidebar_controls_input(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if let Some(value) = self.sidebar_controls.reset_value.take() {
+            self.sidebar_controls.input.update(cx, |input, cx| {
+                input.set_value(value, window, cx);
+            });
+        }
+        if self.sidebar_controls.focus_pending {
+            self.sidebar_controls
+                .input
+                .update(cx, |input, cx| input.focus(window, cx));
+            self.sidebar_controls.focus_pending = false;
+        }
+    }
+
+    pub(super) fn commit_sidebar_dialog(&mut self, cx: &mut Context<Self>) {
+        let value = self
+            .sidebar_controls
+            .input
+            .read(cx)
+            .value()
+            .trim()
+            .to_owned();
+        if value.is_empty() {
+            return;
+        }
+        let Some(dialog) = self.sidebar_controls.dialog.take() else {
+            return;
+        };
+        let update = match dialog {
+            SidebarDialog::RenameProject { path } => self.state.rename_project(path, value),
+            SidebarDialog::RenameThread { thread_id } => {
+                self.chat.update(cx, |chat, cx| {
+                    chat.rename_session(&thread_id, value.clone(), cx);
+                });
+                self.state.rename_thread(thread_id, value)
+            }
+            other => {
+                self.sidebar_controls.dialog = Some(other);
+                return;
+            }
+        };
+        self.apply_client_update(update, cx);
+        cx.notify();
+    }
+
+    pub(super) fn show_archive_confirmation(&mut self, thread_id: String, cx: &mut Context<Self>) {
+        self.sidebar_controls.menu = None;
+        self.sidebar_controls.dialog = Some(SidebarDialog::DiscardCheckout { thread_id });
+        cx.notify();
+    }
+
+    pub(super) fn handle_thread_archived(&mut self, thread_id: String, cx: &mut Context<Self>) {
+        if self.selected_thread_id.as_deref() == Some(thread_id.as_str()) {
+            self.select_next_active_or_draft(&thread_id, cx);
+        }
+        if self.sidebar_controls.archive_queue.front() == Some(&thread_id) {
+            self.sidebar_controls.archive_queue.pop_front();
+            self.archive_next_queued_thread(cx);
+        }
+        cx.notify();
+    }
+
+    fn archive_next_queued_thread(&mut self, cx: &mut Context<Self>) {
+        let Some(thread_id) = self.sidebar_controls.archive_queue.front().cloned() else {
+            return;
+        };
+        let update = self.state.archive_thread(thread_id);
+        self.apply_client_update(update, cx);
+    }
+
+    fn begin_rename_project(&mut self, path: String, cx: &mut Context<Self>) {
+        let Some(name) = self
+            .state
+            .projects
+            .iter()
+            .find(|project| project.path == path)
+            .map(|project| project.name.clone())
+        else {
+            return;
+        };
+        self.sidebar_controls.menu = None;
+        self.sidebar_controls.dialog = Some(SidebarDialog::RenameProject { path });
+        self.sidebar_controls.reset_value = Some(name);
+        self.sidebar_controls.focus_pending = true;
+        cx.notify();
+    }
+
+    fn begin_rename_thread(&mut self, thread_id: String, cx: &mut Context<Self>) {
+        let Some(title) = self
+            .state
+            .projects
+            .iter()
+            .flat_map(|project| project.sessions.iter())
+            .find(|session| session.id == thread_id)
+            .map(|session| session.title.clone())
+        else {
+            return;
+        };
+        self.sidebar_controls.menu = None;
+        self.sidebar_controls.dialog = Some(SidebarDialog::RenameThread { thread_id });
+        self.sidebar_controls.reset_value = Some(title);
+        self.sidebar_controls.focus_pending = true;
+        cx.notify();
+    }
+
+    fn confirm_remove_project(&mut self, path: String, cx: &mut Context<Self>) {
+        self.sidebar_controls.menu = None;
+        self.sidebar_controls.dialog = Some(SidebarDialog::RemoveProject { path });
+        cx.notify();
+    }
+
+    fn confirm_archive_project(&mut self, path: String, cx: &mut Context<Self>) {
+        let thread_ids = self
+            .state
+            .projects
+            .iter()
+            .find(|project| project.path == path)
+            .map(|project| {
+                project
+                    .sessions
+                    .iter()
+                    .map(|session| session.id.clone())
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
+        self.sidebar_controls.menu = None;
+        self.sidebar_controls.dialog = Some(SidebarDialog::ArchiveProject { path, thread_ids });
+        cx.notify();
+    }
+
+    fn run_sidebar_update(
+        &mut self,
+        update: crate::client_state::ClientUpdate,
+        cx: &mut Context<Self>,
+    ) {
+        self.sidebar_controls.menu = None;
+        self.apply_client_update(update, cx);
+        cx.notify();
+    }
+
+    fn confirm_sidebar_dialog(&mut self, cx: &mut Context<Self>) {
+        let Some(dialog) = self.sidebar_controls.dialog.take() else {
+            return;
+        };
+        match dialog {
+            SidebarDialog::RenameProject { .. } | SidebarDialog::RenameThread { .. } => {
+                self.sidebar_controls.dialog = Some(dialog);
+                self.commit_sidebar_dialog(cx);
+            }
+            SidebarDialog::RemoveProject { path } => {
+                let update = self.state.remove_project(path);
+                self.apply_client_update(update, cx);
+            }
+            SidebarDialog::ArchiveProject { thread_ids, .. } => {
+                self.sidebar_controls.archive_queue = thread_ids.into();
+                self.archive_next_queued_thread(cx);
+            }
+            SidebarDialog::DiscardCheckout { thread_id } => {
+                let update = self.state.force_archive_thread(thread_id);
+                self.apply_client_update(update, cx);
+            }
+        }
+        cx.notify();
+    }
+
+    pub(super) fn sidebar_controls_overlay(
+        &self,
+        window: &Window,
+        cx: &Context<Self>,
+    ) -> Option<AnyElement> {
+        if let Some(dialog) = self.sidebar_controls.dialog.clone() {
+            return Some(self.sidebar_dialog_overlay(dialog, cx));
+        }
+        let menu = self.sidebar_controls.menu.as_ref()?;
+        let request = menu.request.clone();
+        let position = menu.position;
+        let theme = self.theme;
+        let mut items = Vec::new();
+
+        match request {
+            SidebarMenuRequest::Project(path) => {
+                let project = self
+                    .state
+                    .projects
+                    .iter()
+                    .find(|project| project.path == path)?
+                    .clone();
+                let pin_path = path.clone();
+                let project_pinned = project.pinned;
+                items.push(sidebar_menu_item(
+                    "sidebar-project-pin",
+                    if project_pinned {
+                        "Unpin"
+                    } else {
+                        "Pin to top"
+                    },
+                    None,
+                    false,
+                    theme,
+                    cx.listener(move |this, _event, _window, cx| {
+                        let update = this.state.pin_project(pin_path.clone(), !project_pinned);
+                        this.run_sidebar_update(update, cx);
+                    }),
+                ));
+                let reveal = path.clone();
+                items.push(sidebar_menu_item(
+                    "sidebar-project-reveal",
+                    "Open in Explorer",
+                    None,
+                    false,
+                    theme,
+                    cx.listener(move |this, _event, _window, cx| {
+                        this.sidebar_controls.menu = None;
+                        if let Err(error) = reveal_path(&reveal) {
+                            this.state.notice =
+                                Some(format!("Could not open that folder: {error}"));
+                        }
+                        cx.notify();
+                    }),
+                ));
+                let rename = path.clone();
+                items.push(sidebar_menu_item(
+                    "sidebar-project-rename",
+                    "Edit name",
+                    Some("icons/pencil.svg"),
+                    false,
+                    theme,
+                    cx.listener(move |this, _event, _window, cx| {
+                        this.begin_rename_project(rename.clone(), cx);
+                    }),
+                ));
+                let search = path.clone();
+                items.push(sidebar_menu_item(
+                    "sidebar-project-search",
+                    "Search chats",
+                    Some("icons/search.svg"),
+                    false,
+                    theme,
+                    cx.listener(move |this, _event, _window, cx| {
+                        this.sidebar_controls.menu = None;
+                        this.open_session_search(Some(search.clone()), cx);
+                    }),
+                ));
+                items.push(sidebar_menu_rule(theme));
+                let archive = path.clone();
+                items.push(sidebar_menu_item(
+                    "sidebar-project-archive",
+                    "Archive chats",
+                    Some("icons/check.svg"),
+                    false,
+                    theme,
+                    cx.listener(move |this, _event, _window, cx| {
+                        this.confirm_archive_project(archive.clone(), cx);
+                    }),
+                ));
+                items.push(sidebar_menu_item(
+                    "sidebar-project-remove",
+                    "Remove from sidebar",
+                    Some("icons/trash-2.svg"),
+                    true,
+                    theme,
+                    cx.listener(move |this, _event, _window, cx| {
+                        this.confirm_remove_project(path.clone(), cx);
+                    }),
+                ));
+            }
+            SidebarMenuRequest::Thread(thread_id) => {
+                let (project, session) = self.state.projects.iter().find_map(|project| {
+                    project
+                        .sessions
+                        .iter()
+                        .find(|session| session.id == thread_id)
+                        .map(|session| (project.clone(), session.clone()))
+                })?;
+                match session.lifecycle.as_ref() {
+                    Some(ThreadLifecycle::Snoozed { .. }) => {
+                        let id = thread_id.clone();
+                        items.push(sidebar_menu_item(
+                            "sidebar-thread-wake",
+                            "Wake now",
+                            None,
+                            false,
+                            theme,
+                            cx.listener(move |this, _event, _window, cx| {
+                                let update = this.state.unsnooze_thread(id.clone());
+                                this.run_sidebar_update(update, cx);
+                            }),
+                        ));
+                    }
+                    Some(ThreadLifecycle::Settled { .. }) => {
+                        let id = thread_id.clone();
+                        items.push(sidebar_menu_item(
+                            "sidebar-thread-unsettle",
+                            "Un-settle",
+                            Some("icons/check.svg"),
+                            false,
+                            theme,
+                            cx.listener(move |this, _event, _window, cx| {
+                                let update = this.state.unsettle_thread(id.clone());
+                                this.run_sidebar_update(update, cx);
+                            }),
+                        ));
+                    }
+                    Some(ThreadLifecycle::Active { .. }) | None => {
+                        if can_hide(&session) {
+                            let settle_id = thread_id.clone();
+                            items.push(sidebar_menu_item(
+                                "sidebar-thread-settle",
+                                "Settle",
+                                Some("icons/check.svg"),
+                                false,
+                                theme,
+                                cx.listener(move |this, _event, _window, cx| {
+                                    let update = this.state.settle_thread(settle_id.clone());
+                                    this.run_sidebar_update(update, cx);
+                                }),
+                            ));
+                            for (index, (label, wake_at)) in
+                                snooze_presets().into_iter().enumerate()
+                            {
+                                let id = thread_id.clone();
+                                items.push(sidebar_menu_item(
+                                    SharedString::from(format!("sidebar-thread-snooze-{index}")),
+                                    label,
+                                    None,
+                                    false,
+                                    theme,
+                                    cx.listener(move |this, _event, _window, cx| {
+                                        let update = this.state.snooze_thread(id.clone(), wake_at);
+                                        this.run_sidebar_update(update, cx);
+                                    }),
+                                ));
+                            }
+                            let keep_id = thread_id.clone();
+                            let keep_active = match session.lifecycle.as_ref() {
+                                Some(ThreadLifecycle::Active { keep_active, .. }) => *keep_active,
+                                _ => false,
+                            };
+                            items.push(sidebar_menu_item(
+                                "sidebar-thread-keep-active",
+                                if keep_active {
+                                    "Allow auto-settle"
+                                } else {
+                                    "Keep active"
+                                },
+                                None,
+                                false,
+                                theme,
+                                cx.listener(move |this, _event, _window, cx| {
+                                    let update = this
+                                        .state
+                                        .set_thread_keep_active(keep_id.clone(), !keep_active);
+                                    this.run_sidebar_update(update, cx);
+                                }),
+                            ));
+                        }
+                    }
+                }
+                items.push(sidebar_menu_rule(theme));
+                let rename_id = thread_id.clone();
+                items.push(sidebar_menu_item(
+                    "sidebar-thread-rename",
+                    "Rename",
+                    Some("icons/pencil.svg"),
+                    false,
+                    theme,
+                    cx.listener(move |this, _event, _window, cx| {
+                        this.begin_rename_thread(rename_id.clone(), cx);
+                    }),
+                ));
+                let pin_id = thread_id.clone();
+                let thread_pinned = session.pinned;
+                items.push(sidebar_menu_item(
+                    "sidebar-thread-pin",
+                    if thread_pinned {
+                        "Unpin thread"
+                    } else {
+                        "Pin thread"
+                    },
+                    None,
+                    false,
+                    theme,
+                    cx.listener(move |this, _event, _window, cx| {
+                        let update = this.state.pin_thread(pin_id.clone(), !thread_pinned);
+                        this.run_sidebar_update(update, cx);
+                    }),
+                ));
+                let project_path = project.path.clone();
+                items.push(sidebar_menu_item(
+                    "sidebar-thread-copy-project",
+                    "Copy project path",
+                    Some("icons/copy.svg"),
+                    false,
+                    theme,
+                    cx.listener(move |this, _event, _window, cx| {
+                        this.sidebar_controls.menu = None;
+                        cx.write_to_clipboard(ClipboardItem::new_string(project_path.clone()));
+                        cx.notify();
+                    }),
+                ));
+                if let Some(branch) = session.worktree_branch.clone() {
+                    items.push(sidebar_menu_item(
+                        "sidebar-thread-copy-branch",
+                        "Copy branch",
+                        Some("icons/copy.svg"),
+                        false,
+                        theme,
+                        cx.listener(move |this, _event, _window, cx| {
+                            this.sidebar_controls.menu = None;
+                            cx.write_to_clipboard(ClipboardItem::new_string(branch.clone()));
+                            cx.notify();
+                        }),
+                    ));
+                }
+                let reveal = project.path;
+                items.push(sidebar_menu_item(
+                    "sidebar-thread-reveal",
+                    "Open in Explorer",
+                    None,
+                    false,
+                    theme,
+                    cx.listener(move |this, _event, _window, cx| {
+                        this.sidebar_controls.menu = None;
+                        if let Err(error) = reveal_path(&reveal) {
+                            this.state.notice =
+                                Some(format!("Could not open that folder: {error}"));
+                        }
+                        cx.notify();
+                    }),
+                ));
+                items.push(sidebar_menu_rule(theme));
+                items.push(sidebar_menu_item(
+                    "sidebar-thread-archive",
+                    if self.state.sidebar_settings.mode == harness_protocol::SidebarMode::Inbox {
+                        "Delete thread"
+                    } else {
+                        "Archive chat"
+                    },
+                    Some("icons/trash-2.svg"),
+                    true,
+                    theme,
+                    cx.listener(move |this, _event, _window, cx| {
+                        let update = this.state.archive_thread(thread_id.clone());
+                        this.run_sidebar_update(update, cx);
+                    }),
+                ));
+            }
+            SidebarMenuRequest::Snooze(thread_id) => {
+                for (index, (label, wake_at)) in snooze_presets().into_iter().enumerate() {
+                    let id = thread_id.clone();
+                    items.push(sidebar_menu_item(
+                        SharedString::from(format!("sidebar-quick-snooze-{index}")),
+                        label,
+                        None,
+                        false,
+                        theme,
+                        cx.listener(move |this, _event, _window, cx| {
+                            let update = this.state.snooze_thread(id.clone(), wake_at);
+                            this.run_sidebar_update(update, cx);
+                        }),
+                    ));
+                }
+            }
+        }
+
+        let panel_width = px(218.0);
+        let panel_height = px((items.len() as f32 * 31.0 + 8.0).min(430.0));
+        let viewport = window.viewport_size();
+        let left = position
+            .x
+            .max(px(8.0))
+            .min((viewport.width - panel_width - px(8.0)).max(px(8.0)));
+        let top = position
+            .y
+            .max(px(8.0))
+            .min((viewport.height - panel_height - px(8.0)).max(px(8.0)));
+
+        Some(
+            div()
+                .absolute()
+                .inset(px(0.0))
+                .child(
+                    div()
+                        .id("sidebar-menu-scrim")
+                        .absolute()
+                        .inset(px(0.0))
+                        .on_click(cx.listener(|this, _event, _window, cx| {
+                            this.close_sidebar_controls(cx);
+                        })),
+                )
+                .child(
+                    div()
+                        .id("sidebar-context-panel")
+                        .absolute()
+                        .left(left)
+                        .top(top)
+                        .w(panel_width)
+                        .max_h(px(430.0))
+                        .overflow_y_scroll()
+                        .occlude()
+                        .rounded(px(9.0))
+                        .border_1()
+                        .border_color(theme.line_strong.hsla())
+                        .bg(theme.surface_2.hsla())
+                        .shadow_lg()
+                        .p(px(4.0))
+                        .children(items),
+                )
+                .into_any_element(),
+        )
+    }
+
+    fn sidebar_dialog_overlay(&self, dialog: SidebarDialog, cx: &Context<Self>) -> AnyElement {
+        let theme = self.theme;
+        let (title, body, action, destructive, rename): (
+            SharedString,
+            SharedString,
+            SharedString,
+            bool,
+            bool,
+        ) = match &dialog {
+            SidebarDialog::RenameProject { .. } => (
+                "Edit project name".into(),
+                "".into(),
+                "Save".into(),
+                false,
+                true,
+            ),
+            SidebarDialog::RenameThread { .. } => {
+                ("Rename chat".into(), "".into(), "Save".into(), false, true)
+            }
+            SidebarDialog::RemoveProject { path } => {
+                let name = self
+                    .state
+                    .projects
+                    .iter()
+                    .find(|project| project.path == *path)
+                    .map_or(path.as_str(), |project| project.name.as_str());
+                (
+                    "Remove project?".into(),
+                    format!(
+                        "This only removes {name} from the sidebar. Its folder and chats stay untouched."
+                    )
+                    .into(),
+                    "Remove project".into(),
+                    true,
+                    false,
+                )
+            }
+            SidebarDialog::ArchiveProject { path, .. } => {
+                let name = self
+                    .state
+                    .projects
+                    .iter()
+                    .find(|project| project.path == *path)
+                    .map_or(path.as_str(), |project| project.name.as_str());
+                (
+                    "Archive all chats?".into(),
+                    format!(
+                        "This archives every chat in {name}. Files on your computer stay untouched."
+                    )
+                    .into(),
+                    "Archive chats".into(),
+                    false,
+                    false,
+                )
+            }
+            SidebarDialog::DiscardCheckout { thread_id } => {
+                let (title, branch) = self
+                    .state
+                    .projects
+                    .iter()
+                    .flat_map(|project| project.sessions.iter())
+                    .find(|session| session.id == *thread_id)
+                    .map_or(("this thread", "isolated checkout"), |session| {
+                        (
+                            session.title.as_str(),
+                            session
+                                .worktree_branch
+                                .as_deref()
+                                .unwrap_or("isolated checkout"),
+                        )
+                    });
+                (
+                    "Discard uncommitted work?".into(),
+                    format!(
+                        "{title} has uncommitted changes in {branch}. Deleting it discards those changes and removes the private checkout."
+                    )
+                    .into(),
+                    "Discard and delete".into(),
+                    true,
+                    false,
+                )
+            }
+        };
+        let input = rename.then(|| {
+            Input::new(&self.sidebar_controls.input)
+                .appearance(false)
+                .bordered(true)
+                .focus_bordered(true)
+                .h(px(34.0))
+                .w_full()
+        });
+
+        div()
+            .absolute()
+            .inset(px(0.0))
+            .flex()
+            .items_center()
+            .justify_center()
+            .px(px(18.0))
+            .child(
+                div()
+                    .id("sidebar-dialog-scrim")
+                    .absolute()
+                    .inset(px(0.0))
+                    .bg(gpui::black().opacity(0.55))
+                    .on_click(cx.listener(|this, _event, _window, cx| {
+                        this.close_sidebar_controls(cx);
+                    })),
+            )
+            .child(
+                div()
+                    .id("sidebar-dialog-panel")
+                    .w_full()
+                    .max_w(px(430.0))
+                    .occlude()
+                    .rounded(px(12.0))
+                    .border_1()
+                    .border_color(theme.line_strong.hsla())
+                    .bg(theme.rail.hsla())
+                    .shadow_lg()
+                    .child(
+                        div()
+                            .h(px(48.0))
+                            .flex()
+                            .items_center()
+                            .px(px(15.0))
+                            .border_b_1()
+                            .border_color(theme.line.hsla())
+                            .text_size(px(14.0))
+                            .font_weight(gpui::FontWeight::SEMIBOLD)
+                            .child(title),
+                    )
+                    .child(
+                        div()
+                            .p(px(15.0))
+                            .flex()
+                            .flex_col()
+                            .gap(px(14.0))
+                            .when(!body.is_empty(), |content| {
+                                content.child(
+                                    div()
+                                        .text_size(px(12.5))
+                                        .line_height(gpui::relative(1.45))
+                                        .text_color(theme.text_2.hsla())
+                                        .child(body.clone()),
+                                )
+                            })
+                            .when_some(input, |content, input| content.child(input))
+                            .child(
+                                div()
+                                    .flex()
+                                    .justify_end()
+                                    .gap(px(8.0))
+                                    .child(dialog_button(
+                                        "sidebar-dialog-cancel",
+                                        "Cancel",
+                                        false,
+                                        theme,
+                                        cx.listener(|this, _event, _window, cx| {
+                                            this.close_sidebar_controls(cx);
+                                        }),
+                                    ))
+                                    .child(dialog_button(
+                                        "sidebar-dialog-confirm",
+                                        action,
+                                        destructive,
+                                        theme,
+                                        cx.listener(|this, _event, _window, cx| {
+                                            this.confirm_sidebar_dialog(cx);
+                                        }),
+                                    )),
+                            ),
+                    ),
+            )
+            .into_any_element()
+    }
+}
+
+fn sidebar_menu_item(
+    id: impl Into<SharedString>,
+    label: impl Into<SharedString>,
+    icon_path: Option<&'static str>,
+    danger: bool,
+    theme: crate::Theme,
+    listener: impl Fn(&gpui::ClickEvent, &mut Window, &mut gpui::App) + 'static,
+) -> AnyElement {
+    div()
+        .id(id.into())
+        .h(px(30.0))
+        .w_full()
+        .flex()
+        .items_center()
+        .gap(px(8.0))
+        .px(px(8.0))
+        .rounded(px(6.0))
+        .text_size(px(11.5))
+        .text_color(if danger {
+            theme.error.hsla()
+        } else {
+            theme.text_2.hsla()
+        })
+        .cursor_pointer()
+        .hover(move |style| {
+            style
+                .bg(if danger {
+                    theme.error.hsla().opacity(0.1)
+                } else {
+                    theme.surface_3.hsla()
+                })
+                .text_color(if danger {
+                    theme.error.hsla()
+                } else {
+                    theme.text.hsla()
+                })
+        })
+        .on_click(listener)
+        .when_some(icon_path, |item, icon_path| {
+            item.child(super::icon(icon_path, 12.0))
+        })
+        .child(label.into())
+        .into_any_element()
+}
+
+fn sidebar_menu_rule(theme: crate::Theme) -> AnyElement {
+    div()
+        .h(px(7.0))
+        .my(px(2.0))
+        .border_t_1()
+        .border_color(theme.line.hsla())
+        .into_any_element()
+}
+
+fn dialog_button(
+    id: &'static str,
+    label: impl Into<SharedString>,
+    destructive: bool,
+    theme: crate::Theme,
+    listener: impl Fn(&gpui::ClickEvent, &mut Window, &mut gpui::App) + 'static,
+) -> AnyElement {
+    div()
+        .id(id)
+        .h(px(31.0))
+        .px(px(11.0))
+        .flex()
+        .items_center()
+        .rounded(px(7.0))
+        .border_1()
+        .border_color(if destructive {
+            theme.error.hsla().opacity(0.4)
+        } else {
+            theme.line_strong.hsla()
+        })
+        .bg(if destructive {
+            theme.error.hsla().opacity(0.1)
+        } else {
+            theme.surface.hsla()
+        })
+        .text_size(px(11.5))
+        .font_weight(gpui::FontWeight::MEDIUM)
+        .text_color(if destructive {
+            theme.error.hsla()
+        } else {
+            theme.text_2.hsla()
+        })
+        .cursor_pointer()
+        .hover(move |style| {
+            style.bg(if destructive {
+                theme.error.hsla().opacity(0.17)
+            } else {
+                theme.surface_2.hsla()
+            })
+        })
+        .on_click(listener)
+        .child(label.into())
+        .into_any_element()
+}
+
+fn snooze_presets() -> Vec<(&'static str, u64)> {
+    let now = Local::now();
+    let in_one_hour = now + ChronoDuration::hours(1);
+    let mut evening = now
+        .with_hour(18)
+        .and_then(|date| date.with_minute(0))
+        .and_then(|date| date.with_second(0))
+        .and_then(|date| date.with_nanosecond(0))
+        .unwrap_or(now);
+    if evening <= now {
+        evening = (now + ChronoDuration::days(1))
+            .with_hour(18)
+            .and_then(|date| date.with_minute(0))
+            .and_then(|date| date.with_second(0))
+            .and_then(|date| date.with_nanosecond(0))
+            .unwrap_or(now + ChronoDuration::days(1));
+    }
+    let tomorrow = (now + ChronoDuration::days(1))
+        .with_hour(9)
+        .and_then(|date| date.with_minute(0))
+        .and_then(|date| date.with_second(0))
+        .and_then(|date| date.with_nanosecond(0))
+        .unwrap_or(now + ChronoDuration::days(1));
+    let days_until_monday = 7 - i64::from(now.weekday().num_days_from_monday());
+    let next_week = (now + ChronoDuration::days(days_until_monday))
+        .with_hour(9)
+        .and_then(|date| date.with_minute(0))
+        .and_then(|date| date.with_second(0))
+        .and_then(|date| date.with_nanosecond(0))
+        .unwrap_or(now + ChronoDuration::days(days_until_monday));
+    [
+        ("In one hour", in_one_hour),
+        ("This evening", evening),
+        ("Tomorrow morning", tomorrow),
+        ("Next week", next_week),
+    ]
+    .into_iter()
+    .map(|(label, at)| (label, at.timestamp_millis().max(0) as u64))
+    .collect()
+}
+
+fn can_hide(session: &SessionSummary) -> bool {
+    !session.running
+        && !matches!(
+            session.status,
+            Some(
+                ThreadInboxStatus::Starting
+                    | ThreadInboxStatus::Working
+                    | ThreadInboxStatus::Queued
+                    | ThreadInboxStatus::Approval
+                    | ThreadInboxStatus::Input
+            )
+        )
+}
+
+fn reveal_path(path: &str) -> std::io::Result<()> {
+    #[cfg(target_os = "macos")]
+    let mut command = {
+        let mut command = Command::new("open");
+        command.arg(path);
+        command
+    };
+    #[cfg(target_os = "windows")]
+    let mut command = {
+        let mut command = Command::new("explorer.exe");
+        command.arg(path);
+        command
+    };
+    #[cfg(all(unix, not(target_os = "macos")))]
+    let mut command = {
+        let mut command = Command::new("xdg-open");
+        command.arg(path);
+        command
+    };
+    command.spawn().map(|_| ())
+}

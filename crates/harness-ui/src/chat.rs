@@ -393,6 +393,20 @@ impl ChatView {
         }
     }
 
+    pub(crate) fn rename_session(
+        &mut self,
+        thread_id: &str,
+        title: String,
+        cx: &mut Context<Self>,
+    ) {
+        if let Some(session) = &mut self.session
+            && session.thread_id.as_deref() == Some(thread_id)
+        {
+            session.title = title;
+            cx.notify();
+        }
+    }
+
     pub(crate) fn apply_update(&mut self, update: ChatUpdate, cx: &mut Context<Self>) {
         match update {
             ChatUpdate::History {

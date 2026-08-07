@@ -11,9 +11,10 @@ use harness_protocol::{
     SessionDiff, SessionSearchPage, SessionSummary, SidebarMode, SidebarSettings,
     SkillEnabledResult, SkillInstalledResult, SkillsListResult, SystemInfo, TerminalExitPush,
     TerminalOpenedResult, TerminalOutputPush, ThreadEventPush, ThreadHistoryResult,
-    ThreadInboxStatus, ThreadLifecycle, ThreadLifecyclePush, ThreadQueuePush, ThreadQueueResult,
-    ThreadStartResult, UpdateCheckResult, VoiceStatusResult, VoiceTranscribeParams,
-    VoiceTranscriptionResult, channel, method,
+    ThreadInboxStatus, ThreadLifecycle, ThreadLifecyclePush, ThreadLifecycleResult,
+    ThreadQueuePush, ThreadQueueResult, ThreadStartResult, ThreadUnsavedWorkResult,
+    UpdateCheckResult, VoiceStatusResult, VoiceTranscribeParams, VoiceTranscriptionResult, channel,
+    method,
 };
 use serde::Deserialize;
 use serde_json::{Value, json};
@@ -338,6 +339,9 @@ enum PendingRequest {
     AddProject {
         path: String,
     },
+    ProjectMutation {
+        removed_path: Option<String>,
+    },
     SearchSessions {
         revision: u64,
         append: bool,
@@ -346,6 +350,24 @@ enum PendingRequest {
         request: NewThreadRequest,
     },
     RenameThread,
+    ThreadSummaryMutation,
+    ThreadLifecycle {
+        thread_id: String,
+        hide: bool,
+    },
+    ArchiveInspect {
+        thread_id: String,
+    },
+    ArchiveClose {
+        thread_id: String,
+        force: bool,
+    },
+    ArchiveDiscard {
+        thread_id: String,
+    },
+    ArchiveDelete {
+        thread_id: String,
+    },
     History {
         thread_id: String,
         replace: bool,
@@ -406,6 +428,18 @@ pub(crate) struct ClientUpdate {
 pub(crate) enum ShellEvent {
     ProjectAdded {
         path: String,
+    },
+    ProjectRemoved {
+        path: String,
+    },
+    ThreadHidden {
+        thread_id: String,
+    },
+    ArchiveNeedsConfirmation {
+        thread_id: String,
+    },
+    ThreadArchived {
+        thread_id: String,
     },
     ThreadStarted {
         thread_id: String,
@@ -1544,6 +1578,170 @@ impl ClientState {
         );
     }
 
+    pub(crate) fn pin_project(&mut self, path: String, pinned: bool) -> ClientUpdate {
+        if self.send_request(
+            method::PROJECTS_PIN,
+            json!({ "path": &path, "pinned": pinned }),
+            PendingRequest::ProjectMutation { removed_path: None },
+        ) && let Some(project) = self
+            .projects
+            .iter_mut()
+            .find(|project| project.path == path)
+        {
+            project.pinned = pinned;
+        }
+        ClientUpdate::shell_changed()
+    }
+
+    pub(crate) fn rename_project(&mut self, path: String, name: String) -> ClientUpdate {
+        if self.send_request(
+            method::PROJECTS_RENAME,
+            json!({ "path": &path, "name": &name }),
+            PendingRequest::ProjectMutation { removed_path: None },
+        ) && let Some(project) = self
+            .projects
+            .iter_mut()
+            .find(|project| project.path == path)
+        {
+            project.name = name;
+        }
+        ClientUpdate::shell_changed()
+    }
+
+    pub(crate) fn remove_project(&mut self, path: String) -> ClientUpdate {
+        if self.send_request(
+            method::PROJECTS_REMOVE,
+            json!({ "path": &path }),
+            PendingRequest::ProjectMutation {
+                removed_path: Some(path.clone()),
+            },
+        ) {
+            self.projects.retain(|project| project.path != path);
+        }
+        ClientUpdate::shell_changed()
+    }
+
+    pub(crate) fn rename_thread(&mut self, thread_id: String, title: String) -> ClientUpdate {
+        if self.send_request(
+            method::THREAD_RENAME,
+            json!({ "threadId": &thread_id, "title": &title }),
+            PendingRequest::ThreadSummaryMutation,
+        ) && let Some(session) = self.session_mut(&thread_id)
+        {
+            session.title = title;
+        }
+        ClientUpdate::shell_changed()
+    }
+
+    pub(crate) fn pin_thread(&mut self, thread_id: String, pinned: bool) -> ClientUpdate {
+        if self.send_request(
+            method::THREAD_PIN,
+            json!({ "threadId": &thread_id, "pinned": pinned }),
+            PendingRequest::ThreadSummaryMutation,
+        ) && let Some(session) = self.session_mut(&thread_id)
+        {
+            session.pinned = pinned;
+        }
+        ClientUpdate::shell_changed()
+    }
+
+    pub(crate) fn settle_thread(&mut self, thread_id: String) -> ClientUpdate {
+        self.request_thread_lifecycle(method::THREAD_SETTLE, thread_id, None, true)
+    }
+
+    pub(crate) fn unsettle_thread(&mut self, thread_id: String) -> ClientUpdate {
+        self.request_thread_lifecycle(method::THREAD_UNSETTLE, thread_id, None, false)
+    }
+
+    pub(crate) fn snooze_thread(&mut self, thread_id: String, wake_at: u64) -> ClientUpdate {
+        self.request_thread_lifecycle(
+            method::THREAD_SNOOZE,
+            thread_id,
+            Some(("wakeAt", json!(wake_at))),
+            true,
+        )
+    }
+
+    pub(crate) fn unsnooze_thread(&mut self, thread_id: String) -> ClientUpdate {
+        self.request_thread_lifecycle(method::THREAD_UNSNOOZE, thread_id, None, false)
+    }
+
+    pub(crate) fn set_thread_keep_active(
+        &mut self,
+        thread_id: String,
+        keep_active: bool,
+    ) -> ClientUpdate {
+        self.request_thread_lifecycle(
+            method::THREAD_SET_KEEP_ACTIVE,
+            thread_id,
+            Some(("keepActive", json!(keep_active))),
+            false,
+        )
+    }
+
+    fn request_thread_lifecycle(
+        &mut self,
+        method_name: &str,
+        thread_id: String,
+        extra: Option<(&str, Value)>,
+        hide: bool,
+    ) -> ClientUpdate {
+        let mut params = serde_json::Map::from_iter([("threadId".into(), json!(&thread_id))]);
+        if let Some((key, value)) = extra {
+            params.insert(key.into(), value);
+        }
+        self.send_request(
+            method_name,
+            Value::Object(params),
+            PendingRequest::ThreadLifecycle { thread_id, hide },
+        );
+        ClientUpdate::shell_changed()
+    }
+
+    pub(crate) fn archive_thread(&mut self, thread_id: String) -> ClientUpdate {
+        self.send_request(
+            method::THREAD_UNSAVED_WORK,
+            json!({ "threadId": &thread_id }),
+            PendingRequest::ArchiveInspect { thread_id },
+        );
+        ClientUpdate::shell_changed()
+    }
+
+    pub(crate) fn force_archive_thread(&mut self, thread_id: String) -> ClientUpdate {
+        self.begin_archive_close(thread_id, true)
+    }
+
+    fn begin_archive_close(&mut self, thread_id: String, force: bool) -> ClientUpdate {
+        self.send_request(
+            method::THREAD_CLOSE,
+            json!({ "threadId": &thread_id }),
+            PendingRequest::ArchiveClose { thread_id, force },
+        );
+        ClientUpdate::shell_changed()
+    }
+
+    fn begin_archive_discard(&mut self, thread_id: String, force: bool) -> ClientUpdate {
+        let mut params = serde_json::Map::from_iter([("threadId".into(), json!(&thread_id))]);
+        if force {
+            params.insert("force".into(), json!(true));
+        }
+        self.send_request(
+            method::THREAD_DISCARD_WORKTREE,
+            Value::Object(params),
+            PendingRequest::ArchiveDiscard { thread_id },
+        );
+        ClientUpdate::shell_changed()
+    }
+
+    fn begin_archive_delete(&mut self, thread_id: String) -> ClientUpdate {
+        self.send_request(
+            method::THREAD_DELETE,
+            json!({ "threadId": &thread_id }),
+            PendingRequest::ArchiveDelete { thread_id },
+        );
+        ClientUpdate::shell_changed()
+    }
+
     pub(crate) fn start_thread(&mut self, request: NewThreadRequest) {
         let mut params = serde_json::Map::from_iter([
             ("provider".into(), json!(request.choice.provider)),
@@ -1819,6 +2017,19 @@ impl ClientState {
                             message,
                         })
                     }
+                    Some(
+                        PendingRequest::ProjectMutation { .. }
+                        | PendingRequest::ThreadSummaryMutation
+                        | PendingRequest::ThreadLifecycle { .. }
+                        | PendingRequest::ArchiveInspect { .. }
+                        | PendingRequest::ArchiveClose { .. }
+                        | PendingRequest::ArchiveDiscard { .. }
+                        | PendingRequest::ArchiveDelete { .. },
+                    ) => {
+                        self.notice = Some(message);
+                        self.request_projects();
+                        ClientUpdate::shell_changed()
+                    }
                     Some(PendingRequest::StartThread { request }) => {
                         ClientUpdate::chat(ChatUpdate::DraftError {
                             message,
@@ -2021,6 +2232,15 @@ impl ClientState {
                 Some(PendingRequest::AddProject { path }) => {
                     self.handle_add_project_response(result, path)
                 }
+                Some(PendingRequest::ProjectMutation { removed_path }) => {
+                    self.request_projects();
+                    match removed_path {
+                        Some(path) => {
+                            ClientUpdate::shell_event(ShellEvent::ProjectRemoved { path })
+                        }
+                        None => ClientUpdate::shell_changed(),
+                    }
+                }
                 Some(PendingRequest::SearchSessions { revision, append }) => {
                     match serde_json::from_value::<SessionSearchPage>(result) {
                         Ok(page) => ClientUpdate::shell_event(ShellEvent::SessionSearchResults {
@@ -2036,6 +2256,63 @@ impl ClientState {
                 }
                 Some(PendingRequest::StartThread { request }) => {
                     self.handle_start_thread_response(result, request)
+                }
+                Some(PendingRequest::ThreadSummaryMutation) => {
+                    self.request_projects();
+                    ClientUpdate::shell_changed()
+                }
+                Some(PendingRequest::ThreadLifecycle { thread_id, hide }) => {
+                    match serde_json::from_value::<ThreadLifecycleResult>(result) {
+                        Ok(result) => {
+                            if let Some(session) = self.session_mut(&thread_id) {
+                                session.lifecycle = Some(result.lifecycle);
+                            } else {
+                                self.request_projects();
+                            }
+                            ClientUpdate {
+                                shell_changed: true,
+                                chat: Vec::new(),
+                                shell_events: hide
+                                    .then_some(ShellEvent::ThreadHidden { thread_id })
+                                    .into_iter()
+                                    .collect(),
+                            }
+                        }
+                        Err(error) => {
+                            self.notice =
+                                Some(format!("thread lifecycle response was invalid: {error}"));
+                            self.request_projects();
+                            ClientUpdate::shell_changed()
+                        }
+                    }
+                }
+                Some(PendingRequest::ArchiveInspect { thread_id }) => {
+                    match serde_json::from_value::<ThreadUnsavedWorkResult>(result) {
+                        Ok(work) if work.isolated && work.uncommitted => {
+                            ClientUpdate::shell_event(ShellEvent::ArchiveNeedsConfirmation {
+                                thread_id,
+                            })
+                        }
+                        Ok(work) if work.isolated => self.begin_archive_close(thread_id, false),
+                        Ok(_) => self.begin_archive_delete(thread_id),
+                        Err(error) => {
+                            self.notice = Some(format!("thread.unsavedWork was invalid: {error}"));
+                            ClientUpdate::shell_changed()
+                        }
+                    }
+                }
+                Some(PendingRequest::ArchiveClose { thread_id, force }) => {
+                    self.begin_archive_discard(thread_id, force)
+                }
+                Some(PendingRequest::ArchiveDiscard { thread_id }) => {
+                    self.begin_archive_delete(thread_id)
+                }
+                Some(PendingRequest::ArchiveDelete { thread_id }) => {
+                    for project in &mut self.projects {
+                        project.sessions.retain(|session| session.id != thread_id);
+                    }
+                    self.request_projects();
+                    ClientUpdate::shell_event(ShellEvent::ThreadArchived { thread_id })
                 }
                 Some(PendingRequest::History { thread_id, replace }) => {
                     match serde_json::from_value::<ThreadHistoryResult>(result) {
@@ -2269,6 +2546,17 @@ impl ClientState {
                     revision,
                     message: "The server connection was lost during search.".into(),
                 })
+            }
+            PendingRequest::ProjectMutation { .. }
+            | PendingRequest::ThreadSummaryMutation
+            | PendingRequest::ThreadLifecycle { .. }
+            | PendingRequest::ArchiveInspect { .. }
+            | PendingRequest::ArchiveClose { .. }
+            | PendingRequest::ArchiveDiscard { .. }
+            | PendingRequest::ArchiveDelete { .. } => {
+                self.notice =
+                    Some("The server connection was lost while updating the sidebar.".into());
+                ClientUpdate::shell_changed()
             }
             PendingRequest::StartThread { request } => ClientUpdate::chat(ChatUpdate::DraftError {
                 message: "The server connection was lost before the session was created.".into(),
@@ -3470,6 +3758,11 @@ impl PendingRequest {
             | Self::RespondUserInput { thread_id, .. }
             | Self::Diff { thread_id }
             | Self::ReviewHunk { thread_id }
+            | Self::ThreadLifecycle { thread_id, .. }
+            | Self::ArchiveInspect { thread_id }
+            | Self::ArchiveClose { thread_id, .. }
+            | Self::ArchiveDiscard { thread_id }
+            | Self::ArchiveDelete { thread_id }
             | Self::TerminalOpen { thread_id } => Some(thread_id),
             Self::Capabilities
             | Self::PreviewCaptureResult
@@ -3482,9 +3775,11 @@ impl PendingRequest {
             | Self::SidebarSettings
             | Self::UpdateSidebarSettings
             | Self::AddProject { .. }
+            | Self::ProjectMutation { .. }
             | Self::SearchSessions { .. }
             | Self::StartThread { .. }
             | Self::RenameThread
+            | Self::ThreadSummaryMutation
             | Self::Providers
             | Self::Connections
             | Self::ConnectionUpsert { .. }
@@ -3688,6 +3983,137 @@ mod tests {
                 page,
             }] if page.next_cursor.as_deref() == Some("cursor-2")
                 && page.results[0].snippet[1].highlighted
+        ));
+    }
+
+    #[test]
+    fn lifecycle_response_updates_the_sidebar_and_marks_hidden_selection() {
+        let mut state = ClientState::new(true);
+        state.projects = serde_json::from_value::<ProjectsListResult>(json!({
+            "projects": [{
+                "path": "/workspace",
+                "name": "Harness",
+                "pinned": false,
+                "createdAt": 1,
+                "sessions": [{
+                    "id": "thread-1",
+                    "title": "Native sidebar",
+                    "provider": "codex",
+                    "createdAt": 2,
+                    "running": false,
+                    "lifecycle": { "state": "active", "keepActive": false }
+                }]
+            }]
+        }))
+        .unwrap()
+        .projects;
+        state.pending.insert(
+            "settle-1".into(),
+            PendingRequest::ThreadLifecycle {
+                thread_id: "thread-1".into(),
+                hide: true,
+            },
+        );
+
+        let update = state.handle_response(Response::Success {
+            id: "settle-1".into(),
+            result: json!({
+                "lifecycle": {
+                    "state": "settled",
+                    "settledAt": 3,
+                    "reason": "manual"
+                }
+            }),
+        });
+
+        assert!(matches!(
+            state.projects[0].sessions[0].lifecycle,
+            Some(ThreadLifecycle::Settled { settled_at: 3, .. })
+        ));
+        assert!(matches!(
+            update.shell_events.as_slice(),
+            [ShellEvent::ThreadHidden { thread_id }] if thread_id == "thread-1"
+        ));
+    }
+
+    #[test]
+    fn removing_a_project_notifies_the_shell_after_server_confirmation() {
+        let mut state = ClientState::new(true);
+        state.pending.insert(
+            "remove-1".into(),
+            PendingRequest::ProjectMutation {
+                removed_path: Some("/workspace".into()),
+            },
+        );
+
+        let update = state.handle_response(Response::Success {
+            id: "remove-1".into(),
+            result: json!({}),
+        });
+
+        assert!(matches!(
+            update.shell_events.as_slice(),
+            [ShellEvent::ProjectRemoved { path }] if path == "/workspace"
+        ));
+    }
+
+    #[test]
+    fn dirty_isolated_archive_requires_confirmation_before_deletion() {
+        let mut state = ClientState::new(true);
+        state.pending.insert(
+            "archive-inspect".into(),
+            PendingRequest::ArchiveInspect {
+                thread_id: "thread-1".into(),
+            },
+        );
+
+        let update = state.handle_response(Response::Success {
+            id: "archive-inspect".into(),
+            result: json!({ "isolated": true, "uncommitted": true }),
+        });
+
+        assert!(matches!(
+            update.shell_events.as_slice(),
+            [ShellEvent::ArchiveNeedsConfirmation { thread_id }] if thread_id == "thread-1"
+        ));
+    }
+
+    #[test]
+    fn completed_archive_removes_the_sidebar_row() {
+        let mut state = ClientState::new(true);
+        state.projects = serde_json::from_value::<ProjectsListResult>(json!({
+            "projects": [{
+                "path": "/workspace",
+                "name": "Harness",
+                "pinned": false,
+                "createdAt": 1,
+                "sessions": [{
+                    "id": "thread-1",
+                    "title": "Native sidebar",
+                    "provider": "codex",
+                    "createdAt": 2,
+                    "running": false
+                }]
+            }]
+        }))
+        .unwrap()
+        .projects;
+        state.pending.insert(
+            "archive-delete".into(),
+            PendingRequest::ArchiveDelete {
+                thread_id: "thread-1".into(),
+            },
+        );
+
+        let update = state.handle_response(Response::Success {
+            id: "archive-delete".into(),
+            result: json!({}),
+        });
+
+        assert!(state.projects[0].sessions.is_empty());
+        assert!(matches!(
+            update.shell_events.as_slice(),
+            [ShellEvent::ThreadArchived { thread_id }] if thread_id == "thread-1"
         ));
     }
 
