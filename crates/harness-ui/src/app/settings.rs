@@ -5,6 +5,7 @@ use super::{HarnessApp, MCP_TRANSPORT_MIN_HEIGHT, McpTransportResizeDrag};
 use crate::chrome;
 use crate::client_state::{AuthTarget, ProviderTerminalKind};
 use crate::model_selection::filter_model_choices_by_query;
+use crate::motion_icon::motion_icon;
 use crate::preferences::{FontPreference, NativePreferences, ThemePreference};
 use crate::provider_icon::{ProviderMark, agent_mark, connection_mark, mark_icon, provider_mark};
 use crate::theme::{Accent, Backdrop, Theme, ThemeMode};
@@ -233,6 +234,7 @@ impl HarnessApp {
             .child(
                 div()
                     .id("settings-back")
+                    .group("settings-back-hover")
                     .h(px(30.0))
                     .w_full()
                     .flex()
@@ -256,7 +258,13 @@ impl HarnessApp {
                             .shadow(Vec::new())
                     })
                     .on_click(move |_event, _window, cx| back(cx))
-                    .child(settings_icon("icons/arrow-left.svg", 14.0))
+                    .child(motion_icon(
+                        "settings-back-icon",
+                        "icons/arrow-left.svg",
+                        14.0,
+                        "settings-back-hover",
+                        theme,
+                    ))
                     .child("Back to app"),
             )
             .child(
@@ -1156,6 +1164,7 @@ impl HarnessApp {
 
         let cancel = div()
             .id("cancel-connection")
+            .group("cancel-connection-hover")
             .h(px(30.0))
             .flex()
             .items_center()
@@ -1176,7 +1185,13 @@ impl HarnessApp {
                         this.cancel_connection_editor(window, cx)
                     }))
             })
-            .child(settings_icon("icons/x.svg", 13.0))
+            .child(motion_icon(
+                "cancel-connection-icon",
+                "icons/x.svg",
+                13.0,
+                "cancel-connection-hover",
+                theme,
+            ))
             .child("Cancel")
             .into_any_element();
         let submit = if can_submit {
@@ -3235,7 +3250,13 @@ fn model_settings_search_field(
             }
         })
         .child(chrome::inset_top_shade(theme))
-        .child(settings_icon("icons/search.svg", 13.0))
+        .child(motion_icon(
+            ("model-settings-search-icon", source_index),
+            "icons/search.svg",
+            13.0,
+            "model-settings-search-icon-direct-hover",
+            theme,
+        ))
         .child(
             Input::new(state)
                 .xsmall()
@@ -3257,6 +3278,7 @@ fn model_settings_search_field(
                     .id(SharedString::from(format!(
                         "model-settings-search-clear:{source_index}"
                     )))
+                    .group("model-settings-search-clear-hover")
                     .size(px(18.0))
                     .flex_none()
                     .flex()
@@ -3276,7 +3298,13 @@ fn model_settings_search_field(
                             input.focus(window, cx);
                         });
                     })
-                    .child(settings_icon("icons/x.svg", 12.0)),
+                    .child(motion_icon(
+                        ("model-settings-search-clear-icon", source_index),
+                        "icons/x.svg",
+                        12.0,
+                        "model-settings-search-clear-hover",
+                        theme,
+                    )),
             )
         })
         .into_any_element()
@@ -3549,8 +3577,10 @@ fn settings_nav_item(
     theme: Theme,
     action: SettingsAction,
 ) -> AnyElement {
+    let hover_group: SharedString = format!("settings-nav-hover:{index}").into();
     div()
         .id(("settings-nav", index))
+        .group(hover_group.clone())
         .relative()
         .min_h(px(32.0))
         .w_full()
@@ -3593,7 +3623,13 @@ fn settings_nav_item(
                 } else {
                     theme.text_3.hsla()
                 })
-                .child(settings_icon(icon, 15.0)),
+                .child(motion_icon(
+                    ("settings-nav-icon", index),
+                    icon,
+                    15.0,
+                    hover_group,
+                    theme,
+                )),
         )
         .child(label)
         .into_any_element()
@@ -3820,6 +3856,7 @@ fn settings_button(
 fn connection_add_button(theme: Theme, action: SettingsAction) -> AnyElement {
     div()
         .id("add-connection")
+        .group("add-connection-hover")
         .w_full()
         .py(px(13.0))
         .px(px(16.0))
@@ -3838,7 +3875,13 @@ fn connection_add_button(theme: Theme, action: SettingsAction) -> AnyElement {
         })
         .active(|style| style.top(px(1.0)))
         .on_click(move |_event, _window, cx| action(cx))
-        .child(settings_icon("icons/plus.svg", 15.0))
+        .child(motion_icon(
+            "add-connection-icon",
+            "icons/plus.svg",
+            15.0,
+            "add-connection-hover",
+            theme,
+        ))
         .child("Connect another plan or API")
         .into_any_element()
 }
@@ -3852,6 +3895,8 @@ fn settings_button_enabled(
     destructive: bool,
     enabled: bool,
 ) -> AnyElement {
+    let hover_group: SharedString = format!("{id}:hover").into();
+    let icon_id: SharedString = format!("{id}:icon").into();
     let text = if destructive {
         theme.error.hsla()
     } else {
@@ -3859,6 +3904,7 @@ fn settings_button_enabled(
     };
     div()
         .id(id)
+        .group(hover_group.clone())
         .relative()
         .h(px(30.0))
         .flex()
@@ -3890,7 +3936,7 @@ fn settings_button_enabled(
                 })
                 .on_click(move |_event, _window, cx| action(cx))
         })
-        .child(settings_icon(icon, 13.0))
+        .child(motion_icon(icon_id, icon, 13.0, hover_group, theme))
         .child(label)
         .into_any_element()
 }
@@ -3931,8 +3977,10 @@ fn provider_action_button(
     theme: Theme,
     action: SettingsAction,
 ) -> AnyElement {
+    let hover_group: SharedString = format!("provider-action-hover:{index}").into();
     div()
         .id(("provider-action", index))
+        .group(hover_group.clone())
         .relative()
         .flex()
         .items_center()
@@ -3962,7 +4010,13 @@ fn provider_action_button(
         })
         .on_click(move |_event, _window, cx| action(cx))
         .when(sign_out, |button| {
-            button.child(settings_icon("icons/log-out.svg", 13.0))
+            button.child(motion_icon(
+                ("provider-action-icon", index),
+                "icons/log-out.svg",
+                13.0,
+                hover_group,
+                theme,
+            ))
         })
         .child(label)
         .into_any_element()
@@ -4002,8 +4056,11 @@ fn mcp_action_button(
     theme: Theme,
     action: impl Fn(&gpui::ClickEvent, &mut Window, &mut App) + 'static,
 ) -> AnyElement {
+    let hover_group: SharedString = format!("{id}:hover").into();
+    let icon_id: SharedString = format!("{id}:icon").into();
     div()
         .id(id)
+        .group(hover_group.clone())
         .relative()
         .flex()
         .items_center()
@@ -4042,7 +4099,9 @@ fn mcp_action_button(
                 })
                 .on_click(action)
         })
-        .when_some(icon, |button, icon| button.child(settings_icon(icon, 13.0)))
+        .when_some(icon, |button, icon| {
+            button.child(motion_icon(icon_id, icon, 13.0, hover_group, theme))
+        })
         .child(label)
         .into_any_element()
 }
