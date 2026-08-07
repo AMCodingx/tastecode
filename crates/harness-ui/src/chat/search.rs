@@ -217,6 +217,13 @@ impl ChatView {
         cx: &mut Context<Self>,
     ) {
         let modifiers = event.keystroke.modifiers;
+        if event.keystroke.key.eq_ignore_ascii_case("escape")
+            && self.markdown_table_overlay.is_some()
+        {
+            cx.stop_propagation();
+            self.close_markdown_table_overlay(cx);
+            return;
+        }
         if event.keystroke.key.eq_ignore_ascii_case("escape") && self.thread_search.open {
             cx.stop_propagation();
             self.close_thread_search(cx);

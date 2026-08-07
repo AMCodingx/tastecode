@@ -4,7 +4,7 @@ use crate::theme::{Theme, ThemeMode, web_ease_out};
 use crate::zoom::px;
 use ::markdown::{ParseOptions, mdast::Node};
 use gpui::{
-    Animation, AnimationExt, AnyElement, App, ClipboardItem, FontWeight, SharedString,
+    Animation, AnimationExt, AnyElement, App, ClipboardItem, Entity, FontWeight, SharedString,
     StyleRefinement, Styled, StyledText, Window, div, prelude::*, relative, rems, svg,
 };
 use gpui_component::highlighter::SyntaxHighlighter;
@@ -13,6 +13,7 @@ use gpui_component::text::{TextView, TextViewStyle};
 use gpui_component::{ActiveTheme, Rope};
 use std::cell::RefCell;
 use std::collections::HashMap;
+use std::rc::Rc;
 use std::time::{Duration, Instant};
 
 const STREAM_WORD_DURATION_MS: u64 = 160;
@@ -94,6 +95,102 @@ impl ChatView {
         })
         .detach();
     }
+
+    pub(super) fn close_markdown_table_overlay(&mut self, cx: &mut gpui::Context<Self>) {
+        if self.markdown_table_overlay.take().is_some() {
+            cx.notify();
+        }
+    }
+
+    pub(super) fn markdown_table_overlay(
+        &self,
+        window: &mut Window,
+        cx: &mut gpui::Context<Self>,
+    ) -> Option<AnyElement> {
+        let overlay = self.markdown_table_overlay.as_ref()?;
+        let definitions = HashMap::new();
+        let view = cx.entity();
+        let context = RenderContext {
+            id: "markdown-table-fullscreen",
+            raw: "",
+            streaming: false,
+            reveals: &[],
+            definitions: &definitions,
+            theme: self.theme,
+            view: view.clone(),
+            reveal_ordinals: RefCell::new(HashMap::new()),
+        };
+        let rows = render_table_rows(&overlay.table, &context);
+        let group: SharedString = "markdown-table-fullscreen-group".into();
+        let controls_state = window.use_keyed_state(
+            SharedString::from(format!(
+                "markdown-table-fullscreen-controls-state:{}",
+                overlay.id
+            )),
+            cx,
+            |_, _| TableControlsState::default(),
+        );
+        let fullscreen_id = format!("markdown-table-fullscreen:{}", overlay.id);
+        let controls = table_controls(
+            &fullscreen_id,
+            overlay.data.clone(),
+            TableControlStyle {
+                group: group.clone(),
+                theme: self.theme,
+                enabled: true,
+            },
+            controls_state,
+            None,
+            cx,
+        );
+        let close = table_control_button(
+            "markdown-table-fullscreen-close".into(),
+            "icons/x.svg",
+            group.clone(),
+            self.theme,
+            true,
+            true,
+            move |cx| {
+                view.update(cx, |this, cx| this.close_markdown_table_overlay(cx));
+            },
+        );
+
+        Some(
+            div()
+                .id("markdown-table-fullscreen")
+                .group(group)
+                .occlude()
+                .absolute()
+                .inset(px(0.0))
+                .flex()
+                .flex_col()
+                .bg(self.theme.background.hsla())
+                .child(
+                    div()
+                        .h(px(56.0))
+                        .flex_none()
+                        .flex()
+                        .items_center()
+                        .justify_end()
+                        .gap(px(3.0))
+                        .px(px(16.0))
+                        .child(controls)
+                        .child(close),
+                )
+                .child(
+                    div()
+                        .id("markdown-table-fullscreen-scroll")
+                        .flex_1()
+                        .min_h(px(0.0))
+                        .overflow_scroll()
+                        .px(px(16.0))
+                        .pb(px(16.0))
+                        .text_size(px(12.5))
+                        .child(div().w_full().children(rows)),
+                )
+                .into_any_element(),
+        )
+    }
 }
 
 fn stream_batch_duration(word_count: u64) -> Duration {
@@ -108,10 +205,11 @@ pub(super) fn markdown_view(
     text: String,
     streaming: bool,
     reveals: &[StreamRevealBatch],
-    theme: Theme,
+    view: Entity<ChatView>,
     window: &mut Window,
     cx: &mut App,
 ) -> AnyElement {
+    let theme = view.read(cx).theme;
     let parsed = ::markdown::to_mdast(&text, &ParseOptions::gfm());
     let Ok(Node::Root(root)) = parsed else {
         return fallback_markdown(id, text, theme, window, cx);
@@ -124,6 +222,7 @@ pub(super) fn markdown_view(
         reveals,
         definitions: &definitions,
         theme,
+        view,
         reveal_ordinals: RefCell::new(HashMap::new()),
     };
     let mut blocks = Vec::with_capacity(root.children.len());
@@ -168,6 +267,7 @@ struct RenderContext<'a> {
     reveals: &'a [StreamRevealBatch],
     definitions: &'a HashMap<String, String>,
     theme: Theme,
+    view: Entity<ChatView>,
     reveal_ordinals: RefCell<HashMap<u64, usize>>,
 }
 
@@ -257,6 +357,47 @@ struct CopyFeedbackState {
     copied: bool,
     generation: u64,
 }
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum TableMenu {
+    Copy,
+    Download,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum TableFormat {
+    Markdown,
+    Csv,
+    Tsv,
+}
+
+#[derive(Default)]
+struct TableControlsState {
+    menu: Option<TableMenu>,
+    copied: bool,
+    generation: u64,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct TableData {
+    headers: Vec<String>,
+    rows: Vec<Vec<String>>,
+}
+
+struct TableControlStyle {
+    group: SharedString,
+    theme: Theme,
+    enabled: bool,
+}
+
+#[derive(Clone)]
+pub(super) struct MarkdownTableOverlay {
+    id: String,
+    table: ::markdown::mdast::Table,
+    data: TableData,
+}
+
+type TableAction = Rc<dyn Fn(&mut App)>;
 
 fn render_code_block(
     code: &::markdown::mdast::Code,
@@ -363,6 +504,59 @@ fn render_table(
         .map_or(0, |position| position.start.offset);
     let table_id = format!("{}:table:{start}", context.id);
     let group: SharedString = format!("markdown-table-group:{table_id}").into();
+    let controls_state = window.use_keyed_state(
+        SharedString::from(format!("{table_id}:controls-state")),
+        cx,
+        |_, _| TableControlsState::default(),
+    );
+    let data = table_data(table);
+    let overlay = MarkdownTableOverlay {
+        id: table_id.clone(),
+        table: table.clone(),
+        data: data.clone(),
+    };
+    let view = context.view.clone();
+    let fullscreen_action: TableAction = Rc::new(move |cx| {
+        view.update(cx, |this, cx| {
+            this.markdown_table_overlay = Some(overlay.clone());
+            cx.notify();
+        });
+    });
+    let controls = table_controls(
+        &table_id,
+        data,
+        TableControlStyle {
+            group: group.clone(),
+            theme: context.theme,
+            enabled: !context.streaming,
+        },
+        controls_state,
+        Some(fullscreen_action),
+        cx,
+    );
+    let rows = render_table_rows(table, context);
+
+    div()
+        .group(group)
+        .relative()
+        .w_full()
+        .when(!last, |table| table.mb(px(14.0)))
+        .text_size(px(12.5))
+        .child(
+            div()
+                .id(SharedString::from(format!("{table_id}:scroll")))
+                .w_full()
+                .overflow_x_scrollbar()
+                .children(rows),
+        )
+        .child(div().absolute().top(px(3.0)).right(px(3.0)).child(controls))
+        .into_any_element()
+}
+
+fn render_table_rows(
+    table: &::markdown::mdast::Table,
+    context: &RenderContext<'_>,
+) -> Vec<AnyElement> {
     let column_count = table
         .children
         .iter()
@@ -372,15 +566,6 @@ fn render_table(
         })
         .max()
         .unwrap_or_default();
-    let copy = copy_control(
-        format!("{table_id}:copy"),
-        table_plain_text(table),
-        group.clone(),
-        context.theme,
-        !context.streaming,
-        window,
-        cx,
-    );
     let mut rows = Vec::with_capacity(table.children.len());
     for (row_index, row) in table.children.iter().enumerate() {
         let Node::TableRow(row) = row else {
@@ -416,24 +601,243 @@ fn render_table(
                 .w_full()
                 .min_w(px(column_count as f32 * 120.0))
                 .flex()
-                .children(cells),
+                .children(cells)
+                .into_any_element(),
         );
     }
+    rows
+}
+
+fn table_controls(
+    table_id: &str,
+    data: TableData,
+    style: TableControlStyle,
+    state: Entity<TableControlsState>,
+    fullscreen_action: Option<TableAction>,
+    cx: &mut App,
+) -> AnyElement {
+    let TableControlStyle {
+        group,
+        theme,
+        enabled,
+    } = style;
+    let open_menu = state.read(cx).menu;
+    let copied = state.read(cx).copied;
+    let copy_menu = table_menu(
+        format!("{table_id}:copy-menu"),
+        &[
+            ("Markdown", TableFormat::Markdown),
+            ("CSV", TableFormat::Csv),
+            ("TSV", TableFormat::Tsv),
+        ],
+        data.clone(),
+        false,
+        theme,
+        state.clone(),
+    );
+    let download_menu = table_menu(
+        format!("{table_id}:download-menu"),
+        &[
+            ("CSV", TableFormat::Csv),
+            ("Markdown", TableFormat::Markdown),
+        ],
+        data,
+        true,
+        theme,
+        state.clone(),
+    );
+    let copy_state = state.clone();
+    let download_state = state.clone();
 
     div()
-        .group(group)
-        .relative()
-        .w_full()
-        .when(!last, |table| table.mb(px(14.0)))
-        .text_size(px(12.5))
+        .flex()
+        .items_center()
+        .gap(px(3.0))
         .child(
             div()
-                .id(SharedString::from(format!("{table_id}:scroll")))
-                .w_full()
-                .overflow_x_scrollbar()
-                .children(rows),
+                .relative()
+                .child(table_control_button(
+                    format!("{table_id}:copy"),
+                    if copied {
+                        "icons/check.svg"
+                    } else {
+                        "icons/copy.svg"
+                    },
+                    group.clone(),
+                    theme,
+                    enabled,
+                    open_menu == Some(TableMenu::Copy),
+                    move |cx| {
+                        copy_state.update(cx, |state, cx| {
+                            state.menu = if state.menu == Some(TableMenu::Copy) {
+                                None
+                            } else {
+                                Some(TableMenu::Copy)
+                            };
+                            cx.notify();
+                        });
+                    },
+                ))
+                .when(open_menu == Some(TableMenu::Copy), |control| {
+                    control.child(copy_menu)
+                }),
         )
-        .child(div().absolute().top(px(3.0)).right(px(3.0)).child(copy))
+        .child(
+            div()
+                .relative()
+                .child(table_control_button(
+                    format!("{table_id}:download"),
+                    "icons/download.svg",
+                    group.clone(),
+                    theme,
+                    enabled,
+                    open_menu == Some(TableMenu::Download),
+                    move |cx| {
+                        download_state.update(cx, |state, cx| {
+                            state.menu = if state.menu == Some(TableMenu::Download) {
+                                None
+                            } else {
+                                Some(TableMenu::Download)
+                            };
+                            cx.notify();
+                        });
+                    },
+                ))
+                .when(open_menu == Some(TableMenu::Download), |control| {
+                    control.child(download_menu)
+                }),
+        )
+        .when_some(fullscreen_action, |controls, fullscreen_action| {
+            controls.child(table_control_button(
+                format!("{table_id}:fullscreen"),
+                "icons/maximize-2.svg",
+                group,
+                theme,
+                enabled,
+                false,
+                move |cx| fullscreen_action(cx),
+            ))
+        })
+        .into_any_element()
+}
+
+fn table_control_button(
+    id: String,
+    icon: &'static str,
+    group: SharedString,
+    theme: Theme,
+    enabled: bool,
+    open: bool,
+    on_click: impl Fn(&mut App) + 'static,
+) -> AnyElement {
+    div()
+        .id(SharedString::from(id))
+        .size(px(24.0))
+        .flex()
+        .items_center()
+        .justify_center()
+        .rounded(px(5.0))
+        .border_1()
+        .border_color(theme.line.hsla())
+        .bg(theme.surface_2.hsla())
+        .text_color(theme.text_3.hsla())
+        .opacity(if open { 1.0 } else { 0.0 })
+        .group_hover(group, move |control| {
+            control.opacity(if enabled { 1.0 } else { 0.5 })
+        })
+        .when(enabled, |control| {
+            control
+                .cursor_pointer()
+                .hover(move |control| control.text_color(theme.text.hsla()))
+                .on_click(move |_event, _window, cx| {
+                    cx.stop_propagation();
+                    on_click(cx);
+                })
+        })
+        .child(svg().path(icon).size(px(13.0)))
+        .into_any_element()
+}
+
+fn table_menu(
+    id: String,
+    options: &[(&'static str, TableFormat)],
+    data: TableData,
+    download: bool,
+    theme: Theme,
+    state: Entity<TableControlsState>,
+) -> AnyElement {
+    div()
+        .id(SharedString::from(id.clone()))
+        .occlude()
+        .absolute()
+        .top(px(28.0))
+        .right(px(0.0))
+        .w(px(120.0))
+        .overflow_hidden()
+        .rounded(px(6.0))
+        .border_1()
+        .border_color(theme.line.hsla())
+        .bg(theme.background.hsla())
+        .shadow_lg()
+        .py(px(3.0))
+        .children(options.iter().enumerate().map(|(index, (label, format))| {
+            let state = state.clone();
+            let data = data.clone();
+            let label = *label;
+            let format = *format;
+            div()
+                .id(SharedString::from(format!("{id}:option:{index}")))
+                .h(px(30.0))
+                .w_full()
+                .flex()
+                .items_center()
+                .px(px(9.0))
+                .text_size(px(12.5))
+                .text_color(theme.text_2.hsla())
+                .cursor_pointer()
+                .hover(move |option| {
+                    option
+                        .bg(theme.surface_2.hsla())
+                        .text_color(theme.text.hsla())
+                })
+                .on_click(move |_event, _window, cx| {
+                    cx.stop_propagation();
+                    let value = format_table(&data, format);
+                    if download {
+                        let (filename, value) = match format {
+                            TableFormat::Csv => ("table.csv", format!("\u{feff}{value}")),
+                            TableFormat::Markdown => ("table.md", value),
+                            TableFormat::Tsv => ("table.tsv", value),
+                        };
+                        prompt_download(filename.to_owned(), value, cx);
+                        state.update(cx, |state, cx| {
+                            state.menu = None;
+                            cx.notify();
+                        });
+                    } else {
+                        cx.write_to_clipboard(ClipboardItem::new_string(value));
+                        state.update(cx, |state, cx| {
+                            state.menu = None;
+                            state.copied = true;
+                            state.generation = state.generation.wrapping_add(1);
+                            cx.notify();
+                        });
+                        let generation = state.read(cx).generation;
+                        let state = state.clone();
+                        cx.spawn(async move |cx| {
+                            cx.background_executor().timer(Duration::from_secs(2)).await;
+                            let _ = state.update(cx, |state, cx| {
+                                if state.generation == generation {
+                                    state.copied = false;
+                                    cx.notify();
+                                }
+                            });
+                        })
+                        .detach();
+                    }
+                })
+                .child(label)
+        }))
         .into_any_element()
 }
 
@@ -532,43 +936,144 @@ fn download_control(
                 .hover(move |control| control.text_color(theme.text.hsla()))
                 .on_click(move |_event, _window, cx| {
                     cx.stop_propagation();
-                    let directory = dirs::download_dir().unwrap_or_else(std::env::temp_dir);
-                    let receiver = cx.prompt_for_new_path(&directory, Some(&filename));
-                    let value = value.clone();
-                    cx.spawn(async move |cx| {
-                        let Ok(Ok(Some(destination))) = receiver.await else {
-                            return;
-                        };
-                        let write =
-                            cx.background_spawn(async move { std::fs::write(destination, value) });
-                        let _ = write.await;
-                    })
-                    .detach();
+                    prompt_download(filename.clone(), value.clone(), cx);
                 })
         })
         .child(svg().path("icons/download.svg").size(px(13.0)))
         .into_any_element()
 }
 
-fn table_plain_text(table: &::markdown::mdast::Table) -> String {
-    table
-        .children
-        .iter()
-        .filter_map(|row| match row {
-            Node::TableRow(row) => Some(
-                row.children
-                    .iter()
-                    .filter_map(|cell| match cell {
-                        Node::TableCell(cell) => Some(flatten_inline_text(&cell.children)),
-                        _ => None,
-                    })
-                    .collect::<Vec<_>>()
-                    .join("\t"),
-            ),
-            _ => None,
-        })
-        .collect::<Vec<_>>()
-        .join("\n")
+fn prompt_download(filename: String, value: String, cx: &mut App) {
+    let directory = dirs::download_dir().unwrap_or_else(std::env::temp_dir);
+    let receiver = cx.prompt_for_new_path(&directory, Some(&filename));
+    cx.spawn(async move |cx| {
+        let Ok(Ok(Some(destination))) = receiver.await else {
+            return;
+        };
+        let write = cx.background_spawn(async move { std::fs::write(destination, value) });
+        let _ = write.await;
+    })
+    .detach();
+}
+
+fn table_data(table: &::markdown::mdast::Table) -> TableData {
+    let mut rows = table.children.iter().filter_map(|row| match row {
+        Node::TableRow(row) => Some(
+            row.children
+                .iter()
+                .filter_map(|cell| match cell {
+                    Node::TableCell(cell) => {
+                        Some(flatten_inline_text(&cell.children).trim().to_owned())
+                    }
+                    _ => None,
+                })
+                .collect::<Vec<_>>(),
+        ),
+        _ => None,
+    });
+    TableData {
+        headers: rows.next().unwrap_or_default(),
+        rows: rows.collect(),
+    }
+}
+
+fn format_table(data: &TableData, format: TableFormat) -> String {
+    match format {
+        TableFormat::Markdown => format_table_markdown(data),
+        TableFormat::Csv => format_table_csv(data),
+        TableFormat::Tsv => format_table_tsv(data),
+    }
+}
+
+fn format_table_csv(data: &TableData) -> String {
+    fn escape(value: &str) -> String {
+        let quoted = value
+            .chars()
+            .any(|character| matches!(character, '"' | ',' | '\n'));
+        if !quoted {
+            return value.to_owned();
+        }
+        format!("\"{}\"", value.replace('"', "\"\""))
+    }
+
+    let mut lines = Vec::with_capacity(data.rows.len() + usize::from(!data.headers.is_empty()));
+    if !data.headers.is_empty() {
+        lines.push(
+            data.headers
+                .iter()
+                .map(|value| escape(value))
+                .collect::<Vec<_>>()
+                .join(","),
+        );
+    }
+    lines.extend(data.rows.iter().map(|row| {
+        row.iter()
+            .map(|value| escape(value))
+            .collect::<Vec<_>>()
+            .join(",")
+    }));
+    lines.join("\n")
+}
+
+fn format_table_tsv(data: &TableData) -> String {
+    fn escape(value: &str) -> String {
+        value
+            .replace('\t', "\\t")
+            .replace('\n', "\\n")
+            .replace('\r', "\\r")
+    }
+
+    let mut lines = Vec::with_capacity(data.rows.len() + usize::from(!data.headers.is_empty()));
+    if !data.headers.is_empty() {
+        lines.push(
+            data.headers
+                .iter()
+                .map(|value| escape(value))
+                .collect::<Vec<_>>()
+                .join("\t"),
+        );
+    }
+    lines.extend(data.rows.iter().map(|row| {
+        row.iter()
+            .map(|value| escape(value))
+            .collect::<Vec<_>>()
+            .join("\t")
+    }));
+    lines.join("\n")
+}
+
+fn format_table_markdown(data: &TableData) -> String {
+    fn escape(value: &str) -> String {
+        value.replace('\\', "\\\\").replace('|', "\\|")
+    }
+
+    if data.headers.is_empty() {
+        return String::new();
+    }
+    let mut lines = Vec::with_capacity(data.rows.len() + 2);
+    lines.push(format!(
+        "| {} |",
+        data.headers
+            .iter()
+            .map(|value| escape(value))
+            .collect::<Vec<_>>()
+            .join(" | ")
+    ));
+    lines.push(format!(
+        "| {} |",
+        vec!["---"; data.headers.len()].join(" | ")
+    ));
+    for row in &data.rows {
+        let cells = if row.len() < data.headers.len() {
+            (0..data.headers.len())
+                .map(|index| row.get(index).map_or(String::new(), |value| escape(value)))
+                .collect::<Vec<_>>()
+        } else {
+            row.iter().map(|value| escape(value)).collect::<Vec<_>>()
+        };
+        lines.push(format!("| {} |", cells.join(" | ")));
+    }
+    lines.join("\n")
 }
 
 fn render_list(
@@ -1336,10 +1841,38 @@ mod tests {
             Node::Table(table) => Some(table),
             _ => None,
         });
+        let data = table.map(table_data);
 
         assert_eq!(
-            table.map(table_plain_text),
+            data.as_ref().map(format_table_tsv),
             Some("Name\tCount\nA\t2".into())
+        );
+    }
+
+    #[test]
+    fn table_exports_match_streamdown_escaping() {
+        let data = TableData {
+            headers: vec!["A|B".into(), "Count".into()],
+            rows: vec![
+                vec![r"x\y".into(), "2".into()],
+                vec!["quoted, \"value\"".into(), "line\nbreak".into()],
+            ],
+        };
+
+        assert_eq!(
+            format_table_markdown(&data),
+            "| A\\|B | Count |\n| --- | --- |\n| x\\\\y | 2 |\n| quoted, \"value\" | line\nbreak |"
+        );
+        assert_eq!(
+            format_table_csv(&data),
+            "A|B,Count\nx\\y,2\n\"quoted, \"\"value\"\"\",\"line\nbreak\""
+        );
+        assert_eq!(
+            format_table_tsv(&TableData {
+                headers: vec!["A\tB".into()],
+                rows: vec![vec!["line\r\nbreak".into()]],
+            }),
+            "A\\tB\nline\\r\\nbreak"
         );
     }
 }

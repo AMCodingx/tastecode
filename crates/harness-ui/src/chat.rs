@@ -287,6 +287,7 @@ pub(crate) struct ChatView {
     stream_reveal_batches: HashMap<String, Vec<StreamRevealBatch>>,
     stream_reveal_generation: u64,
     stream_reveal_cleanup_scheduled: bool,
+    markdown_table_overlay: Option<markdown::MarkdownTableOverlay>,
     expanded_transcript_items: HashSet<String>,
     expanded_activities: HashSet<String>,
     copied_transcript_item: Option<String>,
@@ -409,6 +410,7 @@ impl ChatView {
             stream_reveal_batches: HashMap::new(),
             stream_reveal_generation: 0,
             stream_reveal_cleanup_scheduled: false,
+            markdown_table_overlay: None,
             expanded_transcript_items: HashSet::new(),
             expanded_activities: HashSet::new(),
             copied_transcript_item: None,
@@ -489,6 +491,7 @@ impl ChatView {
         self.pending_anchor_turn = None;
         self.presentation.clear();
         self.reset_transcript_motion();
+        self.markdown_table_overlay = None;
         self.expanded_transcript_items.clear();
         self.expanded_activities.clear();
         self.copied_transcript_item = None;
@@ -3974,9 +3977,11 @@ impl Render for ChatView {
         let control_surface = self.control_surface(cx);
         let terminal_pane = self.terminal_pane(window, cx);
         let thread_search = self.thread_search_overlay(cx);
+        let markdown_table_overlay = self.markdown_table_overlay(window, cx);
         div()
             .size_full()
             .min_w(px(0.0))
+            .relative()
             .flex()
             .flex_col()
             .bg(self.theme.background.hsla())
@@ -4008,6 +4013,7 @@ impl Render for ChatView {
             .when_some(control_surface, |view, surface| view.child(surface))
             .when_some(terminal_pane, |view, terminal| view.child(terminal))
             .child(self.composer(window, cx))
+            .when_some(markdown_table_overlay, |view, overlay| view.child(overlay))
     }
 }
 

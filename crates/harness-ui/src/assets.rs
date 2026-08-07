@@ -72,6 +72,7 @@ impl AssetSource for HarnessAssets {
             "icons/file.svg" => Some(include_bytes!("../assets/icons/file.svg")),
             "icons/image.svg" => Some(include_bytes!("../assets/icons/image.svg")),
             "icons/download.svg" => Some(include_bytes!("../assets/icons/download.svg")),
+            "icons/maximize-2.svg" => Some(include_bytes!("../assets/icons/maximize-2.svg")),
             "icons/minus.svg" => Some(include_bytes!("../assets/icons/minus.svg")),
             _ => None,
         };

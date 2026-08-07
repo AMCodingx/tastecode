@@ -678,7 +678,7 @@ fn assistant_message(
             text,
             snapshot.live,
             &snapshot.stream_reveals,
-            theme,
+            view.clone(),
             window,
             cx,
         ))
@@ -767,7 +767,7 @@ fn completion_rail(
                                     item.text.clone().unwrap_or_default(),
                                     false,
                                     &[],
-                                    theme,
+                                    view.clone(),
                                     window,
                                     cx,
                                 ))
