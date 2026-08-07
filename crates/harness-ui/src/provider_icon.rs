@@ -64,23 +64,27 @@ pub(crate) fn mark_icon(mark: ProviderMark, theme: Theme, size: f32) -> AnyEleme
     mark_icon_color(mark, size, theme.text_2.hsla())
 }
 
+pub(crate) fn provider_mark_path(mark: ProviderMark) -> &'static str {
+    match mark {
+        ProviderMark::OpenAi => "icons/openai.svg",
+        ProviderMark::Anthropic => "icons/anthropic.svg",
+        ProviderMark::Grok => "icons/grok.svg",
+        ProviderMark::Cursor => "icons/cursor.svg",
+        ProviderMark::OpenCode => "icons/opencode.svg",
+        ProviderMark::OpenRouter => "icons/openrouter.svg",
+        ProviderMark::Kimi => "icons/kimi.svg",
+        ProviderMark::Qwen => "icons/qwen.svg",
+        ProviderMark::Zai => "icons/zai.svg",
+        ProviderMark::Antigravity => "icons/antigravity.svg",
+        ProviderMark::Pi => "icons/pi.svg",
+        ProviderMark::Acp => "icons/acp.svg",
+        ProviderMark::Custom => "icons/custom-provider.svg",
+    }
+}
+
 fn mark_icon_color(mark: ProviderMark, size: f32, color: Hsla) -> AnyElement {
     svg()
-        .path(match mark {
-            ProviderMark::OpenAi => "icons/openai.svg",
-            ProviderMark::Anthropic => "icons/anthropic.svg",
-            ProviderMark::Grok => "icons/grok.svg",
-            ProviderMark::Cursor => "icons/cursor.svg",
-            ProviderMark::OpenCode => "icons/opencode.svg",
-            ProviderMark::OpenRouter => "icons/openrouter.svg",
-            ProviderMark::Kimi => "icons/kimi.svg",
-            ProviderMark::Qwen => "icons/qwen.svg",
-            ProviderMark::Zai => "icons/zai.svg",
-            ProviderMark::Antigravity => "icons/antigravity.svg",
-            ProviderMark::Pi => "icons/pi.svg",
-            ProviderMark::Acp => "icons/acp.svg",
-            ProviderMark::Custom => "icons/custom-provider.svg",
-        })
+        .path(provider_mark_path(mark))
         .size(px(size))
         .text_color(color)
         .into_any_element()
