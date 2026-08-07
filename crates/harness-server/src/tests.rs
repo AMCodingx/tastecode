@@ -1,9 +1,17 @@
 use super::*;
-use harness_protocol::{DomainEvent, Item, ItemStatus, ItemType, MessageRole, ProviderId};
+use harness_agent::{
+    AgentError, AgentHandlers, AgentResult, AgentRuntime, AgentSession, StartOptions, TurnOptions,
+};
+use harness_protocol::{
+    ApprovalDecision, Capabilities, DomainEvent, Item, ItemStatus, ItemType, MessageRole, Model,
+    ProviderId, ServiceTier, Thread, Turn, TurnStatus,
+};
 use harness_store::{NewCheckpoint, NewThread as StoreNewThread};
 use serde_json::{Value, json};
+use std::collections::HashMap;
 use std::net::{IpAddr, Ipv4Addr, TcpStream};
 use std::process::Command;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::Instant;
 use tempfile::TempDir;
 use tungstenite::client::IntoClientRequest as _;
@@ -27,6 +35,33 @@ fn start_test_server(
         access_token: access_token.map(str::to_owned),
         store_path,
     })
+    .unwrap();
+    (directory, server)
+}
+
+fn start_test_server_with_runtimes(
+    runtimes: Arc<dyn crate::agents::RuntimeRegistry>,
+) -> (TempDir, ServerHandle) {
+    start_test_server_with_runtimes_and_seed(runtimes, |_| {})
+}
+
+fn start_test_server_with_runtimes_and_seed(
+    runtimes: Arc<dyn crate::agents::RuntimeRegistry>,
+    seed: impl FnOnce(&mut Store),
+) -> (TempDir, ServerHandle) {
+    let directory = tempfile::tempdir().unwrap();
+    let store_path = directory.path().join("harness.db");
+    let mut store = Store::open(&store_path).unwrap();
+    seed(&mut store);
+    store.close().unwrap();
+    let server = start_with_runtimes(
+        ServerConfig {
+            address: SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 0),
+            access_token: None,
+            store_path,
+        },
+        runtimes,
+    )
     .unwrap();
     (directory, server)
 }
@@ -134,6 +169,307 @@ fn read_response_with_terminal_pushes(
         }
         record_terminal_push(&frame, next_sequence, output, exit);
     }
+}
+
+fn read_until_response(socket: &mut ClientSocket, response_id: &str) -> (Vec<Value>, Value) {
+    let mut pushes = Vec::new();
+    loop {
+        let frame = read_value(socket);
+        if frame["id"] == response_id {
+            return (pushes, frame);
+        }
+        pushes.push(frame);
+    }
+}
+
+#[test]
+fn live_agent_routes_persist_stream_queue_and_resume_draining() {
+    let runtime = Arc::new(FakeRuntime::default());
+    let registry = Arc::new(FakeRuntimes {
+        runtime: Arc::clone(&runtime),
+    });
+    let (directory, server) = start_test_server_with_runtimes(registry);
+    let workspace = directory.path().join("workspace");
+    std::fs::create_dir(&workspace).unwrap();
+    let workspace = workspace.to_string_lossy().into_owned();
+    let mut socket = connect_native(&server, "");
+    assert_welcome(&mut socket);
+
+    send_request(
+        &mut socket,
+        "models",
+        "models.list",
+        json!({ "provider": "codex" }),
+    );
+    let models = read_value(&mut socket);
+    assert_eq!(models["result"]["models"][0]["id"], "fake-model");
+
+    send_request(
+        &mut socket,
+        "start",
+        "thread.start",
+        json!({
+            "provider": "codex",
+            "workspacePath": workspace,
+            "model": "fake-model",
+            "effort": "high",
+            "approval": "auto-review"
+        }),
+    );
+    let (start_pushes, started) = read_until_response(&mut socket, "start");
+    assert_eq!(started["result"]["threadId"], "thread-1");
+    assert_eq!(start_pushes[0]["channel"], "thread.event");
+    assert_eq!(start_pushes[0]["data"]["event"]["type"], "thread.started");
+    let options = runtime.start_options.lock().unwrap().clone().unwrap();
+    assert_eq!(options.model.as_deref(), Some("fake-model"));
+    assert_eq!(options.effort.as_deref(), Some("high"));
+    assert!(
+        options
+            .instructions
+            .as_deref()
+            .is_some_and(|instructions| instructions.contains("clear, capable teammate"))
+    );
+
+    send_request(
+        &mut socket,
+        "turn-1",
+        "thread.sendTurn",
+        json!({
+            "threadId": "thread-1",
+            "text": "First",
+            "attachments": ["/repo/reference.png"],
+            "serviceTier": "priority"
+        }),
+    );
+    let (turn_pushes, first_turn) = read_until_response(&mut socket, "turn-1");
+    assert_eq!(
+        first_turn["result"],
+        json!({ "queued": false, "turnId": "turn-1" })
+    );
+    assert!(turn_pushes.iter().any(|push| {
+        push["channel"] == "thread.event" && push["data"]["event"]["type"] == "turn.started"
+    }));
+
+    send_request(
+        &mut socket,
+        "turn-2",
+        "thread.sendTurn",
+        json!({ "threadId": "thread-1", "text": "Second" }),
+    );
+    let (queue_pushes, queued) = read_until_response(&mut socket, "turn-2");
+    assert_eq!(queued["result"]["queued"], true);
+    assert_eq!(queued["result"]["queuedTurn"]["text"], "Second");
+    let queued_id = queued["result"]["queuedTurn"]["id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    assert!(queue_pushes.iter().any(|push| {
+        push["channel"] == "thread.queue" && push["data"]["items"][0]["text"] == "Second"
+    }));
+
+    send_request(&mut socket, "projects", "projects.list", json!({}));
+    let projects = read_value(&mut socket);
+    let session = &projects["result"]["projects"][0]["sessions"][0];
+    assert_eq!(session["running"], true);
+    assert_eq!(session["status"], "working");
+
+    send_request(
+        &mut socket,
+        "approval",
+        "thread.respondToApproval",
+        json!({
+            "threadId": "thread-1",
+            "approvalId": "approval-1",
+            "decision": "approve-session"
+        }),
+    );
+    let (_, approval) = read_until_response(&mut socket, "approval");
+    assert_eq!(approval["result"], json!({}));
+    send_request(
+        &mut socket,
+        "input",
+        "thread.respondToUserInput",
+        json!({
+            "threadId": "thread-1",
+            "requestId": "input-1",
+            "answers": { "palette": ["Blue"] }
+        }),
+    );
+    let (_, input) = read_until_response(&mut socket, "input");
+    assert_eq!(input["result"], json!({}));
+
+    send_request(
+        &mut socket,
+        "steer",
+        "thread.steerQueuedTurn",
+        json!({ "threadId": "thread-1", "queuedTurnId": queued_id }),
+    );
+    let (_, steered) = read_until_response(&mut socket, "steer");
+    assert_eq!(steered["result"], json!({}));
+    send_request(
+        &mut socket,
+        "turn-3",
+        "thread.sendTurn",
+        json!({ "threadId": "thread-1", "text": "Third" }),
+    );
+    let (_, third) = read_until_response(&mut socket, "turn-3");
+    assert_eq!(third["result"]["queued"], true);
+
+    runtime.session().complete("turn-1");
+    let deadline = Instant::now() + Duration::from_secs(2);
+    let mut second_started = false;
+    while Instant::now() < deadline && !second_started {
+        let frame = read_value(&mut socket);
+        second_started = frame["channel"] == "thread.event"
+            && frame["data"]["event"]["type"] == "turn.started"
+            && frame["data"]["event"]["turn"]["id"] == "turn-2";
+    }
+    assert!(second_started, "queued turn did not start after completion");
+    let session = runtime.session();
+    assert_eq!(
+        session.sent_texts.lock().unwrap().as_slice(),
+        ["First", "Third"]
+    );
+    assert_eq!(session.steered_texts.lock().unwrap().as_slice(), ["Second"]);
+    assert_eq!(
+        session.approvals.lock().unwrap().as_slice(),
+        [("approval-1".into(), ApprovalDecision::ApproveSession)]
+    );
+    assert_eq!(
+        session.user_inputs.lock().unwrap()[0].1["palette"],
+        ["Blue"]
+    );
+
+    send_request(
+        &mut socket,
+        "history",
+        "thread.history",
+        json!({ "threadId": "thread-1" }),
+    );
+    let (_, history) = read_until_response(&mut socket, "history");
+    assert_eq!(history["result"]["running"], true);
+    let events = history["result"]["events"].as_array().unwrap();
+    assert!(
+        events
+            .iter()
+            .any(|entry| entry["event"]["type"] == "turn.completed")
+    );
+    assert!(
+        events
+            .windows(2)
+            .all(|pair| pair[0]["seq"].as_u64() < pair[1]["seq"].as_u64())
+    );
+
+    send_request(
+        &mut socket,
+        "interrupt",
+        "thread.interrupt",
+        json!({ "threadId": "thread-1" }),
+    );
+    let (_, interrupted) = read_until_response(&mut socket, "interrupt");
+    assert_eq!(interrupted["result"], json!({}));
+    assert!(runtime.session().interrupted.load(Ordering::Acquire));
+
+    send_request(
+        &mut socket,
+        "close",
+        "thread.close",
+        json!({ "threadId": "thread-1" }),
+    );
+    let (_, closed) = read_until_response(&mut socket, "close");
+    assert_eq!(closed["result"], json!({}));
+    assert!(runtime.session().disposed.load(Ordering::Acquire));
+}
+
+#[test]
+fn turn_completion_before_start_response_does_not_leave_thread_running() {
+    let runtime = Arc::new(FakeRuntime::default());
+    runtime.complete_during_send.store(true, Ordering::Release);
+    let registry = Arc::new(FakeRuntimes {
+        runtime: Arc::clone(&runtime),
+    });
+    let (directory, server) = start_test_server_with_runtimes(registry);
+    let workspace = directory.path().join("workspace");
+    std::fs::create_dir(&workspace).unwrap();
+    let mut socket = connect_native(&server, "");
+    assert_welcome(&mut socket);
+    send_request(
+        &mut socket,
+        "start",
+        "thread.start",
+        json!({
+            "provider": "codex",
+            "workspacePath": workspace.to_string_lossy()
+        }),
+    );
+    let _ = read_until_response(&mut socket, "start");
+    send_request(
+        &mut socket,
+        "turn",
+        "thread.sendTurn",
+        json!({ "threadId": "thread-1", "text": "Finish synchronously" }),
+    );
+    let (_, response) = read_until_response(&mut socket, "turn");
+    assert_eq!(response["result"]["turnId"], "turn-1");
+    send_request(
+        &mut socket,
+        "history",
+        "thread.history",
+        json!({ "threadId": "thread-1" }),
+    );
+    let (_, history) = read_until_response(&mut socket, "history");
+    assert_eq!(history["result"]["running"], false);
+}
+
+#[test]
+fn concurrent_requests_resume_one_provider_session() {
+    let runtime = Arc::new(FakeRuntime::default());
+    runtime.resume_delay_ms.store(100, Ordering::Release);
+    let registry = Arc::new(FakeRuntimes {
+        runtime: Arc::clone(&runtime),
+    });
+    let workspace = tempfile::tempdir().unwrap();
+    let workspace_path = workspace.path().to_string_lossy().into_owned();
+    let stored_path = workspace_path.clone();
+    let (_directory, server) = start_test_server_with_runtimes_and_seed(registry, move |store| {
+        store.add_project(&stored_path, None).unwrap();
+        store
+            .add_thread(StoreNewThread {
+                id: "thread-resume".into(),
+                project_path: stored_path,
+                provider: ProviderId::Codex,
+                agent: None,
+                title: "Resume".into(),
+                created_at: Some(1_000),
+                worktree_path: None,
+                worktree_branch: None,
+            })
+            .unwrap();
+    });
+    let mut first = connect_native(&server, "");
+    let mut second = connect_native(&server, "");
+    assert_welcome(&mut first);
+    assert_welcome(&mut second);
+    send_request(
+        &mut first,
+        "first",
+        "thread.sendTurn",
+        json!({ "threadId": "thread-resume", "text": "First" }),
+    );
+    send_request(
+        &mut second,
+        "second",
+        "thread.sendTurn",
+        json!({ "threadId": "thread-resume", "text": "Second" }),
+    );
+    let (_, first_response) = read_until_response(&mut first, "first");
+    let (_, second_response) = read_until_response(&mut second, "second");
+    assert_ne!(
+        first_response["result"]["queued"],
+        second_response["result"]["queued"]
+    );
+    assert_eq!(runtime.resume_count.load(Ordering::Acquire), 1);
+    assert_eq!(runtime.sessions.lock().unwrap().len(), 1);
 }
 
 #[test]
@@ -1012,6 +1348,231 @@ fn live_checkpoint_restore_keeps_files_and_conversation_reversible_together() {
 
     socket.close(None).unwrap();
     server.close().unwrap();
+}
+
+struct FakeRuntimes {
+    runtime: Arc<FakeRuntime>,
+}
+
+impl crate::agents::RuntimeRegistry for FakeRuntimes {
+    fn runtime(
+        &self,
+        provider: ProviderId,
+        _agent: Option<&str>,
+        _connection_id: Option<&str>,
+    ) -> Result<Arc<dyn AgentRuntime>, AgentError> {
+        if provider != ProviderId::Codex {
+            return Err(AgentError::Failed("unsupported fake provider".into()));
+        }
+        Ok(self.runtime.clone())
+    }
+}
+
+#[derive(Default)]
+struct FakeRuntime {
+    start_options: Mutex<Option<StartOptions>>,
+    sessions: Mutex<Vec<Arc<FakeSession>>>,
+    complete_during_send: Arc<AtomicBool>,
+    resume_count: AtomicU64,
+    resume_delay_ms: AtomicU64,
+}
+
+impl FakeRuntime {
+    fn session(&self) -> Arc<FakeSession> {
+        self.sessions
+            .lock()
+            .unwrap()
+            .last()
+            .cloned()
+            .expect("fake session was not started")
+    }
+}
+
+impl AgentRuntime for FakeRuntime {
+    fn start(
+        &self,
+        workspace_path: &str,
+        options: &StartOptions,
+        handlers: AgentHandlers,
+    ) -> AgentResult<(Thread, Arc<dyn AgentSession>)> {
+        *self.start_options.lock().unwrap() = Some(options.clone());
+        let thread = Thread {
+            id: "thread-1".into(),
+            provider: ProviderId::Codex,
+            connection_id: None,
+            workspace_path: workspace_path.into(),
+            title: None,
+            created_at: 1_000.0,
+        };
+        handlers.emit_event(DomainEvent::ThreadStarted {
+            thread: thread.clone(),
+        });
+        let session = Arc::new(FakeSession {
+            handlers,
+            next_turn: AtomicU64::new(1),
+            complete_during_send: Arc::clone(&self.complete_during_send),
+            interrupted: AtomicBool::new(false),
+            disposed: AtomicBool::new(false),
+            approvals: Mutex::new(Vec::new()),
+            user_inputs: Mutex::new(Vec::new()),
+            sent_texts: Mutex::new(Vec::new()),
+            steered_texts: Mutex::new(Vec::new()),
+        });
+        self.sessions.lock().unwrap().push(Arc::clone(&session));
+        Ok((thread, session))
+    }
+
+    fn resume(
+        &self,
+        thread_id: &str,
+        workspace_path: &str,
+        _options: &StartOptions,
+        handlers: AgentHandlers,
+    ) -> AgentResult<(Thread, Arc<dyn AgentSession>)> {
+        self.resume_count.fetch_add(1, Ordering::AcqRel);
+        let delay = self.resume_delay_ms.load(Ordering::Acquire);
+        if delay > 0 {
+            std::thread::sleep(Duration::from_millis(delay));
+        }
+        let thread = Thread {
+            id: thread_id.into(),
+            provider: ProviderId::Codex,
+            connection_id: None,
+            workspace_path: workspace_path.into(),
+            title: None,
+            created_at: 1_000.0,
+        };
+        let session = Arc::new(FakeSession {
+            handlers,
+            next_turn: AtomicU64::new(1),
+            complete_during_send: Arc::clone(&self.complete_during_send),
+            interrupted: AtomicBool::new(false),
+            disposed: AtomicBool::new(false),
+            approvals: Mutex::new(Vec::new()),
+            user_inputs: Mutex::new(Vec::new()),
+            sent_texts: Mutex::new(Vec::new()),
+            steered_texts: Mutex::new(Vec::new()),
+        });
+        self.sessions.lock().unwrap().push(Arc::clone(&session));
+        Ok((thread, session))
+    }
+
+    fn list_models(&self) -> AgentResult<Vec<Model>> {
+        Ok(vec![Model {
+            id: "fake-model".into(),
+            display_name: "Fake Model".into(),
+            description: Some("Fixture model".into()),
+            is_default: true,
+            reasoning_efforts: vec!["medium".into(), "high".into()],
+            default_reasoning_effort: Some("medium".into()),
+            service_tiers: vec![ServiceTier {
+                id: "priority".into(),
+                name: "Fast".into(),
+                description: "Priority processing".into(),
+            }],
+            default_service_tier: Some("priority".into()),
+        }])
+    }
+}
+
+type FakeUserInputResponses = Vec<(String, HashMap<String, Vec<String>>)>;
+
+struct FakeSession {
+    handlers: AgentHandlers,
+    next_turn: AtomicU64,
+    complete_during_send: Arc<AtomicBool>,
+    interrupted: AtomicBool,
+    disposed: AtomicBool,
+    approvals: Mutex<Vec<(String, ApprovalDecision)>>,
+    user_inputs: Mutex<FakeUserInputResponses>,
+    sent_texts: Mutex<Vec<String>>,
+    steered_texts: Mutex<Vec<String>>,
+}
+
+impl FakeSession {
+    fn complete(&self, turn_id: &str) {
+        self.handlers.emit_event(DomainEvent::TurnCompleted {
+            turn_id: turn_id.into(),
+            status: TurnStatus::Completed,
+        });
+    }
+}
+
+impl AgentSession for FakeSession {
+    fn capabilities(&self) -> Capabilities {
+        Capabilities {
+            steer: true,
+            fork: false,
+            interrupt: true,
+            reasoning_items: true,
+            approvals: true,
+            user_input: Some(true),
+            auto_review: Some(false),
+            images: true,
+        }
+    }
+
+    fn send_turn(
+        &self,
+        thread_id: &str,
+        text: &str,
+        _attachments: &[String],
+        _options: &TurnOptions,
+    ) -> AgentResult<String> {
+        self.sent_texts.lock().unwrap().push(text.into());
+        let index = self.next_turn.fetch_add(1, Ordering::AcqRel);
+        let turn_id = format!("turn-{index}");
+        self.handlers.emit_event(DomainEvent::TurnStarted {
+            turn: Turn {
+                id: turn_id.clone(),
+                thread_id: thread_id.into(),
+                status: TurnStatus::Running,
+                created_at: index as f64,
+            },
+        });
+        if self.complete_during_send.load(Ordering::Acquire) {
+            self.complete(&turn_id);
+        }
+        Ok(turn_id)
+    }
+
+    fn steer(&self, _thread_id: &str, text: &str, _attachments: &[String]) -> AgentResult<()> {
+        self.steered_texts.lock().unwrap().push(text.into());
+        Ok(())
+    }
+
+    fn interrupt(&self, _thread_id: &str) -> AgentResult<()> {
+        self.interrupted.store(true, Ordering::Release);
+        Ok(())
+    }
+
+    fn respond_to_approval(
+        &self,
+        approval_id: &str,
+        decision: ApprovalDecision,
+    ) -> AgentResult<bool> {
+        self.approvals
+            .lock()
+            .unwrap()
+            .push((approval_id.into(), decision));
+        Ok(true)
+    }
+
+    fn respond_to_user_input(
+        &self,
+        request_id: &str,
+        answers: &HashMap<String, Vec<String>>,
+    ) -> AgentResult<bool> {
+        self.user_inputs
+            .lock()
+            .unwrap()
+            .push((request_id.into(), answers.clone()));
+        Ok(true)
+    }
+
+    fn dispose(&self) {
+        self.disposed.store(true, Ordering::Release);
+    }
 }
 
 #[test]

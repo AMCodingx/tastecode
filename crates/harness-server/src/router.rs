@@ -2,18 +2,19 @@ use crate::ServerState;
 use chrono::{Datelike as _, Local, TimeZone as _};
 use harness_protocol::method;
 use harness_protocol::{
-    AcpAgentsResult, CheckpointSummary, ErrorCode, ProjectAddedResult, ProjectSummary,
-    ProjectsListResult, ProviderId, ProvidersListResult, ServerWelcome, SessionSummary,
-    SettleReason, SidebarMode, SystemInfo, SystemPlatform, TerminalOpenedResult,
-    ThreadCheckpointsResult, ThreadHistoryResult, ThreadInboxStatus, ThreadLifecycle,
-    ThreadLifecyclePush, ThreadLifecycleResult, ThreadUnsavedWorkResult, Usage, UsageSummaryResult,
-    WireError, channel,
+    AcpAgentsResult, ApprovalDecision, ApprovalMode, CheckpointSummary, ErrorCode,
+    ModelsListResult, ProjectAddedResult, ProjectSummary, ProjectsListResult, ProviderId,
+    ProvidersListResult, ServerWelcome, SessionSummary, SettleReason, SidebarMode, SystemInfo,
+    SystemPlatform, TerminalOpenedResult, ThreadCheckpointsResult, ThreadHistoryResult,
+    ThreadInboxStatus, ThreadLifecycle, ThreadLifecyclePush, ThreadLifecycleResult,
+    ThreadStartResult, ThreadUnsavedWorkResult, Usage, UsageSummaryResult, WireError, channel,
 };
 use harness_store::{SearchOptions, SidebarSettingsUpdate, Store, StoreError};
 use serde::Deserialize;
 use serde::de::DeserializeOwned;
 use serde_json::{Value, json};
-use std::sync::MutexGuard;
+use std::collections::HashMap;
+use std::sync::{Arc, MutexGuard};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 pub const SERVER_VERSION: &str = "0.0.0";
@@ -53,7 +54,7 @@ impl From<StoreError> for RouteError {
 }
 
 pub(crate) fn route(
-    state: &ServerState,
+    state: &Arc<ServerState>,
     _connection_id: u64,
     method_name: &str,
     params: Value,
@@ -122,6 +123,21 @@ pub(crate) fn route(
                 agents: harness_providers::detect_agents(),
             })
         }
+        method::MODELS_LIST => {
+            let params: ModelsListParams = decode(method_name, params)?;
+            if params.agent.as_deref().is_some_and(str::is_empty) {
+                return Err(RouteError::bad_params(
+                    method_name,
+                    "agent must be non-empty when present",
+                ));
+            }
+            encoded(ModelsListResult {
+                models: state
+                    .agents
+                    .list_models(params.provider, params.agent.as_deref())
+                    .map_err(RouteError::internal)?,
+            })
+        }
         method::WORKSPACE_INFO => {
             let params: WorkspacePathParams = decode(method_name, params)?;
             encoded(harness_workspace::read_workspace(params.path))
@@ -152,13 +168,14 @@ pub(crate) fn route(
                         .into_iter()
                         .map(|thread| {
                             let status = inbox_status(state, &store, &thread.id, thread.unread)?;
+                            let running = state.agents.is_running(&thread.id);
                             Ok(SessionSummary {
                                 id: thread.id,
                                 title: thread.title,
                                 provider: thread.provider,
                                 agent: thread.agent,
                                 created_at: thread.created_at as f64,
-                                running: false,
+                                running,
                                 pinned: thread.pinned,
                                 status: Some(status),
                                 unread: Some(thread.unread),
@@ -214,6 +231,7 @@ pub(crate) fn route(
                 )));
             }
             for thread in &threads {
+                state.agents.close(&thread.id);
                 state.terminals.close_thread(&thread.id);
                 store.close_thread(&thread.id)?;
             }
@@ -267,6 +285,38 @@ pub(crate) fn route(
             require_non_empty(method_name, "terminalId", &params.terminal_id)?;
             state.terminals.close(&params.terminal_id);
             empty_result()
+        }
+        method::THREAD_START => {
+            let params: ThreadStartParams = decode(method_name, params)?;
+            require_non_empty(method_name, "workspacePath", &params.workspace_path)?;
+            if params.connection_id.as_deref().is_some_and(str::is_empty)
+                || (params.provider == ProviderId::Api) != params.connection_id.is_some()
+            {
+                return Err(RouteError::bad_params(
+                    method_name,
+                    "connectionId is required only for api sessions",
+                ));
+            }
+            let thread = state
+                .agents
+                .start_thread(
+                    state,
+                    crate::agents::StartThreadRequest {
+                        provider: params.provider,
+                        agent: params.agent,
+                        connection_id: params.connection_id,
+                        workspace_path: params.workspace_path,
+                        model: params.model,
+                        service_tier: params.service_tier,
+                        effort: params.effort,
+                        approval: params.approval,
+                        isolate: params.isolate.unwrap_or(false),
+                    },
+                )
+                .map_err(RouteError::internal)?;
+            encoded(ThreadStartResult {
+                thread_id: thread.id,
+            })
         }
         method::THREAD_RENAME => {
             let params: ThreadRenameParams = decode(method_name, params)?;
@@ -342,6 +392,7 @@ pub(crate) fn route(
                     "discard the isolated session checkout before deleting it",
                 ));
             }
+            state.agents.close(&params.thread_id);
             state.terminals.close_thread(&params.thread_id);
             lock_store(state)?.delete_thread(&params.thread_id)?;
             state
@@ -357,15 +408,90 @@ pub(crate) fn route(
             let store = lock_store(state)?;
             let result = ThreadHistoryResult {
                 events: store.history(&params.thread_id, after_seq)?,
-                running: false,
+                running: state.agents.is_running(&params.thread_id),
             };
             store.mark_thread_read(&params.thread_id)?;
             encoded(result)
         }
         method::THREAD_CLOSE => {
             let params: ThreadIdParams = decode(method_name, params)?;
+            state.agents.close(&params.thread_id);
             state.terminals.close_thread(&params.thread_id);
             lock_store(state)?.close_thread(&params.thread_id)?;
+            empty_result()
+        }
+        method::THREAD_SEND_TURN => {
+            let params: ThreadSendTurnParams = decode(method_name, params)?;
+            require_non_empty(method_name, "threadId", &params.thread_id)?;
+            encoded(
+                state
+                    .agents
+                    .submit_turn(
+                        state,
+                        crate::agents::SubmitTurnRequest {
+                            thread_id: params.thread_id,
+                            text: params.text,
+                            attachments: params.attachments.unwrap_or_default(),
+                            options: harness_agent::TurnOptions {
+                                model: params.model,
+                                service_tier: params.service_tier,
+                                effort: params.effort,
+                            },
+                        },
+                    )
+                    .map_err(RouteError::internal)?,
+            )
+        }
+        method::THREAD_QUEUE => {
+            let params: ThreadIdParams = decode(method_name, params)?;
+            require_non_empty(method_name, "threadId", &params.thread_id)?;
+            encoded(state.agents.queue(&params.thread_id))
+        }
+        method::THREAD_STEER_QUEUED_TURN => {
+            let params: ThreadSteerQueuedParams = decode(method_name, params)?;
+            require_non_empty(method_name, "threadId", &params.thread_id)?;
+            require_non_empty(method_name, "queuedTurnId", &params.queued_turn_id)?;
+            state
+                .agents
+                .steer_queued(state, &params.thread_id, &params.queued_turn_id)
+                .map_err(RouteError::internal)?;
+            empty_result()
+        }
+        method::THREAD_RESPOND_TO_APPROVAL => {
+            let params: ThreadApprovalParams = decode(method_name, params)?;
+            require_non_empty(method_name, "threadId", &params.thread_id)?;
+            require_non_empty(method_name, "approvalId", &params.approval_id)?;
+            state
+                .agents
+                .respond_to_approval(&params.thread_id, &params.approval_id, params.decision)
+                .map_err(RouteError::internal)?;
+            empty_result()
+        }
+        method::THREAD_RESPOND_TO_USER_INPUT => {
+            let params: ThreadUserInputParams = decode(method_name, params)?;
+            require_non_empty(method_name, "threadId", &params.thread_id)?;
+            require_non_empty(method_name, "requestId", &params.request_id)?;
+            if params.answers.iter().any(|(question, answers)| {
+                question.is_empty() || answers.is_empty() || answers.iter().any(String::is_empty)
+            }) {
+                return Err(RouteError::bad_params(
+                    method_name,
+                    "answers must contain non-empty question ids and values",
+                ));
+            }
+            state
+                .agents
+                .respond_to_user_input(&params.thread_id, &params.request_id, &params.answers)
+                .map_err(RouteError::internal)?;
+            empty_result()
+        }
+        method::THREAD_INTERRUPT => {
+            let params: ThreadIdParams = decode(method_name, params)?;
+            require_non_empty(method_name, "threadId", &params.thread_id)?;
+            state
+                .agents
+                .interrupt(&params.thread_id)
+                .map_err(RouteError::internal)?;
             empty_result()
         }
         method::THREAD_CHECKPOINTS => {
@@ -600,6 +726,9 @@ fn inbox_status(
     thread_id: &str,
     unread: bool,
 ) -> Result<ThreadInboxStatus, RouteError> {
+    if let Some(status) = state.agents.activity_status(thread_id) {
+        return Ok(status);
+    }
     state
         .inbox
         .lock()
@@ -857,6 +986,72 @@ struct ProviderActionParams {
 }
 
 #[derive(Deserialize)]
+struct ModelsListParams {
+    provider: ProviderId,
+    #[serde(default, deserialize_with = "deserialize_present")]
+    agent: Option<String>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ThreadStartParams {
+    provider: ProviderId,
+    #[serde(default, deserialize_with = "deserialize_present")]
+    agent: Option<String>,
+    #[serde(default, deserialize_with = "deserialize_present")]
+    connection_id: Option<String>,
+    workspace_path: String,
+    #[serde(default, deserialize_with = "deserialize_present")]
+    model: Option<String>,
+    #[serde(default, deserialize_with = "deserialize_present")]
+    service_tier: Option<String>,
+    #[serde(default, deserialize_with = "deserialize_present")]
+    effort: Option<String>,
+    #[serde(default, deserialize_with = "deserialize_present")]
+    approval: Option<ApprovalMode>,
+    #[serde(default, deserialize_with = "deserialize_present")]
+    isolate: Option<bool>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ThreadSendTurnParams {
+    thread_id: String,
+    text: String,
+    #[serde(default, deserialize_with = "deserialize_present")]
+    attachments: Option<Vec<String>>,
+    #[serde(default, deserialize_with = "deserialize_present")]
+    model: Option<String>,
+    #[serde(default, deserialize_with = "deserialize_present")]
+    effort: Option<String>,
+    #[serde(default, deserialize_with = "deserialize_present")]
+    service_tier: Option<String>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ThreadSteerQueuedParams {
+    thread_id: String,
+    queued_turn_id: String,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ThreadApprovalParams {
+    thread_id: String,
+    approval_id: String,
+    decision: ApprovalDecision,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ThreadUserInputParams {
+    thread_id: String,
+    request_id: String,
+    answers: HashMap<String, Vec<String>>,
+}
+
+#[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct TerminalOpenParams {
     thread_id: String,
@@ -1036,6 +1231,22 @@ mod tests {
                 "agent": null,
                 "columns": 80,
                 "rows": 24
+            }))
+            .is_err()
+        );
+        assert!(
+            serde_json::from_value::<ThreadStartParams>(json!({
+                "provider": "codex",
+                "workspacePath": "/repo",
+                "model": null
+            }))
+            .is_err()
+        );
+        assert!(
+            serde_json::from_value::<ThreadSendTurnParams>(json!({
+                "threadId": "thread",
+                "text": "hello",
+                "attachments": null
             }))
             .is_err()
         );

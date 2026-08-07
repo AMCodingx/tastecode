@@ -5,6 +5,7 @@
 //! provider name.
 
 mod access;
+mod agents;
 mod inbox;
 mod push;
 mod router;
@@ -108,8 +109,9 @@ impl ServerHandle {
     }
 
     fn stop(&mut self) -> Result<(), ServerError> {
-        self.state.terminals.close_all();
         self.state.shutdown.store(true, Ordering::Release);
+        self.state.agents.dispose_all();
+        self.state.terminals.close_all();
         if let Some(join) = self.join.take() {
             join.join().map_err(|_| ServerError::ThreadPanicked)?;
         }
@@ -124,6 +126,13 @@ impl Drop for ServerHandle {
 }
 
 pub fn start(config: ServerConfig) -> Result<ServerHandle, ServerError> {
+    start_with_runtimes(config, Arc::new(agents::NativeRuntimes::default()))
+}
+
+fn start_with_runtimes(
+    config: ServerConfig,
+    runtimes: Arc<dyn agents::RuntimeRegistry>,
+) -> Result<ServerHandle, ServerError> {
     assert_safe_bind(config.address.ip(), config.access_token.as_deref())
         .map_err(ServerError::UnsafeBind)?;
     let listener = TcpListener::bind(config.address)?;
@@ -156,6 +165,7 @@ pub fn start(config: ServerConfig) -> Result<ServerHandle, ServerError> {
         inbox: Mutex::new(inbox::InboxProjections::default()),
         push,
         terminals,
+        agents: agents::AgentManager::new(runtimes),
         shutdown: AtomicBool::new(false),
         access_token: config.access_token,
     });
@@ -202,6 +212,7 @@ pub(crate) struct ServerState {
     inbox: Mutex<inbox::InboxProjections>,
     push: Arc<PushBus>,
     terminals: TerminalManager,
+    agents: agents::AgentManager,
     shutdown: AtomicBool,
     access_token: Option<String>,
 }
@@ -290,7 +301,7 @@ fn handle_connection(stream: TcpStream, state: Arc<ServerState>) {
 
 fn run_connection(
     socket: &mut WebSocket<TcpStream>,
-    state: &ServerState,
+    state: &Arc<ServerState>,
     connection_id: u64,
     pushes: Receiver<PendingPush>,
 ) {
@@ -330,7 +341,7 @@ fn run_connection(
 
 fn handle_request(
     socket: &mut WebSocket<TcpStream>,
-    state: &ServerState,
+    state: &Arc<ServerState>,
     connection_id: u64,
     pushes: &Receiver<PendingPush>,
     sequence: &mut u64,

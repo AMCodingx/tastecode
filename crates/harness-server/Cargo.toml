@@ -8,6 +8,8 @@ publish.workspace = true
 [dependencies]
 chrono.workspace = true
 dirs.workspace = true
+harness-adapter-codex = { path = "../harness-adapter-codex" }
+harness-agent = { path = "../harness-agent" }
 harness-protocol = { path = "../harness-protocol" }
 harness-providers = { path = "../harness-providers" }
 harness-store = { path = "../harness-store" }
@@ -19,6 +21,7 @@ subtle.workspace = true
 thiserror.workspace = true
 tungstenite.workspace = true
 url.workspace = true
+uuid.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true
