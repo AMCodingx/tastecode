@@ -3,14 +3,14 @@ use harness_client::{ClientEvent, ClientHandle, ConnectionState, Endpoint};
 use harness_protocol::{
     Account, AcpAgent, AcpAgentsResult, ApprovalDecision, ApprovalMode, AuthEventPush,
     AuthStartLoginResult, CredentialConfiguredResult, DiffDecision, DomainEvent, ErrorCode,
-    McpListResult, McpServer, Model, ModelConnection, ModelConnectionInput, ModelConnectionResult,
-    ModelConnectionsResult, ModelsListResult, PROTOCOL_VERSION, ProjectAddedResult, ProjectSummary,
-    ProjectsListResult, ProviderId, ProviderStatus, ProvidersListResult, Response,
-    ReviewDiffResult, SendTurnResult, ServerWelcome, SessionDiff, SessionSummary, SidebarMode,
-    SidebarSettings, SkillEnabledResult, SkillInstalledResult, SkillsListResult, TerminalExitPush,
-    TerminalOpenedResult, TerminalOutputPush, ThreadEventPush, ThreadHistoryResult,
-    ThreadInboxStatus, ThreadLifecycle, ThreadLifecyclePush, ThreadQueuePush, ThreadQueueResult,
-    ThreadStartResult, channel, method,
+    McpListResult, McpOAuthPush, McpOAuthStartResult, McpServer, McpServerConfig, Model,
+    ModelConnection, ModelConnectionInput, ModelConnectionResult, ModelConnectionsResult,
+    ModelsListResult, PROTOCOL_VERSION, ProjectAddedResult, ProjectSummary, ProjectsListResult,
+    ProviderId, ProviderStatus, ProvidersListResult, Response, ReviewDiffResult, SendTurnResult,
+    ServerWelcome, SessionDiff, SessionSummary, SidebarMode, SidebarSettings, SkillEnabledResult,
+    SkillInstalledResult, SkillsListResult, TerminalExitPush, TerminalOpenedResult,
+    TerminalOutputPush, ThreadEventPush, ThreadHistoryResult, ThreadInboxStatus, ThreadLifecycle,
+    ThreadLifecyclePush, ThreadQueuePush, ThreadQueueResult, ThreadStartResult, channel, method,
 };
 use serde::Deserialize;
 use serde_json::{Value, json};
@@ -38,6 +38,9 @@ pub(crate) struct ClientState {
     pub(crate) mcp_loading: bool,
     pub(crate) mcp_busy: Option<String>,
     pub(crate) mcp_error: Option<String>,
+    pub(crate) mcp_notice: Option<String>,
+    pub(crate) mcp_oauth: Option<McpOAuthSession>,
+    early_mcp_oauth: HashMap<String, McpOAuthPush>,
     mcp_scope: Option<(ProviderId, String)>,
     mcp_generation: u64,
     pub(crate) skills_inventory: Option<ScopedSkillsInventory>,
@@ -79,6 +82,14 @@ pub(crate) struct ScopedSkillsInventory {
     pub(crate) provider: ProviderId,
     pub(crate) project_path: String,
     pub(crate) result: SkillsListResult,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct McpOAuthSession {
+    pub(crate) provider: ProviderId,
+    pub(crate) project_path: String,
+    pub(crate) server_id: String,
+    pub(crate) login_id: String,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
@@ -265,10 +276,22 @@ enum PendingRequest {
         provider: ProviderId,
         project_path: String,
         server_id: String,
+        success_message: String,
     },
     McpReload {
         provider: ProviderId,
         project_path: String,
+        success_message: String,
+    },
+    McpOAuthStart {
+        provider: ProviderId,
+        project_path: String,
+        server_id: String,
+    },
+    McpOAuthCancel {
+        provider: ProviderId,
+        project_path: String,
+        server_id: String,
     },
     SkillsList {
         provider: ProviderId,
@@ -497,6 +520,9 @@ impl ClientState {
             mcp_loading: false,
             mcp_busy: None,
             mcp_error: None,
+            mcp_notice: None,
+            mcp_oauth: None,
+            early_mcp_oauth: HashMap::new(),
             mcp_scope: None,
             mcp_generation: 0,
             skills_inventory: None,
@@ -727,6 +753,7 @@ impl ClientState {
         let scope = (provider, project_path.clone());
         if self.mcp_scope.as_ref() != Some(&scope) {
             self.mcp_inventory = None;
+            self.mcp_notice = None;
         }
         self.mcp_scope = Some(scope);
         self.mcp_generation = self.mcp_generation.wrapping_add(1);
@@ -743,6 +770,10 @@ impl ClientState {
             },
         ) {
             self.mcp_loading = false;
+            self.mcp_error = self
+                .notice
+                .clone()
+                .or_else(|| Some("Could not request MCP inventory.".into()));
         }
         ClientUpdate::shell_changed()
     }
@@ -754,9 +785,7 @@ impl ClientState {
         server: &McpServer,
     ) -> ClientUpdate {
         self.mcp_scope = Some((provider, project_path.clone()));
-        self.mcp_busy = Some(server.id.clone());
-        self.mcp_error = None;
-        let (method_name, params) = if server.enabled {
+        let (method_name, params, success_message) = if server.enabled {
             (
                 method::MCP_ADD,
                 json!({
@@ -764,6 +793,7 @@ impl ClientState {
                     "projectPath": project_path,
                     "server": { "id": server.id, "enabled": false }
                 }),
+                "Server disabled for this project.",
             )
         } else {
             (
@@ -773,18 +803,165 @@ impl ClientState {
                     "projectPath": project_path,
                     "serverId": server.id
                 }),
+                "Project override removed.",
             )
         };
+        self.send_mcp_mutation(
+            provider,
+            project_path,
+            server.id.clone(),
+            method_name,
+            params,
+            success_message,
+        )
+    }
+
+    pub(crate) fn save_mcp_server(
+        &mut self,
+        provider: ProviderId,
+        project_path: String,
+        server: McpServerConfig,
+        update: bool,
+    ) -> ClientUpdate {
+        let server_id = server.id.clone();
+        let params = match serde_json::to_value(server) {
+            Ok(server) => json!({
+                "provider": provider,
+                "projectPath": project_path,
+                "server": server,
+            }),
+            Err(error) => {
+                self.mcp_error = Some(format!("Could not encode the MCP server: {error}"));
+                return ClientUpdate::shell_changed();
+            }
+        };
+        self.send_mcp_mutation(
+            provider,
+            project_path,
+            server_id,
+            if update {
+                method::MCP_UPDATE
+            } else {
+                method::MCP_ADD
+            },
+            params,
+            if update {
+                "Server updated."
+            } else {
+                "Server added."
+            },
+        )
+    }
+
+    pub(crate) fn remove_mcp_server(
+        &mut self,
+        provider: ProviderId,
+        project_path: String,
+        server_id: String,
+    ) -> ClientUpdate {
+        self.send_mcp_mutation(
+            provider,
+            project_path.clone(),
+            server_id.clone(),
+            method::MCP_REMOVE,
+            json!({
+                "provider": provider,
+                "projectPath": project_path,
+                "serverId": server_id,
+            }),
+            "Server removed.",
+        )
+    }
+
+    pub(crate) fn start_mcp_oauth(
+        &mut self,
+        provider: ProviderId,
+        project_path: String,
+        server_id: String,
+    ) -> ClientUpdate {
+        self.mcp_scope = Some((provider, project_path.clone()));
+        self.mcp_busy = Some(server_id.clone());
+        self.mcp_error = None;
+        self.mcp_notice = None;
+        if !self.send_request(
+            method::MCP_START_OAUTH,
+            json!({
+                "provider": provider,
+                "projectPath": project_path,
+                "serverId": server_id,
+            }),
+            PendingRequest::McpOAuthStart {
+                provider,
+                project_path,
+                server_id,
+            },
+        ) {
+            self.mcp_busy = None;
+            self.mcp_error = self
+                .notice
+                .clone()
+                .or_else(|| Some("Could not start MCP sign-in.".into()));
+        }
+        ClientUpdate::shell_changed()
+    }
+
+    pub(crate) fn cancel_mcp_oauth(&mut self) -> ClientUpdate {
+        let Some(session) = self.mcp_oauth.clone() else {
+            return ClientUpdate::default();
+        };
+        self.mcp_busy = Some(session.server_id.clone());
+        self.mcp_error = None;
+        if !self.send_request(
+            method::MCP_CANCEL_OAUTH,
+            json!({
+                "provider": session.provider,
+                "projectPath": session.project_path,
+                "serverId": session.server_id,
+                "loginId": session.login_id,
+            }),
+            PendingRequest::McpOAuthCancel {
+                provider: session.provider,
+                project_path: session.project_path,
+                server_id: session.server_id,
+            },
+        ) {
+            self.mcp_busy = None;
+            self.mcp_error = self
+                .notice
+                .clone()
+                .or_else(|| Some("Could not cancel MCP sign-in.".into()));
+        }
+        ClientUpdate::shell_changed()
+    }
+
+    fn send_mcp_mutation(
+        &mut self,
+        provider: ProviderId,
+        project_path: String,
+        server_id: String,
+        method_name: &'static str,
+        params: Value,
+        success_message: &'static str,
+    ) -> ClientUpdate {
+        self.mcp_scope = Some((provider, project_path.clone()));
+        self.mcp_busy = Some(server_id.clone());
+        self.mcp_error = None;
+        self.mcp_notice = None;
         if !self.send_request(
             method_name,
             params,
             PendingRequest::McpMutation {
                 provider,
                 project_path,
-                server_id: server.id.clone(),
+                server_id,
+                success_message: success_message.into(),
             },
         ) {
             self.mcp_busy = None;
+            self.mcp_error = self
+                .notice
+                .clone()
+                .or_else(|| Some("Could not update the MCP server.".into()));
         }
         ClientUpdate::shell_changed()
     }
@@ -1313,12 +1490,22 @@ impl ClientState {
                         if self.mcp_busy.as_deref() == Some(server_id.as_str()) {
                             self.mcp_busy = None;
                         }
+                        self.mcp_notice = None;
                         self.mcp_error = Some(message);
                         ClientUpdate::shell_changed()
                     }
                     Some(PendingRequest::McpReload { .. }) => {
                         self.mcp_loading = false;
                         self.mcp_busy = None;
+                        self.mcp_error = Some(message);
+                        ClientUpdate::shell_changed()
+                    }
+                    Some(PendingRequest::McpOAuthStart { server_id, .. })
+                    | Some(PendingRequest::McpOAuthCancel { server_id, .. }) => {
+                        if self.mcp_busy.as_deref() == Some(server_id.as_str()) {
+                            self.mcp_busy = None;
+                        }
+                        self.clear_orphaned_mcp_oauth_events();
                         self.mcp_error = Some(message);
                         ClientUpdate::shell_changed()
                     }
@@ -1472,12 +1659,26 @@ impl ClientState {
                 Some(PendingRequest::McpMutation {
                     provider,
                     project_path,
+                    success_message,
                     ..
-                }) => self.finish_mcp_mutation(provider, project_path),
+                }) => self.finish_mcp_mutation(provider, project_path, success_message),
                 Some(PendingRequest::McpReload {
                     provider,
                     project_path,
-                }) => self.request_mcp_inventory(provider, project_path),
+                    success_message,
+                }) => self.finish_mcp_reload(provider, project_path, success_message),
+                Some(PendingRequest::McpOAuthStart {
+                    provider,
+                    project_path,
+                    server_id,
+                }) => {
+                    self.handle_mcp_oauth_start_response(result, provider, project_path, server_id)
+                }
+                Some(PendingRequest::McpOAuthCancel {
+                    provider,
+                    project_path,
+                    server_id,
+                }) => self.handle_mcp_oauth_cancel_response(provider, project_path, server_id),
                 Some(PendingRequest::SkillsList {
                     provider,
                     project_path,
@@ -1674,9 +1875,13 @@ impl ClientState {
             }
             PendingRequest::McpList { .. }
             | PendingRequest::McpMutation { .. }
-            | PendingRequest::McpReload { .. } => {
+            | PendingRequest::McpReload { .. }
+            | PendingRequest::McpOAuthStart { .. }
+            | PendingRequest::McpOAuthCancel { .. } => {
                 self.mcp_loading = false;
                 self.mcp_busy = None;
+                self.clear_orphaned_mcp_oauth_events();
+                self.mcp_notice = None;
                 self.mcp_error =
                     Some("The server connection was lost while updating MCP settings.".into());
                 ClientUpdate::shell_changed()
@@ -2334,11 +2539,17 @@ impl ClientState {
         ClientUpdate::shell_changed()
     }
 
-    fn finish_mcp_mutation(&mut self, provider: ProviderId, project_path: String) -> ClientUpdate {
+    fn finish_mcp_mutation(
+        &mut self,
+        provider: ProviderId,
+        project_path: String,
+        success_message: String,
+    ) -> ClientUpdate {
         if self.mcp_scope.as_ref() != Some(&(provider, project_path.clone())) {
             return ClientUpdate::default();
         }
         self.mcp_busy = None;
+        self.mcp_notice = Some(success_message.clone());
         let reload = self
             .mcp_inventory
             .as_ref()
@@ -2351,13 +2562,156 @@ impl ClientState {
                 PendingRequest::McpReload {
                     provider,
                     project_path,
+                    success_message,
                 },
             ) {
                 self.mcp_loading = false;
+                self.mcp_error = self.notice.clone().or_else(|| {
+                    Some("The MCP server was saved, but reload could not start.".into())
+                });
             }
             ClientUpdate::shell_changed()
         } else {
             self.request_mcp_inventory(provider, project_path)
+        }
+    }
+
+    fn finish_mcp_reload(
+        &mut self,
+        provider: ProviderId,
+        project_path: String,
+        success_message: String,
+    ) -> ClientUpdate {
+        if self.mcp_scope.as_ref() != Some(&(provider, project_path.clone())) {
+            return ClientUpdate::default();
+        }
+        self.mcp_notice = Some(format!("{success_message} Active sessions reloaded."));
+        self.request_mcp_inventory(provider, project_path)
+    }
+
+    fn handle_mcp_oauth_start_response(
+        &mut self,
+        result: Value,
+        provider: ProviderId,
+        project_path: String,
+        server_id: String,
+    ) -> ClientUpdate {
+        self.mcp_busy = None;
+        match serde_json::from_value::<McpOAuthStartResult>(result) {
+            Ok(result) if !result.login_id.trim().is_empty() && is_http_url(&result.auth_url) => {
+                if let Some(push) = self.early_mcp_oauth.remove(&result.login_id) {
+                    return self.finish_mcp_oauth(push);
+                }
+                self.mcp_oauth = Some(McpOAuthSession {
+                    provider,
+                    project_path,
+                    server_id,
+                    login_id: result.login_id,
+                });
+                self.mcp_error = None;
+                self.mcp_notice = Some("Finish signing in in your browser.".into());
+                ClientUpdate::shell_event(ShellEvent::OpenUrl {
+                    url: result.auth_url,
+                })
+            }
+            Ok(_) => {
+                self.clear_orphaned_mcp_oauth_events();
+                self.mcp_error = Some("The MCP server returned an unsafe sign-in URL.".into());
+                ClientUpdate::shell_changed()
+            }
+            Err(error) => {
+                self.clear_orphaned_mcp_oauth_events();
+                self.mcp_error = Some(format!("mcp.startOAuth was invalid: {error}"));
+                ClientUpdate::shell_changed()
+            }
+        }
+    }
+
+    fn handle_mcp_oauth_cancel_response(
+        &mut self,
+        provider: ProviderId,
+        project_path: String,
+        server_id: String,
+    ) -> ClientUpdate {
+        self.mcp_busy = None;
+        if self.mcp_oauth.as_ref().is_some_and(|session| {
+            session.provider == provider
+                && session.project_path == project_path
+                && session.server_id == server_id
+        }) {
+            self.mcp_oauth = None;
+        }
+        self.mcp_error = None;
+        self.mcp_notice = Some("MCP sign-in cancelled.".into());
+        ClientUpdate::shell_changed()
+    }
+
+    fn handle_mcp_oauth_push(&mut self, push: McpOAuthPush) -> ClientUpdate {
+        let owns_login = self.mcp_oauth.as_ref().is_some_and(|session| {
+            session.provider == push.provider
+                && session.project_path == push.project_path
+                && session.server_id == push.server_id
+                && session.login_id == push.login_id
+        });
+        let pending_start = self.pending.values().any(|pending| {
+            matches!(
+                pending,
+                PendingRequest::McpOAuthStart {
+                    provider,
+                    project_path,
+                    server_id,
+                } if *provider == push.provider
+                    && *project_path == push.project_path
+                    && *server_id == push.server_id
+            )
+        });
+        if !owns_login && pending_start {
+            if self.early_mcp_oauth.len() >= 8
+                && !self.early_mcp_oauth.contains_key(&push.login_id)
+                && let Some(oldest) = self.early_mcp_oauth.keys().next().cloned()
+            {
+                self.early_mcp_oauth.remove(&oldest);
+            }
+            self.early_mcp_oauth.insert(push.login_id.clone(), push);
+            return ClientUpdate::default();
+        }
+        self.finish_mcp_oauth(push)
+    }
+
+    fn finish_mcp_oauth(&mut self, push: McpOAuthPush) -> ClientUpdate {
+        let in_scope = self.mcp_scope.as_ref() == Some(&(push.provider, push.project_path.clone()));
+        if self.mcp_oauth.as_ref().is_some_and(|session| {
+            session.provider == push.provider
+                && session.project_path == push.project_path
+                && session.server_id == push.server_id
+                && session.login_id == push.login_id
+        }) {
+            self.mcp_oauth = None;
+        }
+        if self.mcp_busy.as_deref() == Some(push.server_id.as_str()) {
+            self.mcp_busy = None;
+        }
+        if !in_scope {
+            return ClientUpdate::default();
+        }
+        if push.success {
+            self.mcp_error = None;
+            self.mcp_notice = Some("MCP sign-in completed.".into());
+            self.request_mcp_inventory(push.provider, push.project_path)
+        } else {
+            self.mcp_notice = None;
+            self.mcp_error = Some(push.error.unwrap_or_else(|| "MCP sign-in failed.".into()));
+            ClientUpdate::shell_changed()
+        }
+    }
+
+    fn clear_orphaned_mcp_oauth_events(&mut self) {
+        if !self
+            .pending
+            .values()
+            .any(|pending| matches!(pending, PendingRequest::McpOAuthStart { .. }))
+        {
+            self.early_mcp_oauth.clear();
         }
     }
 
@@ -2495,6 +2849,14 @@ impl ClientState {
                 }
                 ClientUpdate::shell_changed()
             }
+            channel::MCP_OAUTH => match serde_json::from_value::<McpOAuthPush>(data) {
+                Ok(push) => self.handle_mcp_oauth_push(push),
+                Err(error) => {
+                    self.mcp_busy = None;
+                    self.mcp_error = Some(format!("mcp.oauth push was invalid: {error}"));
+                    ClientUpdate::shell_changed()
+                }
+            },
             channel::MCP_CHANGED => match serde_json::from_value::<ProviderProjectPush>(data) {
                 Ok(push)
                     if self.mcp_scope.as_ref()
@@ -2737,6 +3099,8 @@ impl PendingRequest {
             | Self::McpList { .. }
             | Self::McpMutation { .. }
             | Self::McpReload { .. }
+            | Self::McpOAuthStart { .. }
+            | Self::McpOAuthCancel { .. }
             | Self::SkillsList { .. }
             | Self::SkillToggle { .. }
             | Self::SkillInstall { .. }
@@ -2801,6 +3165,11 @@ fn auth_params(target: &AuthTarget) -> Value {
         params.insert("agent".into(), Value::String(agent.clone()));
     }
     Value::Object(params)
+}
+
+fn is_http_url(value: &str) -> bool {
+    url::Url::parse(value)
+        .is_ok_and(|url| matches!(url.scheme(), "http" | "https") && url.host().is_some())
 }
 
 #[cfg(test)]
@@ -3249,6 +3618,116 @@ mod tests {
 
         assert!(current.shell_changed);
         assert!(state.mcp_inventory.is_some());
+    }
+
+    #[test]
+    fn mcp_oauth_opens_only_a_valid_http_url_and_refreshes_on_completion() {
+        let mut state = ClientState::new(true);
+        state.mcp_scope = Some((ProviderId::Codex, "/project".into()));
+        state.mcp_busy = Some("docs".into());
+        state.pending.insert(
+            "mcp-login".into(),
+            PendingRequest::McpOAuthStart {
+                provider: ProviderId::Codex,
+                project_path: "/project".into(),
+                server_id: "docs".into(),
+            },
+        );
+
+        let started = state.handle_response(Response::Success {
+            id: "mcp-login".into(),
+            result: json!({
+                "loginId": "login-1",
+                "authUrl": "https://example.com/oauth"
+            }),
+        });
+        assert!(matches!(
+            started.shell_events.as_slice(),
+            [ShellEvent::OpenUrl { url }] if url == "https://example.com/oauth"
+        ));
+        assert_eq!(
+            state
+                .mcp_oauth
+                .as_ref()
+                .map(|session| session.login_id.as_str()),
+            Some("login-1")
+        );
+
+        let finished = state.handle_push(
+            channel::MCP_OAUTH,
+            json!({
+                "provider": "codex",
+                "projectPath": "/project",
+                "serverId": "docs",
+                "loginId": "login-1",
+                "success": true,
+                "error": null
+            }),
+        );
+        assert!(finished.shell_changed);
+        assert!(state.mcp_oauth.is_none());
+        assert_eq!(state.mcp_notice.as_deref(), Some("MCP sign-in completed."));
+    }
+
+    #[test]
+    fn mcp_oauth_rejects_non_http_browser_targets() {
+        let mut state = ClientState::new(true);
+        state.pending.insert(
+            "mcp-login".into(),
+            PendingRequest::McpOAuthStart {
+                provider: ProviderId::Codex,
+                project_path: "/project".into(),
+                server_id: "docs".into(),
+            },
+        );
+
+        let update = state.handle_response(Response::Success {
+            id: "mcp-login".into(),
+            result: json!({ "loginId": "login-1", "authUrl": "file:///tmp/oauth" }),
+        });
+        assert!(update.shell_events.is_empty());
+        assert_eq!(
+            state.mcp_error.as_deref(),
+            Some("The MCP server returned an unsafe sign-in URL.")
+        );
+    }
+
+    #[test]
+    fn mcp_oauth_completion_can_win_the_start_response_race() {
+        let mut state = ClientState::new(true);
+        state.mcp_scope = Some((ProviderId::Codex, "/project".into()));
+        state.pending.insert(
+            "mcp-login".into(),
+            PendingRequest::McpOAuthStart {
+                provider: ProviderId::Codex,
+                project_path: "/project".into(),
+                server_id: "docs".into(),
+            },
+        );
+        let early = state.handle_push(
+            channel::MCP_OAUTH,
+            json!({
+                "provider": "codex",
+                "projectPath": "/project",
+                "serverId": "docs",
+                "loginId": "login-1",
+                "success": true,
+                "error": null
+            }),
+        );
+        assert!(!early.shell_changed);
+
+        let response = state.handle_response(Response::Success {
+            id: "mcp-login".into(),
+            result: json!({
+                "loginId": "login-1",
+                "authUrl": "https://example.com/oauth"
+            }),
+        });
+        assert!(response.shell_changed);
+        assert!(response.shell_events.is_empty());
+        assert!(state.mcp_oauth.is_none());
+        assert_eq!(state.mcp_notice.as_deref(), Some("MCP sign-in completed."));
     }
 
     #[test]
