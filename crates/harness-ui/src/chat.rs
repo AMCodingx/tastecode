@@ -8,18 +8,20 @@ mod thinking_orb;
 mod transcript;
 mod voice;
 
+use crate::chrome;
 use crate::client_state::{ChatUpdate, ModelChoice};
-use crate::model_selection::{fast_service_tier, is_fast_mode_enabled};
-use crate::provider_icon::provider_icon;
+use crate::model_selection::{fast_service_tier, is_fast_mode_enabled, source_key};
+use crate::provider_icon::{provider_icon, provider_icon_color};
 use crate::theme::{CHAT_WIDTH, RADIUS_XL, Theme, ThemeMode, cubic_bezier_timing};
 use crate::zoom::px;
 use diff::DiffUiState;
 use gpui::{
     Animation, AnimationExt, AnyElement, App, Background, Bounds, BoxShadow, ClipboardEntry,
     Context, Entity, EventEmitter, ExternalPaths, FocusHandle, Focusable, FontWeight,
-    HighlightStyle, Image, ImageFormat, ListAlignment, ListOffset, ListState, ObjectFit, Pixels,
-    Point, Render, Rgba, ScrollWheelEvent, SharedString, StyledImage, StyledText, Window, canvas,
-    div, fill, img, linear_color_stop, linear_gradient, point, prelude::*, relative, size, svg,
+    HighlightStyle, Image, ImageFormat, KeyDownEvent, ListAlignment, ListOffset, ListState,
+    ObjectFit, Pixels, Point, Render, Rgba, ScrollWheelEvent, SharedString, StyledImage,
+    StyledText, Window, canvas, div, fill, img, linear_color_stop, linear_gradient, point,
+    prelude::*, relative, size, svg,
 };
 use gpui_component::RopeExt;
 use gpui_component::input::{Input, InputEvent, InputState};
@@ -229,6 +231,14 @@ struct InputFieldSync {
     masked: bool,
 }
 
+#[derive(Clone)]
+struct ModelSourceGroup {
+    key: String,
+    name: String,
+    provider: ProviderId,
+    entries: Vec<ModelChoice>,
+}
+
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 enum VoicePhase {
     #[default]
@@ -302,6 +312,10 @@ pub(crate) struct ChatView {
     last_specific_work_label: Option<String>,
     thread_search: ThreadSearchState,
     composer: Entity<InputState>,
+    model_search: Entity<InputState>,
+    model_search_reset: bool,
+    model_search_focus_pending: bool,
+    active_model_source_key: Option<String>,
     user_input_custom: Entity<InputState>,
     clear_composer: bool,
     restore_composer: Option<String>,
@@ -355,12 +369,17 @@ impl ChatView {
                 .auto_grow(2, 11)
                 .placeholder("Do anything")
         });
+        let model_search = cx.new(|cx| InputState::new(window, cx).placeholder("Search models"));
         let user_input_custom =
             cx.new(|cx| InputState::new(window, cx).placeholder("Type your answer…"));
         let thread_search = ThreadSearchState::new(window, cx);
         cx.subscribe(&composer, |this, _composer, event, cx| match event {
             InputEvent::PressEnter { secondary } => this.submit(*secondary, cx),
             InputEvent::Change | InputEvent::Focus | InputEvent::Blur => cx.notify(),
+        })
+        .detach();
+        cx.subscribe(&model_search, |_this, _input, _event: &InputEvent, cx| {
+            cx.notify()
         })
         .detach();
         cx.subscribe(&user_input_custom, |this, input, event, cx| match event {
@@ -437,6 +456,10 @@ impl ChatView {
             last_specific_work_label: None,
             thread_search,
             composer,
+            model_search,
+            model_search_reset: false,
+            model_search_focus_pending: false,
+            active_model_source_key: None,
             user_input_custom,
             clear_composer: false,
             restore_composer: None,
@@ -491,6 +514,11 @@ impl ChatView {
     pub(crate) fn text_input_focused(&self, window: &Window, cx: &App) -> bool {
         self.composer.read(cx).focus_handle(cx).is_focused(window)
             || self
+                .model_search
+                .read(cx)
+                .focus_handle(cx)
+                .is_focused(window)
+            || self
                 .user_input_custom
                 .read(cx)
                 .focus_handle(cx)
@@ -543,6 +571,9 @@ impl ChatView {
         self.attachments.clear();
         self.attachment_error = None;
         self.composer_menu = None;
+        self.model_search_reset = false;
+        self.model_search_focus_pending = false;
+        self.active_model_source_key = None;
         self.reset_effort_interaction();
         self.active_user_input_id = None;
         self.user_input_step = 0;
@@ -1810,9 +1841,36 @@ impl ChatView {
         };
         if self.composer_menu == Some(ComposerMenu::Model) && next != self.composer_menu {
             self.reset_effort_interaction();
+            self.model_search_focus_pending = false;
+        }
+        if next == Some(ComposerMenu::Model) && self.composer_menu != next {
+            self.active_model_source_key = self.selected_model().map(model_picker_source_key);
+            self.model_search_reset = true;
+            self.model_search_focus_pending = true;
         }
         self.composer_menu = next;
         cx.notify();
+    }
+
+    fn prepare_model_search_input(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.model_search_reset {
+            self.model_search.update(cx, |input, cx| {
+                input.set_value("", window, cx);
+            });
+            self.model_search_reset = false;
+        }
+        if self.model_search_focus_pending && self.composer_menu == Some(ComposerMenu::Model) {
+            self.model_search
+                .update(cx, |input, cx| input.focus(window, cx));
+            self.model_search_focus_pending = false;
+        }
+    }
+
+    fn select_model_source(&mut self, key: String, cx: &mut Context<Self>) {
+        if self.active_model_source_key.as_deref() != Some(key.as_str()) {
+            self.active_model_source_key = Some(key);
+            cx.notify();
+        }
     }
 
     fn choose_project(&mut self, path: String, cx: &mut Context<Self>) {
@@ -4222,82 +4280,194 @@ impl ChatView {
         let theme = self.theme;
         let selected_key = self.composer_settings.selected_model_key.clone();
         let selected = self.selected_model().cloned();
-        let mut last_source = None::<String>;
+        let groups = group_models_by_source(&self.composer_settings.models);
+        let selected_group_key = selected.as_ref().map(model_picker_source_key);
+        let active_group = self
+            .active_model_source_key
+            .as_deref()
+            .and_then(|key| groups.iter().find(|group| group.key == key))
+            .or_else(|| {
+                selected_group_key
+                    .as_deref()
+                    .and_then(|key| groups.iter().find(|group| group.key == key))
+            })
+            .or_else(|| groups.first())
+            .cloned();
+        let active_group_key = active_group.as_ref().map(|group| group.key.clone());
+        let query = self.model_search.read(cx).value().to_string();
         let attachment_offset = self.attachment_shelf_height();
         let menu_bottom = (if is_new_session { 183.0 } else { 147.0 }) + attachment_offset;
-        let mut rows = Vec::new();
-        for (index, choice) in self.composer_settings.models.iter().cloned().enumerate() {
-            if last_source.as_deref() != Some(choice.source_name.as_str()) {
-                let first_group = last_source.is_none();
-                last_source = Some(choice.source_name.clone());
-                if !first_group {
-                    rows.push(
-                        div()
-                            .h(px(5.0))
-                            .mt(px(4.0))
-                            .border_t_1()
-                            .border_color(theme.line.hsla().opacity(0.6))
-                            .into_any_element(),
-                    );
-                }
-                rows.push(
-                    div()
-                        .h(px(27.0))
-                        .flex()
-                        .items_center()
-                        .gap(px(6.0))
-                        .px(px(8.0))
-                        .text_size(px(10.0))
-                        .font_weight(FontWeight(560.0))
-                        .text_color(theme.text_3.hsla())
-                        .child(provider_icon(choice.provider, theme, 13.0))
-                        .child(choice.source_name.clone())
-                        .into_any_element(),
-                );
-            }
-            let active = selected_key.as_deref() == Some(choice.key.as_str());
-            let key = choice.key.clone();
-            rows.push(
+        let provider_rail = div()
+            .id("model-provider-rail")
+            .h_full()
+            .w(px(52.0))
+            .flex_none()
+            .flex()
+            .flex_col()
+            .items_center()
+            .gap(px(4.0))
+            .overflow_y_scroll()
+            .px(px(8.0))
+            .py(px(6.0))
+            .bg(theme.surface.hsla())
+            .border_r_1()
+            .border_color(theme.line.hsla())
+            .children(groups.into_iter().enumerate().map(|(index, group)| {
+                let active = active_group_key.as_deref() == Some(group.key.as_str());
+                let key = group.key;
                 div()
-                    .id(("model-option", index))
-                    .min_h(px(32.0))
-                    .w_full()
+                    .id(("model-provider", index))
+                    .size(px(34.0))
+                    .flex_none()
                     .flex()
                     .items_center()
-                    .gap(px(8.0))
-                    .px(px(8.0))
-                    .rounded(px(8.0))
-                    .when(active, |row| {
-                        row.bg(model_picker_selected_background(theme))
+                    .justify_center()
+                    .rounded(px(5.0))
+                    .text_color(if active {
+                        theme.text.hsla()
+                    } else {
+                        theme.text_3.hsla()
+                    })
+                    .when(active, |button| {
+                        button
+                            .bg(model_picker_selected_background(theme))
                             .shadow(model_picker_selected_shadows(theme))
-                            .when(theme.mode == ThemeMode::Light, |row| {
-                                row.border_1().border_color(gpui::rgb(0xe3e3e6))
+                            .when(theme.mode == ThemeMode::Light, |button| {
+                                button.border_1().border_color(gpui::rgb(0xe3e3e6))
                             })
                     })
                     .cursor_pointer()
                     .hover(move |style| style.bg(model_picker_hover_background(theme)))
+                    .active(|style| style.opacity(0.78))
                     .on_click(cx.listener(move |this, _event, _window, cx| {
-                        this.choose_model(key.clone(), cx);
+                        this.select_model_source(key.clone(), cx);
                     }))
-                    .child(
-                        div()
-                            .min_w(px(0.0))
-                            .flex_1()
-                            .truncate()
-                            .text_size(px(12.5))
-                            .text_color(theme.text.hsla())
-                            .child(choice.model.display_name),
-                    )
-                    .when(active, |row| row.child(svg_icon("icons/check.svg", 13.0)))
-                    .into_any_element(),
-            );
-        }
+                    .child(provider_icon_color(
+                        group.provider,
+                        18.0,
+                        if active {
+                            theme.text.hsla()
+                        } else {
+                            theme.text_3.hsla()
+                        },
+                    ))
+            }));
+
+        let models = if let Some(group) = active_group {
+            let rows = filter_model_choices_by_query(&group.entries, &query)
+                .into_iter()
+                .enumerate()
+                .map(|(index, choice)| {
+                    let active = selected_key.as_deref() == Some(choice.key.as_str());
+                    let key = choice.key.clone();
+                    div()
+                        .id(("model-option", index))
+                        .min_h(px(32.0))
+                        .w_full()
+                        .flex()
+                        .items_center()
+                        .justify_between()
+                        .gap(px(8.0))
+                        .px(px(8.0))
+                        .rounded(px(5.0))
+                        .when(active, |row| {
+                            row.bg(model_picker_selected_background(theme))
+                                .shadow(model_picker_selected_shadows(theme))
+                                .when(theme.mode == ThemeMode::Light, |row| {
+                                    row.border_1().border_color(gpui::rgb(0xe3e3e6))
+                                })
+                        })
+                        .cursor_pointer()
+                        .hover(move |style| style.bg(model_picker_hover_background(theme)))
+                        .on_click(cx.listener(move |this, _event, _window, cx| {
+                            this.choose_model(key.clone(), cx);
+                        }))
+                        .child(
+                            div()
+                                .min_w(px(0.0))
+                                .flex_1()
+                                .truncate()
+                                .text_size(px(12.5))
+                                .text_color(theme.text.hsla())
+                                .child(choice.model.display_name),
+                        )
+                        .when(active, |row| {
+                            row.child(
+                                div()
+                                    .flex_none()
+                                    .text_color(theme.text_2.hsla())
+                                    .child(svg_icon("icons/check.svg", 14.0)),
+                            )
+                        })
+                        .into_any_element()
+                })
+                .collect::<Vec<_>>();
+            let empty = rows.is_empty();
+            div()
+                .h_full()
+                .min_w(px(0.0))
+                .flex_1()
+                .flex()
+                .flex_col()
+                .p(px(6.0))
+                .child(
+                    div()
+                        .h(px(34.0))
+                        .flex_none()
+                        .flex()
+                        .items_center()
+                        .gap(px(6.0))
+                        .pl(px(8.0))
+                        .pr(px(4.0))
+                        .py(px(3.0))
+                        .when(theme.mode == ThemeMode::Dark, |header| {
+                            header.bg(theme.surface_2.hsla())
+                        })
+                        .child(
+                            div()
+                                .min_w(px(0.0))
+                                .flex_1()
+                                .truncate()
+                                .text_size(px(10.0))
+                                .font_weight(FontWeight(560.0))
+                                .text_color(theme.text_3.hsla())
+                                .child(group.name),
+                        )
+                        .child(self.model_search_field(query, window, cx)),
+                )
+                .child(
+                    div()
+                        .id(SharedString::from(format!(
+                            "model-options-scroll:{}",
+                            group.key
+                        )))
+                        .flex_1()
+                        .min_h(px(0.0))
+                        .overflow_y_scroll()
+                        .when(empty, |list| {
+                            list.child(
+                                div()
+                                    .px(px(8.0))
+                                    .py(px(24.0))
+                                    .text_center()
+                                    .text_size(px(12.5))
+                                    .text_color(theme.text_3.hsla())
+                                    .child("No matching models."),
+                            )
+                        })
+                        .children(rows),
+                )
+                .into_any_element()
+        } else {
+            div().flex_1().into_any_element()
+        };
 
         div()
+            .occlude()
             .absolute()
             .right(px(38.0))
             .bottom(px(menu_bottom))
-            .w(px(330.0))
+            .w(px(382.0))
             .max_h(px(520.0))
             .rounded(px(RADIUS_XL))
             .border_1()
@@ -4307,11 +4477,12 @@ impl ChatView {
             .overflow_hidden()
             .child(
                 div()
-                    .id("model-options-scroll")
-                    .max_h(px(246.0))
-                    .overflow_y_scroll()
-                    .p(px(6.0))
-                    .children(rows),
+                    .h(px(246.0))
+                    .w_full()
+                    .flex()
+                    .overflow_hidden()
+                    .child(provider_rail)
+                    .child(models),
             )
             .when_some(selected, |menu, selected| {
                 menu.child(self.model_controls(selected, window, cx))
@@ -4324,6 +4495,87 @@ impl ChatView {
                         .bottom(px(menu_bottom - 2.0 * (1.0 - delta)))
                 },
             )
+            .into_any_element()
+    }
+
+    fn model_search_field(&self, query: String, window: &Window, cx: &Context<Self>) -> AnyElement {
+        let theme = self.theme;
+        let focused = self
+            .model_search
+            .read(cx)
+            .focus_handle(cx)
+            .is_focused(window);
+        let clear_input = self.model_search.clone();
+        div()
+            .id("model-search")
+            .relative()
+            .h(px(26.0))
+            .w(px(184.0))
+            .min_w(px(120.0))
+            .flex_none()
+            .flex()
+            .items_center()
+            .gap(px(6.0))
+            .px(px(7.0))
+            .rounded(px(5.0))
+            .border_1()
+            .border_color(if focused {
+                theme.text_3.hsla()
+            } else {
+                chrome::border(theme)
+            })
+            .bg(chrome::recessed(theme))
+            .text_color(theme.text_3.hsla())
+            .on_key_down(cx.listener(|this, event: &KeyDownEvent, window, cx| {
+                if event.keystroke.key.eq_ignore_ascii_case("escape")
+                    && !this.model_search.read(cx).value().is_empty()
+                {
+                    cx.stop_propagation();
+                    this.model_search.update(cx, |input, cx| {
+                        input.set_value("", window, cx);
+                    });
+                }
+            }))
+            .child(chrome::inset_top_shade(theme))
+            .child(svg_icon("icons/search.svg", 13.0))
+            .child(
+                Input::new(&self.model_search)
+                    .appearance(false)
+                    .bordered(false)
+                    .focus_bordered(false)
+                    .cleanable(false)
+                    .h(px(24.0))
+                    .min_w(px(0.0))
+                    .flex_1()
+                    .px(px(0.0))
+                    .text_size(px(12.5))
+                    .text_color(theme.text.hsla()),
+            )
+            .when(!query.is_empty(), |field| {
+                field.child(
+                    div()
+                        .id("clear-model-search")
+                        .size(px(18.0))
+                        .flex_none()
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .rounded_full()
+                        .cursor_pointer()
+                        .hover(move |style| {
+                            style
+                                .bg(theme.surface_3.hsla())
+                                .text_color(theme.text.hsla())
+                        })
+                        .on_click(move |_event, window, cx| {
+                            clear_input.update(cx, |input, cx| {
+                                input.set_value("", window, cx);
+                                input.focus(window, cx);
+                            });
+                        })
+                        .child(svg_icon("icons/x.svg", 12.0)),
+                )
+            })
             .into_any_element()
     }
 
@@ -4709,6 +4961,7 @@ impl Render for ChatView {
             });
         }
         self.prepare_thread_search_input(window, cx);
+        self.prepare_model_search_input(window, cx);
         if let Some(text) = self.restore_composer.take() {
             self.composer.update(cx, |composer, cx| {
                 composer.set_value(text, window, cx);
@@ -5015,6 +5268,60 @@ fn brief_flyout_shadows(theme: Theme) -> Vec<BoxShadow> {
             },
         ]
     }
+}
+
+fn model_picker_source_key(choice: &ModelChoice) -> String {
+    format!("{}:{}", source_key(choice), choice.source_name)
+}
+
+fn group_models_by_source(models: &[ModelChoice]) -> Vec<ModelSourceGroup> {
+    let mut groups = Vec::<ModelSourceGroup>::new();
+    for choice in models.iter().cloned() {
+        let key = model_picker_source_key(&choice);
+        if let Some(group) = groups.iter_mut().find(|group| group.key == key) {
+            group.entries.push(choice);
+        } else {
+            groups.push(ModelSourceGroup {
+                key,
+                name: choice.source_name.clone(),
+                provider: choice.provider,
+                entries: vec![choice],
+            });
+        }
+    }
+    groups
+}
+
+fn filter_model_choices_by_query(choices: &[ModelChoice], query: &str) -> Vec<ModelChoice> {
+    let terms = query
+        .split_whitespace()
+        .map(str::to_lowercase)
+        .collect::<Vec<_>>();
+    if terms.is_empty() {
+        return choices.to_vec();
+    }
+    choices
+        .iter()
+        .filter(|choice| {
+            model_search_fields_match(
+                &choice.source_name,
+                &choice.model.display_name,
+                &choice.model.id,
+                &terms,
+            )
+        })
+        .cloned()
+        .collect()
+}
+
+fn model_search_fields_match(
+    source_name: &str,
+    display_name: &str,
+    model_id: &str,
+    terms: &[String],
+) -> bool {
+    let searchable = format!("{source_name} {display_name} {model_id}").to_lowercase();
+    terms.iter().all(|term| searchable.contains(term))
 }
 
 fn icon_tool_button(
@@ -5926,6 +6233,26 @@ mod tests {
         assert_eq!(friendly_effort_label(Some("xhigh")), "Extra High");
         assert_eq!(friendly_effort_label(Some("xlow")), "Extra Low");
         assert_eq!(friendly_effort_label(Some("extra_high")), "Extra High");
+    }
+
+    #[test]
+    fn model_search_matches_every_case_insensitive_visible_term() {
+        let terms = ["opus", "openrouter"]
+            .into_iter()
+            .map(str::to_owned)
+            .collect::<Vec<_>>();
+        assert!(model_search_fields_match(
+            "OpenCode",
+            "OpenRouter · Claude Opus 5",
+            "openrouter/claude-opus-5",
+            &terms,
+        ));
+        assert!(!model_search_fields_match(
+            "OpenCode",
+            "OpenCode Go · Qwen3.8 Max",
+            "qwen/qwen3.8-max",
+            &terms,
+        ));
     }
 
     #[test]

@@ -229,6 +229,16 @@ impl ChatView {
             self.close_thread_search(cx);
             return;
         }
+        if event.keystroke.key.eq_ignore_ascii_case("escape") && self.composer_menu.is_some() {
+            cx.stop_propagation();
+            if self.composer_menu == Some(super::ComposerMenu::Model) {
+                self.reset_effort_interaction();
+                self.model_search_focus_pending = false;
+            }
+            self.composer_menu = None;
+            cx.notify();
+            return;
+        }
         if self.thread_search.open
             && event.keystroke.key.eq_ignore_ascii_case("enter")
             && event.keystroke.modifiers.shift
@@ -273,6 +283,11 @@ impl ChatView {
 
     fn text_input_focused_for_search(&self, window: &Window, cx: &gpui::App) -> bool {
         self.composer.read(cx).focus_handle(cx).is_focused(window)
+            || self
+                .model_search
+                .read(cx)
+                .focus_handle(cx)
+                .is_focused(window)
             || self
                 .user_input_custom
                 .read(cx)

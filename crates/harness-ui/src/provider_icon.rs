@@ -1,6 +1,6 @@
 use crate::theme::Theme;
 use crate::zoom::px;
-use gpui::{AnyElement, IntoElement, Styled, svg};
+use gpui::{AnyElement, Hsla, IntoElement, Styled, svg};
 use harness_protocol::{ModelConnectionPreset, ProviderId};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -22,6 +22,10 @@ pub(crate) enum ProviderMark {
 
 pub(crate) fn provider_icon(provider: ProviderId, theme: Theme, size: f32) -> AnyElement {
     mark_icon(provider_mark(provider), theme, size)
+}
+
+pub(crate) fn provider_icon_color(provider: ProviderId, size: f32, color: Hsla) -> AnyElement {
+    mark_icon_color(provider_mark(provider), size, color)
 }
 
 pub(crate) fn provider_mark(provider: ProviderId) -> ProviderMark {
@@ -57,6 +61,10 @@ pub(crate) fn connection_mark(preset: ModelConnectionPreset) -> ProviderMark {
 }
 
 pub(crate) fn mark_icon(mark: ProviderMark, theme: Theme, size: f32) -> AnyElement {
+    mark_icon_color(mark, size, theme.text_2.hsla())
+}
+
+fn mark_icon_color(mark: ProviderMark, size: f32, color: Hsla) -> AnyElement {
     svg()
         .path(match mark {
             ProviderMark::OpenAi => "icons/openai.svg",
@@ -74,7 +82,7 @@ pub(crate) fn mark_icon(mark: ProviderMark, theme: Theme, size: f32) -> AnyEleme
             ProviderMark::Custom => "icons/custom-provider.svg",
         })
         .size(px(size))
-        .text_color(theme.text_2.hsla())
+        .text_color(color)
         .into_any_element()
 }
 
