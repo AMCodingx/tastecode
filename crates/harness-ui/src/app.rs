@@ -233,6 +233,13 @@ impl HarnessApp {
                 this.sync_composer_settings(cx);
             }
             ChatEvent::PickAttachments => this.pick_attachments(cx),
+            ChatEvent::TranscribeVoice { params } => {
+                let update = this.state.transcribe_voice(params.clone());
+                this.apply_client_update(update, cx);
+            }
+            ChatEvent::CancelVoice { request_id } => {
+                this.state.cancel_voice(request_id.clone());
+            }
             ChatEvent::RespondApproval {
                 thread_id,
                 approval_id,
@@ -728,6 +735,18 @@ impl HarnessApp {
     }
 
     fn sync_composer_settings(&mut self, cx: &mut Context<Self>) {
+        let selected_provider = self.selected_model_choice().map(|choice| choice.provider);
+        if let Some(provider) = selected_provider {
+            self.state.ensure_voice_status(provider);
+        }
+        let voice_available = selected_provider.is_some_and(|provider| {
+            provider == ProviderId::Codex
+                && self
+                    .state
+                    .voice_statuses
+                    .get(&provider)
+                    .is_some_and(|status| status.available)
+        });
         let auto_review_supported = self.selected_model_choice().is_some_and(|choice| {
             self.state
                 .provider_statuses
@@ -757,6 +776,7 @@ impl HarnessApp {
                     auto_review_supported,
                     isolate: self.isolate_session,
                     design_mode: self.design_mode,
+                    voice_available,
                 },
                 cx,
             );

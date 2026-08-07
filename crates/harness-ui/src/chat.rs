@@ -1,5 +1,6 @@
 mod diff;
 pub(crate) mod terminal;
+mod voice;
 
 use crate::client_state::{ChatUpdate, ModelChoice};
 use crate::theme::{CHAT_WIDTH, Theme};
@@ -9,19 +10,23 @@ use gpui::{
     ListAlignment, ListState, Render, SharedString, Window, div, ease_out_quint, list, prelude::*,
     px, relative, svg,
 };
+use gpui_component::RopeExt;
 use gpui_component::input::{Input, InputEvent, InputState};
 use harness_protocol::{
     ApprovalDecision, ApprovalKind, ApprovalMode, ApprovalReview, ApprovalReviewStatus,
     DiffDecision, Item, ItemStatus, ItemType, MessageRole, ProviderId, RiskLevel, ThreadEventPush,
-    ThreadQueueResult, UserInputQuestion,
+    ThreadQueueResult, UserInputQuestion, VoiceMimeType, VoiceTranscribeParams,
 };
 use harness_state::{ApplyOutcome, HistoryError, ThreadState};
 use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 use std::time::Duration;
 use terminal::TerminalUiState;
+use voice::{MAX_RECORDING_DURATION, VOICE_SAMPLE_RATE, VoiceRecorder};
 
 const LIVE_FLUSH_INTERVAL: Duration = Duration::from_millis(16);
+const VOICE_LEVEL_INTERVAL: Duration = Duration::from_millis(45);
+const MAX_WAVEFORM_LEVELS: usize = 160;
 
 #[derive(Clone)]
 pub(crate) struct SessionContext {
@@ -65,6 +70,12 @@ pub(crate) enum ChatEvent {
     ToggleIsolation,
     ToggleDesign,
     PickAttachments,
+    TranscribeVoice {
+        params: VoiceTranscribeParams,
+    },
+    CancelVoice {
+        request_id: String,
+    },
     RespondApproval {
         thread_id: String,
         approval_id: String,
@@ -116,6 +127,7 @@ pub(crate) struct ComposerSettings {
     pub(crate) auto_review_supported: bool,
     pub(crate) isolate: bool,
     pub(crate) design_mode: bool,
+    pub(crate) voice_available: bool,
 }
 
 impl Default for ComposerSettings {
@@ -129,6 +141,7 @@ impl Default for ComposerSettings {
             auto_review_supported: false,
             isolate: false,
             design_mode: false,
+            voice_available: false,
         }
     }
 }
@@ -142,6 +155,20 @@ enum ComposerMenu {
 struct InputFieldSync {
     value: String,
     masked: bool,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+enum VoicePhase {
+    #[default]
+    Idle,
+    Recording,
+    Transcribing,
+}
+
+struct PendingTranscript {
+    text: String,
+    cursor: usize,
+    send_after: bool,
 }
 
 pub(crate) struct ChatView {
@@ -173,6 +200,15 @@ pub(crate) struct ChatView {
     action_errors: HashMap<String, String>,
     diff_ui: DiffUiState,
     terminal_ui: TerminalUiState,
+    voice_recorder: VoiceRecorder,
+    voice_phase: VoicePhase,
+    voice_error: Option<String>,
+    voice_request_id: Option<String>,
+    voice_cursor: usize,
+    voice_send_after: bool,
+    voice_levels: Vec<f32>,
+    voice_tick_scheduled: bool,
+    pending_transcript: Option<PendingTranscript>,
 }
 
 impl ChatView {
@@ -234,10 +270,20 @@ impl ChatView {
             action_errors: HashMap::new(),
             diff_ui: DiffUiState::default(),
             terminal_ui: TerminalUiState::new(cx),
+            voice_recorder: VoiceRecorder::default(),
+            voice_phase: VoicePhase::Idle,
+            voice_error: None,
+            voice_request_id: None,
+            voice_cursor: 0,
+            voice_send_after: false,
+            voice_levels: Vec::new(),
+            voice_tick_scheduled: false,
+            pending_transcript: None,
         }
     }
 
     pub(crate) fn begin_session(&mut self, session: SessionContext, cx: &mut Context<Self>) {
+        self.cancel_voice(cx);
         self.release_terminal_for_session_change(cx);
         self.session = Some(session);
         self.state = ThreadState::default();
@@ -296,6 +342,9 @@ impl ChatView {
         cx: &mut Context<Self>,
     ) {
         self.composer_settings = settings;
+        if !self.composer_settings.voice_available && self.voice_phase != VoicePhase::Idle {
+            self.cancel_voice(cx);
+        }
         cx.notify();
     }
 
@@ -451,6 +500,27 @@ impl ChatView {
                 }
                 cx.notify();
             }
+            ChatUpdate::VoiceTranscribed { request_id, text }
+                if self.voice_request_id.as_deref() == Some(request_id.as_str()) =>
+            {
+                self.voice_request_id = None;
+                self.voice_phase = VoicePhase::Idle;
+                self.pending_transcript = Some(PendingTranscript {
+                    text,
+                    cursor: self.voice_cursor,
+                    send_after: self.voice_send_after,
+                });
+                cx.notify();
+            }
+            ChatUpdate::VoiceTranscriptionError {
+                request_id,
+                message,
+            } if self.voice_request_id.as_deref() == Some(request_id.as_str()) => {
+                self.voice_request_id = None;
+                self.voice_phase = VoicePhase::Idle;
+                self.voice_error = Some(message);
+                cx.notify();
+            }
             ChatUpdate::Connection(connection) => {
                 self.apply_terminal_connection(connection, cx);
             }
@@ -480,7 +550,9 @@ impl ChatView {
             | ChatUpdate::ApprovalError { .. }
             | ChatUpdate::UserInputError { .. }
             | ChatUpdate::DiffSnapshot { .. }
-            | ChatUpdate::DiffError { .. } => {}
+            | ChatUpdate::DiffError { .. }
+            | ChatUpdate::VoiceTranscribed { .. }
+            | ChatUpdate::VoiceTranscriptionError { .. } => {}
         }
     }
 
@@ -874,6 +946,9 @@ impl ChatView {
     }
 
     fn primary_action(&mut self, cx: &mut Context<Self>) {
+        if self.voice_phase != VoicePhase::Idle {
+            return;
+        }
         let has_draft = !self.composer.read(cx).value().trim().is_empty();
         if self.state.running && !has_draft {
             if let Some(thread_id) = self
@@ -888,6 +963,122 @@ impl ChatView {
         } else {
             self.submit(false, cx);
         }
+    }
+
+    fn start_voice(&mut self, cx: &mut Context<Self>) {
+        if self.voice_phase != VoicePhase::Idle
+            || !self.composer_settings.voice_available
+            || self.state.running
+        {
+            return;
+        }
+        self.voice_error = None;
+        match self.voice_recorder.start() {
+            Ok(()) => {
+                self.voice_phase = VoicePhase::Recording;
+                self.voice_levels.clear();
+                self.schedule_voice_tick(cx);
+            }
+            Err(error) => self.voice_error = Some(error),
+        }
+        cx.notify();
+    }
+
+    fn stop_voice(&mut self, send_after: bool, cx: &mut Context<Self>) {
+        if self.voice_phase != VoicePhase::Recording {
+            return;
+        }
+        self.voice_phase = VoicePhase::Transcribing;
+        self.voice_error = None;
+        self.voice_cursor = self.composer.read(cx).cursor();
+        self.voice_send_after = send_after;
+        match self.voice_recorder.stop() {
+            Ok(Some(recording)) => {
+                let request_id = uuid::Uuid::new_v4().to_string();
+                self.voice_request_id = Some(request_id.clone());
+                cx.emit(ChatEvent::TranscribeVoice {
+                    params: VoiceTranscribeParams {
+                        request_id,
+                        provider: ProviderId::Codex,
+                        audio_base64: recording.audio_base64,
+                        mime_type: VoiceMimeType::Wav,
+                        sample_rate_hz: VOICE_SAMPLE_RATE,
+                        duration_ms: recording.duration_ms,
+                    },
+                });
+            }
+            Ok(None) => {
+                self.voice_phase = VoicePhase::Idle;
+                self.voice_error = Some(
+                    "No audio was captured. Check the selected microphone and try again.".into(),
+                );
+            }
+            Err(error) => {
+                self.voice_phase = VoicePhase::Idle;
+                self.voice_error = Some(error);
+            }
+        }
+        cx.notify();
+    }
+
+    fn cancel_voice(&mut self, cx: &mut Context<Self>) {
+        if self.voice_phase == VoicePhase::Idle && self.voice_request_id.is_none() {
+            return;
+        }
+        if let Some(request_id) = self.voice_request_id.take() {
+            cx.emit(ChatEvent::CancelVoice { request_id });
+        }
+        self.voice_recorder.cancel();
+        self.voice_phase = VoicePhase::Idle;
+        self.voice_error = None;
+        self.voice_levels.clear();
+        cx.notify();
+    }
+
+    fn schedule_voice_tick(&mut self, cx: &mut Context<Self>) {
+        if self.voice_tick_scheduled {
+            return;
+        }
+        self.voice_tick_scheduled = true;
+        cx.spawn(async move |view, cx| {
+            loop {
+                cx.background_executor().timer(VOICE_LEVEL_INTERVAL).await;
+                let keep_ticking = view
+                    .update(cx, |this, cx| this.voice_tick(cx))
+                    .unwrap_or(false);
+                if !keep_ticking {
+                    break;
+                }
+            }
+        })
+        .detach();
+    }
+
+    fn voice_tick(&mut self, cx: &mut Context<Self>) -> bool {
+        if self.voice_phase != VoicePhase::Recording {
+            self.voice_tick_scheduled = false;
+            return false;
+        }
+        if let Some(error) = self.voice_recorder.take_error() {
+            self.voice_recorder.cancel();
+            self.voice_phase = VoicePhase::Idle;
+            self.voice_error = Some(error);
+            self.voice_tick_scheduled = false;
+            cx.notify();
+            return false;
+        }
+        self.voice_levels.push(self.voice_recorder.level());
+        if self.voice_levels.len() > MAX_WAVEFORM_LEVELS {
+            let excess = self.voice_levels.len() - MAX_WAVEFORM_LEVELS;
+            self.voice_levels.drain(..excess);
+        }
+        if self.voice_recorder.elapsed() >= MAX_RECORDING_DURATION {
+            self.voice_tick_scheduled = false;
+            self.stop_voice(false, cx);
+            return false;
+        }
+        cx.notify();
+        true
     }
 
     fn toggle_composer_menu(&mut self, menu: ComposerMenu, cx: &mut Context<Self>) {
@@ -1688,36 +1879,190 @@ impl ChatView {
                                         theme,
                                         Some(design_action),
                                     ))
-                                    .child(div().flex_1())
-                                    .when_some(self.model_trigger(running, cx), |tools, trigger| {
-                                        tools.child(trigger)
+                                    .when(self.voice_phase == VoicePhase::Idle, |tools| {
+                                        tools
+                                            .child(div().flex_1())
+                                            .when_some(
+                                                self.model_trigger(running, cx),
+                                                |tools, trigger| tools.child(trigger),
+                                            )
+                                            .when(
+                                                self.composer_settings.voice_available && !running,
+                                                |tools| tools.child(self.voice_button(cx)),
+                                            )
+                                            .child(
+                                                div()
+                                                    .id("composer-primary-action")
+                                                    .size(px(28.0))
+                                                    .rounded(px(9.0))
+                                                    .flex()
+                                                    .items_center()
+                                                    .justify_center()
+                                                    .bg(theme.text.hsla())
+                                                    .text_color(theme.background.hsla())
+                                                    .text_size(px(13.0))
+                                                    .font_weight(FontWeight::SEMIBOLD)
+                                                    .cursor_pointer()
+                                                    .active(|style| style.opacity(0.72))
+                                                    .on_click(cx.listener(
+                                                        |this, _event, _window, cx| {
+                                                            this.primary_action(cx);
+                                                        },
+                                                    ))
+                                                    .child(if running && !has_draft {
+                                                        "■"
+                                                    } else {
+                                                        "↑"
+                                                    }),
+                                            )
                                     })
-                                    .child(
-                                        div()
-                                            .id("composer-primary-action")
-                                            .size(px(28.0))
-                                            .rounded(px(9.0))
-                                            .flex()
-                                            .items_center()
-                                            .justify_center()
-                                            .bg(theme.text.hsla())
-                                            .text_color(theme.background.hsla())
-                                            .text_size(px(13.0))
-                                            .font_weight(FontWeight::SEMIBOLD)
-                                            .cursor_pointer()
-                                            .active(|style| style.opacity(0.72))
-                                            .on_click(cx.listener(|this, _event, _window, cx| {
-                                                this.primary_action(cx);
-                                            }))
-                                            .child(if running && !has_draft {
-                                                "■"
-                                            } else {
-                                                "↑"
-                                            }),
-                                    ),
+                                    .when(self.voice_phase != VoicePhase::Idle, |tools| {
+                                        tools.child(self.voice_bar(running, cx))
+                                    }),
                             ),
                     ),
             )
+            .when_some(self.voice_error.clone(), |composer, error| {
+                composer.child(
+                    div()
+                        .w_full()
+                        .max_w(px(CHAT_WIDTH))
+                        .mx_auto()
+                        .mt(px(5.0))
+                        .px(px(12.0))
+                        .text_size(px(10.5))
+                        .line_height(relative(1.4))
+                        .text_color(theme.error.hsla())
+                        .child(error),
+                )
+            })
+    }
+
+    fn voice_button(&self, cx: &Context<Self>) -> AnyElement {
+        let theme = self.theme;
+        div()
+            .id("composer-voice")
+            .size(px(30.0))
+            .ml(px(2.0))
+            .rounded(px(15.0))
+            .border_1()
+            .border_color(theme.line_strong.hsla())
+            .bg(theme.surface.hsla())
+            .flex()
+            .items_center()
+            .justify_center()
+            .text_color(theme.text_2.hsla())
+            .cursor_pointer()
+            .hover(move |style| {
+                style
+                    .bg(theme.surface_2.hsla())
+                    .text_color(theme.text.hsla())
+            })
+            .active(|style| style.opacity(0.72))
+            .on_click(cx.listener(|this, _event, _window, cx| this.start_voice(cx)))
+            .child(svg_icon("icons/mic.svg", 15.0))
+            .into_any_element()
+    }
+
+    fn voice_bar(&self, running: bool, cx: &Context<Self>) -> AnyElement {
+        let theme = self.theme;
+        let transcribing = self.voice_phase == VoicePhase::Transcribing;
+        let duration = format_voice_duration(self.voice_recorder.elapsed());
+        let stop = div()
+            .id("composer-voice-stop")
+            .size(px(28.0))
+            .rounded(px(14.0))
+            .flex()
+            .items_center()
+            .justify_center()
+            .bg(theme.surface_2.hsla())
+            .text_color(theme.text_2.hsla())
+            .opacity(if running { 0.5 } else { 1.0 })
+            .when(!running, |button| {
+                button
+                    .cursor_pointer()
+                    .hover(move |style| {
+                        style
+                            .bg(theme.surface_3.hsla())
+                            .text_color(theme.text.hsla())
+                    })
+                    .active(|style| style.opacity(0.72))
+                    .on_click(cx.listener(move |this, _event, _window, cx| {
+                        if transcribing {
+                            this.cancel_voice(cx);
+                        } else {
+                            this.stop_voice(false, cx);
+                        }
+                    }))
+            })
+            .child(if transcribing { "×" } else { "■" });
+        let submit = div()
+            .id("composer-voice-submit")
+            .size(px(28.0))
+            .rounded(px(14.0))
+            .flex()
+            .items_center()
+            .justify_center()
+            .bg(theme.text.hsla())
+            .text_color(theme.background.hsla())
+            .text_size(px(13.0))
+            .font_weight(FontWeight::SEMIBOLD)
+            .opacity(if running || transcribing { 0.5 } else { 1.0 })
+            .when(!running && !transcribing, |button| {
+                button
+                    .cursor_pointer()
+                    .hover(|style| style.opacity(0.9))
+                    .active(|style| style.opacity(0.72))
+                    .on_click(cx.listener(|this, _event, _window, cx| {
+                        this.stop_voice(true, cx);
+                    }))
+            })
+            .child(if transcribing { "…" } else { "↑" });
+        div()
+            .min_w(px(0.0))
+            .flex_1()
+            .flex()
+            .items_center()
+            .gap(px(10.0))
+            .child(self.voice_waveform(transcribing))
+            .child(
+                div()
+                    .flex_none()
+                    .text_size(px(10.5))
+                    .font_weight(FontWeight::MEDIUM)
+                    .text_color(theme.text_3.hsla())
+                    .child(duration),
+            )
+            .child(stop)
+            .child(submit)
+            .into_any_element()
+    }
+
+    fn voice_waveform(&self, transcribing: bool) -> AnyElement {
+        let theme = self.theme;
+        let start = self.voice_levels.len().saturating_sub(52);
+        let mut levels = vec![0.035_f32; 52_usize.saturating_sub(self.voice_levels.len())];
+        levels.extend_from_slice(&self.voice_levels[start..]);
+        div()
+            .h(px(28.0))
+            .min_w(px(0.0))
+            .flex_1()
+            .flex()
+            .items_center()
+            .justify_end()
+            .gap(px(2.0))
+            .overflow_hidden()
+            .opacity(if transcribing { 0.5 } else { 1.0 })
+            .children(levels.into_iter().enumerate().map(|(index, level)| {
+                let smoothed = level.clamp(0.0, 1.0).powf(0.72);
+                div()
+                    .id(("voice-level", index))
+                    .w(px(2.0))
+                    .h(px(2.0 + smoothed * 22.0))
+                    .rounded(px(1.0))
+                    .bg(theme.text_2.hsla().opacity(0.16 + smoothed * 0.72))
+            }))
+            .into_any_element()
     }
 
     fn attachment_chips(&self, cx: &Context<Self>) -> Option<AnyElement> {
@@ -2220,6 +2565,23 @@ impl Render for ChatView {
             });
             self.clear_composer = false;
         }
+        let mut send_transcript = false;
+        if let Some(pending) = self.pending_transcript.take() {
+            let current = self.composer.read(cx).value().to_string();
+            if let Some(insertion) =
+                insert_transcript_at_cursor(&current, &pending.text, pending.cursor)
+            {
+                self.composer.update(cx, |composer, cx| {
+                    composer.set_value(insertion.text, window, cx);
+                    let position = composer.text().offset_to_position(insertion.cursor);
+                    composer.set_cursor_position(position, window, cx);
+                });
+                send_transcript = pending.send_after;
+            }
+        }
+        if send_transcript {
+            self.submit(false, cx);
+        }
         if let Some(sync) = self.user_input_field_sync.take() {
             self.user_input_custom.update(cx, |input, cx| {
                 input.set_masked(sync.masked, window, cx);
@@ -2666,5 +3028,72 @@ fn provider_label(provider: ProviderId) -> &'static str {
         ProviderId::OpenCode => "OpenCode",
         ProviderId::Acp => "ACP",
         ProviderId::Api => "API",
+    }
+}
+
+fn format_voice_duration(duration: Duration) -> String {
+    let seconds = duration.as_secs();
+    format!("{}:{:02}", seconds / 60, seconds % 60)
+}
+
+struct TranscriptInsertion {
+    text: String,
+    cursor: usize,
+}
+
+fn insert_transcript_at_cursor(
+    current: &str,
+    transcript: &str,
+    cursor: usize,
+) -> Option<TranscriptInsertion> {
+    let spoken = transcript.trim();
+    if spoken.is_empty() {
+        return None;
+    }
+    let mut position = cursor.min(current.len());
+    while !current.is_char_boundary(position) {
+        position = position.saturating_sub(1);
+    }
+    let (before, after) = current.split_at(position);
+    let leading = if before
+        .chars()
+        .next_back()
+        .is_some_and(|character| !character.is_whitespace())
+    {
+        " "
+    } else {
+        ""
+    };
+    let trailing = if after
+        .chars()
+        .next()
+        .is_some_and(|character| !character.is_whitespace())
+    {
+        " "
+    } else {
+        ""
+    };
+    let insertion = format!("{leading}{spoken}{trailing}");
+    Some(TranscriptInsertion {
+        text: format!("{before}{insertion}{after}"),
+        cursor: before.len() + insertion.len(),
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn transcript_insertion_preserves_both_sides_of_the_draft() {
+        let inserted = insert_transcript_at_cursor("hello world", " spoken words ", 5).unwrap();
+        assert_eq!(inserted.text, "hello spoken words world");
+        assert_eq!(inserted.cursor, 18);
+    }
+
+    #[test]
+    fn voice_duration_uses_the_web_minutes_and_seconds_format() {
+        assert_eq!(format_voice_duration(Duration::from_millis(999)), "0:00");
+        assert_eq!(format_voice_duration(Duration::from_secs(65)), "1:05");
     }
 }
