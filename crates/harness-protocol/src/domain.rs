@@ -957,6 +957,45 @@ pub struct ServerWelcome {
     pub protocol_version: u32,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum SystemPlatform {
+    #[serde(rename = "win32")]
+    Windows,
+    #[serde(rename = "darwin")]
+    MacOs,
+    #[serde(rename = "linux")]
+    Linux,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SystemInfo {
+    pub server_version: String,
+    pub protocol_version: u32,
+    pub platform: SystemPlatform,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UpdateRemote {
+    pub sha: String,
+    pub message: String,
+    pub date: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UpdateCheckResult {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub local_commit: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub remote: Option<UpdateRemote>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub up_to_date: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ThreadEventPush {
@@ -1084,6 +1123,31 @@ mod tests {
             serde_json::to_value(ApprovalDecision::ApproveSession).unwrap(),
             "approve-session"
         );
+    }
+
+    #[test]
+    fn system_update_results_match_the_typescript_wire_shape() {
+        let info: SystemInfo = serde_json::from_value(json!({
+            "serverVersion": "0.0.0",
+            "protocolVersion": 2,
+            "platform": "darwin"
+        }))
+        .unwrap();
+        let update: UpdateCheckResult = serde_json::from_value(json!({
+            "localCommit": "1111111",
+            "remote": {
+                "sha": "2222222",
+                "message": "Latest change",
+                "date": "2026-08-06T12:00:00Z"
+            },
+            "upToDate": false
+        }))
+        .unwrap();
+
+        assert_eq!(info.platform, SystemPlatform::MacOs);
+        assert_eq!(update.local_commit.as_deref(), Some("1111111"));
+        assert_eq!(update.remote.unwrap().message, "Latest change");
+        assert_eq!(update.up_to_date, Some(false));
     }
 
     #[test]

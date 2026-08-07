@@ -73,6 +73,7 @@ pub enum InboundFrame {
 pub mod method {
     pub const CLIENT_CAPABILITIES: &str = "client.capabilities";
     pub const SYSTEM_INFO: &str = "system.info";
+    pub const SYSTEM_UPDATE_CHECK: &str = "system.updateCheck";
     pub const PROVIDERS_LIST: &str = "providers.list";
     pub const PROVIDERS_INSTALL: &str = "providers.install";
     pub const PROVIDERS_LAUNCH: &str = "providers.launch";
@@ -188,6 +189,12 @@ mod tests {
         assert_eq!(method::SIDEBAR_SETTINGS, "sidebar.settings");
         assert_eq!(method::SIDEBAR_UPDATE_SETTINGS, "sidebar.updateSettings");
         assert_eq!(channel::SIDEBAR_SETTINGS, "sidebar.settings");
+    }
+
+    #[test]
+    fn system_contract_keeps_the_existing_update_method() {
+        assert_eq!(method::SYSTEM_INFO, "system.info");
+        assert_eq!(method::SYSTEM_UPDATE_CHECK, "system.updateCheck");
     }
 
     #[test]
