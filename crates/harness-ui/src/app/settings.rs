@@ -18,7 +18,8 @@ use gpui_component::tooltip::Tooltip;
 use harness_protocol::{
     McpAuth, McpAuthMethod, McpConfigValue, McpServer, McpServerConfig, McpStartupStatus,
     McpTransport, ModelConnectionInput, ModelConnectionPreset, ModelTransport, ProviderAuth,
-    ProviderId, ProviderLogin, SidebarMode, SidebarSettings, Skill, SkillScope, UpdateCheckResult,
+    ProviderId, ProviderLogin, SidebarMode, SidebarSettings, Skill, SkillScope, SkillSource,
+    UpdateCheckResult,
 };
 use std::rc::Rc;
 
@@ -2256,16 +2257,7 @@ impl HarnessApp {
                     theme,
                 )
             };
-            rows.push(settings_row(
-                index,
-                skill
-                    .display_name
-                    .clone()
-                    .unwrap_or_else(|| skill.name.clone()),
-                skill_note(skill),
-                trailing,
-                theme,
-            ));
+            rows.push(skill_settings_row(index, skill, trailing, theme));
         }
         if rows.is_empty() {
             rows.push(settings_empty_row(
@@ -3085,6 +3077,126 @@ fn settings_row(
         )
         .child(div().flex_none().child(trailing))
         .into_any_element()
+}
+
+fn skill_settings_row(
+    index: usize,
+    skill: &Skill,
+    trailing: AnyElement,
+    theme: Theme,
+) -> AnyElement {
+    let name = skill
+        .display_name
+        .clone()
+        .unwrap_or_else(|| skill.name.clone());
+    let description = skill.description.clone();
+    let source = match &skill.source {
+        SkillSource::Folder { path } => path.clone(),
+        SkillSource::Provider => "Managed by provider".into(),
+    };
+    let dependency_errors = skill.dependency_errors.clone();
+    div()
+        .min_h(px(46.0))
+        .w_full()
+        .flex()
+        .items_start()
+        .justify_between()
+        .gap(px(16.0))
+        .px(px(16.0))
+        .py(px(6.0))
+        .when(index > 0, |row| {
+            row.border_t_1().border_color(theme.line.hsla())
+        })
+        .opacity(if skill.enabled { 1.0 } else { 0.58 })
+        .hover(move |style| style.bg(theme.surface.hsla()))
+        .child(
+            div()
+                .min_w(px(0.0))
+                .flex_1()
+                .child(
+                    div()
+                        .min_w(px(0.0))
+                        .flex()
+                        .items_center()
+                        .gap(px(8.0))
+                        .child(
+                            div()
+                                .min_w(px(0.0))
+                                .truncate()
+                                .text_size(px(13.5))
+                                .font_weight(FontWeight(550.0))
+                                .text_color(theme.text.hsla())
+                                .child(name),
+                        )
+                        .child(inventory_badge(skill_scope_label(skill.scope), theme))
+                        .child(inventory_badge(
+                            if skill.enabled { "Enabled" } else { "Disabled" },
+                            theme,
+                        )),
+                )
+                .when(!description.is_empty(), |copy| {
+                    copy.child(
+                        div()
+                            .mt(px(7.0))
+                            .text_size(px(12.5))
+                            .line_height(relative(1.5))
+                            .text_color(theme.text_2.hsla())
+                            .child(description),
+                    )
+                })
+                .child(
+                    div()
+                        .mt(px(8.0))
+                        .truncate()
+                        .font_family("Geist Mono")
+                        .text_size(px(11.5))
+                        .text_color(theme.text_3.hsla())
+                        .child(source),
+                )
+                .children(dependency_errors.into_iter().map(|error| {
+                    div()
+                        .mt(px(10.0))
+                        .pt(px(10.0))
+                        .flex()
+                        .items_center()
+                        .gap(px(6.0))
+                        .border_t_1()
+                        .border_color(theme.line.hsla())
+                        .text_size(px(11.5))
+                        .text_color(theme.error.hsla())
+                        .child(settings_icon("icons/triangle-alert.svg", 13.0))
+                        .child(
+                            div()
+                                .font_weight(FontWeight::SEMIBOLD)
+                                .child(error.dependency),
+                        )
+                        .child(format!("· {}", error.message))
+                })),
+        )
+        .child(div().flex_none().child(trailing))
+        .into_any_element()
+}
+
+fn inventory_badge(label: impl Into<SharedString>, theme: Theme) -> AnyElement {
+    div()
+        .flex_none()
+        .px(px(6.0))
+        .py(px(1.0))
+        .rounded_full()
+        .bg(theme.surface_2.hsla())
+        .text_size(px(11.5))
+        .text_color(theme.text_3.hsla())
+        .child(label.into())
+        .into_any_element()
+}
+
+fn skill_scope_label(scope: SkillScope) -> &'static str {
+    match scope {
+        SkillScope::Project => "Project",
+        SkillScope::User => "User",
+        SkillScope::System => "System",
+        SkillScope::Admin => "Admin",
+    }
 }
 
 fn settings_empty_row(note: impl Into<SharedString>, theme: Theme) -> AnyElement {
@@ -4232,30 +4344,6 @@ fn mcp_status(server: &McpServer) -> (&'static str, bool) {
         McpStartupStatus::Starting => ("Starting", false),
         McpStartupStatus::Stopped => ("Stopped", false),
         McpStartupStatus::Failed { .. } => ("Failed", false),
-    }
-}
-
-fn skill_note(skill: &Skill) -> String {
-    let scope = match skill.scope {
-        SkillScope::Project => "Project",
-        SkillScope::User => "User",
-        SkillScope::System => "System",
-        SkillScope::Admin => "Admin",
-    };
-    if skill.dependency_errors.is_empty() {
-        if skill.description.is_empty() {
-            format!("{scope} skill")
-        } else {
-            format!("{scope} · {}", skill.description)
-        }
-    } else {
-        let errors = skill
-            .dependency_errors
-            .iter()
-            .map(|error| format!("{}: {}", error.dependency, error.message))
-            .collect::<Vec<_>>()
-            .join("; ");
-        format!("{scope} · {errors}")
     }
 }
 

@@ -101,6 +101,9 @@ impl AssetSource for HarnessAssets {
             "icons/images.svg" => Some(include_bytes!("../assets/icons/images.svg")),
             "icons/list-checks.svg" => Some(include_bytes!("../assets/icons/list-checks.svg")),
             "icons/circle-alert.svg" => Some(include_bytes!("../assets/icons/circle-alert.svg")),
+            "icons/triangle-alert.svg" => {
+                Some(include_bytes!("../assets/icons/triangle-alert.svg"))
+            }
             "icons/circle-question-mark.svg" => {
                 Some(include_bytes!("../assets/icons/circle-question-mark.svg"))
             }
