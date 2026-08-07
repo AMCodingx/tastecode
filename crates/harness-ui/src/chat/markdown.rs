@@ -16,6 +16,8 @@ use gpui_component::highlighter::SyntaxHighlighter;
 use gpui_component::scroll::ScrollableElement;
 use gpui_component::text::{TextView, TextViewStyle};
 use gpui_component::{ActiveTheme, Rope};
+use html5ever::{parse_document, tendril::TendrilSink as _};
+use markup5ever_rcdom::{Handle as HtmlHandle, NodeData as HtmlNodeData, RcDom};
 use std::cell::RefCell;
 use std::collections::{BTreeMap, HashMap};
 use std::ops::Range;
@@ -984,6 +986,35 @@ fn render_media_node(
                 render_markdown_image(
                     url,
                     &image.alt,
+                    link,
+                    node_start(node).unwrap_or_default(),
+                    context,
+                    cx,
+                )
+            },
+        ),
+        Node::Html(html) => parse_raw_html_tag(&html.value).map_or_else(
+            || div().into_any_element(),
+            |tag| {
+                if tag.closing || tag.name != "img" {
+                    return div().into_any_element();
+                }
+                let url = tag
+                    .attributes
+                    .get("src")
+                    .and_then(Option::as_deref)
+                    .unwrap_or_default();
+                let Some(url) = safe_html_image_url(url) else {
+                    return image_fallback(context.theme);
+                };
+                let alt = tag
+                    .attributes
+                    .get("alt")
+                    .and_then(Option::as_deref)
+                    .unwrap_or_default();
+                render_markdown_image(
+                    &url,
+                    alt,
                     link,
                     node_start(node).unwrap_or_default(),
                     context,
@@ -2153,6 +2184,11 @@ fn fallback_node(
         return div().into_any_element();
     };
     let node_id = format!("{}:fallback:{}", context.id, position.start.offset);
+    let content = if matches!(node, Node::Html(_)) {
+        fallback_html(node_id, raw, context.theme, window, cx)
+    } else {
+        fallback_markdown(node_id, raw.to_owned(), context.theme, window, cx)
+    };
     div()
         .w_full()
         .when(!last && matches!(node, Node::Paragraph(_)), |block| {
@@ -2162,13 +2198,7 @@ fn fallback_node(
             !last && matches!(node, Node::Code(_) | Node::Math(_)),
             |block| block.mb(px(14.0)),
         )
-        .child(fallback_markdown(
-            node_id,
-            raw.to_owned(),
-            context.theme,
-            window,
-            cx,
-        ))
+        .child(content)
         .into_any_element()
 }
 
@@ -2179,6 +2209,50 @@ fn fallback_markdown(
     window: &mut Window,
     cx: &mut App,
 ) -> AnyElement {
+    let text_style = fallback_text_style(theme);
+
+    TextView::markdown(SharedString::from(id), text, window, cx)
+        .style(text_style)
+        .selectable(true)
+        .w_full()
+        .font_family("Geist")
+        .text_size(px(15.0))
+        .line_height(relative(1.52))
+        .text_color(theme.response_text.hsla())
+        .code_block_actions(move |block, _window, _cx| {
+            let code = block.code().to_string();
+            fallback_code_copy_button(code, theme)
+        })
+        .into_any_element()
+}
+
+fn fallback_html(
+    id: String,
+    html: &str,
+    theme: Theme,
+    window: &mut Window,
+    cx: &mut App,
+) -> AnyElement {
+    TextView::html(
+        SharedString::from(id),
+        sanitize_html_fragment(html),
+        window,
+        cx,
+    )
+    .style(fallback_text_style(theme))
+    .selectable(true)
+    .w_full()
+    .font_family("Geist")
+    .text_size(px(15.0))
+    .line_height(relative(1.52))
+    .text_color(theme.response_text.hsla())
+    .code_block_actions(move |block, _window, _cx| {
+        fallback_code_copy_button(block.code().to_string(), theme)
+    })
+    .into_any_element()
+}
+
+fn fallback_text_style(theme: Theme) -> TextViewStyle {
     let code_style = StyleRefinement::default()
         .bg(theme.surface.hsla())
         .border_1()
@@ -2198,44 +2272,247 @@ fn fallback_markdown(
         .code_block(code_style);
     text_style.heading_base_font_size = px(15.0);
     text_style.is_dark = theme.mode == ThemeMode::Dark;
+    text_style
+}
 
-    TextView::markdown(SharedString::from(id), text, window, cx)
-        .style(text_style)
-        .selectable(true)
-        .w_full()
-        .font_family("Geist")
-        .text_size(px(15.0))
-        .line_height(relative(1.52))
-        .text_color(theme.response_text.hsla())
-        .code_block_actions(move |block, _window, _cx| {
-            let code = block.code().to_string();
-            div()
-                .id(SharedString::from(format!(
-                    "copy-code:{}",
-                    stable_hash(&code)
-                )))
-                .size(px(24.0))
-                .flex()
-                .items_center()
-                .justify_center()
-                .rounded(px(5.0))
-                .border_1()
-                .border_color(theme.line.hsla())
-                .bg(theme.surface_2.hsla())
-                .text_color(theme.text_3.hsla())
-                .cursor_pointer()
-                .hover(move |style| style.text_color(theme.text.hsla()))
-                .on_click(move |_event, _window, cx| {
-                    cx.write_to_clipboard(ClipboardItem::new_string(code.clone()));
-                })
-                .child(
-                    svg()
-                        .path("icons/copy.svg")
-                        .size(px(13.0))
-                        .text_color(theme.text_3.hsla()),
-                )
+fn fallback_code_copy_button(code: String, theme: Theme) -> AnyElement {
+    div()
+        .id(SharedString::from(format!(
+            "copy-code:{}",
+            stable_hash(&code)
+        )))
+        .size(px(24.0))
+        .flex()
+        .items_center()
+        .justify_center()
+        .rounded(px(5.0))
+        .border_1()
+        .border_color(theme.line.hsla())
+        .bg(theme.surface_2.hsla())
+        .text_color(theme.text_3.hsla())
+        .cursor_pointer()
+        .hover(move |style| style.text_color(theme.text.hsla()))
+        .on_click(move |_event, _window, cx| {
+            cx.write_to_clipboard(ClipboardItem::new_string(code.clone()));
         })
+        .child(
+            svg()
+                .path("icons/copy.svg")
+                .size(px(13.0))
+                .text_color(theme.text_3.hsla()),
+        )
         .into_any_element()
+}
+
+fn sanitize_html_fragment(source: &str) -> String {
+    let dom = parse_document(RcDom::default(), Default::default()).one(source);
+    let mut output = String::with_capacity(source.len());
+    write_sanitized_html(&dom.document, &mut output);
+    output
+}
+
+fn write_sanitized_html(node: &HtmlHandle, output: &mut String) {
+    match &node.data {
+        HtmlNodeData::Text { contents } => escape_html_text(&contents.borrow(), output),
+        HtmlNodeData::Element { name, attrs, .. } => {
+            let tag = name.local.as_ref().to_ascii_lowercase();
+            if is_dangerous_html_tag(&tag) {
+                return;
+            }
+            let allowed = is_allowed_html_tag(&tag);
+            if allowed {
+                if tag == "input"
+                    && !attrs.borrow().iter().any(|attribute| {
+                        attribute.name.local.as_ref().eq_ignore_ascii_case("type")
+                            && attribute.value.as_ref().eq_ignore_ascii_case("checkbox")
+                    })
+                {
+                    return;
+                }
+                output.push('<');
+                output.push_str(&tag);
+                for attribute in attrs.borrow().iter() {
+                    let name = attribute.name.local.as_ref().to_ascii_lowercase();
+                    let value = attribute.value.as_ref();
+                    if let Some(value) = sanitized_html_attribute(&tag, &name, value) {
+                        output.push(' ');
+                        output.push_str(&name);
+                        if let Some(value) = value {
+                            output.push_str("=\"");
+                            escape_html_attribute(&value, output);
+                            output.push('"');
+                        }
+                    }
+                }
+                if tag == "input" && !output.ends_with(" disabled") {
+                    output.push_str(" disabled");
+                }
+                output.push('>');
+            }
+            for child in node.children.borrow().iter() {
+                write_sanitized_html(child, output);
+            }
+            if allowed && !is_void_html_tag(&tag) {
+                output.push_str("</");
+                output.push_str(&tag);
+                output.push('>');
+            }
+        }
+        HtmlNodeData::Document => {
+            for child in node.children.borrow().iter() {
+                write_sanitized_html(child, output);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn is_allowed_html_tag(tag: &str) -> bool {
+    matches!(
+        tag,
+        "a" | "b"
+            | "blockquote"
+            | "br"
+            | "code"
+            | "dd"
+            | "del"
+            | "details"
+            | "div"
+            | "dl"
+            | "dt"
+            | "em"
+            | "h1"
+            | "h2"
+            | "h3"
+            | "h4"
+            | "h5"
+            | "h6"
+            | "hr"
+            | "i"
+            | "img"
+            | "input"
+            | "ins"
+            | "kbd"
+            | "li"
+            | "ol"
+            | "p"
+            | "picture"
+            | "pre"
+            | "q"
+            | "rp"
+            | "rt"
+            | "ruby"
+            | "s"
+            | "samp"
+            | "section"
+            | "source"
+            | "span"
+            | "strike"
+            | "strong"
+            | "sub"
+            | "summary"
+            | "sup"
+            | "table"
+            | "tbody"
+            | "td"
+            | "tfoot"
+            | "th"
+            | "thead"
+            | "tr"
+            | "tt"
+            | "ul"
+            | "var"
+    )
+}
+
+fn is_dangerous_html_tag(tag: &str) -> bool {
+    matches!(
+        tag,
+        "applet"
+            | "base"
+            | "embed"
+            | "form"
+            | "frame"
+            | "frameset"
+            | "head"
+            | "iframe"
+            | "link"
+            | "meta"
+            | "noscript"
+            | "object"
+            | "script"
+            | "style"
+            | "template"
+    )
+}
+
+fn is_void_html_tag(tag: &str) -> bool {
+    matches!(tag, "br" | "hr" | "img" | "input" | "source")
+}
+
+fn sanitized_html_attribute(tag: &str, name: &str, value: &str) -> Option<Option<String>> {
+    match (tag, name) {
+        ("a", "href") => safe_markdown_link_url(value).map(Some),
+        ("img" | "source", "src") => safe_html_image_url(value).map(Some),
+        ("img", "alt" | "title" | "width" | "height")
+        | ("a", "title")
+        | ("ol", "start")
+        | ("td" | "th", "align" | "colspan" | "rowspan")
+        | (_, "dir" | "lang") => Some(Some(value.to_owned())),
+        ("details", "open") | ("input", "checked" | "disabled") => Some(None),
+        ("input", "type") if value.eq_ignore_ascii_case("checkbox") => {
+            Some(Some("checkbox".into()))
+        }
+        _ => None,
+    }
+}
+
+fn safe_html_image_url(value: &str) -> Option<String> {
+    let value = value.trim();
+    if value.starts_with("data:") {
+        return decode_data_image(value).map(|_| value.to_owned());
+    }
+    if value.starts_with("//") {
+        return Some(format!("https:{value}"));
+    }
+    let scheme_end = value.find(':');
+    if scheme_end.is_some_and(|end| value[..end].contains('&')) {
+        return None;
+    }
+    let first_path_delimiter = value.find(['/', '?', '#']).unwrap_or(value.len());
+    if let Some(scheme_end) = scheme_end
+        && scheme_end < first_path_delimiter
+        && !matches!(
+            value[..scheme_end].to_ascii_lowercase().as_str(),
+            "http" | "https"
+        )
+    {
+        return None;
+    }
+    (!value.is_empty() && !value.chars().any(char::is_control)).then(|| value.to_owned())
+}
+
+fn escape_html_text(value: &str, output: &mut String) {
+    for character in value.chars() {
+        match character {
+            '&' => output.push_str("&amp;"),
+            '<' => output.push_str("&lt;"),
+            '>' => output.push_str("&gt;"),
+            _ => output.push(character),
+        }
+    }
+}
+
+fn escape_html_attribute(value: &str, output: &mut String) {
+    for character in value.chars() {
+        match character {
+            '&' => output.push_str("&amp;"),
+            '"' => output.push_str("&quot;"),
+            '<' => output.push_str("&lt;"),
+            '>' => output.push_str("&gt;"),
+            _ => output.push(character),
+        }
+    }
 }
 
 fn selected_markdown_text<'a>(
@@ -2627,6 +2904,13 @@ struct InlineStyle {
     bold: bool,
     italic: bool,
     strikethrough: bool,
+    underline: bool,
+    inline_code: bool,
+    keyboard: bool,
+    highlight: bool,
+    superscript: bool,
+    subscript: bool,
+    small: bool,
     link: Option<String>,
 }
 
@@ -2743,23 +3027,35 @@ fn collect_inline(
     context: &RenderContext<'_>,
     builder: &mut InlineBuilder,
 ) {
+    let mut current = style.clone();
+    let mut html_stack = Vec::<(String, InlineStyle)>::new();
     for node in children {
         match node {
             Node::Text(text) => {
-                builder.push_text(&text.value, node_start(node).unwrap_or_default(), style)
+                let start = node_start(node).unwrap_or_default();
+                if current.inline_code {
+                    builder.push_atomic(
+                        InlineUnitKind::Text(text.value.clone()),
+                        start,
+                        start + text.value.len(),
+                        &current,
+                    );
+                } else {
+                    builder.push_text(&text.value, start, &current);
+                }
             }
             Node::Strong(strong) => {
-                let mut nested = style.clone();
+                let mut nested = current.clone();
                 nested.bold = true;
                 collect_inline(&strong.children, &nested, context, builder);
             }
             Node::Emphasis(emphasis) => {
-                let mut nested = style.clone();
+                let mut nested = current.clone();
                 nested.italic = true;
                 collect_inline(&emphasis.children, &nested, context, builder);
             }
             Node::Delete(delete) => {
-                let mut nested = style.clone();
+                let mut nested = current.clone();
                 nested.strikethrough = true;
                 collect_inline(&delete.children, &nested, context, builder);
             }
@@ -2773,11 +3069,16 @@ fn collect_inline(
                 } else {
                     InlineUnitKind::Code(code.value.clone())
                 };
-                builder.push_atomic(kind, start, end, style);
+                builder.push_atomic(kind, start, end, &current);
             }
             Node::InlineMath(math) => {
                 let (start, end) = node_range(node);
-                builder.push_atomic(InlineUnitKind::Code(math.value.clone()), start, end, style);
+                builder.push_atomic(
+                    InlineUnitKind::Code(math.value.clone()),
+                    start,
+                    end,
+                    &current,
+                );
             }
             Node::Link(link) => {
                 if let Some(path) = local_file_reference_path(&link.url) {
@@ -2789,22 +3090,27 @@ fn collect_inline(
                         },
                         start,
                         end,
-                        style,
+                        &current,
                     );
                 } else {
-                    let mut nested = style.clone();
-                    nested.link = Some(link.url.clone());
+                    let mut nested = current.clone();
+                    nested.underline = true;
+                    nested.link = safe_markdown_link_url(&link.url);
                     collect_inline(&link.children, &nested, context, builder);
                 }
             }
             Node::LinkReference(link) => {
-                let mut nested = style.clone();
-                nested.link = context.definitions.get(&link.identifier).cloned();
+                let mut nested = current.clone();
+                nested.underline = true;
+                nested.link = context
+                    .definitions
+                    .get(&link.identifier)
+                    .and_then(|url| safe_markdown_link_url(url));
                 collect_inline(&link.children, &nested, context, builder);
             }
             Node::Break(_) => builder.push_break(node_start(node).unwrap_or_default()),
             Node::Html(html) => {
-                builder.push_text(&html.value, node_start(node).unwrap_or_default(), style)
+                apply_inline_html(html, &mut current, &mut html_stack, builder);
             }
             Node::FootnoteReference(reference) => {
                 let (start, end) = node_range(node);
@@ -2816,14 +3122,199 @@ fn collect_inline(
                         },
                         start,
                         end,
-                        style,
+                        &current,
                     );
                 } else {
-                    builder.push_text(&format!("[^{}]", reference.identifier), start, style);
+                    builder.push_text(&format!("[^{}]", reference.identifier), start, &current);
                 }
             }
             _ => {}
         }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct RawHtmlTag {
+    name: String,
+    closing: bool,
+    self_closing: bool,
+    attributes: HashMap<String, Option<String>>,
+}
+
+fn parse_raw_html_tag(value: &str) -> Option<RawHtmlTag> {
+    let value = value.trim();
+    if !value.starts_with('<')
+        || !value.ends_with('>')
+        || value.starts_with("<!--")
+        || value.starts_with("<!")
+        || value.starts_with("<?")
+    {
+        return None;
+    }
+    let bytes = value.as_bytes();
+    let mut index = 1;
+    let closing = bytes.get(index) == Some(&b'/');
+    if closing {
+        index += 1;
+    }
+    while bytes.get(index).is_some_and(u8::is_ascii_whitespace) {
+        index += 1;
+    }
+    let name_start = index;
+    while bytes
+        .get(index)
+        .is_some_and(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b':'))
+    {
+        index += 1;
+    }
+    if name_start == index {
+        return None;
+    }
+    let name = value[name_start..index].to_ascii_lowercase();
+    let mut attributes = HashMap::new();
+    while index < bytes.len() - 1 {
+        while bytes.get(index).is_some_and(u8::is_ascii_whitespace) {
+            index += 1;
+        }
+        if bytes
+            .get(index)
+            .is_none_or(|byte| matches!(byte, b'/' | b'>'))
+        {
+            break;
+        }
+        let attribute_start = index;
+        while bytes
+            .get(index)
+            .is_some_and(|byte| !byte.is_ascii_whitespace() && !matches!(byte, b'=' | b'/' | b'>'))
+        {
+            index += 1;
+        }
+        if attribute_start == index {
+            index += 1;
+            continue;
+        }
+        let attribute = value[attribute_start..index].to_ascii_lowercase();
+        while bytes.get(index).is_some_and(u8::is_ascii_whitespace) {
+            index += 1;
+        }
+        let attribute_value = if bytes.get(index) == Some(&b'=') {
+            index += 1;
+            while bytes.get(index).is_some_and(u8::is_ascii_whitespace) {
+                index += 1;
+            }
+            if let Some(quote @ (b'\'' | b'"')) = bytes.get(index).copied() {
+                index += 1;
+                let value_start = index;
+                while bytes.get(index).is_some_and(|byte| *byte != quote) {
+                    index += 1;
+                }
+                let result = value[value_start..index].to_owned();
+                if bytes.get(index) == Some(&quote) {
+                    index += 1;
+                }
+                Some(result)
+            } else {
+                let value_start = index;
+                while bytes
+                    .get(index)
+                    .is_some_and(|byte| !byte.is_ascii_whitespace() && !matches!(byte, b'/' | b'>'))
+                {
+                    index += 1;
+                }
+                Some(value[value_start..index].to_owned())
+            }
+        } else {
+            None
+        };
+        attributes.insert(attribute, attribute_value);
+    }
+    Some(RawHtmlTag {
+        name,
+        closing,
+        self_closing: value[..value.len() - 1].trim_end().ends_with('/'),
+        attributes,
+    })
+}
+
+fn apply_inline_html(
+    html: &::markdown::mdast::Html,
+    current: &mut InlineStyle,
+    stack: &mut Vec<(String, InlineStyle)>,
+    builder: &mut InlineBuilder,
+) {
+    let Some(tag) = parse_raw_html_tag(&html.value) else {
+        return;
+    };
+    let start = html
+        .position
+        .as_ref()
+        .map_or(0, |position| position.start.offset);
+    let end = html
+        .position
+        .as_ref()
+        .map_or(start + html.value.len(), |position| position.end.offset);
+    if tag.closing {
+        if tag.name == "q" {
+            builder.push_atomic(InlineUnitKind::Text("”".into()), start, end, current);
+        }
+        if let Some(index) = stack.iter().rposition(|(name, _)| name == &tag.name) {
+            *current = stack[index].1.clone();
+            stack.truncate(index);
+        }
+        return;
+    }
+
+    match tag.name.as_str() {
+        "br" => {
+            builder.push_break(start);
+            return;
+        }
+        "wbr" | "img" => return,
+        "input" => {
+            if tag
+                .attributes
+                .get("type")
+                .and_then(Option::as_deref)
+                .is_some_and(|value| value.eq_ignore_ascii_case("checkbox"))
+            {
+                let checked = tag.attributes.contains_key("checked");
+                builder.push_atomic(
+                    InlineUnitKind::Text(if checked { "☑" } else { "☐" }.into()),
+                    start,
+                    end,
+                    current,
+                );
+            }
+            return;
+        }
+        "q" => builder.push_atomic(InlineUnitKind::Text("“".into()), start, end, current),
+        _ => {}
+    }
+
+    stack.push((tag.name.clone(), current.clone()));
+    match tag.name.as_str() {
+        "b" | "strong" => current.bold = true,
+        "em" | "i" => current.italic = true,
+        "del" | "s" | "strike" => current.strikethrough = true,
+        "u" | "ins" | "abbr" => current.underline = true,
+        "code" => current.inline_code = true,
+        "kbd" | "samp" | "var" => current.keyboard = true,
+        "mark" => current.highlight = true,
+        "sup" => current.superscript = true,
+        "sub" => current.subscript = true,
+        "small" => current.small = true,
+        "a" => {
+            current.underline = true;
+            current.link = tag
+                .attributes
+                .get("href")
+                .and_then(Option::as_deref)
+                .and_then(safe_markdown_link_url);
+        }
+        _ => {}
+    }
+    if tag.self_closing {
+        *current = stack.pop().expect("HTML style frame should exist").1;
     }
 }
 
@@ -2928,6 +3419,33 @@ fn render_inline_unit(unit: InlineUnit, context: &RenderContext<'_>) -> AnyEleme
     }
     if style.strikethrough {
         element = element.line_through();
+    }
+    if style.underline {
+        element = element.underline();
+    }
+    if style.inline_code {
+        element = element
+            .rounded(px(5.0))
+            .bg(context.theme.surface_2.hsla())
+            .px(px(5.0))
+            .py(px(1.0))
+            .font_family("Geist Mono")
+            .text_size(px(13.5))
+            .whitespace_nowrap();
+    } else if style.keyboard {
+        element = element.font_family("Geist Mono").text_size(px(13.5));
+    }
+    if style.highlight {
+        element = element
+            .bg(gpui::rgb(0xffff00))
+            .text_color(gpui::rgb(0x000000));
+    }
+    if style.superscript {
+        element = element.relative().top(px(-4.0)).text_size(px(10.5));
+    } else if style.subscript {
+        element = element.relative().top(px(3.0)).text_size(px(10.5));
+    } else if style.small {
+        element = element.text_size(px(12.5));
     }
     if let Some(url) = style.link {
         let selection = context.selection.clone();
@@ -3144,6 +3662,42 @@ fn local_file_reference_path(href: &str) -> Option<String> {
     is_file_reference(without_anchor).then(|| without_anchor.to_owned())
 }
 
+fn safe_markdown_link_url(value: &str) -> Option<String> {
+    let value = value.trim();
+    if value.is_empty() || value.chars().any(char::is_control) {
+        return None;
+    }
+    if value.starts_with("//") {
+        return Some(format!("https:{value}"));
+    }
+    let scheme_end = value.find(':');
+    if scheme_end.is_some_and(|end| value[..end].contains('&')) {
+        return None;
+    }
+    let first_path_delimiter = value.find(['/', '?', '#']).unwrap_or(value.len());
+    if let Some(scheme_end) = scheme_end
+        && scheme_end < first_path_delimiter
+    {
+        let scheme = &value[..scheme_end];
+        if scheme.is_empty()
+            || !scheme.bytes().enumerate().all(|(index, byte)| {
+                if index == 0 {
+                    byte.is_ascii_alphabetic()
+                } else {
+                    byte.is_ascii_alphanumeric() || matches!(byte, b'+' | b'-' | b'.')
+                }
+            })
+            || !matches!(
+                scheme.to_ascii_lowercase().as_str(),
+                "http" | "https" | "mailto" | "tel" | "irc" | "ircs" | "xmpp"
+            )
+        {
+            return None;
+        }
+    }
+    Some(value.to_owned())
+}
+
 fn is_windows_absolute_path(value: &str) -> bool {
     let bytes = value.as_bytes();
     bytes.len() >= 3
@@ -3186,6 +3740,9 @@ fn hex_value(value: u8) -> Option<u8> {
 fn contains_media(nodes: &[Node]) -> bool {
     nodes.iter().any(|node| match node {
         Node::Image(_) | Node::ImageReference(_) => true,
+        Node::Html(html) => {
+            parse_raw_html_tag(&html.value).is_some_and(|tag| !tag.closing && tag.name == "img")
+        }
         Node::Strong(node) => contains_media(&node.children),
         Node::Emphasis(node) => contains_media(&node.children),
         Node::Delete(node) => contains_media(&node.children),
@@ -3350,6 +3907,63 @@ mod tests {
             local_file_reference_path("/tmp/bad%2G.rs"),
             Some("/tmp/bad%2G.rs".into())
         );
+    }
+
+    #[test]
+    fn markdown_links_reject_active_and_local_protocols() {
+        assert_eq!(
+            safe_markdown_link_url("HTTPS://example.com/path"),
+            Some("HTTPS://example.com/path".into())
+        );
+        assert_eq!(
+            safe_markdown_link_url("//example.com/path"),
+            Some("https://example.com/path".into())
+        );
+        assert_eq!(
+            safe_markdown_link_url("mailto:test@example.com"),
+            Some("mailto:test@example.com".into())
+        );
+        assert_eq!(safe_markdown_link_url("javascript:alert(1)"), None);
+        assert_eq!(safe_markdown_link_url("file:///tmp/private.txt"), None);
+        assert_eq!(safe_markdown_link_url("java&#x73;cript:alert(1)"), None);
+    }
+
+    #[test]
+    fn raw_inline_html_updates_native_text_styles_without_showing_tags() {
+        let opening = ::markdown::mdast::Html {
+            value: "<strong data-ignored='yes'>".into(),
+            position: None,
+        };
+        let closing = ::markdown::mdast::Html {
+            value: "</strong>".into(),
+            position: None,
+        };
+        let mut style = InlineStyle::default();
+        let mut stack = Vec::new();
+        let mut builder = InlineBuilder::default();
+
+        apply_inline_html(&opening, &mut style, &mut stack, &mut builder);
+        assert!(style.bold);
+        assert!(builder.units.is_empty());
+        apply_inline_html(&closing, &mut style, &mut stack, &mut builder);
+        assert!(!style.bold);
+        assert!(stack.is_empty());
+    }
+
+    #[test]
+    fn raw_html_sanitizer_matches_the_streamdown_safety_boundary() {
+        let sanitized = sanitize_html_fragment(
+            "<script>alert(1)</script><p><strong>Safe</strong> <a href='javascript:bad'>bad</a> <a href='https://example.com'>good</a><input type='checkbox' checked></p>",
+        );
+
+        assert!(!sanitized.contains("script"));
+        assert!(!sanitized.contains("alert"));
+        assert!(!sanitized.contains("javascript"));
+        assert!(sanitized.contains("<strong>Safe</strong>"));
+        assert!(sanitized.contains("href=\"https://example.com\""));
+        assert!(sanitized.contains("type=\"checkbox\""));
+        assert!(sanitized.contains(" checked"));
+        assert!(sanitized.contains(" disabled"));
     }
 
     #[test]
