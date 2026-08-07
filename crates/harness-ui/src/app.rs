@@ -43,6 +43,7 @@ use provider_terminal::{ProviderTerminalKey, ProviderTerminalView};
 use session_search::SessionSearchState;
 use sidebar_controls::SidebarControlsState;
 use stage_controls::StageControlsState;
+use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -124,6 +125,7 @@ struct HarnessApp {
     settings_section: settings::SettingsSection,
     settings_transition: u64,
     settings_open_transition: u64,
+    settings_switch_motion: RefCell<HashMap<usize, settings::SettingsSwitchMotion>>,
     settings_focus: FocusHandle,
     settings_focus_pending: bool,
     command_palette: CommandPaletteState,
@@ -615,6 +617,7 @@ impl HarnessApp {
             settings_section: settings::SettingsSection::default(),
             settings_transition: 0,
             settings_open_transition: 0,
+            settings_switch_motion: RefCell::new(HashMap::new()),
             settings_focus: cx.focus_handle(),
             settings_focus_pending: false,
             command_palette: CommandPaletteState::new(command_palette_input),

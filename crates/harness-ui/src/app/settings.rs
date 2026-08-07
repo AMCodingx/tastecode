@@ -11,8 +11,8 @@ use crate::theme::{Accent, Backdrop, Theme, ThemeMode};
 use crate::zoom::px;
 use gpui::{
     Animation, AnimationExt, AnyElement, App, ClipboardItem, Context, Entity, Focusable,
-    FontWeight, KeyDownEvent, PathPromptOptions, PromptButton, PromptLevel, SharedString, Window,
-    div, linear_color_stop, linear_gradient, prelude::*, relative, svg,
+    FontWeight, Hsla, KeyDownEvent, PathPromptOptions, PromptButton, PromptLevel, Rgba,
+    SharedString, Window, div, linear_color_stop, linear_gradient, prelude::*, relative, svg,
 };
 use gpui_component::Sizable as _;
 use gpui_component::input::{Input, InputEvent, InputState};
@@ -23,7 +23,9 @@ use harness_protocol::{
     ProviderId, ProviderLogin, SidebarMode, SidebarSettings, Skill, SkillScope, SkillSource,
     UpdateCheckResult,
 };
+use std::collections::HashMap;
 use std::rc::Rc;
+use std::time::{Duration, Instant};
 
 const SETTINGS_CONTENT_WIDTH: f32 = 840.0;
 const SETTINGS_SECTION_GAP: f32 = 30.0;
@@ -42,6 +44,24 @@ pub(super) struct McpEditorState {
     provider: ProviderId,
     project_path: String,
     server_id: Option<String>,
+}
+
+#[derive(Clone, Copy, Debug)]
+pub(super) struct SettingsSwitchMotion {
+    target: bool,
+    from: f32,
+    started: Instant,
+    duration: Duration,
+    generation: u64,
+    animating: bool,
+}
+
+#[derive(Clone, Copy, Debug)]
+struct SettingsSwitchAnimation {
+    from: f32,
+    to: f32,
+    duration: Duration,
+    generation: u64,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -118,6 +138,7 @@ impl HarnessApp {
         self.settings_section = SettingsSection::Providers;
         self.settings_focus_pending = true;
         self.model_settings_searches.clear();
+        self.settings_switch_motion.borrow_mut().clear();
         self.scope_open = false;
         self.settings_transition = self.settings_transition.wrapping_add(1);
         self.settings_open_transition = self.settings_open_transition.wrapping_add(1);
@@ -132,6 +153,23 @@ impl HarnessApp {
         self.mcp_editor = None;
         self.mcp_editor_submission_id = None;
         cx.notify();
+    }
+
+    fn settings_switch_control(
+        &self,
+        id: usize,
+        on: bool,
+        enabled: bool,
+        action: SettingsAction,
+    ) -> AnyElement {
+        let animation = settings_switch_animation(
+            &mut self.settings_switch_motion.borrow_mut(),
+            id,
+            on,
+            self.theme.motion.fast,
+            Instant::now(),
+        );
+        settings_switch(id, on, enabled, self.theme, action, animation)
     }
 
     pub(super) fn settings_panel(
@@ -154,6 +192,7 @@ impl HarnessApp {
                     if this.settings_section != section {
                         this.settings_section = section;
                         this.model_settings_searches.clear();
+                        this.settings_switch_motion.borrow_mut().clear();
                         this.mcp_editor = None;
                         this.mcp_editor_submission_id = None;
                         this.settings_transition = this.settings_transition.wrapping_add(1);
@@ -1433,11 +1472,10 @@ impl HarnessApp {
                     window,
                     cx,
                 ))
-                .child(settings_switch(
+                .child(self.settings_switch_control(
                     source_index * 10_000,
                     any_visible,
                     true,
-                    theme,
                     master,
                 ));
 
@@ -1459,11 +1497,10 @@ impl HarnessApp {
                 rows.push(model_visibility_row(
                     choice.model.display_name,
                     visible,
-                    settings_switch(
+                    self.settings_switch_control(
                         source_index * 10_000 + model_index + 1,
                         visible,
                         true,
-                        theme,
                         action,
                     ),
                     theme,
@@ -1697,13 +1734,7 @@ impl HarnessApp {
                         this.apply_client_update(update, cx);
                     });
                 });
-                actions.push(settings_switch(
-                    920_000 + index,
-                    enabled,
-                    !busy,
-                    theme,
-                    action,
-                ));
+                actions.push(self.settings_switch_control(920_000 + index, enabled, !busy, action));
             }
             if can_edit {
                 let path = project_path.clone();
@@ -2257,7 +2288,7 @@ impl HarnessApp {
                         this.apply_client_update(update, cx);
                     });
                 });
-                settings_switch(930_000 + index, skill.enabled, !busy, theme, action)
+                self.settings_switch_control(930_000 + index, skill.enabled, !busy, action)
             } else {
                 div().into_any_element()
             };
@@ -2362,7 +2393,7 @@ impl HarnessApp {
                             }),
                     ),
             )
-            .child(settings_switch(900_000, auto_settle, true, theme, toggle))
+            .child(self.settings_switch_control(900_000, auto_settle, true, toggle))
             .into_any_element();
 
         settings_panel(
@@ -3507,6 +3538,7 @@ fn settings_switch(
     enabled: bool,
     theme: Theme,
     action: SettingsAction,
+    animation: Option<SettingsSwitchAnimation>,
 ) -> AnyElement {
     let off_background = if theme.mode == ThemeMode::Light {
         chrome::recessed(theme)
@@ -3517,21 +3549,46 @@ fn settings_switch(
         ThemeMode::Dark => gpui::rgb(0x101010).into(),
         ThemeMode::Light => gpui::white(),
     };
-    div()
+    let off_border = if theme.mode == ThemeMode::Light {
+        chrome::border(theme)
+    } else {
+        theme.line_strong.hsla()
+    };
+    let thumb = div()
+        .absolute()
+        .top(px(2.0))
+        .left(px(if on { 16.0 } else { 2.0 }))
+        .size(px(14.0))
+        .rounded_full()
+        .bg(if on { on_light } else { theme.text_2.hsla() });
+    let thumb = if let Some(motion) = animation {
+        thumb
+            .with_animation(
+                SharedString::from(format!("settings-switch-thumb:{id}:{}", motion.generation)),
+                Animation::new(motion.duration).with_easing(crate::theme::web_ease_out),
+                move |thumb, delta| {
+                    let progress = switch_motion_progress(motion, delta);
+                    thumb.left(px(2.0 + 14.0 * progress)).bg(interpolate_color(
+                        theme.text_2.hsla(),
+                        on_light,
+                        progress,
+                    ))
+                },
+            )
+            .into_any_element()
+    } else {
+        thumb.into_any_element()
+    };
+    let switch = div()
         .id(("settings-switch", id))
         .relative()
         .w(px(34.0))
         .h(px(20.0))
         .flex_none()
+        .overflow_hidden()
         .rounded_full()
         .border_1()
-        .border_color(if on {
-            theme.text.hsla()
-        } else if theme.mode == ThemeMode::Light {
-            chrome::border(theme)
-        } else {
-            theme.line_strong.hsla()
-        })
+        .border_color(if on { theme.text.hsla() } else { off_border })
         .bg(if on {
             theme.text.hsla()
         } else {
@@ -3543,16 +3600,108 @@ fn settings_switch(
                 .cursor_pointer()
                 .on_click(move |_event, _window, cx| action(cx))
         })
-        .child(
-            div()
-                .absolute()
-                .top(px(2.0))
-                .left(px(if on { 16.0 } else { 2.0 }))
-                .size(px(14.0))
-                .rounded_full()
-                .bg(if on { on_light } else { theme.text_2.hsla() }),
-        )
-        .into_any_element()
+        .when(theme.mode == ThemeMode::Light && !on, |switch| {
+            switch.child(chrome::inset_top_shade(theme))
+        })
+        .child(thumb);
+    if let Some(motion) = animation {
+        switch
+            .with_animation(
+                SharedString::from(format!("settings-switch-track:{id}:{}", motion.generation)),
+                Animation::new(motion.duration).with_easing(crate::theme::web_ease_out),
+                move |switch, delta| {
+                    let progress = switch_motion_progress(motion, delta);
+                    switch
+                        .border_color(interpolate_color(off_border, theme.text.hsla(), progress))
+                        .bg(interpolate_color(
+                            off_background,
+                            theme.text.hsla(),
+                            progress,
+                        ))
+                },
+            )
+            .into_any_element()
+    } else {
+        switch.into_any_element()
+    }
+}
+
+fn settings_switch_animation(
+    states: &mut HashMap<usize, SettingsSwitchMotion>,
+    id: usize,
+    on: bool,
+    base_duration: Duration,
+    now: Instant,
+) -> Option<SettingsSwitchAnimation> {
+    let target = if on { 1.0 } else { 0.0 };
+    let Some(state) = states.get_mut(&id) else {
+        states.insert(
+            id,
+            SettingsSwitchMotion {
+                target: on,
+                from: target,
+                started: now,
+                duration: base_duration,
+                generation: 0,
+                animating: false,
+            },
+        );
+        return None;
+    };
+
+    if state.target != on {
+        let from = settings_switch_position(*state, now);
+        let distance = (target - from).abs();
+        state.target = on;
+        state.from = from;
+        state.started = now;
+        state.generation = state.generation.wrapping_add(1);
+        state.duration = if (distance - 1.0).abs() <= f32::EPSILON {
+            base_duration
+        } else {
+            base_duration
+                .mul_f32(distance)
+                .max(Duration::from_millis(1))
+        };
+        state.animating = distance > 0.001;
+    } else if state.animating && now.duration_since(state.started) >= state.duration {
+        state.from = target;
+        state.animating = false;
+    }
+
+    state.animating.then_some(SettingsSwitchAnimation {
+        from: state.from,
+        to: target,
+        duration: state.duration,
+        generation: state.generation,
+    })
+}
+
+fn settings_switch_position(state: SettingsSwitchMotion, now: Instant) -> f32 {
+    if !state.animating || state.duration.is_zero() {
+        return if state.target { 1.0 } else { 0.0 };
+    }
+    let elapsed = now.duration_since(state.started).as_secs_f32();
+    let progress = (elapsed / state.duration.as_secs_f32()).clamp(0.0, 1.0);
+    let target = if state.target { 1.0 } else { 0.0 };
+    state.from + (target - state.from) * crate::theme::web_ease_out(progress)
+}
+
+fn switch_motion_progress(motion: SettingsSwitchAnimation, delta: f32) -> f32 {
+    motion.from + (motion.to - motion.from) * delta
+}
+
+fn interpolate_color(from: Hsla, to: Hsla, progress: f32) -> Hsla {
+    let from = from.to_rgb();
+    let to = to.to_rgb();
+    let progress = progress.clamp(0.0, 1.0);
+    Rgba {
+        r: from.r + (to.r - from.r) * progress,
+        g: from.g + (to.g - from.g) * progress,
+        b: from.b + (to.b - from.b) * progress,
+        a: from.a + (to.a - from.a) * progress,
+    }
+    .into()
 }
 
 fn segmented_button(
@@ -4669,6 +4818,48 @@ mod tests {
     #[test]
     fn public_beta_keeps_parked_provider_surfaces_hidden() {
         assert!(!parked_provider_surfaces_visible());
+    }
+
+    #[test]
+    fn settings_switch_motion_animates_changes_without_animating_mounts() {
+        let mut states = HashMap::new();
+        let start = Instant::now();
+        let duration = Duration::from_millis(180);
+
+        assert!(settings_switch_animation(&mut states, 7, false, duration, start).is_none());
+        assert!(
+            settings_switch_animation(
+                &mut states,
+                7,
+                false,
+                duration,
+                start + Duration::from_millis(20),
+            )
+            .is_none()
+        );
+
+        let change = settings_switch_animation(
+            &mut states,
+            7,
+            true,
+            duration,
+            start + Duration::from_millis(40),
+        )
+        .expect("a value change should animate");
+        assert_eq!(change.from, 0.0);
+        assert_eq!(change.to, 1.0);
+        assert_eq!(change.duration, duration);
+
+        assert!(
+            settings_switch_animation(
+                &mut states,
+                7,
+                true,
+                duration,
+                start + Duration::from_millis(221),
+            )
+            .is_none()
+        );
     }
 
     #[test]
