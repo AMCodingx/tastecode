@@ -59,6 +59,26 @@ fn send_request(socket: &mut ClientSocket, id: &str, method: &str, params: Value
         .unwrap();
 }
 
+fn completed_message(id: &str, text: &str, created_at: f64) -> DomainEvent {
+    DomainEvent::ItemCompleted {
+        item: Item {
+            id: id.into(),
+            turn_id: id.into(),
+            item_type: ItemType::Message,
+            status: ItemStatus::Completed,
+            role: Some(MessageRole::Assistant),
+            text: Some(text.into()),
+            command: None,
+            exit_code: None,
+            duration_ms: None,
+            path: None,
+            lines_added: None,
+            lines_removed: None,
+            created_at,
+        },
+    }
+}
+
 fn git(cwd: &std::path::Path, args: &[&str]) -> String {
     let output = Command::new("git")
         .args(args)
@@ -504,6 +524,155 @@ fn live_worktree_routes_refuse_unsaved_work_and_forced_discard_keeps_the_branch(
         read_value(&mut socket)["result"],
         json!({ "isolated": false, "uncommitted": false })
     );
+
+    socket.close(None).unwrap();
+    server.close().unwrap();
+}
+
+#[test]
+fn live_checkpoint_restore_keeps_files_and_conversation_reversible_together() {
+    let repository = tempfile::tempdir().unwrap();
+    git(repository.path(), &["init", "--initial-branch=main"]);
+    git(
+        repository.path(),
+        &["config", "user.email", "test@example.com"],
+    );
+    git(repository.path(), &["config", "user.name", "Test"]);
+    std::fs::write(repository.path().join("tracked.txt"), "original\n").unwrap();
+    git(repository.path(), &["add", "."]);
+    git(repository.path(), &["commit", "-m", "initial"]);
+    let before = harness_workspace::take_snapshot(repository.path()).unwrap();
+    std::fs::write(repository.path().join("tracked.txt"), "changed\n").unwrap();
+    std::fs::write(repository.path().join("added.txt"), "temporary\n").unwrap();
+    let repository_text = repository.path().to_string_lossy().into_owned();
+
+    let (_directory, server) = start_test_server(None, |store| {
+        store.add_project(&repository_text, None).unwrap();
+        store
+            .add_thread(StoreNewThread {
+                id: "thread-1".into(),
+                project_path: repository_text.clone(),
+                provider: ProviderId::Codex,
+                agent: None,
+                title: "Restore".into(),
+                created_at: Some(10),
+                worktree_path: None,
+                worktree_branch: None,
+            })
+            .unwrap();
+        let checkpoint_seq = store
+            .append_at(
+                "thread-1",
+                &completed_message("keep", "keep this", 10.0),
+                10,
+            )
+            .unwrap();
+        store
+            .add_checkpoint_at(
+                NewCheckpoint {
+                    thread_id: "thread-1".into(),
+                    seq: checkpoint_seq,
+                    commit: before.commit.clone(),
+                    label: "Before change".into(),
+                },
+                20,
+            )
+            .unwrap();
+        store
+            .append_at(
+                "thread-1",
+                &completed_message("tail", "temporary tail", 30.0),
+                30,
+            )
+            .unwrap();
+    });
+    let mut socket = connect_native(&server, "");
+    assert_welcome(&mut socket);
+
+    send_request(
+        &mut socket,
+        "changed",
+        "thread.changedSince",
+        json!({ "threadId": "thread-1", "checkpointId": 1 }),
+    );
+    let mut files = read_value(&mut socket)["result"]["files"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|value| value.as_str().unwrap().to_owned())
+        .collect::<Vec<_>>();
+    files.sort();
+    assert_eq!(files, ["added.txt", "tracked.txt"]);
+
+    send_request(
+        &mut socket,
+        "restore",
+        "thread.restore",
+        json!({ "threadId": "thread-1", "checkpointId": 1 }),
+    );
+    let restored = read_value(&mut socket);
+    let undo = restored["result"]["undo"].as_str().unwrap().to_owned();
+    assert_eq!(
+        std::fs::read_to_string(repository.path().join("tracked.txt")).unwrap(),
+        "original\n"
+    );
+    assert!(!repository.path().join("added.txt").exists());
+
+    send_request(
+        &mut socket,
+        "truncated",
+        "thread.history",
+        json!({ "threadId": "thread-1" }),
+    );
+    assert_eq!(
+        read_value(&mut socket)["result"]["events"]
+            .as_array()
+            .unwrap()
+            .len(),
+        1
+    );
+
+    send_request(
+        &mut socket,
+        "undo",
+        "thread.undoRestore",
+        json!({ "threadId": "thread-1", "undo": undo }),
+    );
+    assert_eq!(
+        read_value(&mut socket),
+        json!({ "id": "undo", "result": {} })
+    );
+    assert_eq!(
+        std::fs::read_to_string(repository.path().join("tracked.txt")).unwrap(),
+        "changed\n"
+    );
+    assert_eq!(
+        std::fs::read_to_string(repository.path().join("added.txt")).unwrap(),
+        "temporary\n"
+    );
+    send_request(
+        &mut socket,
+        "history",
+        "thread.history",
+        json!({ "threadId": "thread-1" }),
+    );
+    assert_eq!(
+        read_value(&mut socket)["result"]["events"]
+            .as_array()
+            .unwrap()
+            .len(),
+        2
+    );
+
+    send_request(
+        &mut socket,
+        "spent",
+        "thread.undoRestore",
+        json!({ "threadId": "thread-1", "undo": undo }),
+    );
+    let spent = read_value(&mut socket);
+    assert_eq!(spent["error"]["code"], "internal");
+    assert_eq!(spent["error"]["message"], "restore can no longer be undone");
 
     socket.close(None).unwrap();
     server.close().unwrap();

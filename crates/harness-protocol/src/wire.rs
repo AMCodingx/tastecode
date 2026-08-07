@@ -133,6 +133,9 @@ pub mod method {
     pub const THREAD_INTERRUPT: &str = "thread.interrupt";
     pub const THREAD_CLOSE: &str = "thread.close";
     pub const THREAD_CHECKPOINTS: &str = "thread.checkpoints";
+    pub const THREAD_CHANGED_SINCE: &str = "thread.changedSince";
+    pub const THREAD_RESTORE: &str = "thread.restore";
+    pub const THREAD_UNDO_RESTORE: &str = "thread.undoRestore";
     pub const THREAD_UNSAVED_WORK: &str = "thread.unsavedWork";
     pub const THREAD_DISCARD_WORKTREE: &str = "thread.discardWorktree";
     pub const THREAD_QUEUE: &str = "thread.queue";
@@ -230,6 +233,9 @@ mod tests {
         assert_eq!(method::THREAD_DELETE, "thread.delete");
         assert_eq!(method::THREAD_CLOSE, "thread.close");
         assert_eq!(method::THREAD_CHECKPOINTS, "thread.checkpoints");
+        assert_eq!(method::THREAD_CHANGED_SINCE, "thread.changedSince");
+        assert_eq!(method::THREAD_RESTORE, "thread.restore");
+        assert_eq!(method::THREAD_UNDO_RESTORE, "thread.undoRestore");
         assert_eq!(method::THREAD_UNSAVED_WORK, "thread.unsavedWork");
         assert_eq!(method::THREAD_DISCARD_WORKTREE, "thread.discardWorktree");
         assert_eq!(method::USAGE_SUMMARY, "usage.summary");

@@ -293,6 +293,102 @@ pub(crate) fn route(
                     .collect(),
             })
         }
+        method::THREAD_CHANGED_SINCE => {
+            let params: ThreadCheckpointParams = decode(method_name, params)?;
+            let Some(checkpoint_id) = exact_u64(params.checkpoint_id) else {
+                return Ok(json!({ "files": [] }));
+            };
+            let (stored, checkpoint) = {
+                let store = lock_store(state)?;
+                (
+                    store.thread(&params.thread_id)?,
+                    store.checkpoint(checkpoint_id)?,
+                )
+            };
+            let files = match (stored, checkpoint) {
+                (Some(stored), Some(checkpoint)) if checkpoint.thread_id == params.thread_id => {
+                    let repo_path = stored.worktree_path.unwrap_or(stored.project_path);
+                    harness_workspace::changed_since(repo_path, &checkpoint.commit)
+                        .unwrap_or_default()
+                        .into_iter()
+                        .map(|path| path.to_string_lossy().into_owned())
+                        .collect::<Vec<_>>()
+                }
+                _ => Vec::new(),
+            };
+            Ok(json!({ "files": files }))
+        }
+        method::THREAD_RESTORE => {
+            let params: ThreadCheckpointParams = decode(method_name, params)?;
+            let checkpoint_id = exact_u64(params.checkpoint_id)
+                .ok_or_else(|| RouteError::internal("no such checkpoint"))?;
+            let (stored, checkpoint) = {
+                let store = lock_store(state)?;
+                (
+                    store.thread(&params.thread_id)?,
+                    store.checkpoint(checkpoint_id)?,
+                )
+            };
+            let (Some(stored), Some(checkpoint)) = (stored, checkpoint) else {
+                return Err(RouteError::internal("no such checkpoint"));
+            };
+            if checkpoint.thread_id != params.thread_id {
+                return Err(RouteError::internal("no such checkpoint"));
+            }
+            let repo_path = stored.worktree_path.unwrap_or(stored.project_path);
+            let replaced = harness_workspace::restore_snapshot(&repo_path, &checkpoint.commit)
+                .map_err(RouteError::internal)?;
+            let save_result = {
+                let mut store = lock_store(state)?;
+                store.save_restore_undo(&params.thread_id, checkpoint.seq, &replaced.commit)
+            };
+            let undo = match save_result {
+                Ok(undo) => undo,
+                Err(error) => {
+                    harness_workspace::restore_snapshot(&repo_path, &replaced.commit)
+                        .map_err(RouteError::internal)?;
+                    return Err(error.into());
+                }
+            };
+            state
+                .inbox
+                .lock()
+                .map_err(|_| RouteError::internal("inbox projection mutex poisoned"))?
+                .remove(&params.thread_id);
+            Ok(json!({ "undo": undo }))
+        }
+        method::THREAD_UNDO_RESTORE => {
+            let params: ThreadUndoRestoreParams = decode(method_name, params)?;
+            require_non_empty(method_name, "undo", &params.undo)?;
+            let (stored, undo) = {
+                let store = lock_store(state)?;
+                (
+                    store.thread(&params.thread_id)?,
+                    store.restore_undo(&params.thread_id, &params.undo)?,
+                )
+            };
+            let (Some(stored), Some(undo)) = (stored, undo) else {
+                return Err(RouteError::internal("restore can no longer be undone"));
+            };
+            let repo_path = stored.worktree_path.unwrap_or(stored.project_path);
+            let replaced = harness_workspace::restore_snapshot(&repo_path, &undo.commit)
+                .map_err(RouteError::internal)?;
+            let apply_result = {
+                let mut store = lock_store(state)?;
+                store.apply_restore_undo(&params.thread_id, &params.undo)
+            };
+            if let Err(error) = apply_result {
+                harness_workspace::restore_snapshot(&repo_path, &replaced.commit)
+                    .map_err(RouteError::internal)?;
+                return Err(error.into());
+            }
+            state
+                .inbox
+                .lock()
+                .map_err(|_| RouteError::internal("inbox projection mutex poisoned"))?
+                .remove(&params.thread_id);
+            empty_result()
+        }
         method::THREAD_UNSAVED_WORK => {
             let params: ThreadIdParams = decode(method_name, params)?;
             let stored = lock_store(state)?.thread(&params.thread_id)?;
@@ -428,6 +524,11 @@ fn require_non_empty(method: &str, field: &str, value: &str) -> Result<(), Route
         ));
     }
     Ok(())
+}
+
+fn exact_u64(value: f64) -> Option<u64> {
+    (value.is_finite() && value >= 0.0 && value.fract() == 0.0 && value <= u64::MAX as f64)
+        .then_some(value as u64)
 }
 
 fn broadcast_lifecycle(
@@ -652,6 +753,20 @@ struct ThreadDiscardWorktreeParams {
     thread_id: String,
     #[serde(default, deserialize_with = "deserialize_present")]
     force: Option<bool>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ThreadCheckpointParams {
+    thread_id: String,
+    checkpoint_id: f64,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ThreadUndoRestoreParams {
+    thread_id: String,
+    undo: String,
 }
 
 #[derive(Deserialize)]
