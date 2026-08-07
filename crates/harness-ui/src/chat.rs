@@ -13,7 +13,7 @@ use crate::client_state::{ChatUpdate, ModelChoice};
 use crate::model_selection::{
     fast_service_tier, filter_model_choices_by_query, is_fast_mode_enabled, source_key,
 };
-use crate::motion_icon::motion_icon;
+use crate::motion_icon::{IconTransformation, motion_icon};
 use crate::provider_icon::{provider_icon, provider_icon_color};
 use crate::theme::{CHAT_WIDTH, RADIUS_XL, Theme, ThemeMode, cubic_bezier_timing};
 use crate::zoom::px;
@@ -3091,6 +3091,7 @@ impl ChatView {
             .child(
                 div()
                     .id("composer-primary-action")
+                    .group("composer-primary-action-hover")
                     .absolute()
                     .inset_0()
                     .rounded_full()
@@ -4119,26 +4120,29 @@ impl ChatView {
         } else {
             theme.prompt.hsla()
         };
-        let chevron = svg()
-            .path("icons/chevron-down.svg")
-            .size(px(16.0))
-            .with_animation(
-                ("composer-model-chevron", usize::from(open)),
-                Animation::new(theme.motion.fast).with_easing(crate::theme::web_ease_out),
-                move |icon, delta| {
-                    let rotation = if open {
-                        delta * 0.5
-                    } else {
-                        (1.0 - delta) * 0.5
-                    };
-                    icon.with_transformation(gpui::Transformation::rotate(gpui::percentage(
-                        rotation,
-                    )))
-                },
-            );
+        let chevron = motion_icon(
+            "composer-model-chevron-icon",
+            "icons/chevron-down.svg",
+            16.0,
+            "composer-model-hover",
+            theme,
+        )
+        .with_animation(
+            ("composer-model-chevron", usize::from(open)),
+            Animation::new(theme.motion.fast).with_easing(crate::theme::web_ease_out),
+            move |icon, delta| {
+                let rotation_degrees = if open {
+                    delta * 180.0
+                } else {
+                    (1.0 - delta) * 180.0
+                };
+                icon.with_transformation(IconTransformation::rotate(rotation_degrees))
+            },
+        );
         Some(
             div()
                 .id("composer-model")
+                .group("composer-model-hover")
                 .min_h(px(32.0))
                 .max_w(px(270.0))
                 .pl(px(8.0))
@@ -4177,12 +4181,15 @@ impl ChatView {
                         }))
                 })
                 .when(fast, |button| {
-                    button.child(
-                        div()
-                            .flex_none()
-                            .text_color(theme.text.hsla())
-                            .child(svg_icon("icons/zap-filled.svg", 13.0)),
-                    )
+                    button.child(div().flex_none().text_color(theme.text.hsla()).child(
+                        motion_icon(
+                            "composer-model-fast-icon",
+                            "icons/zap-filled.svg",
+                            13.0,
+                            "composer-model-hover",
+                            theme,
+                        ),
+                    ))
                 })
                 .child(
                     div()
@@ -4878,6 +4885,7 @@ impl ChatView {
                         row.child(
                             div()
                                 .id("model-fast-toggle")
+                                .group("model-fast-toggle-hover")
                                 .size(px(30.0))
                                 .flex()
                                 .items_center()
@@ -4903,7 +4911,7 @@ impl ChatView {
                                     cx.emit(ChatEvent::ToggleFast);
                                     this.composer_menu = Some(ComposerMenu::Model);
                                 }))
-                                .child(fast_toggle_icon(fast, theme)),
+                                .child(fast_toggle_icon(fast, "model-fast-toggle-hover", theme)),
                         )
                     }),
             )
@@ -5594,7 +5602,14 @@ fn composer_primary_icon(
     theme: Theme,
 ) -> AnyElement {
     if show_stop {
-        let icon = svg().path("icons/square.svg").size(px(9.0)).flex_none();
+        let icon = motion_icon(
+            "composer-primary-icon",
+            "icons/square.svg",
+            9.0,
+            "composer-primary-action-hover",
+            theme,
+        )
+        .flex_none();
         if stopping {
             icon.with_animation(
                 "composer-stopping",
@@ -5603,7 +5618,7 @@ fn composer_primary_icon(
                     let pulse = (std::f32::consts::PI * delta).sin();
                     let scale = 1.0 - 0.14 * pulse;
                     icon.opacity(1.0 - 0.55 * pulse)
-                        .with_transformation(gpui::Transformation::scale(gpui::size(scale, scale)))
+                        .with_transformation(IconTransformation::scale(scale))
                 },
             )
             .into_any_element()
@@ -5615,15 +5630,21 @@ fn composer_primary_icon(
                 |icon, delta| {
                     let scale = 0.55 + 0.45 * delta;
                     icon.opacity(delta).with_transformation(
-                        gpui::Transformation::scale(gpui::size(scale, scale))
-                            .with_rotation(gpui::radians((-18.0_f32 * (1.0 - delta)).to_radians())),
+                        IconTransformation::scale(scale).with_rotation(-18.0 * (1.0 - delta)),
                     )
                 },
             )
             .into_any_element()
         }
     } else {
-        let icon = svg().path("icons/arrow-up.svg").size(px(15.0)).flex_none();
+        let icon = motion_icon(
+            "composer-primary-icon",
+            "icons/arrow-up.svg",
+            15.0,
+            "composer-primary-action-hover",
+            theme,
+        )
+        .flex_none();
         if sending {
             icon.with_animation(
                 ("composer-send-motion", send_motion_generation),
@@ -5632,8 +5653,7 @@ fn composer_primary_icon(
                     let pulse = (std::f32::consts::PI * delta).sin();
                     let scale = 1.0 - 0.06 * pulse;
                     icon.with_transformation(
-                        gpui::Transformation::scale(gpui::size(scale, scale))
-                            .with_translation(point(px(0.0), px(-2.0 * pulse))),
+                        IconTransformation::scale(scale).with_translation(0.0, -2.0 * pulse),
                     )
                 },
             )
@@ -5646,8 +5666,8 @@ fn composer_primary_icon(
                 |icon, delta| {
                     let scale = 0.72 + 0.28 * delta;
                     icon.opacity(delta).with_transformation(
-                        gpui::Transformation::scale(gpui::size(scale, scale))
-                            .with_translation(point(px(0.0), px(-6.0 * (1.0 - delta)))),
+                        IconTransformation::scale(scale)
+                            .with_translation(0.0, -6.0 * (1.0 - delta)),
                     )
                 },
             )
@@ -5876,19 +5896,22 @@ fn fast_toggle_shadows(theme: Theme) -> Vec<BoxShadow> {
     }]
 }
 
-fn fast_toggle_icon(fast: bool, theme: Theme) -> AnyElement {
+fn fast_toggle_icon(fast: bool, hover_group: &'static str, theme: Theme) -> AnyElement {
     let icon = div()
         .size(px(15.0))
         .flex()
         .items_center()
         .justify_center()
-        .child(svg_icon(
+        .child(motion_icon(
+            "model-fast-toggle-icon",
             if fast {
                 "icons/zap-filled.svg"
             } else {
                 "icons/zap.svg"
             },
             15.0,
+            hover_group,
+            theme,
         ));
     if fast {
         icon.with_animation(

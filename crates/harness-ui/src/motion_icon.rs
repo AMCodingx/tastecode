@@ -32,6 +32,7 @@ pub(crate) struct MotionIcon {
     path: SharedString,
     duration: Duration,
     reduced_motion: bool,
+    transformation: IconTransformation,
 }
 
 impl MotionIcon {
@@ -48,7 +49,56 @@ impl MotionIcon {
             path: path.into(),
             duration,
             reduced_motion,
+            transformation: IconTransformation::default(),
         }
+    }
+
+    pub(crate) fn with_transformation(mut self, transformation: IconTransformation) -> Self {
+        self.transformation = transformation;
+        self
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct IconTransformation {
+    scale: [f32; 2],
+    translation: [f32; 2],
+    rotation_degrees: f32,
+}
+
+impl Default for IconTransformation {
+    fn default() -> Self {
+        Self {
+            scale: [1.0, 1.0],
+            translation: [0.0, 0.0],
+            rotation_degrees: 0.0,
+        }
+    }
+}
+
+impl IconTransformation {
+    pub(crate) fn scale(scale: f32) -> Self {
+        Self {
+            scale: [scale, scale],
+            ..Self::default()
+        }
+    }
+
+    pub(crate) fn rotate(rotation_degrees: f32) -> Self {
+        Self {
+            rotation_degrees,
+            ..Self::default()
+        }
+    }
+
+    pub(crate) fn with_translation(mut self, x: f32, y: f32) -> Self {
+        self.translation = [x, y];
+        self
+    }
+
+    pub(crate) fn with_rotation(mut self, rotation_degrees: f32) -> Self {
+        self.rotation_degrees = rotation_degrees;
+        self
     }
 }
 
@@ -127,6 +177,38 @@ fn rotation_matrix(
     }
 }
 
+fn base_transformation_matrix(
+    bounds: Bounds<Pixels>,
+    scale_factor: f32,
+    transformation: IconTransformation,
+) -> TransformationMatrix {
+    let angle = transformation.rotation_degrees.to_radians();
+    let cosine = angle.cos();
+    let sine = angle.sin();
+    let scale_x = transformation.scale[0];
+    let scale_y = transformation.scale[1];
+    let rotation_scale = [
+        [cosine * scale_x, -sine * scale_y],
+        [sine * scale_x, cosine * scale_y],
+    ];
+    let center = bounds.center();
+    let center_x = f32::from(center.x) * scale_factor;
+    let center_y = f32::from(center.y) * scale_factor;
+    let translation_x = transformation.translation[0] * scale_factor;
+    let translation_y = transformation.translation[1] * scale_factor;
+    TransformationMatrix {
+        rotation_scale,
+        translation: [
+            center_x + translation_x
+                - rotation_scale[0][0] * center_x
+                - rotation_scale[0][1] * center_y,
+            center_y + translation_y
+                - rotation_scale[1][0] * center_x
+                - rotation_scale[1][1] * center_y,
+        ],
+    }
+}
+
 impl Element for MotionIcon {
     type RequestLayoutState = ();
     type PrepaintState = Option<Hitbox>;
@@ -189,6 +271,7 @@ impl Element for MotionIcon {
         let path = self.path.clone();
         let duration = self.duration;
         let reduced_motion = self.reduced_motion;
+        let base_transformation = self.transformation;
         self.interactivity.paint(
             global_id,
             inspector_id,
@@ -211,7 +294,10 @@ impl Element for MotionIcon {
                     },
                 );
                 let color = window.text_style().color;
-                let transformation = rotation_matrix(bounds, window.scale_factor(), progress);
+                let scale_factor = window.scale_factor();
+                let transformation = rotation_matrix(bounds, scale_factor, progress).compose(
+                    base_transformation_matrix(bounds, scale_factor, base_transformation),
+                );
                 let _ = window.paint_svg(bounds, path, transformation, color, cx);
             },
         );
@@ -273,5 +359,27 @@ mod tests {
         );
         assert!((reversed - entered).abs() < 0.001);
         assert!(animating);
+    }
+
+    #[test]
+    fn hover_rotation_composes_after_the_existing_icon_transform() {
+        let bounds = Bounds::new(
+            gpui::point(gpui::px(10.0), gpui::px(20.0)),
+            gpui::size(gpui::px(16.0), gpui::px(16.0)),
+        );
+        let base = base_transformation_matrix(
+            bounds,
+            2.0,
+            IconTransformation::scale(0.8)
+                .with_translation(0.0, -2.0)
+                .with_rotation(-18.0),
+        );
+        let hover = rotation_matrix(bounds, 2.0, 1.0);
+        let composed = hover.compose(base);
+
+        assert_ne!(composed, base);
+        assert_ne!(composed, hover);
+        assert!(composed.rotation_scale[0][0].is_finite());
+        assert!(composed.translation[1].is_finite());
     }
 }
