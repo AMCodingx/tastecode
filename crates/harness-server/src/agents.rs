@@ -7,8 +7,8 @@ use harness_agent::{
 use harness_protocol::{
     Account, ApprovalDecision, AuthEventPush, AuthStartLoginResult, DomainEvent, McpAuth,
     McpListResult, McpServer, McpServerScope, McpStartupStatus, Model, ProviderId, QueuedTurn,
-    SendTurnResult, SkillsListResult, Thread, ThreadEventPush, ThreadInboxStatus,
-    ThreadLifecyclePush, ThreadQueuePush, ThreadQueueResult, channel,
+    SendTurnResult, Skill, SkillSource, SkillsListResult, Thread, ThreadEventPush,
+    ThreadInboxStatus, ThreadLifecyclePush, ThreadQueuePush, ThreadQueueResult, channel,
 };
 use harness_store::{NewCheckpoint, NewThread};
 use harness_workspace::Worktree;
@@ -285,6 +285,50 @@ impl AgentManager {
         self.control(state, provider, None)?
             .set_skill_enabled(skill_id, enabled)
             .map_err(|error| error.to_string())
+    }
+
+    pub(crate) fn install_skill(
+        &self,
+        state: &Arc<ServerState>,
+        provider: ProviderId,
+        project_path: &str,
+        folder_path: &str,
+    ) -> Result<Skill, String> {
+        let control = self.control(state, provider, None)?;
+        let current = control
+            .list_skills(project_path)
+            .map_err(|error| error.to_string())?;
+        if !current.capabilities.install {
+            return Err("this provider cannot install skills".into());
+        }
+        let destination = crate::skill_install::install_local_skill(project_path, folder_path)
+            .map_err(|error| error.to_string())?;
+        let discovered = control
+            .list_skills(project_path)
+            .map_err(|error| error.to_string())
+            .and_then(|inventory| {
+                inventory
+                    .skills
+                    .into_iter()
+                    .find(|skill| match &skill.source {
+                        SkillSource::Folder { path } => same_path(path, &destination),
+                        SkillSource::Provider => false,
+                    })
+                    .ok_or_else(|| {
+                        inventory
+                            .errors
+                            .iter()
+                            .find(|error| path_inside(&destination, &error.path))
+                            .map(|error| error.message.clone())
+                            .unwrap_or_else(|| {
+                                "provider did not discover the installed skill".into()
+                            })
+                    })
+            });
+        if discovered.is_err() {
+            let _ = std::fs::remove_dir_all(destination);
+        }
+        discovered
     }
 
     pub(crate) fn list_models(
@@ -1008,6 +1052,38 @@ fn queue_result(live: &LiveState, thread_id: &str) -> ThreadQueueResult {
 fn cleanup_failed_worktree(worktree: Option<&Worktree>) {
     if let Some(worktree) = worktree {
         let _ = harness_workspace::remove_worktree(worktree, true);
+    }
+}
+
+fn same_path(left: &str, right: &std::path::Path) -> bool {
+    let left = std::fs::canonicalize(left).unwrap_or_else(|_| PathBuf::from(left));
+    let right = std::fs::canonicalize(right).unwrap_or_else(|_| right.to_path_buf());
+    #[cfg(target_os = "windows")]
+    return left
+        .to_string_lossy()
+        .eq_ignore_ascii_case(&right.to_string_lossy());
+    #[cfg(not(target_os = "windows"))]
+    {
+        left == right
+    }
+}
+
+fn path_inside(root: &std::path::Path, candidate: &str) -> bool {
+    let root = std::fs::canonicalize(root).unwrap_or_else(|_| root.to_path_buf());
+    let candidate = std::fs::canonicalize(candidate).unwrap_or_else(|_| PathBuf::from(candidate));
+    #[cfg(target_os = "windows")]
+    {
+        let root = root.to_string_lossy().to_lowercase();
+        let candidate = candidate.to_string_lossy().to_lowercase();
+        return candidate == root
+            || candidate
+                .strip_prefix(&root)
+                .and_then(|suffix| suffix.as_bytes().first())
+                .is_some_and(|separator| matches!(separator, b'\\' | b'/'));
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        candidate == root || candidate.strip_prefix(root).is_ok()
     }
 }
 

@@ -785,6 +785,47 @@ fn live_mcp_and_skills_routes_share_control_and_push_invalidations() {
     );
     assert_eq!(runtime.control_open_count.load(Ordering::Acquire), 1);
 
+    let project = directory.path().join("skills-project");
+    let source = directory.path().join("skill-source/review-skill");
+    std::fs::create_dir_all(source.join("references")).unwrap();
+    std::fs::create_dir(&project).unwrap();
+    std::fs::write(source.join("SKILL.md"), "---\nname: review-skill\n---\n").unwrap();
+    std::fs::write(source.join("references/notes.md"), "notes").unwrap();
+    send_request(
+        &mut socket,
+        "install-skill",
+        "skills.installFromFolder",
+        json!({
+            "provider": "codex",
+            "projectPath": project,
+            "folderPath": source
+        }),
+    );
+    let (pushes, installed) = read_until_response(&mut socket, "install-skill");
+    assert_eq!(pushes[0]["channel"], "skills.changed");
+    assert_eq!(installed["result"]["skill"]["name"], "review-skill");
+    assert_eq!(
+        std::fs::read_to_string(project.join(".agents/skills/review-skill/references/notes.md"))
+            .unwrap(),
+        "notes"
+    );
+    send_request(
+        &mut socket,
+        "install-conflict",
+        "skills.installFromFolder",
+        json!({
+            "provider": "codex",
+            "projectPath": project,
+            "folderPath": source
+        }),
+    );
+    assert!(
+        read_value(&mut socket)["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("already exists")
+    );
+
     send_request(
         &mut socket,
         "bad-project",
@@ -1935,21 +1976,43 @@ impl ProviderControl for FakeControl {
     }
 
     fn list_skills(&self, project_path: &str) -> AgentResult<harness_protocol::SkillsListResult> {
+        let mut skills = vec![json!({
+            "id": format!("{project_path}/.agents/skills/docs/SKILL.md"),
+            "name": "docs",
+            "displayName": "Docs",
+            "description": "Read docs",
+            "source": {
+                "type": "folder",
+                "path": format!("{project_path}/.agents/skills/docs")
+            },
+            "scope": "project",
+            "enabled": true,
+            "dependencyErrors": []
+        })];
+        let managed = std::path::Path::new(project_path).join(".agents/skills");
+        if let Ok(entries) = std::fs::read_dir(managed) {
+            for entry in entries.filter_map(Result::ok) {
+                let folder = entry.path();
+                if !folder.join("SKILL.md").is_file() {
+                    continue;
+                }
+                let Some(name) = folder.file_name().and_then(|name| name.to_str()) else {
+                    continue;
+                };
+                skills.push(json!({
+                    "id": folder.join("SKILL.md"),
+                    "name": name,
+                    "description": format!("Installed {name}"),
+                    "source": { "type": "folder", "path": folder },
+                    "scope": "project",
+                    "enabled": true,
+                    "dependencyErrors": []
+                }));
+            }
+        }
         Ok(serde_json::from_value(json!({
             "capabilities": { "inventory": true, "configure": true, "install": true },
-            "skills": [{
-                "id": format!("{project_path}/.agents/skills/docs/SKILL.md"),
-                "name": "docs",
-                "displayName": "Docs",
-                "description": "Read docs",
-                "source": {
-                    "type": "folder",
-                    "path": format!("{project_path}/.agents/skills/docs")
-                },
-                "scope": "project",
-                "enabled": true,
-                "dependencyErrors": []
-            }],
+            "skills": skills,
             "errors": []
         }))
         .unwrap())

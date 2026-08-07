@@ -10,6 +10,7 @@ mod inbox;
 mod mcp_config;
 mod push;
 mod router;
+mod skill_install;
 
 pub use access::{allowed_origin, assert_safe_bind, has_access};
 pub use router::SERVER_VERSION;

@@ -263,17 +263,34 @@ pub(crate) fn route(
                 .agents
                 .set_skill_enabled(state, params.provider, &params.skill_id, params.enabled)
                 .map_err(RouteError::internal)?;
-            state
-                .push
-                .broadcast(
-                    channel::SKILLS_CHANGED,
-                    json!({
-                        "provider": params.provider,
-                        "projectPath": params.project_path,
-                    }),
+            broadcast_provider_project(
+                state,
+                channel::SKILLS_CHANGED,
+                params.provider,
+                &params.project_path,
+            )?;
+            encoded(harness_protocol::SkillEnabledResult { enabled })
+        }
+        method::SKILLS_INSTALL_FROM_FOLDER => {
+            let params: SkillInstallParams = decode(method_name, params)?;
+            require_non_empty(method_name, "projectPath", &params.project_path)?;
+            require_non_empty(method_name, "folderPath", &params.folder_path)?;
+            let skill = state
+                .agents
+                .install_skill(
+                    state,
+                    params.provider,
+                    &params.project_path,
+                    &params.folder_path,
                 )
                 .map_err(RouteError::internal)?;
-            encoded(harness_protocol::SkillEnabledResult { enabled })
+            broadcast_provider_project(
+                state,
+                channel::SKILLS_CHANGED,
+                params.provider,
+                &params.project_path,
+            )?;
+            encoded(harness_protocol::SkillInstalledResult { skill })
         }
         method::MODELS_LIST => {
             let params: ModelsListParams = decode(method_name, params)?;
@@ -1228,6 +1245,14 @@ struct SkillToggleParams {
     project_path: String,
     skill_id: String,
     enabled: bool,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct SkillInstallParams {
+    provider: ProviderId,
+    project_path: String,
+    folder_path: String,
 }
 
 #[derive(Deserialize)]
