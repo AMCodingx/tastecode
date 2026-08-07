@@ -24,8 +24,8 @@ use command_palette::{CommandPaletteState, CommandScope};
 use gpui::{
     Animation, AnimationExt, App, Application, Bounds, Context, Entity, FocusHandle, FontWeight,
     KeyDownEvent, MouseButton, PathPromptOptions, Render, TitlebarOptions, Window,
-    WindowAppearance, WindowBackgroundAppearance, WindowBounds, WindowOptions, div, ease_out_quint,
-    point, prelude::*, size, svg,
+    WindowAppearance, WindowBackgroundAppearance, WindowBounds, WindowOptions, div, point,
+    prelude::*, size, svg,
 };
 use gpui_component::Root;
 use gpui_component::input::{InputEvent, InputState};
@@ -1462,7 +1462,7 @@ impl Render for HarnessApp {
             rail_slot
                 .with_animation(
                     ("rail-transition", self.sidebar_transition),
-                    Animation::new(self.theme.motion.slow).with_easing(ease_out_quint()),
+                    Animation::new(self.theme.motion.slow).with_easing(crate::theme::web_ease_out),
                     move |slot, delta| {
                         let visible = if collapsed { 1.0 - delta } else { delta };
                         slot.w(px(crate::RAIL_WIDTH * visible))

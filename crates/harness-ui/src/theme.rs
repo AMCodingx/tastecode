@@ -21,6 +21,35 @@ impl Motion {
     };
 }
 
+/// The CSS `cubic-bezier(0.23, 1, 0.32, 1)` timing function used throughout
+/// the web oracle. GPUI accepts elapsed progress, so solve the Bezier's x
+/// coordinate and return its y coordinate.
+pub(crate) fn web_ease_out(progress: f32) -> f32 {
+    let progress = progress.clamp(0.0, 1.0);
+    if progress == 0.0 || progress == 1.0 {
+        return progress;
+    }
+
+    let mut lower = 0.0;
+    let mut upper = 1.0;
+    for _ in 0..16 {
+        let parameter = (lower + upper) * 0.5;
+        if bezier_component(parameter, 0.23, 0.32) < progress {
+            lower = parameter;
+        } else {
+            upper = parameter;
+        }
+    }
+    bezier_component((lower + upper) * 0.5, 1.0, 1.0)
+}
+
+fn bezier_component(parameter: f32, first: f32, second: f32) -> f32 {
+    let inverse = 1.0 - parameter;
+    3.0 * inverse * inverse * parameter * first
+        + 3.0 * inverse * parameter * parameter * second
+        + parameter * parameter * parameter
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ColorToken(pub u32);
 
@@ -228,6 +257,8 @@ mod tests {
         assert_eq!(Motion::WEB_PARITY.press, Duration::from_millis(140));
         assert_eq!(Motion::WEB_PARITY.fast, Duration::from_millis(180));
         assert_eq!(Motion::WEB_PARITY.slow, Duration::from_millis(260));
+        assert!((web_ease_out(0.157_656_25) - 0.578_125).abs() < 0.000_1);
+        assert!((web_ease_out(0.331_25) - 0.875).abs() < 0.000_1);
     }
 
     #[test]

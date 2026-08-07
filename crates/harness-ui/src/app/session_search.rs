@@ -4,7 +4,7 @@ use crate::zoom::px;
 use chrono::{DateTime, Local};
 use gpui::{
     Animation, AnimationExt, AnyElement, Context, Entity, FontWeight, SharedString, Window, div,
-    ease_out_quint, prelude::*, relative,
+    prelude::*, relative,
 };
 use gpui_component::input::{Input, InputState};
 use harness_protocol::{ProviderId, SessionSearchResult};
@@ -522,7 +522,7 @@ impl HarnessApp {
             .when_some(provider_menu, |panel, menu| panel.child(menu))
             .with_animation(
                 ("session-search-panel", self.session_search.open_transition),
-                Animation::new(Duration::from_millis(220)).with_easing(ease_out_quint()),
+                Animation::new(Duration::from_millis(220)).with_easing(crate::theme::web_ease_out),
                 |panel, delta| panel.top(px(6.0 * (1.0 - delta))).opacity(delta),
             );
 
@@ -547,7 +547,8 @@ impl HarnessApp {
                         }))
                         .with_animation(
                             "session-search-scrim-in",
-                            Animation::new(theme.motion.fast).with_easing(ease_out_quint()),
+                            Animation::new(theme.motion.fast)
+                                .with_easing(crate::theme::web_ease_out),
                             |scrim, delta| scrim.opacity(delta),
                         ),
                 )

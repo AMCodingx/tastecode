@@ -5,8 +5,8 @@ use crate::zoom::px;
 use chrono::{DateTime, Local};
 use gpui::{
     Animation, AnimationExt, AnyElement, App, BoxShadow, ClipboardItem, Entity, SharedString,
-    StyleRefinement, Styled, Transformation, Window, div, ease_out_quint, list, percentage, point,
-    prelude::*, relative, rems, rgba, svg,
+    StyleRefinement, Styled, Transformation, Window, div, list, percentage, point, prelude::*,
+    relative, rems, rgba, svg,
 };
 use gpui_component::scroll::ScrollableElement;
 use gpui_component::text::{TextView, TextViewStyle};
@@ -173,7 +173,8 @@ impl ChatView {
                                 .child("Jump to latest")
                                 .with_animation(
                                     "jump-to-latest-in",
-                                    Animation::new(theme.motion.fast).with_easing(ease_out_quint()),
+                                    Animation::new(theme.motion.fast)
+                                        .with_easing(crate::theme::web_ease_out),
                                     |button, delta| button.opacity(delta),
                                 ),
                         ),
@@ -705,7 +706,7 @@ fn working_rail(working: WorkingSnapshot, theme: Theme) -> AnyElement {
         )
         .child(div().child(working.label).with_animation(
             "transcript-working-label",
-            Animation::new(Duration::from_millis(180)).with_easing(ease_out_quint()),
+            Animation::new(Duration::from_millis(180)).with_easing(crate::theme::web_ease_out),
             |label, delta| label.opacity(delta),
         ))
         .child(

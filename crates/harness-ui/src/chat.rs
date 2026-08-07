@@ -12,7 +12,7 @@ use diff::DiffUiState;
 use gpui::{
     Animation, AnimationExt, AnyElement, App, ClipboardEntry, Context, Entity, EventEmitter,
     Focusable, FontWeight, Image, ImageFormat, ListAlignment, ListOffset, ListState, ObjectFit,
-    Render, SharedString, StyledImage, Window, div, ease_out_quint, img, prelude::*, relative, svg,
+    Render, SharedString, StyledImage, Window, div, img, prelude::*, relative, svg,
 };
 use gpui_component::RopeExt;
 use gpui_component::input::{Input, InputEvent, InputState};
@@ -1760,7 +1760,7 @@ impl ChatView {
             )
             .with_animation(
                 "header-project-menu",
-                Animation::new(theme.motion.fast).with_easing(ease_out_quint()),
+                Animation::new(theme.motion.fast).with_easing(crate::theme::web_ease_out),
                 |menu, delta| menu.top(px(34.0 + 4.0 * delta)).opacity(delta),
             )
             .into_any_element()
@@ -2321,7 +2321,8 @@ impl ChatView {
                 )
                 .with_animation(
                     ("brief-input", request_animation_id),
-                    Animation::new(Duration::from_millis(220)).with_easing(ease_out_quint()),
+                    Animation::new(Duration::from_millis(220))
+                        .with_easing(crate::theme::web_ease_out),
                     move |card, delta| {
                         card.bottom(px(bottom - (8.0 * (1.0 - delta))))
                             .opacity(delta)
@@ -2497,7 +2498,8 @@ impl ChatView {
                     .child(delete)
                     .with_animation(
                         row_animation_id,
-                        Animation::new(Duration::from_millis(240)).with_easing(ease_out_quint()),
+                        Animation::new(Duration::from_millis(240))
+                            .with_easing(crate::theme::web_ease_out),
                         |row, delta| row.top(px(4.0 * (1.0 - delta))).opacity(delta),
                     )
                     .into_any_element()
@@ -2527,7 +2529,7 @@ impl ChatView {
                 .children(rows)
                 .with_animation(
                     "composer-queue-panel",
-                    Animation::new(theme.motion.fast).with_easing(ease_out_quint()),
+                    Animation::new(theme.motion.fast).with_easing(crate::theme::web_ease_out),
                     |panel, delta| panel.opacity(delta),
                 )
                 .into_any_element(),
@@ -3044,7 +3046,8 @@ impl ChatView {
                             })
                             .with_animation(
                                 ("attachment-preview-in", index),
-                                Animation::new(theme.motion.fast).with_easing(ease_out_quint()),
+                                Animation::new(theme.motion.fast)
+                                    .with_easing(crate::theme::web_ease_out),
                                 |preview, delta| preview.opacity(delta),
                             )
                             .into_any_element()
@@ -3102,7 +3105,8 @@ impl ChatView {
                             )
                             .with_animation(
                                 ("attachment-chip-in", index),
-                                Animation::new(theme.motion.fast).with_easing(ease_out_quint()),
+                                Animation::new(theme.motion.fast)
+                                    .with_easing(crate::theme::web_ease_out),
                                 |chip, delta| chip.opacity(delta),
                             )
                             .into_any_element()
@@ -3410,7 +3414,7 @@ impl ChatView {
             )
             .with_animation(
                 "composer-project-menu",
-                Animation::new(theme.motion.fast).with_easing(ease_out_quint()),
+                Animation::new(theme.motion.fast).with_easing(crate::theme::web_ease_out),
                 |menu, delta| menu.opacity(delta),
             )
             .into_any_element()
@@ -3476,7 +3480,7 @@ impl ChatView {
             )
             .with_animation(
                 "composer-branch-menu",
-                Animation::new(theme.motion.fast).with_easing(ease_out_quint()),
+                Animation::new(theme.motion.fast).with_easing(crate::theme::web_ease_out),
                 |menu, delta| menu.opacity(delta),
             )
             .into_any_element()

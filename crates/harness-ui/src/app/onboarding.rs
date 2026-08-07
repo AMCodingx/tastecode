@@ -4,7 +4,7 @@ use crate::theme::Theme;
 use crate::zoom::px;
 use gpui::{
     Animation, AnimationExt, AnyElement, App, Context, FontWeight, Transformation, Window, div,
-    ease_out_quint, percentage, prelude::*, svg,
+    percentage, prelude::*, svg,
 };
 use gpui_component::input::Input;
 use gpui_component::scroll::ScrollableElement;
@@ -135,7 +135,8 @@ impl HarnessApp {
                     .child(panel)
                     .with_animation(
                         ("onboarding-step", transition),
-                        Animation::new(Duration::from_millis(300)).with_easing(ease_out_quint()),
+                        Animation::new(Duration::from_millis(300))
+                            .with_easing(crate::theme::web_ease_out),
                         |panel, delta| panel.opacity(delta).mt(px(10.0 * (1.0 - delta))),
                     ),
             )
@@ -1369,7 +1370,7 @@ fn selection_check(index: usize, theme: Theme) -> AnyElement {
         .child(svg().path("icons/check.svg").size(px(12.0)))
         .with_animation(
             ("onboarding-check-in", index),
-            Animation::new(Duration::from_millis(240)).with_easing(ease_out_quint()),
+            Animation::new(Duration::from_millis(240)).with_easing(crate::theme::web_ease_out),
             |check, delta| check.opacity(delta),
         )
         .into_any_element()

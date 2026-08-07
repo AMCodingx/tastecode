@@ -6,7 +6,7 @@ use crate::theme::{Accent, Backdrop, Theme, ThemeMode};
 use crate::zoom::px;
 use gpui::{
     Animation, AnimationExt, AnyElement, App, Context, Entity, FontWeight, PathPromptOptions,
-    PromptButton, PromptLevel, SharedString, Window, div, ease_out_quint, prelude::*, svg,
+    PromptButton, PromptLevel, SharedString, Window, div, prelude::*, svg,
 };
 use gpui_component::input::{Input, InputState};
 use harness_protocol::{
@@ -207,7 +207,8 @@ impl HarnessApp {
         let transition = self.settings_transition ^ self.settings_section.index() as u64;
         let content = self.settings_content(cx).with_animation(
             ("settings-section", transition),
-            Animation::new(std::time::Duration::from_millis(220)).with_easing(ease_out_quint()),
+            Animation::new(std::time::Duration::from_millis(220))
+                .with_easing(crate::theme::web_ease_out),
             |panel, delta| panel.opacity(delta).mt(px(4.0 * (1.0 - delta))),
         );
 
@@ -236,7 +237,7 @@ impl HarnessApp {
             )
             .with_animation(
                 ("settings-overlay", self.settings_open_transition),
-                Animation::new(theme.motion.fast).with_easing(ease_out_quint()),
+                Animation::new(theme.motion.fast).with_easing(crate::theme::web_ease_out),
                 |panel, delta| panel.opacity(delta),
             )
             .into_any_element()

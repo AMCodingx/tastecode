@@ -2,8 +2,7 @@ use super::HarnessApp;
 use crate::zoom::px;
 use gpui::{
     Animation, AnimationExt, AnyElement, BoxShadow, Context, Image, MouseButton, ObjectFit,
-    ScrollHandle, StyledImage, Window, div, ease_out_quint, img, point, prelude::*, relative, rgba,
-    svg,
+    ScrollHandle, StyledImage, Window, div, img, point, prelude::*, relative, rgba, svg,
 };
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -148,7 +147,8 @@ impl HarnessApp {
             frame
                 .with_animation(
                     ("image-viewer-zoom", transition),
-                    Animation::new(Duration::from_millis(180)).with_easing(ease_out_quint()),
+                    Animation::new(Duration::from_millis(180))
+                        .with_easing(crate::theme::web_ease_out),
                     move |frame, delta| {
                         let scale = previous_zoom + (zoom - previous_zoom) * delta;
                         frame.w(relative(scale)).h(relative(scale))
@@ -273,7 +273,8 @@ impl HarnessApp {
                 )
                 .with_animation(
                     ("image-viewer-in", image_id),
-                    Animation::new(Duration::from_millis(180)).with_easing(ease_out_quint()),
+                    Animation::new(Duration::from_millis(180))
+                        .with_easing(crate::theme::web_ease_out),
                     |viewer, delta| viewer.opacity(delta),
                 )
                 .into_any_element(),

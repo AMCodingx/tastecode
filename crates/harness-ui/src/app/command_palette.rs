@@ -6,7 +6,7 @@ use crate::shortcuts::{
 use crate::zoom::px;
 use gpui::{
     Animation, AnimationExt, AnyElement, Context, Entity, Focusable, FontWeight, KeyDownEvent,
-    ScrollHandle, SharedString, Window, div, ease_out_quint, prelude::*,
+    ScrollHandle, SharedString, Window, div, prelude::*,
 };
 use gpui_component::input::{Input, InputState};
 use std::time::Duration;
@@ -638,7 +638,7 @@ impl HarnessApp {
                     "command-palette-panel",
                     self.command_palette.open_transition,
                 ),
-                Animation::new(Duration::from_millis(220)).with_easing(ease_out_quint()),
+                Animation::new(Duration::from_millis(220)).with_easing(crate::theme::web_ease_out),
                 |panel, delta| panel.top(px(6.0 * (1.0 - delta))).opacity(delta),
             );
 
@@ -663,7 +663,8 @@ impl HarnessApp {
                         }))
                         .with_animation(
                             "command-palette-scrim-in",
-                            Animation::new(theme.motion.fast).with_easing(ease_out_quint()),
+                            Animation::new(theme.motion.fast)
+                                .with_easing(crate::theme::web_ease_out),
                             |scrim, delta| scrim.opacity(delta),
                         ),
                 )

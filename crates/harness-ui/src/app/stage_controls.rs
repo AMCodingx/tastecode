@@ -4,8 +4,8 @@ use crate::client_state::{RollbackOperation, UsageScope, WorkspaceOperation};
 use crate::zoom::px;
 use chrono::{DateTime, Local};
 use gpui::{
-    Animation, AnimationExt, AnyElement, Context, FontWeight, SharedString, div, ease_out_quint,
-    prelude::*, relative, svg,
+    Animation, AnimationExt, AnyElement, Context, FontWeight, SharedString, div, prelude::*,
+    relative, svg,
 };
 use harness_protocol::{
     CheckpointSummary, PanicStopSessionResult, UsageSummaryResult, WorkspaceInfo,
@@ -750,7 +750,8 @@ impl HarnessApp {
                         }))
                         .with_animation(
                             ("rollback-scrim", rollback.transition),
-                            Animation::new(theme.motion.fast).with_easing(ease_out_quint()),
+                            Animation::new(theme.motion.fast)
+                                .with_easing(crate::theme::web_ease_out),
                             |scrim, delta| scrim.opacity(delta),
                         ),
                 )
@@ -827,7 +828,8 @@ impl HarnessApp {
                         .when_some(inspection, |panel, inspection| panel.child(inspection))
                         .with_animation(
                             ("rollback-panel", rollback.transition),
-                            Animation::new(theme.motion.slow).with_easing(ease_out_quint()),
+                            Animation::new(theme.motion.slow)
+                                .with_easing(crate::theme::web_ease_out),
                             |panel, delta| panel.top(px(8.0 * (1.0 - delta))).opacity(delta),
                         ),
                 )
@@ -973,7 +975,7 @@ impl HarnessApp {
                 ))
                 .with_animation(
                     "global-notice",
-                    Animation::new(theme.motion.fast).with_easing(ease_out_quint()),
+                    Animation::new(theme.motion.fast).with_easing(crate::theme::web_ease_out),
                     |notice, delta| notice.opacity(delta),
                 )
                 .into_any_element(),

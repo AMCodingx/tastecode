@@ -2,7 +2,7 @@ use super::ChatView;
 use crate::zoom::px;
 use gpui::{
     Animation, AnimationExt, AnyElement, Context, Entity, Focusable, FontWeight, KeyDownEvent,
-    SharedString, Window, div, ease_out_quint, prelude::*, svg,
+    SharedString, Window, div, prelude::*, svg,
 };
 use gpui_component::input::{Input, InputEvent, InputState};
 use harness_protocol::Item;
@@ -364,7 +364,7 @@ impl ChatView {
                 .child(close)
                 .with_animation(
                     ("thread-find-in", self.thread_search.open_transition),
-                    Animation::new(theme.motion.fast).with_easing(ease_out_quint()),
+                    Animation::new(theme.motion.fast).with_easing(crate::theme::web_ease_out),
                     |find, delta| find.top(px(6.0 + 4.0 * delta)).opacity(delta),
                 )
                 .into_any_element(),
