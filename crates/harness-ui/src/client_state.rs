@@ -11,7 +11,7 @@ use harness_protocol::{
     SkillInstalledResult, SkillsListResult, SystemInfo, TerminalExitPush, TerminalOpenedResult,
     TerminalOutputPush, ThreadEventPush, ThreadHistoryResult, ThreadInboxStatus, ThreadLifecycle,
     ThreadLifecyclePush, ThreadQueuePush, ThreadQueueResult, ThreadStartResult, UpdateCheckResult,
-    channel, method,
+    VoiceStatusResult, VoiceTranscribeParams, VoiceTranscriptionResult, channel, method,
 };
 use serde::Deserialize;
 use serde_json::{Value, json};
@@ -24,6 +24,8 @@ pub(crate) struct ClientState {
     pub(crate) system_info: Option<SystemInfo>,
     pub(crate) update_check: Option<UpdateCheckResult>,
     pub(crate) update_checking: bool,
+    pub(crate) voice_statuses: HashMap<ProviderId, VoiceStatusResult>,
+    voice_status_pending: HashSet<ProviderId>,
     pub(crate) projects: Vec<ProjectSummary>,
     pub(crate) projects_loaded: bool,
     pub(crate) sidebar_settings: SidebarSettings,
@@ -241,6 +243,13 @@ enum PendingRequest {
     Capabilities,
     SystemInfo,
     UpdateCheck,
+    VoiceStatus {
+        provider: ProviderId,
+    },
+    VoiceTranscribe {
+        request_id: String,
+    },
+    VoiceCancel,
     Projects,
     SidebarSettings,
     UpdateSidebarSettings,
@@ -453,6 +462,14 @@ pub(crate) enum ChatUpdate {
         message: String,
         stale: bool,
     },
+    VoiceTranscribed {
+        request_id: String,
+        text: String,
+    },
+    VoiceTranscriptionError {
+        request_id: String,
+        message: String,
+    },
     Connection(ConnectionState),
     TerminalOpened {
         thread_id: String,
@@ -508,6 +525,8 @@ impl ClientState {
             system_info: None,
             update_check: None,
             update_checking: false,
+            voice_statuses: HashMap::new(),
+            voice_status_pending: HashSet::new(),
             projects: Vec::new(),
             projects_loaded: fixture,
             sidebar_settings: SidebarSettings {
@@ -632,6 +651,67 @@ impl ClientState {
                 )));
         }
         ClientUpdate::shell_changed()
+    }
+
+    pub(crate) fn ensure_voice_status(&mut self, provider: ProviderId) {
+        if self.voice_statuses.contains_key(&provider)
+            || self.voice_status_pending.contains(&provider)
+        {
+            return;
+        }
+        self.voice_status_pending.insert(provider);
+        if !self.send_request(
+            method::VOICE_STATUS,
+            json!({ "provider": provider }),
+            PendingRequest::VoiceStatus { provider },
+        ) {
+            self.voice_status_pending.remove(&provider);
+            self.voice_statuses.insert(
+                provider,
+                VoiceStatusResult {
+                    available: false,
+                    reason: None,
+                },
+            );
+        }
+    }
+
+    pub(crate) fn transcribe_voice(&mut self, params: VoiceTranscribeParams) -> ClientUpdate {
+        let request_id = params.request_id.clone();
+        let payload = match serde_json::to_value(params) {
+            Ok(payload) => payload,
+            Err(error) => {
+                return ClientUpdate::chat(ChatUpdate::VoiceTranscriptionError {
+                    request_id,
+                    message: format!("The voice recording could not be encoded: {error}"),
+                });
+            }
+        };
+        if self.send_request(
+            method::VOICE_TRANSCRIBE,
+            payload,
+            PendingRequest::VoiceTranscribe {
+                request_id: request_id.clone(),
+            },
+        ) {
+            ClientUpdate::default()
+        } else {
+            ClientUpdate::chat(ChatUpdate::VoiceTranscriptionError {
+                request_id,
+                message: self
+                    .notice
+                    .clone()
+                    .unwrap_or_else(|| "Voice transcription could not be started.".into()),
+            })
+        }
+    }
+
+    pub(crate) fn cancel_voice(&mut self, request_id: String) {
+        self.send_request(
+            method::VOICE_CANCEL,
+            json!({ "requestId": request_id }),
+            PendingRequest::VoiceCancel,
+        );
     }
 
     pub(crate) fn update_sidebar_settings(&mut self, settings: SidebarSettings) -> ClientUpdate {
@@ -1373,6 +1453,8 @@ impl ClientState {
     }
 
     fn request_initial_state(&mut self) {
+        self.voice_statuses.clear();
+        self.voice_status_pending.clear();
         self.send_request(
             method::CLIENT_CAPABILITIES,
             json!({ "previewCapture": false }),
@@ -1461,6 +1543,24 @@ impl ClientState {
                         self.update_check = Some(failed_update_check(message));
                         ClientUpdate::shell_changed()
                     }
+                    Some(PendingRequest::VoiceStatus { provider }) => {
+                        self.voice_status_pending.remove(&provider);
+                        self.voice_statuses.insert(
+                            provider,
+                            VoiceStatusResult {
+                                available: false,
+                                reason: None,
+                            },
+                        );
+                        ClientUpdate::shell_changed()
+                    }
+                    Some(PendingRequest::VoiceTranscribe { request_id }) => {
+                        ClientUpdate::chat(ChatUpdate::VoiceTranscriptionError {
+                            request_id,
+                            message,
+                        })
+                    }
+                    Some(PendingRequest::VoiceCancel) => ClientUpdate::default(),
                     Some(PendingRequest::ProviderTerminal { target, kind }) => {
                         if self.provider_terminal_busy.as_ref() == Some(&target) {
                             self.provider_terminal_busy = None;
@@ -1672,6 +1772,29 @@ impl ClientState {
                     );
                     ClientUpdate::shell_changed()
                 }
+                Some(PendingRequest::VoiceStatus { provider }) => {
+                    self.voice_status_pending.remove(&provider);
+                    let status = serde_json::from_value::<VoiceStatusResult>(result).unwrap_or(
+                        VoiceStatusResult {
+                            available: false,
+                            reason: None,
+                        },
+                    );
+                    self.voice_statuses.insert(provider, status);
+                    ClientUpdate::shell_changed()
+                }
+                Some(PendingRequest::VoiceTranscribe { request_id }) => {
+                    match serde_json::from_value::<VoiceTranscriptionResult>(result) {
+                        Ok(result) => ClientUpdate::chat(ChatUpdate::VoiceTranscribed {
+                            request_id,
+                            text: result.text,
+                        }),
+                        Err(error) => ClientUpdate::chat(ChatUpdate::VoiceTranscriptionError {
+                            request_id,
+                            message: format!("voice.transcribe was invalid: {error}"),
+                        }),
+                    }
+                }
                 Some(PendingRequest::Projects) => self.handle_projects_response(result),
                 Some(PendingRequest::SidebarSettings)
                 | Some(PendingRequest::UpdateSidebarSettings) => {
@@ -1871,6 +1994,7 @@ impl ClientState {
                 | Some(PendingRequest::TerminalResize { .. })
                 | Some(PendingRequest::RenameThread)
                 | Some(PendingRequest::Capabilities)
+                | Some(PendingRequest::VoiceCancel)
                 | None => ClientUpdate::default(),
             },
         }
@@ -1893,6 +2017,24 @@ impl ClientState {
                 ));
                 ClientUpdate::shell_changed()
             }
+            PendingRequest::VoiceStatus { provider } => {
+                self.voice_status_pending.remove(&provider);
+                self.voice_statuses.insert(
+                    provider,
+                    VoiceStatusResult {
+                        available: false,
+                        reason: None,
+                    },
+                );
+                ClientUpdate::shell_changed()
+            }
+            PendingRequest::VoiceTranscribe { request_id } => {
+                ClientUpdate::chat(ChatUpdate::VoiceTranscriptionError {
+                    request_id,
+                    message: "The server connection was lost during voice transcription.".into(),
+                })
+            }
+            PendingRequest::VoiceCancel => ClientUpdate::default(),
             PendingRequest::ProviderTerminal { target, kind } => {
                 if self.provider_terminal_busy.as_ref() == Some(&target) {
                     self.provider_terminal_busy = None;
@@ -2437,6 +2579,7 @@ impl ClientState {
     }
 
     fn handle_auth_status_response(&mut self, result: Value, target: AuthTarget) -> ClientUpdate {
+        self.voice_statuses.remove(&target.provider);
         match serde_json::from_value::<Account>(result) {
             Ok(account) => {
                 let refresh_catalog = self.auth_busy.as_ref() == Some(&target);
@@ -2481,6 +2624,7 @@ impl ClientState {
     }
 
     fn handle_auth_sign_out_response(&mut self, target: AuthTarget) -> ClientUpdate {
+        self.voice_statuses.remove(&target.provider);
         self.accounts.insert(
             target.clone(),
             Account {
@@ -3143,6 +3287,9 @@ impl PendingRequest {
             Self::Capabilities
             | Self::SystemInfo
             | Self::UpdateCheck
+            | Self::VoiceStatus { .. }
+            | Self::VoiceTranscribe { .. }
+            | Self::VoiceCancel
             | Self::Projects
             | Self::SidebarSettings
             | Self::UpdateSidebarSettings
@@ -3334,6 +3481,42 @@ mod tests {
         assert!(!state.update_checking);
         assert_eq!(state.system_info.unwrap().protocol_version, 2);
         assert_eq!(state.update_check.unwrap().remote.unwrap().sha, "2222222");
+    }
+
+    #[test]
+    fn voice_capability_and_transcript_responses_keep_the_request_identity() {
+        let mut state = ClientState::new(true);
+        state.voice_status_pending.insert(ProviderId::Codex);
+        state.pending.insert(
+            "voice-status".into(),
+            PendingRequest::VoiceStatus {
+                provider: ProviderId::Codex,
+            },
+        );
+        state.pending.insert(
+            "voice-transcribe".into(),
+            PendingRequest::VoiceTranscribe {
+                request_id: "3a7c0fb4-222e-471a-97de-f062ad676df4".into(),
+            },
+        );
+
+        let status = state.handle_response(Response::Success {
+            id: "voice-status".into(),
+            result: json!({ "available": true }),
+        });
+        let transcript = state.handle_response(Response::Success {
+            id: "voice-transcribe".into(),
+            result: json!({ "text": "spoken words" }),
+        });
+
+        assert!(status.shell_changed);
+        assert!(state.voice_statuses[&ProviderId::Codex].available);
+        assert!(matches!(
+            transcript.chat.as_slice(),
+            [ChatUpdate::VoiceTranscribed { request_id, text }]
+                if request_id == "3a7c0fb4-222e-471a-97de-f062ad676df4"
+                    && text == "spoken words"
+        ));
     }
 
     #[test]
