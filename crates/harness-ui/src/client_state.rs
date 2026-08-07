@@ -845,6 +845,10 @@ impl ClientState {
 
     pub(crate) fn select_thread(&mut self, thread_id: &str) {
         self.request_history(thread_id, None);
+        self.request_thread_queue(thread_id);
+    }
+
+    pub(crate) fn request_thread_queue(&mut self, thread_id: &str) {
         self.send_request(
             method::THREAD_QUEUE,
             json!({ "threadId": thread_id }),

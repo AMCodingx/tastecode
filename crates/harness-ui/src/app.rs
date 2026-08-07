@@ -322,7 +322,10 @@ impl HarnessApp {
             ChatEvent::NeedHistory {
                 thread_id,
                 after_seq,
-            } => this.state.request_history(thread_id, *after_seq),
+            } => {
+                this.state.request_history(thread_id, *after_seq);
+                this.state.request_thread_queue(thread_id);
+            }
             ChatEvent::Submit {
                 thread_id,
                 text,
