@@ -47,6 +47,11 @@ pub(crate) struct ClientState {
     pub(crate) acp_agents: Vec<AcpAgent>,
     pub(crate) model_catalog: Vec<ModelChoice>,
     pub(crate) model_catalog_loaded: bool,
+    pending_provider_statuses: Vec<ProviderStatus>,
+    pending_model_connections: Vec<ModelConnection>,
+    pending_acp_agents: Vec<AcpAgent>,
+    pending_model_catalog: Vec<ModelChoice>,
+    catalog_refresh_failed: bool,
     pub(crate) mcp_inventory: Option<ScopedMcpInventory>,
     pub(crate) mcp_loading: bool,
     pub(crate) mcp_busy: Option<String>,
@@ -737,6 +742,11 @@ impl ClientState {
             acp_agents: Vec::new(),
             model_catalog: Vec::new(),
             model_catalog_loaded: fixture,
+            pending_provider_statuses: Vec::new(),
+            pending_model_connections: Vec::new(),
+            pending_acp_agents: Vec::new(),
+            pending_model_catalog: Vec::new(),
+            catalog_refresh_failed: false,
             mcp_inventory: None,
             mcp_loading: false,
             mcp_busy: None,
@@ -2136,15 +2146,17 @@ impl ClientState {
     fn request_model_catalog(&mut self) {
         self.pending
             .retain(|_, request| !request.is_catalog_request());
-        self.provider_statuses.clear();
-        self.model_connections.clear();
-        self.acp_agents.clear();
-        self.model_catalog.clear();
-        self.model_catalog_loaded = false;
+        self.pending_provider_statuses.clear();
+        self.pending_model_connections.clear();
+        self.pending_acp_agents.clear();
+        self.pending_model_catalog.clear();
+        self.catalog_refresh_failed = false;
         self.catalog_discovery_pending = 0;
         self.catalog_model_pending = 0;
         if self.send_request(method::PROVIDERS_LIST, json!({}), PendingRequest::Providers) {
             self.catalog_discovery_pending += 1;
+        } else {
+            self.catalog_refresh_failed = true;
         }
         if self.send_request(
             method::CONNECTIONS_LIST,
@@ -3373,9 +3385,8 @@ impl ClientState {
     fn handle_providers_response(&mut self, result: Value) -> ClientUpdate {
         match serde_json::from_value::<ProvidersListResult>(result) {
             Ok(result) => {
-                self.provider_statuses = result.providers;
-                let auth_targets = self
-                    .provider_statuses
+                let providers = result.providers;
+                let auth_targets = providers
                     .iter()
                     .filter(|provider| {
                         provider.installed
@@ -3386,8 +3397,7 @@ impl ClientState {
                 for target in auth_targets {
                     self.request_auth_status(target);
                 }
-                let sources = self
-                    .provider_statuses
+                let sources = providers
                     .iter()
                     .filter(|provider| {
                         provider.installed
@@ -3406,11 +3416,13 @@ impl ClientState {
                         source_index,
                     })
                     .collect::<Vec<_>>();
+                self.pending_provider_statuses = providers;
                 for source in sources {
                     self.request_models(source, None);
                 }
             }
             Err(error) => {
+                self.catalog_refresh_failed = true;
                 self.notice = Some(format!("providers.list was invalid: {error}"));
             }
         }
@@ -3421,7 +3433,7 @@ impl ClientState {
     fn handle_connections_response(&mut self, result: Value) -> ClientUpdate {
         match serde_json::from_value::<ModelConnectionsResult>(result) {
             Ok(result) => {
-                self.model_connections = result.connections;
+                self.pending_model_connections = result.connections;
             }
             Err(error) => {
                 self.notice = Some(format!("connections.list was invalid: {error}"));
@@ -3434,7 +3446,7 @@ impl ClientState {
     fn handle_acp_agents_response(&mut self, result: Value) -> ClientUpdate {
         match serde_json::from_value::<AcpAgentsResult>(result) {
             Ok(result) => {
-                self.acp_agents = result.agents;
+                self.pending_acp_agents = result.agents;
             }
             Err(error) => {
                 self.notice = Some(format!("acp.agents was invalid: {error}"));
@@ -3466,7 +3478,7 @@ impl ClientState {
                 } else {
                     result.models
                 };
-                self.model_catalog
+                self.pending_model_catalog
                     .extend(models.into_iter().enumerate().map(|(model_index, model)| {
                         ModelChoice {
                             key: format!("{}\u{1f}{}", source.key, model.id),
@@ -3496,7 +3508,11 @@ impl ClientState {
 
     fn finish_catalog_request(&mut self, request: &PendingRequest) {
         match request {
-            PendingRequest::Providers | PendingRequest::Connections | PendingRequest::AcpAgents => {
+            PendingRequest::Providers => {
+                self.catalog_refresh_failed = true;
+                self.finish_catalog_discovery()
+            }
+            PendingRequest::Connections | PendingRequest::AcpAgents => {
                 self.finish_catalog_discovery()
             }
             PendingRequest::Models { .. } => {
@@ -3763,12 +3779,23 @@ impl ClientState {
     }
 
     fn update_catalog_loaded(&mut self) {
-        self.model_catalog_loaded =
-            self.catalog_discovery_pending == 0 && self.catalog_model_pending == 0;
-        if self.model_catalog_loaded {
-            self.model_catalog
-                .sort_by_key(|choice| choice.catalog_order);
+        if self.catalog_discovery_pending != 0 || self.catalog_model_pending != 0 {
+            return;
         }
+        if self.catalog_refresh_failed {
+            self.pending_provider_statuses.clear();
+            self.pending_model_connections.clear();
+            self.pending_acp_agents.clear();
+            self.pending_model_catalog.clear();
+            return;
+        }
+        self.pending_model_catalog
+            .sort_by_key(|choice| choice.catalog_order);
+        self.provider_statuses = std::mem::take(&mut self.pending_provider_statuses);
+        self.model_connections = std::mem::take(&mut self.pending_model_connections);
+        self.acp_agents = std::mem::take(&mut self.pending_acp_agents);
+        self.model_catalog = std::mem::take(&mut self.pending_model_catalog);
+        self.model_catalog_loaded = true;
     }
 
     fn clear_orphaned_provider_terminal_events(&mut self) {
@@ -4506,6 +4533,28 @@ mod tests {
     use harness_protocol::{PreviewViewport, Push};
     use serde_json::json;
 
+    fn model_choice(id: &str) -> ModelChoice {
+        ModelChoice {
+            key: format!("codex\u{1f}{id}"),
+            provider: ProviderId::Codex,
+            source_name: "Codex".into(),
+            connection_id: None,
+            agent_id: None,
+            agent_name: None,
+            model: Model {
+                id: id.into(),
+                display_name: id.into(),
+                description: None,
+                is_default: true,
+                reasoning_efforts: vec!["low".into(), "high".into()],
+                default_reasoning_effort: Some("high".into()),
+                service_tiers: Vec::new(),
+                default_service_tier: None,
+            },
+            catalog_order: (0, 0, 0),
+        }
+    }
+
     #[test]
     fn streamed_delta_routes_to_chat_without_invalidating_the_shell() {
         let mut state = ClientState::new(true);
@@ -5089,6 +5138,78 @@ mod tests {
         assert!(state.model_catalog_loaded);
         assert_eq!(state.model_catalog[0].provider, ProviderId::Codex);
         assert_eq!(state.model_catalog[0].model.id, "gpt-test");
+    }
+
+    #[test]
+    fn model_refresh_keeps_the_previous_catalog_until_every_source_finishes() {
+        let mut state = ClientState::new(true);
+        state.model_catalog = vec![model_choice("cached")];
+        state.catalog_model_pending = 2;
+        for (request_id, source_index) in [("model-one", 0), ("model-two", 1)] {
+            state.pending.insert(
+                request_id.into(),
+                PendingRequest::Models {
+                    source: ModelSource {
+                        key: "codex".into(),
+                        provider: ProviderId::Codex,
+                        source_name: "Codex".into(),
+                        connection_id: None,
+                        agent_id: None,
+                        agent_name: None,
+                        fallback_model: None,
+                        catalog_group: 0,
+                        source_index,
+                    },
+                },
+            );
+        }
+
+        state.handle_response(Response::Success {
+            id: "model-one".into(),
+            result: json!({ "models": [{
+                "id": "fresh-one",
+                "displayName": "Fresh One",
+                "isDefault": true,
+                "reasoningEfforts": [],
+                "serviceTiers": []
+            }] }),
+        });
+        assert_eq!(state.model_catalog[0].model.id, "cached");
+
+        state.handle_response(Response::Success {
+            id: "model-two".into(),
+            result: json!({ "models": [{
+                "id": "fresh-two",
+                "displayName": "Fresh Two",
+                "isDefault": false,
+                "reasoningEfforts": [],
+                "serviceTiers": []
+            }] }),
+        });
+        assert_eq!(
+            state
+                .model_catalog
+                .iter()
+                .map(|choice| choice.model.id.as_str())
+                .collect::<Vec<_>>(),
+            ["fresh-one", "fresh-two"]
+        );
+    }
+
+    #[test]
+    fn failed_provider_refresh_keeps_the_last_complete_catalog() {
+        let mut state = ClientState::new(true);
+        state.model_catalog = vec![model_choice("cached")];
+        state.catalog_discovery_pending = 1;
+        state
+            .pending
+            .insert("providers".into(), PendingRequest::Providers);
+
+        state.handle_aborted_request("providers");
+
+        assert!(state.model_catalog_loaded);
+        assert_eq!(state.model_catalog[0].model.id, "cached");
+        assert!(state.pending_model_catalog.is_empty());
     }
 
     #[test]
