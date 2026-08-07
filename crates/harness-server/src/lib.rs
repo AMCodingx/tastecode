@@ -7,6 +7,7 @@
 mod access;
 mod agents;
 mod api_workspace_tools;
+mod design_preview_runner;
 mod diff_review;
 mod inbox;
 mod mcp_config;

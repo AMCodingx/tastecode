@@ -2940,6 +2940,7 @@ dependencies = [
  "harness-adapter-opencode",
  "harness-agent",
  "harness-credentials",
+ "harness-design-agent",
  "harness-proc",
  "harness-protocol",
  "harness-providers",

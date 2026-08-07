@@ -17,6 +17,7 @@ harness-adapter-cursor = { path = "../harness-adapter-cursor" }
 harness-adapter-opencode = { path = "../harness-adapter-opencode" }
 harness-agent = { path = "../harness-agent" }
 harness-credentials = { path = "../harness-credentials" }
+harness-design-agent = { path = "../harness-design-agent" }
 harness-protocol = { path = "../harness-protocol" }
 harness-proc = { path = "../harness-proc" }
 harness-providers = { path = "../harness-providers" }
