@@ -409,6 +409,22 @@ impl AgentManager {
             .map_err(|error| error.to_string())
     }
 
+    pub(crate) fn list_connection_models(
+        &self,
+        state: &ServerState,
+        connection_id: &str,
+    ) -> Result<Vec<Model>, String> {
+        let connection = lock(&state.model_connections)
+            .get(connection_id)
+            .map_err(|error| error.to_string())?;
+        let api_key = state
+            .credentials
+            .read(&connection.credential_ref)
+            .map_err(|error| error.to_string())?;
+        harness_adapter_api::list_models(&connection.input(), &api_key)
+            .map_err(|error| error.to_string())
+    }
+
     pub(crate) fn start_thread(
         &self,
         state: &Arc<ServerState>,

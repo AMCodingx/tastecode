@@ -170,6 +170,16 @@ pub(crate) fn route(
                 .map_err(|error| model_connection_error(method_name, error))?;
             empty_result()
         }
+        method::CONNECTIONS_MODELS => {
+            let params: ConnectionIdParams = decode(method_name, params)?;
+            require_non_empty(method_name, "connectionId", &params.connection_id)?;
+            encoded(ModelsListResult {
+                models: state
+                    .agents
+                    .list_connection_models(state, &params.connection_id)
+                    .map_err(RouteError::internal)?,
+            })
+        }
         method::AUTH_STATUS => {
             let params: AuthParams = decode(method_name, params)?;
             validate_auth_target(method_name, &params)?;

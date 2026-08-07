@@ -27,6 +27,20 @@ pub(crate) struct StoredModelConnection {
     pub credential_ref: String,
 }
 
+impl StoredModelConnection {
+    pub(crate) fn input(&self) -> ModelConnectionInput {
+        ModelConnectionInput {
+            id: self.id.clone(),
+            display_name: self.display_name.clone(),
+            preset: self.preset,
+            transport: self.transport,
+            base_url: self.base_url.clone(),
+            default_model: self.default_model.clone(),
+            enabled: self.enabled,
+        }
+    }
+}
+
 #[derive(Serialize)]
 struct ConfigFile<'a> {
     version: u8,

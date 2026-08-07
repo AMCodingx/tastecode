@@ -153,6 +153,44 @@ fn send_request(socket: &mut ClientSocket, id: &str, method: &str, params: Value
         .unwrap();
 }
 
+fn serve_json_once(
+    body: Value,
+) -> (
+    String,
+    std::sync::mpsc::Receiver<String>,
+    std::thread::JoinHandle<()>,
+) {
+    use std::io::{BufRead as _, BufReader, Write as _};
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let address = listener.local_addr().unwrap();
+    let (sender, receiver) = std::sync::mpsc::channel();
+    let join = std::thread::spawn(move || {
+        let (mut stream, _) = listener.accept().unwrap();
+        let mut request = String::new();
+        {
+            let mut reader = BufReader::new(&mut stream);
+            loop {
+                let mut line = String::new();
+                reader.read_line(&mut line).unwrap();
+                request.push_str(&line);
+                if line == "\r\n" || line.is_empty() {
+                    break;
+                }
+            }
+        }
+        sender.send(request).unwrap();
+        let body = body.to_string();
+        write!(
+            stream,
+            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+            body.len()
+        )
+        .unwrap();
+        stream.flush().unwrap();
+    });
+    (format!("http://{address}/v1"), receiver, join)
+}
+
 fn completed_message(id: &str, text: &str, created_at: f64) -> DomainEvent {
     DomainEvent::ItemCompleted {
         item: Item {
@@ -739,6 +777,45 @@ fn live_connection_routes_keep_api_keys_only_in_the_credential_store() {
             .unwrap(),
         "secret-test-key"
     );
+
+    let (model_base_url, model_request, model_server) = serve_json_once(json!({
+        "data": [{ "id": "model-b" }, { "id": "model-a" }]
+    }));
+    send_request(
+        &mut socket,
+        "local-endpoint",
+        "connections.upsert",
+        json!({
+            "id": "work-openrouter",
+            "displayName": "Work OpenRouter",
+            "preset": "openrouter",
+            "transport": "openai-compatible",
+            "baseUrl": model_base_url,
+            "defaultModel": "model-b",
+            "enabled": true
+        }),
+    );
+    assert_eq!(
+        read_value(&mut socket)["result"]["connection"]["credentialConfigured"],
+        true
+    );
+    send_request(
+        &mut socket,
+        "models",
+        "connections.models",
+        json!({ "connectionId": "work-openrouter" }),
+    );
+    let models = read_value(&mut socket);
+    assert_eq!(models["result"]["models"][0]["id"], "model-a");
+    assert_eq!(models["result"]["models"][1]["isDefault"], true);
+    assert!(
+        model_request
+            .recv()
+            .unwrap()
+            .to_ascii_lowercase()
+            .contains("authorization: bearer secret-test-key")
+    );
+    model_server.join().unwrap();
 
     send_request(&mut socket, "list", "connections.list", json!({}));
     assert_eq!(
