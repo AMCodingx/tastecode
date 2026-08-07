@@ -2,6 +2,7 @@ use super::HarnessApp;
 use crate::chat::{StageProject, StageSettings};
 use crate::chrome;
 use crate::client_state::{RollbackOperation, UsageScope, WorkspaceOperation};
+use crate::motion_icon::motion_icon;
 use crate::theme::ThemeMode;
 use crate::zoom::px;
 use chrono::{DateTime, Local};
@@ -634,6 +635,7 @@ impl HarnessApp {
                 let value = checkpoint.clone();
                 div()
                     .id(("rollback-checkpoint", index))
+                    .group("rollback-checkpoint-hover")
                     .w_full()
                     .flex()
                     .items_center()
@@ -654,7 +656,13 @@ impl HarnessApp {
                                 this.inspect_checkpoint(value.clone(), cx);
                             }))
                     })
-                    .child(svg_icon("icons/history.svg", 13.0))
+                    .child(motion_icon(
+                        ("rollback-checkpoint-icon", checkpoint.id),
+                        "icons/history.svg",
+                        13.0,
+                        "rollback-checkpoint-hover",
+                        theme,
+                    ))
                     .child(
                         div()
                             .min_w(px(0.0))
@@ -775,6 +783,7 @@ impl HarnessApp {
                                 .child(
                                     div()
                                         .id("rollback-close")
+                                        .group("rollback-close-hover")
                                         .size(px(22.0))
                                         .flex_none()
                                         .flex()
@@ -792,7 +801,13 @@ impl HarnessApp {
                                         .on_click(cx.listener(|this, _event, _window, cx| {
                                             this.close_rollback(cx);
                                         }))
-                                        .child(svg_icon("icons/x.svg", 13.0)),
+                                        .child(motion_icon(
+                                            "rollback-close-icon",
+                                            "icons/x.svg",
+                                            13.0,
+                                            "rollback-close-hover",
+                                            theme,
+                                        )),
                                 ),
                         )
                         .child(
@@ -1133,8 +1148,4 @@ fn toast_button(
         })
         .child(label)
         .into_any_element()
-}
-
-fn svg_icon(path: &'static str, size: f32) -> impl IntoElement {
-    svg().path(path).size(px(size))
 }
