@@ -375,6 +375,34 @@ fn read_until_response(socket: &mut ClientSocket, response_id: &str) -> (Vec<Val
 }
 
 #[test]
+fn native_claude_runtime_exposes_the_captured_model_catalog() {
+    let (_directory, server, _credentials) = start_test_server_with_native_runtimes();
+    let mut socket = connect_native(&server, "");
+    assert_welcome(&mut socket);
+
+    send_request(
+        &mut socket,
+        "models",
+        "models.list",
+        json!({ "provider": "claude-code" }),
+    );
+    let models = read_value(&mut socket);
+    assert_eq!(
+        models["result"]["models"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|model| model["id"].as_str().unwrap())
+            .collect::<Vec<_>>(),
+        ["fable", "opus", "sonnet", "haiku"]
+    );
+    assert_eq!(models["result"]["models"][0]["isDefault"], true);
+
+    socket.close(None).unwrap();
+    server.close().unwrap();
+}
+
+#[test]
 fn live_agent_routes_persist_stream_queue_and_resume_draining() {
     let runtime = Arc::new(FakeRuntime::default());
     let registry = Arc::new(FakeRuntimes {
