@@ -3144,14 +3144,16 @@ fn model_settings_search_field(
         .child(settings_icon("icons/search.svg", 13.0))
         .child(
             Input::new(state)
+                .xsmall()
                 .appearance(false)
                 .bordered(false)
                 .focus_bordered(false)
                 .cleanable(false)
-                .h(px(26.0))
                 .min_w(px(0.0))
                 .flex_1()
                 .px(px(0.0))
+                .py(px(0.0))
+                .line_height(relative(1.55))
                 .text_size(px(12.5))
                 .text_color(theme.text.hsla()),
         )
@@ -3173,7 +3175,6 @@ fn model_settings_search_field(
                             .bg(theme.surface_3.hsla())
                             .text_color(theme.text.hsla())
                     })
-                    .active(|style| style.size(px(17.0)).m(px(0.5)))
                     .on_click(move |_event, window, cx| {
                         cx.stop_propagation();
                         clear_state.update(cx, |input, cx| {
