@@ -3,8 +3,12 @@ use serde_json::Value;
 use uuid::Uuid;
 
 mod notification;
+mod runtime;
 
 pub use notification::{NotificationMappingError, map_domain_notification};
+pub use runtime::{
+    CodexAdapter, CodexAdapterError, CodexHandlers, CodexLaunchOptions, StartOptions, TurnOptions,
+};
 
 /// Context supplied by the Codex lifecycle notification around a thread item.
 #[derive(Clone, Copy, Debug, PartialEq)]

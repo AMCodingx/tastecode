@@ -1,0 +1,1034 @@
+use crate::map_domain_notification;
+use harness_proc::{
+    JsonRpcError, ProcessError, RpcResponder, SpawnOptions, StdioJsonRpc, spawn_cli,
+};
+use harness_protocol::{
+    Account, ApprovalDecision, ApprovalKind, ApprovalMode, ApprovalRequest, DomainEvent, Model,
+    ProviderId, ServiceTier, Thread, UserInputOption, UserInputQuestion, UserInputRequest,
+};
+use serde_json::{Map, Value, json};
+use std::collections::HashMap;
+use std::ffi::{OsStr, OsString};
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use thiserror::Error;
+use uuid::Uuid;
+
+const CLIENT_NAME: &str = "personal-harness";
+const DEFAULT_REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
+
+type EventHandler = dyn Fn(DomainEvent) + Send + Sync;
+type LogHandler = dyn Fn(String) + Send + Sync;
+
+#[derive(Clone)]
+pub struct CodexHandlers {
+    event: Arc<EventHandler>,
+    log: Arc<LogHandler>,
+}
+
+impl CodexHandlers {
+    pub fn new(
+        event: impl Fn(DomainEvent) + Send + Sync + 'static,
+        log: impl Fn(String) + Send + Sync + 'static,
+    ) -> Self {
+        Self {
+            event: Arc::new(event),
+            log: Arc::new(log),
+        }
+    }
+}
+
+impl Default for CodexHandlers {
+    fn default() -> Self {
+        Self::new(|_| {}, |_| {})
+    }
+}
+
+pub struct CodexLaunchOptions {
+    /// Extra process environment, primarily isolated MCP credentials.
+    pub environment: Vec<(OsString, OsString)>,
+    pub request_timeout: Duration,
+}
+
+impl Default for CodexLaunchOptions {
+    fn default() -> Self {
+        Self {
+            environment: Vec::new(),
+            request_timeout: DEFAULT_REQUEST_TIMEOUT,
+        }
+    }
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct StartOptions {
+    pub instructions: Option<String>,
+    pub model: Option<String>,
+    pub service_tier: Option<String>,
+    pub effort: Option<String>,
+    pub approval: Option<ApprovalMode>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct TurnOptions {
+    pub model: Option<String>,
+    pub service_tier: Option<String>,
+    pub effort: Option<String>,
+}
+
+#[derive(Debug, Error)]
+pub enum CodexAdapterError {
+    #[error(transparent)]
+    Process(#[from] ProcessError),
+    #[error(transparent)]
+    JsonRpc(#[from] JsonRpcError),
+    #[error("{method} returned an invalid response: {message}")]
+    InvalidResponse {
+        method: &'static str,
+        message: String,
+    },
+}
+
+struct PendingApproval {
+    kind: ApprovalKind,
+    responder: RpcResponder,
+}
+
+#[derive(Default)]
+struct PendingRequests {
+    approvals: HashMap<String, PendingApproval>,
+    user_inputs: HashMap<String, RpcResponder>,
+}
+
+pub struct CodexAdapter {
+    rpc: StdioJsonRpc,
+    pending: Arc<Mutex<PendingRequests>>,
+    handlers: CodexHandlers,
+    request_timeout: Duration,
+}
+
+impl CodexAdapter {
+    /// Spawn `codex app-server` and complete its initialize handshake.
+    pub fn launch(
+        options: CodexLaunchOptions,
+        handlers: CodexHandlers,
+    ) -> Result<Self, CodexAdapterError> {
+        let args = [
+            OsStr::new("app-server"),
+            OsStr::new("--enable"),
+            OsStr::new("default_mode_request_user_input"),
+        ];
+        let spawn_options = SpawnOptions {
+            environment: options.environment,
+            ..SpawnOptions::default()
+        };
+        Self::launch_process(
+            OsStr::new("codex"),
+            &args,
+            &spawn_options,
+            handlers,
+            options.request_timeout,
+        )
+    }
+
+    fn launch_process(
+        program: &OsStr,
+        args: &[&OsStr],
+        spawn_options: &SpawnOptions,
+        handlers: CodexHandlers,
+        request_timeout: Duration,
+    ) -> Result<Self, CodexAdapterError> {
+        let child = spawn_cli(program, args, spawn_options)?;
+        let rpc = StdioJsonRpc::new(child, "codex app-server")?;
+        let pending = Arc::new(Mutex::new(PendingRequests::default()));
+        configure_handlers(&rpc, Arc::clone(&pending), handlers.clone());
+        rpc.request(
+            "initialize",
+            json!({
+                "clientInfo": {
+                    "name": CLIENT_NAME,
+                    "title": "Personal Harness",
+                    "version": "0.0.0"
+                }
+            }),
+            request_timeout,
+        )?;
+        rpc.notify("initialized", json!({}))?;
+        Ok(Self {
+            rpc,
+            pending,
+            handlers,
+            request_timeout,
+        })
+    }
+
+    /// Ask the provider binary about its account without reading credentials.
+    pub fn account(&self) -> Account {
+        let Ok(response) = self.call("account/read", json!({})) else {
+            return Account {
+                signed_in: false,
+                email: None,
+                plan: None,
+            };
+        };
+        let Some(account) = response.get("account").filter(|value| !value.is_null()) else {
+            return Account {
+                signed_in: false,
+                email: None,
+                plan: None,
+            };
+        };
+        match account.get("type").and_then(Value::as_str) {
+            Some("apiKey") => Account {
+                signed_in: true,
+                email: None,
+                plan: Some("API key".into()),
+            },
+            Some("chatgpt") => Account {
+                signed_in: true,
+                email: account
+                    .get("email")
+                    .and_then(Value::as_str)
+                    .map(str::to_owned),
+                plan: account
+                    .get("planType")
+                    .and_then(Value::as_str)
+                    .map(plan_label)
+                    .or_else(|| Some("Signed in".into())),
+            },
+            Some(_) => Account {
+                signed_in: true,
+                email: None,
+                plan: None,
+            },
+            None => Account {
+                signed_in: false,
+                email: None,
+                plan: None,
+            },
+        }
+    }
+
+    pub fn list_models(&self) -> Result<Vec<Model>, CodexAdapterError> {
+        let method = "model/list";
+        let response = self.call(method, json!({}))?;
+        let data = response
+            .get("data")
+            .and_then(Value::as_array)
+            .ok_or_else(|| invalid(method, "missing data array"))?;
+        data.iter()
+            .filter(|raw| !raw.get("hidden").and_then(Value::as_bool).unwrap_or(false))
+            .map(|raw| map_model(method, raw))
+            .collect()
+    }
+
+    pub fn start_thread(
+        &self,
+        workspace_path: &str,
+        options: &StartOptions,
+    ) -> Result<Thread, CodexAdapterError> {
+        let method = "thread/start";
+        let mut params = Map::new();
+        params.insert("cwd".into(), Value::String(workspace_path.into()));
+        insert_option(&mut params, "model", options.model.as_deref());
+        insert_option(&mut params, "serviceTier", options.service_tier.as_deref());
+        insert_option(
+            &mut params,
+            "developerInstructions",
+            options.instructions.as_deref(),
+        );
+        if let Some(effort) = &options.effort {
+            params.insert("config".into(), json!({ "model_reasoning_effort": effort }));
+        }
+        if let Some(mode) = options.approval {
+            apply_approval_mode(&mut params, mode);
+        }
+        let response = self.call(method, Value::Object(params))?;
+        Ok(Thread {
+            id: response_str(method, &response, &["thread", "id"])?.into(),
+            provider: ProviderId::Codex,
+            connection_id: None,
+            workspace_path: workspace_path.into(),
+            title: None,
+            created_at: now_ms(),
+        })
+    }
+
+    pub fn resume_thread(
+        &self,
+        thread_id: &str,
+        workspace_path: &str,
+        instructions: Option<&str>,
+    ) -> Result<Thread, CodexAdapterError> {
+        let method = "thread/resume";
+        let mut params = Map::new();
+        params.insert("threadId".into(), Value::String(thread_id.into()));
+        params.insert("cwd".into(), Value::String(workspace_path.into()));
+        insert_option(&mut params, "developerInstructions", instructions);
+        let response = self.call(method, Value::Object(params))?;
+        let created_at = response
+            .pointer("/thread/createdAt")
+            .and_then(Value::as_f64)
+            .map(normalize_timestamp_ms)
+            .unwrap_or_else(now_ms);
+        Ok(Thread {
+            id: response_str(method, &response, &["thread", "id"])?.into(),
+            provider: ProviderId::Codex,
+            connection_id: None,
+            workspace_path: workspace_path.into(),
+            title: None,
+            created_at,
+        })
+    }
+
+    pub fn send_turn(
+        &self,
+        thread_id: &str,
+        text: &str,
+        attachments: &[String],
+        options: &TurnOptions,
+    ) -> Result<String, CodexAdapterError> {
+        let method = "turn/start";
+        let mut params = Map::new();
+        params.insert("threadId".into(), Value::String(thread_id.into()));
+        insert_option(&mut params, "model", options.model.as_deref());
+        insert_option(&mut params, "serviceTier", options.service_tier.as_deref());
+        insert_option(&mut params, "effort", options.effort.as_deref());
+        let mut input = vec![json!({ "type": "text", "text": text, "text_elements": [] })];
+        input.extend(attachments.iter().map(|path| {
+            if is_image(path) {
+                json!({ "type": "localImage", "path": path })
+            } else {
+                json!({ "type": "mention", "name": basename(path), "path": path })
+            }
+        }));
+        params.insert("input".into(), Value::Array(input));
+        let response = self.call(method, Value::Object(params))?;
+        Ok(response_str(method, &response, &["turn", "id"])?.into())
+    }
+
+    pub fn steer(
+        &self,
+        thread_id: &str,
+        text: &str,
+        attachments: &[String],
+    ) -> Result<(), CodexAdapterError> {
+        let input = turn_input(text, attachments);
+        self.call(
+            "turn/steer",
+            json!({ "threadId": thread_id, "input": input }),
+        )?;
+        Ok(())
+    }
+
+    pub fn interrupt(&self, thread_id: &str) -> Result<(), CodexAdapterError> {
+        self.call("turn/interrupt", json!({ "threadId": thread_id }))?;
+        Ok(())
+    }
+
+    pub fn respond_to_approval(
+        &self,
+        approval_id: &str,
+        decision: ApprovalDecision,
+    ) -> Result<bool, CodexAdapterError> {
+        let pending = lock(&self.pending).approvals.remove(approval_id);
+        let Some(pending) = pending else {
+            return Ok(false);
+        };
+        pending.responder.respond(json!({
+            "decision": decision_value(pending.kind, decision)
+        }))?;
+        (self.handlers.event)(DomainEvent::ApprovalResolved {
+            id: approval_id.into(),
+        });
+        Ok(true)
+    }
+
+    pub fn respond_to_user_input(
+        &self,
+        request_id: &str,
+        answers: &HashMap<String, Vec<String>>,
+    ) -> Result<bool, CodexAdapterError> {
+        let responder = lock(&self.pending).user_inputs.remove(request_id);
+        let Some(responder) = responder else {
+            return Ok(false);
+        };
+        let answers = answers
+            .iter()
+            .map(|(question, values)| (question.clone(), json!({ "answers": values })))
+            .collect::<Map<_, _>>();
+        responder.respond(json!({ "answers": answers }))?;
+        (self.handlers.event)(DomainEvent::UserInputResolved {
+            id: request_id.into(),
+        });
+        Ok(true)
+    }
+
+    pub fn dispose(&self) {
+        lock(&self.pending).approvals.clear();
+        lock(&self.pending).user_inputs.clear();
+        self.rpc.dispose();
+    }
+
+    fn call(&self, method: &'static str, params: Value) -> Result<Value, CodexAdapterError> {
+        Ok(self.rpc.request(method, params, self.request_timeout)?)
+    }
+}
+
+impl Drop for CodexAdapter {
+    fn drop(&mut self) {
+        self.dispose();
+    }
+}
+
+fn configure_handlers(
+    rpc: &StdioJsonRpc,
+    pending: Arc<Mutex<PendingRequests>>,
+    handlers: CodexHandlers,
+) {
+    let log = Arc::clone(&handlers.log);
+    rpc.on_stderr(move |text| {
+        let text = text.trim_end();
+        if !text.is_empty() {
+            log(text.into());
+        }
+    });
+
+    let notification_pending = Arc::clone(&pending);
+    let notification_handlers = handlers.clone();
+    rpc.on_notification(move |method, params| {
+        if method == "turn/completed" {
+            resolve_unanswered(&notification_pending, &notification_handlers);
+        }
+        match map_domain_notification(&method, &params, now_ms()) {
+            Ok(Some(event)) => (notification_handlers.event)(event),
+            Ok(None) => (notification_handlers.log)(format!("unmapped notification: {method}")),
+            Err(error) => (notification_handlers.log)(format!("invalid notification: {error}")),
+        }
+    });
+
+    rpc.on_server_request(move |method, params, responder| {
+        handle_server_request(&pending, &handlers, &method, &params, responder);
+    });
+}
+
+fn handle_server_request(
+    pending: &Mutex<PendingRequests>,
+    handlers: &CodexHandlers,
+    method: &str,
+    params: &Value,
+    responder: RpcResponder,
+) {
+    if method == "item/tool/requestUserInput" {
+        match map_user_input(params) {
+            Ok(request) => {
+                let previous = lock(pending)
+                    .user_inputs
+                    .insert(request.id.clone(), responder);
+                if let Some(previous) = previous {
+                    let _ = previous.respond(json!({ "answers": {} }));
+                    (handlers.event)(DomainEvent::UserInputResolved {
+                        id: request.id.clone(),
+                    });
+                }
+                (handlers.event)(DomainEvent::UserInputRequested { request });
+            }
+            Err(error) => {
+                (handlers.log)(format!("declined invalid user input request: {error}"));
+                let _ = responder.respond(json!({ "answers": {} }));
+            }
+        }
+        return;
+    }
+
+    let Some(kind) = approval_kind(method) else {
+        (handlers.log)(format!("declined unhandled server request: {method}"));
+        let _ = responder.respond(json!({ "decision": "decline" }));
+        return;
+    };
+    let id = params
+        .get("approvalId")
+        .and_then(Value::as_str)
+        .or_else(|| params.get("itemId").and_then(Value::as_str))
+        .map(str::to_owned)
+        .unwrap_or_else(|| Uuid::new_v4().to_string());
+    let previous = lock(pending)
+        .approvals
+        .insert(id.clone(), PendingApproval { kind, responder });
+    if let Some(previous) = previous {
+        let _ = previous
+            .responder
+            .respond(json!({ "decision": decision_value(previous.kind, ApprovalDecision::Deny) }));
+        (handlers.event)(DomainEvent::ApprovalResolved { id: id.clone() });
+    }
+    (handlers.event)(DomainEvent::ApprovalRequested {
+        request: ApprovalRequest {
+            id,
+            kind,
+            reason: optional_str(params, "reason"),
+            command: optional_str(params, "command"),
+            cwd: optional_str(params, "cwd"),
+            path: optional_str(params, "grantRoot"),
+            created_at: now_ms(),
+        },
+    });
+}
+
+fn resolve_unanswered(pending: &Mutex<PendingRequests>, handlers: &CodexHandlers) {
+    let (approvals, user_inputs) = {
+        let mut pending = lock(pending);
+        (
+            pending.approvals.drain().collect::<Vec<_>>(),
+            pending.user_inputs.drain().collect::<Vec<_>>(),
+        )
+    };
+    for (id, pending) in approvals {
+        let _ = pending
+            .responder
+            .respond(json!({ "decision": decision_value(pending.kind, ApprovalDecision::Deny) }));
+        (handlers.event)(DomainEvent::ApprovalResolved { id });
+    }
+    for (id, responder) in user_inputs {
+        let _ = responder.respond(json!({ "answers": {} }));
+        (handlers.event)(DomainEvent::UserInputResolved { id });
+    }
+}
+
+fn map_user_input(params: &Value) -> Result<UserInputRequest, CodexAdapterError> {
+    let method = "item/tool/requestUserInput";
+    let questions = params
+        .get("questions")
+        .and_then(Value::as_array)
+        .ok_or_else(|| invalid(method, "missing questions array"))?
+        .iter()
+        .map(|question| {
+            let options = match question.get("options") {
+                None | Some(Value::Null) => None,
+                Some(Value::Array(options)) => Some(
+                    options
+                        .iter()
+                        .map(|option| {
+                            Ok(UserInputOption {
+                                label: response_str(method, option, &["label"])?.into(),
+                                description: response_str(method, option, &["description"])?.into(),
+                            })
+                        })
+                        .collect::<Result<Vec<_>, CodexAdapterError>>()?,
+                ),
+                Some(_) => return Err(invalid(method, "questions[].options is not an array")),
+            };
+            Ok(UserInputQuestion {
+                id: response_str(method, question, &["id"])?.into(),
+                header: response_str(method, question, &["header"])?.into(),
+                question: response_str(method, question, &["question"])?.into(),
+                allow_other: question
+                    .get("isOther")
+                    .and_then(Value::as_bool)
+                    .unwrap_or(false),
+                secret: question
+                    .get("isSecret")
+                    .and_then(Value::as_bool)
+                    .unwrap_or(false),
+                options,
+            })
+        })
+        .collect::<Result<Vec<_>, CodexAdapterError>>()?;
+    Ok(UserInputRequest {
+        id: response_str(method, params, &["itemId"])?.into(),
+        turn_id: response_str(method, params, &["turnId"])?.into(),
+        questions,
+        auto_resolution_ms: params.get("autoResolutionMs").and_then(Value::as_u64),
+        created_at: now_ms(),
+    })
+}
+
+fn map_model(method: &'static str, raw: &Value) -> Result<Model, CodexAdapterError> {
+    let efforts = raw
+        .get("supportedReasoningEfforts")
+        .and_then(Value::as_array)
+        .map(|options| {
+            options
+                .iter()
+                .filter_map(|option| option.get("reasoningEffort").and_then(Value::as_str))
+                .map(str::to_owned)
+                .collect()
+        })
+        .unwrap_or_default();
+    let service_tiers = raw
+        .get("serviceTiers")
+        .and_then(Value::as_array)
+        .map(|tiers| {
+            tiers
+                .iter()
+                .map(|tier| {
+                    Ok(ServiceTier {
+                        id: response_str(method, tier, &["id"])?.into(),
+                        name: response_str(method, tier, &["name"])?.into(),
+                        description: response_str(method, tier, &["description"])?.into(),
+                    })
+                })
+                .collect::<Result<Vec<_>, CodexAdapterError>>()
+        })
+        .transpose()?
+        .unwrap_or_default();
+    Ok(Model {
+        id: response_str(method, raw, &["id"])?.into(),
+        display_name: response_str(method, raw, &["displayName"])?.into(),
+        description: raw
+            .get("description")
+            .and_then(Value::as_str)
+            .filter(|text| !text.is_empty())
+            .map(str::to_owned),
+        is_default: raw
+            .get("isDefault")
+            .and_then(Value::as_bool)
+            .unwrap_or(false),
+        reasoning_efforts: efforts,
+        default_reasoning_effort: raw
+            .get("defaultReasoningEffort")
+            .and_then(Value::as_str)
+            .map(str::to_owned),
+        service_tiers,
+        default_service_tier: raw
+            .get("defaultServiceTier")
+            .and_then(Value::as_str)
+            .map(str::to_owned),
+    })
+}
+
+fn turn_input(text: &str, attachments: &[String]) -> Vec<Value> {
+    let mut input = vec![json!({ "type": "text", "text": text, "text_elements": [] })];
+    input.extend(attachments.iter().map(|path| {
+        if is_image(path) {
+            json!({ "type": "localImage", "path": path })
+        } else {
+            json!({ "type": "mention", "name": basename(path), "path": path })
+        }
+    }));
+    input
+}
+
+fn apply_approval_mode(params: &mut Map<String, Value>, mode: ApprovalMode) {
+    let (approval_policy, sandbox, reviewer) = match mode {
+        ApprovalMode::Ask => ("untrusted", "read-only", None),
+        ApprovalMode::Auto => ("on-request", "workspace-write", None),
+        ApprovalMode::AutoReview => ("on-request", "workspace-write", Some("auto_review")),
+        ApprovalMode::Full => ("never", "danger-full-access", None),
+    };
+    params.insert(
+        "approvalPolicy".into(),
+        Value::String(approval_policy.into()),
+    );
+    params.insert("sandbox".into(), Value::String(sandbox.into()));
+    if let Some(reviewer) = reviewer {
+        params.insert("approvalsReviewer".into(), Value::String(reviewer.into()));
+    }
+}
+
+fn approval_kind(method: &str) -> Option<ApprovalKind> {
+    match method {
+        "item/commandExecution/requestApproval" | "execCommandApproval" => {
+            Some(ApprovalKind::Command)
+        }
+        "item/fileChange/requestApproval" | "applyPatchApproval" => Some(ApprovalKind::FileChange),
+        "item/permissions/requestApproval" => Some(ApprovalKind::Permissions),
+        _ => None,
+    }
+}
+
+fn decision_value(_kind: ApprovalKind, decision: ApprovalDecision) -> &'static str {
+    match decision {
+        ApprovalDecision::Approve => "accept",
+        ApprovalDecision::ApproveSession => "acceptForSession",
+        ApprovalDecision::Deny => "decline",
+        ApprovalDecision::Abort => "cancel",
+    }
+}
+
+fn plan_label(plan: &str) -> String {
+    match plan {
+        "free" => "Free",
+        "go" => "Go",
+        "plus" => "Plus",
+        "pro" => "Pro",
+        "prolite" => "Pro Lite",
+        "team" => "Team",
+        "business" => "Business",
+        "enterprise" => "Enterprise",
+        "edu" => "Edu",
+        _ => "Signed in",
+    }
+    .into()
+}
+
+fn is_image(path: &str) -> bool {
+    let extension = path.rsplit_once('.').map(|(_, extension)| extension);
+    matches!(
+        extension.map(str::to_ascii_lowercase).as_deref(),
+        Some("png" | "jpg" | "jpeg" | "gif" | "webp" | "bmp" | "svg")
+    )
+}
+
+fn basename(path: &str) -> &str {
+    path.rsplit(['/', '\\'])
+        .find(|part| !part.is_empty())
+        .unwrap_or(path)
+}
+
+fn insert_option(params: &mut Map<String, Value>, field: &str, value: Option<&str>) {
+    if let Some(value) = value {
+        params.insert(field.into(), Value::String(value.into()));
+    }
+}
+
+fn optional_str(value: &Value, field: &str) -> Option<String> {
+    value.get(field).and_then(Value::as_str).map(str::to_owned)
+}
+
+fn response_str<'a>(
+    method: &'static str,
+    value: &'a Value,
+    path: &[&str],
+) -> Result<&'a str, CodexAdapterError> {
+    let mut current = value;
+    for field in path {
+        current = current
+            .get(field)
+            .ok_or_else(|| invalid(method, &format!("missing {}", path.join("."))))?;
+    }
+    current
+        .as_str()
+        .ok_or_else(|| invalid(method, &format!("{} is not a string", path.join("."))))
+}
+
+fn invalid(method: &'static str, message: &str) -> CodexAdapterError {
+    CodexAdapterError::InvalidResponse {
+        method,
+        message: message.into(),
+    }
+}
+
+fn normalize_timestamp_ms(timestamp: f64) -> f64 {
+    if timestamp < 100_000_000_000.0 {
+        timestamp * 1_000.0
+    } else {
+        timestamp
+    }
+}
+
+fn now_ms() -> f64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs_f64()
+        * 1_000.0
+}
+
+fn lock<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
+    mutex
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::{BufRead, BufReader, Write};
+    use std::sync::mpsc;
+    use std::thread;
+
+    const HELPER_MODE: &str = "HARNESS_CODEX_ADAPTER_HELPER";
+
+    #[test]
+    fn drives_handshake_models_thread_turn_and_approval_over_real_stdio() {
+        let (event_tx, event_rx) = mpsc::channel();
+        let (log_tx, _log_rx) = mpsc::channel();
+        let handlers = CodexHandlers::new(
+            move |event| {
+                let _ = event_tx.send(event);
+            },
+            move |line| {
+                let _ = log_tx.send(line);
+            },
+        );
+        let adapter = Arc::new(test_adapter(handlers));
+        assert_eq!(
+            adapter.account(),
+            Account {
+                signed_in: true,
+                email: Some("developer@example.com".into()),
+                plan: Some("Pro".into()),
+            }
+        );
+        let models = adapter.list_models().unwrap();
+        assert_eq!(models.len(), 1);
+        assert_eq!(models[0].id, "gpt-test");
+        assert_eq!(models[0].reasoning_efforts, ["medium", "high"]);
+        assert_eq!(models[0].service_tiers[0].id, "priority");
+
+        let thread = adapter
+            .start_thread(
+                "/repo",
+                &StartOptions {
+                    model: Some("gpt-test".into()),
+                    effort: Some("high".into()),
+                    approval: Some(ApprovalMode::AutoReview),
+                    ..StartOptions::default()
+                },
+            )
+            .unwrap();
+        assert_eq!(thread.id, "thread-1");
+
+        let turn_adapter = Arc::clone(&adapter);
+        let turn = thread::spawn(move || {
+            turn_adapter.send_turn(
+                "thread-1",
+                "Build this",
+                &["C:\\repo\\reference.png".into(), "/repo/spec.md".into()],
+                &TurnOptions::default(),
+            )
+        });
+
+        let approval_id = loop {
+            let event = event_rx.recv_timeout(Duration::from_secs(2)).unwrap();
+            if let DomainEvent::ApprovalRequested { request } = event {
+                assert_eq!(request.kind, ApprovalKind::Command);
+                assert_eq!(request.command.as_deref(), Some("cargo test"));
+                break request.id;
+            }
+        };
+        assert!(
+            adapter
+                .respond_to_approval(&approval_id, ApprovalDecision::ApproveSession)
+                .unwrap()
+        );
+        assert_eq!(turn.join().unwrap().unwrap(), "turn-1");
+
+        let mut saw_started = false;
+        let mut saw_delta = false;
+        let mut saw_completed = false;
+        let deadline = std::time::Instant::now() + Duration::from_secs(2);
+        while std::time::Instant::now() < deadline && !saw_completed {
+            let Ok(event) = event_rx.recv_timeout(Duration::from_millis(100)) else {
+                continue;
+            };
+            match event {
+                DomainEvent::TurnStarted { turn } => saw_started = turn.id == "turn-1",
+                DomainEvent::ItemDelta { text_delta, .. } => saw_delta = text_delta == "hello",
+                DomainEvent::TurnCompleted { turn_id, .. } => saw_completed = turn_id == "turn-1",
+                _ => {}
+            }
+        }
+        assert!(saw_started && saw_delta && saw_completed);
+        adapter.dispose();
+    }
+
+    #[test]
+    fn maps_attachments_approval_modes_and_timestamp_units() {
+        assert!(is_image("C:\\repo\\IMAGE.PNG"));
+        assert!(!is_image("/repo/readme.md"));
+        assert_eq!(basename("C:\\repo\\IMAGE.PNG"), "IMAGE.PNG");
+        assert_eq!(basename("/repo/readme.md"), "readme.md");
+        assert_eq!(normalize_timestamp_ms(1_785_627_335.0), 1_785_627_335_000.0);
+        assert_eq!(
+            normalize_timestamp_ms(1_785_627_335_000.0),
+            1_785_627_335_000.0
+        );
+
+        let mut params = Map::new();
+        apply_approval_mode(&mut params, ApprovalMode::AutoReview);
+        assert_eq!(params["approvalPolicy"], "on-request");
+        assert_eq!(params["sandbox"], "workspace-write");
+        assert_eq!(params["approvalsReviewer"], "auto_review");
+    }
+
+    #[test]
+    fn codex_helper() {
+        if std::env::var_os(HELPER_MODE).is_none() {
+            return;
+        }
+        let stdin = std::io::stdin();
+        let mut lines = BufReader::new(stdin.lock()).lines();
+        let stdout = std::io::stdout();
+        let mut stdout = stdout.lock();
+        while let Some(Ok(line)) = lines.next() {
+            let request: Value = serde_json::from_str(&line).unwrap();
+            let method = request["method"].as_str().unwrap_or_default();
+            let id = request.get("id").cloned();
+            match method {
+                "initialize" => {
+                    assert_eq!(request["params"]["clientInfo"]["name"], CLIENT_NAME);
+                    respond(
+                        &mut stdout,
+                        id.unwrap(),
+                        json!({ "userAgent": "fake-codex" }),
+                    );
+                }
+                "initialized" => {}
+                "account/read" => respond(
+                    &mut stdout,
+                    id.unwrap(),
+                    json!({
+                        "account": {
+                            "type": "chatgpt",
+                            "email": "developer@example.com",
+                            "planType": "pro"
+                        }
+                    }),
+                ),
+                "model/list" => respond(
+                    &mut stdout,
+                    id.unwrap(),
+                    json!({
+                        "data": [
+                            {
+                                "id": "gpt-test",
+                                "displayName": "GPT Test",
+                                "description": "Captured model",
+                                "hidden": false,
+                                "isDefault": true,
+                                "supportedReasoningEfforts": [
+                                    { "reasoningEffort": "medium", "description": "" },
+                                    { "reasoningEffort": "high", "description": "" }
+                                ],
+                                "defaultReasoningEffort": "medium",
+                                "serviceTiers": [
+                                    { "id": "priority", "name": "Fast", "description": "Priority" }
+                                ],
+                                "defaultServiceTier": "priority"
+                            },
+                            {
+                                "id": "hidden",
+                                "displayName": "Hidden",
+                                "hidden": true
+                            }
+                        ],
+                        "nextCursor": null
+                    }),
+                ),
+                "thread/start" => {
+                    assert_eq!(request["params"]["cwd"], "/repo");
+                    assert_eq!(
+                        request["params"]["config"]["model_reasoning_effort"],
+                        "high"
+                    );
+                    assert_eq!(request["params"]["approvalsReviewer"], "auto_review");
+                    respond(
+                        &mut stdout,
+                        id.unwrap(),
+                        json!({ "thread": { "id": "thread-1" } }),
+                    );
+                }
+                "turn/start" => {
+                    assert_eq!(request["params"]["input"][1]["type"], "localImage");
+                    assert_eq!(request["params"]["input"][2]["type"], "mention");
+                    let turn_request_id = id.unwrap();
+                    write_frame(
+                        &mut stdout,
+                        json!({
+                            "jsonrpc": "2.0",
+                            "id": 99,
+                            "method": "item/commandExecution/requestApproval",
+                            "params": {
+                                "itemId": "approval-1",
+                                "command": "cargo test",
+                                "cwd": "/repo"
+                            }
+                        }),
+                    );
+                    let approval: Value =
+                        serde_json::from_str(&lines.next().unwrap().unwrap()).unwrap();
+                    assert_eq!(approval["id"], 99);
+                    assert_eq!(approval["result"]["decision"], "acceptForSession");
+                    write_frame(
+                        &mut stdout,
+                        json!({
+                            "jsonrpc": "2.0",
+                            "method": "turn/started",
+                            "params": { "threadId": "thread-1", "turn": { "id": "turn-1" } }
+                        }),
+                    );
+                    write_frame(
+                        &mut stdout,
+                        json!({
+                            "jsonrpc": "2.0",
+                            "method": "item/started",
+                            "params": {
+                                "threadId": "thread-1",
+                                "turnId": "turn-1",
+                                "startedAtMs": 1000,
+                                "item": { "type": "agentMessage", "id": "item-1", "text": "" }
+                            }
+                        }),
+                    );
+                    write_frame(
+                        &mut stdout,
+                        json!({
+                            "jsonrpc": "2.0",
+                            "method": "item/agentMessage/delta",
+                            "params": { "turnId": "turn-1", "itemId": "item-1", "delta": "hello" }
+                        }),
+                    );
+                    write_frame(
+                        &mut stdout,
+                        json!({
+                            "jsonrpc": "2.0",
+                            "method": "item/completed",
+                            "params": {
+                                "threadId": "thread-1",
+                                "turnId": "turn-1",
+                                "completedAtMs": 1001,
+                                "item": { "type": "agentMessage", "id": "item-1", "text": "hello" }
+                            }
+                        }),
+                    );
+                    write_frame(
+                        &mut stdout,
+                        json!({
+                            "jsonrpc": "2.0",
+                            "method": "turn/completed",
+                            "params": {
+                                "threadId": "thread-1",
+                                "turn": { "id": "turn-1", "status": "completed" }
+                            }
+                        }),
+                    );
+                    respond(
+                        &mut stdout,
+                        turn_request_id,
+                        json!({ "turn": { "id": "turn-1" } }),
+                    );
+                }
+                method => panic!("unexpected helper method: {method}"),
+            }
+        }
+    }
+
+    fn test_adapter(handlers: CodexHandlers) -> CodexAdapter {
+        let executable = std::env::current_exe().unwrap();
+        let args = [
+            OsStr::new("--exact"),
+            OsStr::new("runtime::tests::codex_helper"),
+            OsStr::new("--nocapture"),
+        ];
+        CodexAdapter::launch_process(
+            executable.as_os_str(),
+            &args,
+            &SpawnOptions::default().env(HELPER_MODE, "1"),
+            handlers,
+            Duration::from_secs(2),
+        )
+        .unwrap()
+    }
+
+    fn respond(stdout: &mut impl Write, id: Value, result: Value) {
+        write_frame(
+            stdout,
+            json!({ "jsonrpc": "2.0", "id": id, "result": result }),
+        );
+    }
+
+    fn write_frame(stdout: &mut impl Write, frame: Value) {
+        writeln!(stdout, "{frame}").unwrap();
+        stdout.flush().unwrap();
+    }
+}
