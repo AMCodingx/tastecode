@@ -1,5 +1,6 @@
 use super::ChatView;
 use super::code_extensions::code_file_extension;
+use crate::chrome;
 use crate::theme::{Theme, ThemeMode, web_ease_out};
 use crate::zoom::px;
 use ::markdown::{ParseOptions, mdast::Node};
@@ -1797,7 +1798,7 @@ fn table_control_button(
         .flex()
         .items_center()
         .justify_center()
-        .rounded(px(5.0))
+        .rounded(px(3.0))
         .border_1()
         .border_color(theme.line.hsla())
         .bg(theme.surface_2.hsla())
@@ -1839,7 +1840,7 @@ fn table_menu(
         .border_1()
         .border_color(theme.line.hsla())
         .bg(theme.background.hsla())
-        .shadow_lg()
+        .shadow(chrome::flyout_shadows(theme))
         .py(px(3.0))
         .children(options.iter().enumerate().map(|(index, (label, format))| {
             let state = state.clone();
