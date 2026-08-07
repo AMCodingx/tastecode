@@ -92,17 +92,115 @@ function portIsOpen(port, host) {
   })
 }
 
-async function requireFreePorts(host) {
+async function listenerPids(port) {
+  if (isWin) {
+    const { stdout } = await execFileAsync('netstat.exe', ['-ano', '-p', 'tcp'])
+    return stdout
+      .split(/\r?\n/)
+      .map((line) => line.trim().split(/\s+/))
+      .filter(
+        (fields) =>
+          fields.length >= 5 &&
+          fields[0].toUpperCase() === 'TCP' &&
+          fields[1].endsWith(`:${port}`) &&
+          fields[3].toUpperCase() === 'LISTENING',
+      )
+      .map((fields) => Number.parseInt(fields[4], 10))
+      .filter((pid) => Number.isInteger(pid) && pid > 0)
+  }
+
+  try {
+    const { stdout } = await execFileAsync('lsof', ['-nP', `-iTCP:${port}`, '-sTCP:LISTEN', '-t'])
+    return stdout
+      .trim()
+      .split(/\s+/)
+      .map((pid) => Number.parseInt(pid, 10))
+      .filter((pid) => Number.isInteger(pid) && pid > 0)
+  } catch (error) {
+    if (error?.code === 1) return []
+    throw error
+  }
+}
+
+function processExists(pid) {
+  try {
+    process.kill(pid, 0)
+    return true
+  } catch (error) {
+    if (error?.code === 'ESRCH') return false
+    if (error?.code === 'EPERM') return true
+    throw error
+  }
+}
+
+async function stopPortOwner(pid, force = false) {
+  if (pid === process.pid) throw new Error('dev launcher unexpectedly owns an application port')
+
+  if (isWin) {
+    try {
+      await execFileAsync('taskkill.exe', ['/pid', String(pid), '/T', '/F'], {
+        windowsHide: true,
+      })
+    } catch (error) {
+      if (processExists(pid)) throw error
+    }
+    return
+  }
+
+  try {
+    process.kill(pid, force ? 'SIGKILL' : 'SIGTERM')
+  } catch (error) {
+    if (error?.code !== 'ESRCH') throw error
+  }
+}
+
+async function waitForPortsToClose(ports, host, timeoutMs = 5_000) {
+  const deadline = Date.now() + timeoutMs
+  let occupied = ports
+  while (occupied.length > 0 && Date.now() < deadline) {
+    await new Promise((resolve) => setTimeout(resolve, 100))
+    const states = await Promise.all(occupied.map((port) => portIsOpen(port, host)))
+    occupied = occupied.filter((_, index) => states[index])
+  }
+  return occupied
+}
+
+async function reclaimOccupiedPorts(host) {
   const ports = [4311, 5183]
   const states = await Promise.all(ports.map((port) => portIsOpen(port, host)))
   const occupied = ports.filter((_, index) => states[index])
   if (occupied.length === 0) return
 
-  console.error(
-    `[dev] port${occupied.length === 1 ? '' : 's'} ${occupied.join(', ')} already in use. ` +
-      'Another application owns the port, so Personal Harness will not stop it.',
+  const owners = new Set((await Promise.all(occupied.map(listenerPids))).flat())
+  if (owners.size === 0) {
+    const currentStates = await Promise.all(occupied.map((port) => portIsOpen(port, host)))
+    const remaining = occupied.filter((_, index) => currentStates[index])
+    if (remaining.length === 0) return
+    throw new Error(
+      `port${remaining.length === 1 ? '' : 's'} ${remaining.join(', ')} ` +
+        'still in use, but the owning process could not be identified',
+    )
+  }
+
+  console.log(
+    `[dev] port${occupied.length === 1 ? '' : 's'} ${occupied.join(', ')} already in use; ` +
+      `stopping process${owners.size === 1 ? '' : 'es'} ${[...owners].join(', ')}`,
   )
-  process.exit(1)
+  await Promise.all([...owners].map(stopPortOwner))
+
+  let remaining = await waitForPortsToClose(occupied, host, 2_000)
+  if (remaining.length > 0) {
+    const stubbornOwners = new Set((await Promise.all(remaining.map(listenerPids))).flat())
+    await Promise.all([...stubbornOwners].map((pid) => stopPortOwner(pid, true)))
+    remaining = await waitForPortsToClose(remaining, host, 3_000)
+  }
+
+  if (remaining.length > 0) {
+    throw new Error(
+      `port${remaining.length === 1 ? '' : 's'} ${remaining.join(', ')} ` +
+        'did not close after stopping the owning process',
+    )
+  }
 }
 
 function requestLauncherShutdown() {
@@ -241,7 +339,7 @@ await claimLauncher()
 
 if (mobile) {
   const host = await tailscaleIPv4()
-  await requireFreePorts(host)
+  await reclaimOccupiedPorts(host)
   const accessToken = randomBytes(24).toString('base64url')
   const serverUrl = `ws://${host}:4311`
   const webUrl = `http://${host}:5183/#access_token=${accessToken}`
@@ -257,7 +355,7 @@ if (mobile) {
   await Promise.all([waitForPort(4311, host), waitForPort(5183, host)])
   console.log(`\nOpen on your Tailscale-connected phone:\n${webUrl}\n`)
 } else {
-  await requireFreePorts('127.0.0.1')
+  await reclaimOccupiedPorts('127.0.0.1')
   run('server', 'apps/server', ['run', 'dev'])
   run('web', 'apps/web', ['run', 'dev'])
 
