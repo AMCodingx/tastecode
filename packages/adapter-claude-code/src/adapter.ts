@@ -4,7 +4,7 @@ import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import type { ApprovalMode, Capabilities, DomainEvent, Model, Thread } from '@harness/contracts'
-import { killTree, readNdjson, spawnCli } from '@harness/proc'
+import { killTree, readNdjson, runCli, spawnCli } from '@harness/proc'
 import { toDomainEvents, type ClaudeEvent } from './events.js'
 
 /**
@@ -46,14 +46,10 @@ export const CLAUDE_CAPABILITIES: Capabilities = {
 }
 
 /**
- * The first four are the aliases `claude --model` documents: each alias
- * tracks the newest model of its family, so the ids survive releases. The
- * display names DO name the current version — users pick "Fable 5", not a
- * vague family word — which makes them the one thing to touch when Anthropic
- * ships a new generation. Below the aliases sit the previous generation as
- * pinned full names (`--help` documents the full-name form, e.g.
- * 'claude-fable-5') for users who want the model an alias just moved off
- * of. Current as of claude-code 2.1.222.
+ * The first four are the family aliases `claude --model` documents. They track
+ * the newest model in that family, while their display names spell out the
+ * current version. Below them sit pinned previous models. Current as of
+ * claude-code 2.1.222.
  *
  * Effort levels come from the docs' per-model table (docs/en/model-config):
  * every effort-capable model takes low..max, the 4.6 generation lacks xhigh,
@@ -69,6 +65,12 @@ export const CLAUDE_MODELS: Model[] = [
   claudeAlias('haiku', 'Haiku 4.5', 'Fastest and cheapest', []),
   claudeAlias('claude-opus-4-8', 'Opus 4.8', 'Previous Opus generation', FULL_EFFORTS),
   claudeAlias('claude-opus-4-7', 'Opus 4.7', 'Older Opus generation', FULL_EFFORTS, false, 'xhigh'),
+  claudeAlias('claude-opus-4-6', 'Opus 4.6', 'Older Opus generation', [
+    'low',
+    'medium',
+    'high',
+    'max',
+  ]),
   claudeAlias('claude-sonnet-4-6', 'Sonnet 4.6', 'Previous Sonnet generation', [
     'low',
     'medium',
@@ -115,6 +117,26 @@ export type ClaudeStartOptions = {
   approval?: ApprovalMode | undefined
 }
 
+export type ClaudeTurnOptions = Pick<ClaudeStartOptions, 'model' | 'effort'>
+
+type SpawnFn = typeof spawnCli
+type RunFn = typeof runCli
+
+function applyClaudeTurnOptions(
+  current: ClaudeStartOptions,
+  next: ClaudeTurnOptions,
+): ClaudeStartOptions {
+  if (Object.keys(next).length === 0) return current
+  const merged = { ...current }
+  for (const field of ['model', 'effort'] as const) {
+    if (!(field in next)) continue
+    const value = next[field]
+    if (value === undefined) delete merged[field]
+    else merged[field] = value
+  }
+  return merged
+}
+
 /** One stream-json stdin line: how the prompt reaches the CLI, never argv. */
 export function claudeUserMessage(text: string): string {
   return `${JSON.stringify({
@@ -155,7 +177,46 @@ export function claudeTurnArgs(
   ]
 }
 
+/** Values the installed Claude Code binary publishes for `--effort`. */
+export function parseClaudeEfforts(output: string): string[] {
+  const match = output.match(/--effort\s+<[^>]+>[\s\S]{0,200}?\(([^)]+)\)/i)
+  if (!match?.[1]) return []
+  return [
+    ...new Set(
+      match[1]
+        .split(',')
+        .map((value) => value.trim())
+        .filter(Boolean),
+    ),
+  ]
+}
+
+function claudeModelsForEfforts(available: string[]): Model[] {
+  const supported = new Set(available)
+  return CLAUDE_MODELS.map((model) => {
+    const reasoningEfforts = model.reasoningEfforts.filter((effort) => supported.has(effort))
+    const next = { ...model, reasoningEfforts }
+    delete next.defaultReasoningEffort
+    if (reasoningEfforts.length > 0) {
+      const defaultIndex = model.reasoningEfforts.indexOf(model.defaultReasoningEffort ?? '')
+      const nearestDefault = reasoningEfforts.reduce((best, effort) =>
+        Math.abs(model.reasoningEfforts.indexOf(effort) - defaultIndex) <
+        Math.abs(model.reasoningEfforts.indexOf(best) - defaultIndex)
+          ? effort
+          : best,
+      )
+      next.defaultReasoningEffort =
+        model.defaultReasoningEffort && supported.has(model.defaultReasoningEffort)
+          ? model.defaultReasoningEffort
+          : nearestDefault
+    }
+    return next
+  })
+}
+
 export class ClaudeCodeAdapter extends EventEmitter<ClaudeAdapterEvents> {
+  readonly #spawn: SpawnFn
+  readonly #run: RunFn
   #workspacePath = ''
   #options: ClaudeStartOptions = {}
   /** Claude Code's own session id, so follow-up turns resume rather than restart. */
@@ -167,6 +228,12 @@ export class ClaudeCodeAdapter extends EventEmitter<ClaudeAdapterEvents> {
   /** Where the multi-line session instructions live, since argv cannot carry them. */
   #instructionsDir: string | undefined
   #instructionsFile: string | undefined
+
+  constructor(options: { spawn?: SpawnFn; run?: RunFn } = {}) {
+    super()
+    this.#spawn = options.spawn ?? spawnCli
+    this.#run = options.run ?? runCli
+  }
 
   get capabilities(): Capabilities {
     return CLAUDE_CAPABILITIES
@@ -203,14 +270,21 @@ export class ClaudeCodeAdapter extends EventEmitter<ClaudeAdapterEvents> {
     }
   }
 
-  async sendTurn(threadId: string, text: string): Promise<string> {
+  async sendTurn(
+    threadId: string,
+    text: string,
+    attachments: string[] = [],
+    options: ClaudeTurnOptions = {},
+  ): Promise<string> {
+    if (attachments.length) throw new Error('Claude Code attachments are not supported yet')
+    this.#options = applyClaudeTurnOptions(this.#options, options)
     const turnId = `${threadId}-turn-${++this.#turnCounter}`
     const args = claudeTurnArgs(this.#options, this.#sessionId, this.#instructionsFile)
 
     // A turn already in flight would be orphaned by the reassignment below —
     // its exit handler must also not clobber the new child's reference.
     if (this.#child) this.#stop(this.#child)
-    const child = spawnCli('claude', args, { cwd: this.#workspacePath })
+    const child = this.#spawn('claude', args, { cwd: this.#workspacePath })
     this.#child = child
 
     this.emit('event', {
@@ -269,12 +343,19 @@ export class ClaudeCodeAdapter extends EventEmitter<ClaudeAdapterEvents> {
   /**
    * Models are not enumerable over this surface — there is no equivalent of
    * Codex's model/list — but `--model` documents stable aliases that always
-   * point at the newest model of each family. Offering those instead of full
-   * model ids keeps the list from going stale when a new version ships.
-   * Verified against claude-code 2.1.222.
+   * point at the newest model of each family. The per-model table above is
+   * intersected with this installed binary's own `--effort` values so removed
+   * levels disappear rather than becoming dead slider stops.
    */
   async listModels(): Promise<Model[]> {
-    return CLAUDE_MODELS
+    try {
+      const result = await this.#run('claude', ['--help'])
+      const efforts = result.code === 0 ? parseClaudeEfforts(result.stdout) : []
+      return efforts.length > 0 ? claudeModelsForEfforts(efforts) : CLAUDE_MODELS
+    } catch (error) {
+      this.emit('log', `Claude effort discovery fell back to known values: ${String(error)}`)
+      return CLAUDE_MODELS
+    }
   }
 
   dispose(): void {
