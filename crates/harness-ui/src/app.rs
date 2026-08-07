@@ -111,8 +111,10 @@ struct HarnessApp {
     stage_controls: StageControlsState,
     collapsed_projects: HashSet<String>,
     expanded_project_sessions: HashSet<String>,
+    sidebar_search: Entity<InputState>,
     snoozed_expanded: bool,
     settled_expanded: bool,
+    settled_limit: usize,
     account_menu_open: bool,
     onboarding: Option<onboarding::OnboardingState>,
     onboarding_api_key: Entity<InputState>,
@@ -198,6 +200,11 @@ impl HarnessApp {
             cx.new(|cx| InputState::new(window, cx).placeholder("Search every chat…"));
         let command_palette_input = cx
             .new(|cx| InputState::new(window, cx).placeholder("Search commands, projects, chats…"));
+        let sidebar_search_input = cx.new(|cx| {
+            InputState::new(window, cx)
+                .placeholder("Search threads")
+                .clean_on_escape()
+        });
         let sidebar_editor_input = cx.new(|cx| InputState::new(window, cx).placeholder("Name"));
 
         for input in [
@@ -235,6 +242,18 @@ impl HarnessApp {
                 InputEvent::PressEnter { .. } => this.run_selected_palette_command(cx),
                 InputEvent::Change => this.command_palette_query_changed(cx),
                 InputEvent::Focus | InputEvent::Blur => cx.notify(),
+            },
+        )
+        .detach();
+        cx.subscribe(
+            &sidebar_search_input,
+            |_this, _input, event: &InputEvent, cx| {
+                if matches!(
+                    event,
+                    InputEvent::Change | InputEvent::Focus | InputEvent::Blur
+                ) {
+                    cx.notify();
+                }
             },
         )
         .detach();
@@ -502,8 +521,10 @@ impl HarnessApp {
             stage_controls: StageControlsState::default(),
             collapsed_projects: HashSet::new(),
             expanded_project_sessions: HashSet::new(),
+            sidebar_search: sidebar_search_input,
             snoozed_expanded: false,
-            settled_expanded: false,
+            settled_expanded: true,
+            settled_limit: 10,
             account_menu_open: false,
             onboarding: (!fixture && preferences.setup_provider.is_none())
                 .then(onboarding::OnboardingState::default),
@@ -649,11 +670,13 @@ impl HarnessApp {
         match event {
             ShellEvent::ProjectAdded { path } => {
                 self.sidebar_scope = Some(path.clone());
+                self.settled_limit = 10;
                 self.begin_new_chat(path, cx);
             }
             ShellEvent::ProjectRemoved { path } => {
                 if self.sidebar_scope.as_deref() == Some(path.as_str()) {
                     self.sidebar_scope = None;
+                    self.settled_limit = 10;
                 }
                 if self.active_project_path.as_deref() == Some(path.as_str()) {
                     self.selected_thread_id = None;
@@ -1299,6 +1322,7 @@ impl HarnessApp {
         let open_menu_view = select_view.clone();
         let toggle_snoozed_view = select_view.clone();
         let toggle_settled_view = select_view.clone();
+        let show_more_settled_view = select_view.clone();
         let toggle_account_view = select_view.clone();
         let panic_stop_view = select_view.clone();
         SidebarActions {
@@ -1332,6 +1356,7 @@ impl HarnessApp {
                 let _ = select_scope_view.update(cx, |this, cx| {
                     let should_start = this.new_thread_picker && path.is_some();
                     this.sidebar_scope = path.clone();
+                    this.settled_limit = 10;
                     this.scope_open = false;
                     this.new_thread_picker = false;
                     if should_start {
@@ -1382,6 +1407,12 @@ impl HarnessApp {
             toggle_settled: Rc::new(move |cx| {
                 let _ = toggle_settled_view.update(cx, |this, cx| {
                     this.settled_expanded = !this.settled_expanded;
+                    cx.notify();
+                });
+            }),
+            show_more_settled: Rc::new(move |cx| {
+                let _ = show_more_settled_view.update(cx, |this, cx| {
+                    this.settled_limit = this.settled_limit.saturating_add(25);
                     cx.notify();
                 });
             }),
@@ -1506,6 +1537,7 @@ impl Render for HarnessApp {
             .map(|choice| choice.source_name.clone())
             .unwrap_or_else(|| "Personal Harness".into());
         let usage_limits = self.stage_controls.usage_limits();
+        let sidebar_query = self.sidebar_search.read(cx).value();
         let rail = sidebar(
             SidebarProps {
                 theme: self.theme,
@@ -1516,12 +1548,15 @@ impl Render for HarnessApp {
                 mode: self.state.sidebar_settings.mode,
                 selected_thread_id: self.selected_thread_id.as_deref(),
                 selected_scope: self.sidebar_scope.as_deref(),
+                query: sidebar_query.as_ref(),
+                search_input: self.sidebar_search.clone(),
                 scope_open: self.scope_open,
                 new_thread_picker: self.new_thread_picker,
                 collapsed_projects: &self.collapsed_projects,
                 expanded_project_sessions: &self.expanded_project_sessions,
                 snoozed_expanded: self.snoozed_expanded,
                 settled_expanded: self.settled_expanded,
+                settled_limit: self.settled_limit,
                 account_menu_open: self.account_menu_open,
                 provider_name: &provider_name,
                 usage_limits,

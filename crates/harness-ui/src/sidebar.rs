@@ -3,8 +3,10 @@ use crate::theme::{RADIUS_MD, RAIL_WIDTH, Theme};
 use crate::zoom::px;
 use chrono::{DateTime, Datelike, Local};
 use gpui::{
-    AnyElement, App, FontWeight, Hsla, Pixels, Point, SharedString, div, prelude::*, relative, svg,
+    AnyElement, App, Entity, FontWeight, Hsla, Pixels, Point, SharedString, div, prelude::*,
+    relative, svg,
 };
+use gpui_component::input::{Input, InputState};
 use harness_client::ConnectionState;
 use harness_protocol::{
     ProjectSummary, ProviderId, SessionSummary, SidebarMode, ThreadInboxStatus, ThreadLifecycle,
@@ -42,6 +44,7 @@ pub(crate) struct SidebarActions {
     pub(crate) open_menu: OpenSidebarMenu,
     pub(crate) toggle_snoozed: SidebarAction,
     pub(crate) toggle_settled: SidebarAction,
+    pub(crate) show_more_settled: SidebarAction,
     pub(crate) toggle_account: SidebarAction,
     pub(crate) panic_stop: SidebarAction,
 }
@@ -55,12 +58,15 @@ pub(crate) struct SidebarProps<'a> {
     pub(crate) mode: SidebarMode,
     pub(crate) selected_thread_id: Option<&'a str>,
     pub(crate) selected_scope: Option<&'a str>,
+    pub(crate) query: &'a str,
+    pub(crate) search_input: Entity<InputState>,
     pub(crate) scope_open: bool,
     pub(crate) new_thread_picker: bool,
     pub(crate) collapsed_projects: &'a std::collections::HashSet<String>,
     pub(crate) expanded_project_sessions: &'a std::collections::HashSet<String>,
     pub(crate) snoozed_expanded: bool,
     pub(crate) settled_expanded: bool,
+    pub(crate) settled_limit: usize,
     pub(crate) account_menu_open: bool,
     pub(crate) provider_name: &'a str,
     pub(crate) usage_limits: &'a [UsageLimit],
@@ -78,12 +84,15 @@ pub fn sidebar(props: SidebarProps<'_>, actions: SidebarActions) -> impl IntoEle
         mode,
         selected_thread_id,
         selected_scope,
+        query,
+        search_input,
         scope_open,
         new_thread_picker,
         collapsed_projects,
         expanded_project_sessions,
         snoozed_expanded,
         settled_expanded,
+        settled_limit,
         account_menu_open,
         provider_name,
         usage_limits,
@@ -111,6 +120,7 @@ pub fn sidebar(props: SidebarProps<'_>, actions: SidebarActions) -> impl IntoEle
                 selected_scope,
                 scope_open,
                 new_thread_picker,
+                &search_input,
                 &actions,
             )
             .into_any_element()
@@ -139,8 +149,10 @@ pub fn sidebar(props: SidebarProps<'_>, actions: SidebarActions) -> impl IntoEle
                 loaded,
                 selected_thread_id,
                 selected_scope,
+                query,
                 snoozed_expanded,
                 settled_expanded,
+                settled_limit,
                 actions.clone(),
             )
             .into_any_element()
@@ -487,6 +499,7 @@ fn sidebar_actions(
     selected_scope: Option<&str>,
     scope_open: bool,
     _new_thread_picker: bool,
+    search_input: &Entity<InputState>,
     actions: &SidebarActions,
 ) -> impl IntoElement {
     div()
@@ -518,23 +531,23 @@ fn sidebar_actions(
                         .border_color(theme.line_strong.hsla())
                         .bg(theme.background.hsla())
                         .text_color(theme.text_3.hsla())
-                        .cursor_pointer()
                         .hover(move |style| {
                             style
                                 .border_color(theme.text_3.hsla().opacity(0.65))
                                 .text_color(theme.text.hsla())
                         })
-                        .on_click({
-                            let open_search = actions.open_search.clone();
-                            move |_event, _window, cx| open_search(cx)
-                        })
                         .child(icon("icons/search.svg", 14.0))
                         .child(
-                            div()
+                            Input::new(search_input)
+                                .appearance(false)
+                                .bordered(false)
+                                .focus_bordered(false)
+                                .cleanable(true)
+                                .h(px(30.0))
                                 .min_w(px(0.0))
                                 .flex_1()
                                 .text_size(px(11.5))
-                                .child("Search threads"),
+                                .text_color(theme.text.hsla()),
                         ),
                 )
                 .child(
@@ -725,10 +738,13 @@ fn sidebar_body(
     loaded: bool,
     selected_thread_id: Option<&str>,
     selected_scope: Option<&str>,
+    query: &str,
     snoozed_expanded: bool,
     settled_expanded: bool,
+    settled_limit: usize,
     actions: SidebarActions,
 ) -> impl IntoElement {
+    let normalized_query = query.trim().to_lowercase();
     let mut active = Vec::new();
     let mut snoozed = Vec::new();
     let mut settled = Vec::new();
@@ -737,6 +753,9 @@ fn sidebar_body(
             continue;
         }
         for session in &project.sessions {
+            if !title_matches_query(&session.title, &normalized_query) {
+                continue;
+            }
             match session.lifecycle.as_ref() {
                 Some(ThreadLifecycle::Snoozed { .. }) => snoozed.push((project, session)),
                 Some(ThreadLifecycle::Settled { .. }) => settled.push((project, session)),
@@ -745,8 +764,44 @@ fn sidebar_body(
         }
     }
     active.sort_by(|(_, left), (_, right)| newest_first(left, right));
-    snoozed.sort_by(|(_, left), (_, right)| newest_first(left, right));
-    settled.sort_by(|(_, left), (_, right)| newest_first(left, right));
+    snoozed.sort_by_key(|(_, session)| wake_at(session).unwrap_or(u64::MAX));
+    settled.sort_by(|(_, left), (_, right)| {
+        settled_at(right)
+            .unwrap_or(right.created_at)
+            .partial_cmp(&settled_at(left).unwrap_or(left.created_at))
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
+
+    let query_active = !normalized_query.is_empty();
+    let active_count = active.len();
+    let active_empty = active.is_empty();
+    let has_matches = !active.is_empty() || !snoozed.is_empty() || !settled.is_empty();
+    let selected_snoozed = snoozed
+        .iter()
+        .any(|(_, session)| selected_thread_id == Some(session.id.as_str()));
+    let selected_settled = settled
+        .iter()
+        .find(|(_, session)| selected_thread_id == Some(session.id.as_str()))
+        .copied();
+    let snoozed_open = query_active || snoozed_expanded || selected_snoozed;
+    let settled_open = query_active || settled_expanded || selected_settled.is_some();
+    let settled_count = settled.len();
+    let mut visible_settled = if query_active {
+        settled.clone()
+    } else {
+        settled
+            .iter()
+            .copied()
+            .take(settled_limit)
+            .collect::<Vec<_>>()
+    };
+    if let Some(selected) = selected_settled
+        && !visible_settled
+            .iter()
+            .any(|(_, session)| session.id == selected.1.id)
+    {
+        visible_settled.push(selected);
+    }
 
     let status = match connection {
         ConnectionState::Connecting => Some("Connecting to server…"),
@@ -756,6 +811,7 @@ fn sidebar_body(
         ConnectionState::Open if projects.is_empty() => Some("Nothing here yet."),
         ConnectionState::Open => None,
     };
+    let show_empty_active = !query_active && active_empty && status.is_none();
 
     div()
         .id("sidebar-scroll")
@@ -766,8 +822,8 @@ fn sidebar_body(
         .when_some(status, |body, label| {
             body.child(empty_state(SharedString::from(label), theme))
         })
-        .when(!active.is_empty(), |body| {
-            body.child(section_label("Active".into(), theme))
+        .when(!query_active || !active_empty, |body| {
+            body.child(section_heading("Active", active_count, theme))
                 .children(active.into_iter().map(|(project, session)| {
                     inbox_row(
                         session.id.clone().into(),
@@ -781,60 +837,71 @@ fn sidebar_body(
                         Some(actions.settle_thread.clone()),
                     )
                 }))
-        })
-        .when(!snoozed.is_empty(), |body| {
-            body.child(collapsed_group(
-                "Snoozed".into(),
-                Some(snoozed.len().to_string().into()),
-                snoozed_expanded,
-                theme,
-                Some(actions.toggle_snoozed.clone()),
-            ))
-            .when(snoozed_expanded, |body| {
-                body.children(snoozed.into_iter().take(10).map(|(project, session)| {
-                    settled_row(
-                        session.id.clone().into(),
-                        session.title.clone().into(),
-                        format!(
-                            "{} · wakes {}",
-                            project.name,
-                            wake_label(session).unwrap_or_else(|| "later".into())
-                        )
-                        .into(),
+                .when(show_empty_active, |body| {
+                    body.child(empty_state(
+                        "No active threads in this project.".into(),
                         theme,
-                        selected_thread_id == Some(session.id.as_str()),
-                        Some(actions.select_session.clone()),
-                        Some(actions.open_menu.clone()),
+                    ))
+                })
+        })
+        .child(collapsed_group(
+            "Snoozed".into(),
+            Some(snoozed.len().to_string().into()),
+            snoozed_open,
+            theme,
+            Some(actions.toggle_snoozed.clone()),
+        ))
+        .when(snoozed_open, |body| {
+            body.children(snoozed.into_iter().map(|(project, session)| {
+                settled_row(
+                    session.id.clone().into(),
+                    session.title.clone().into(),
+                    format!(
+                        "{} · wakes {}",
+                        project.name,
+                        wake_label(session).unwrap_or_else(|| "later".into())
                     )
-                }))
+                    .into(),
+                    theme,
+                    selected_thread_id == Some(session.id.as_str()),
+                    Some(actions.select_session.clone()),
+                    Some(actions.open_menu.clone()),
+                )
+            }))
+        })
+        .child(collapsed_group(
+            "Settled".into(),
+            Some(settled_count.to_string().into()),
+            settled_open,
+            theme,
+            Some(actions.toggle_settled.clone()),
+        ))
+        .when(settled_open, |body| {
+            body.children(visible_settled.into_iter().map(|(project, session)| {
+                settled_row(
+                    session.id.clone().into(),
+                    session.title.clone().into(),
+                    format!(
+                        "{} · {}",
+                        project.name,
+                        relative_time(settled_at(session).unwrap_or(session.created_at))
+                    )
+                    .into(),
+                    theme,
+                    selected_thread_id == Some(session.id.as_str()),
+                    Some(actions.select_session.clone()),
+                    Some(actions.open_menu.clone()),
+                )
+            }))
+            .when(!query_active && settled_count > settled_limit, |body| {
+                body.child(show_more_settled(theme, actions.show_more_settled.clone()))
             })
         })
-        .when(!settled.is_empty(), |body| {
-            body.child(collapsed_group(
-                "Settled".into(),
-                Some(settled.len().to_string().into()),
-                settled_expanded,
+        .when(query_active && !has_matches, |body| {
+            body.child(empty_state(
+                format!("No threads match “{}”.", query.trim()).into(),
                 theme,
-                Some(actions.toggle_settled.clone()),
             ))
-            .when(settled_expanded, |body| {
-                body.children(settled.into_iter().take(10).map(|(project, session)| {
-                    settled_row(
-                        session.id.clone().into(),
-                        session.title.clone().into(),
-                        format!(
-                            "{} · {}",
-                            project.name,
-                            relative_time(settled_at(session).unwrap_or(session.created_at))
-                        )
-                        .into(),
-                        theme,
-                        selected_thread_id == Some(session.id.as_str()),
-                        Some(actions.select_session.clone()),
-                        Some(actions.open_menu.clone()),
-                    )
-                }))
-            })
         })
 }
 
@@ -1373,6 +1440,21 @@ fn section_label(label: SharedString, theme: Theme) -> impl IntoElement {
         .child(label)
 }
 
+fn section_heading(label: &'static str, count: usize, theme: Theme) -> impl IntoElement {
+    div()
+        .h(px(31.0))
+        .flex()
+        .items_end()
+        .justify_between()
+        .px(px(8.0))
+        .pb(px(7.0))
+        .text_size(px(11.5))
+        .font_weight(FontWeight::MEDIUM)
+        .text_color(theme.text_3.hsla())
+        .child(label)
+        .child(count.to_string())
+}
+
 #[derive(Clone, Copy)]
 enum Status {
     Starting,
@@ -1657,6 +1739,22 @@ fn settled_row(
         })
 }
 
+fn show_more_settled(theme: Theme, action: SidebarAction) -> impl IntoElement {
+    div()
+        .id("show-more-settled")
+        .h(px(30.0))
+        .flex()
+        .items_center()
+        .px(px(8.0))
+        .rounded(px(RADIUS_MD))
+        .text_size(px(11.5))
+        .text_color(theme.text_3.hsla())
+        .cursor_pointer()
+        .hover(move |style| style.bg(theme.surface.hsla()).text_color(theme.text.hsla()))
+        .on_click(move |_event, _window, cx| action(cx))
+        .child("Show 25 more")
+}
+
 fn empty_state(label: SharedString, theme: Theme) -> impl IntoElement {
     div()
         .px(px(8.0))
@@ -1716,9 +1814,20 @@ fn newest_first(left: &SessionSummary, right: &SessionSummary) -> std::cmp::Orde
         .unwrap_or(std::cmp::Ordering::Equal)
 }
 
+fn title_matches_query(title: &str, normalized_query: &str) -> bool {
+    normalized_query.is_empty() || title.to_lowercase().contains(normalized_query)
+}
+
 fn settled_at(session: &SessionSummary) -> Option<f64> {
     match session.lifecycle.as_ref() {
         Some(ThreadLifecycle::Settled { settled_at, .. }) => Some(*settled_at as f64),
+        _ => None,
+    }
+}
+
+fn wake_at(session: &SessionSummary) -> Option<u64> {
+    match session.lifecycle.as_ref() {
+        Some(ThreadLifecycle::Snoozed { wake_at, .. }) => Some(*wake_at),
         _ => None,
     }
 }
@@ -1748,5 +1857,17 @@ fn relative_time(timestamp: f64) -> String {
         60..=3_599 => format!("{}m ago", elapsed / 60),
         3_600..=86_399 => format!("{}h ago", elapsed / 3_600),
         _ => format!("{}d ago", elapsed / 86_400),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::title_matches_query;
+
+    #[test]
+    fn inbox_query_matches_titles_case_insensitively() {
+        assert!(title_matches_query("Ship Native Sidebar", "native"));
+        assert!(title_matches_query("Ship Native Sidebar", ""));
+        assert!(!title_matches_query("Ship Native Sidebar", "electron"));
     }
 }
