@@ -1,14 +1,15 @@
 use crate::ServerState;
 use harness_adapter_codex::CodexRuntime;
 use harness_agent::{
-    AgentError, AgentHandlers, AgentRuntime, AgentSession, ControlHandlers, ProviderControl,
-    StartOptions, TurnOptions,
+    AgentError, AgentHandlers, AgentRuntime, AgentSession, ControlHandlers, CredentialValues,
+    ProviderControl, StartOptions, TurnOptions,
 };
 use harness_protocol::{
     Account, ApprovalDecision, AuthEventPush, AuthStartLoginResult, DomainEvent, McpAuth,
-    McpListResult, McpServer, McpServerScope, McpStartupStatus, Model, ProviderId, QueuedTurn,
-    SendTurnResult, Skill, SkillSource, SkillsListResult, Thread, ThreadEventPush,
-    ThreadInboxStatus, ThreadLifecyclePush, ThreadQueuePush, ThreadQueueResult, channel,
+    McpListResult, McpOAuthPush, McpOAuthStartResult, McpServer, McpServerConfig, McpServerScope,
+    McpStartupStatus, Model, ProviderId, QueuedTurn, SendTurnResult, Skill, SkillSource,
+    SkillsListResult, Thread, ThreadEventPush, ThreadInboxStatus, ThreadLifecyclePush,
+    ThreadQueuePush, ThreadQueueResult, channel,
 };
 use harness_store::{NewCheckpoint, NewThread};
 use harness_workspace::Worktree;
@@ -88,9 +89,12 @@ struct QueuedEntry {
     options: TurnOptions,
 }
 
+type ProjectSession = (String, Arc<dyn AgentSession>);
+
 #[derive(Default)]
 struct LiveState {
     sessions: HashMap<String, Arc<dyn AgentSession>>,
+    session_order: Vec<String>,
     active_turns: HashSet<String>,
     starting_turns: HashSet<String>,
     terminal_while_starting: HashSet<String>,
@@ -138,6 +142,8 @@ pub(crate) struct AgentManager {
     resumes: Mutex<HashMap<String, Arc<ResumeSlot>>>,
     controls: Mutex<HashMap<ControlKey, Arc<dyn ProviderControl>>>,
     control_starts: Mutex<HashMap<ControlKey, Arc<ControlSlot>>>,
+    watched_mcp_projects: Arc<Mutex<HashMap<ProviderId, HashSet<String>>>>,
+    watched_skill_projects: Arc<Mutex<HashMap<ProviderId, HashSet<String>>>>,
     worktree_root: PathBuf,
 }
 
@@ -149,6 +155,8 @@ impl AgentManager {
             resumes: Mutex::new(HashMap::new()),
             controls: Mutex::new(HashMap::new()),
             control_starts: Mutex::new(HashMap::new()),
+            watched_mcp_projects: Arc::new(Mutex::new(HashMap::new())),
+            watched_skill_projects: Arc::new(Mutex::new(HashMap::new())),
             worktree_root: std::env::temp_dir().join("personal-harness-trees"),
         }
     }
@@ -216,10 +224,22 @@ impl AgentManager {
         provider: ProviderId,
         project_path: &str,
     ) -> Result<McpListResult, String> {
-        let mut inventory = self
-            .control(state, provider, None)?
-            .list_mcp_servers()
-            .map_err(|error| error.to_string())?;
+        watch_project(&self.watched_mcp_projects, provider, project_path);
+        let active = self.project_session(state, provider, project_path)?;
+        let mut inventory = match active {
+            Some((thread_id, session)) => match session.list_mcp_servers(&thread_id) {
+                Ok(inventory) => inventory,
+                Err(AgentError::Unsupported(_)) => self
+                    .control(state, provider, None)?
+                    .list_mcp_servers()
+                    .map_err(|error| error.to_string())?,
+                Err(error) => return Err(error.to_string()),
+            },
+            None => self
+                .control(state, provider, None)?
+                .list_mcp_servers()
+                .map_err(|error| error.to_string())?,
+        };
         let configured = lock(&state.mcp_config)
             .list(provider, project_path)
             .map_err(|error| error.to_string())?;
@@ -264,12 +284,56 @@ impl AgentManager {
         Ok(inventory)
     }
 
+    pub(crate) fn reload_mcp_servers(
+        &self,
+        state: &Arc<ServerState>,
+        provider: ProviderId,
+        project_path: &str,
+    ) -> Result<(), String> {
+        let (thread_id, session) = self
+            .project_session(state, provider, project_path)?
+            .ok_or_else(|| {
+                "start a compatible session for this project before reloading MCP servers"
+                    .to_owned()
+            })?;
+        let (servers, credentials) = self.mcp_runtime_config(state, provider, project_path)?;
+        session
+            .reload_mcp_servers(&thread_id, &servers, &credentials)
+            .map_err(|error| error.to_string())
+    }
+
+    pub(crate) fn start_mcp_o_auth(
+        &self,
+        state: &Arc<ServerState>,
+        provider: ProviderId,
+        project_path: &str,
+        server_id: &str,
+    ) -> Result<McpOAuthStartResult, String> {
+        let (thread_id, session) = self
+            .project_session(state, provider, project_path)?
+            .ok_or_else(|| {
+                "start a compatible session for this project before signing in to an MCP server"
+                    .to_owned()
+            })?;
+        session
+            .start_mcp_o_auth(server_id, &thread_id)
+            .map_err(|error| error.to_string())
+    }
+
+    pub(crate) fn cancel_mcp_o_auth(&self, provider: ProviderId) -> Result<(), String> {
+        Err(format!(
+            "provider \"{}\" cannot cancel MCP OAuth; close the browser flow instead",
+            provider_key(provider)
+        ))
+    }
+
     pub(crate) fn list_skills(
         &self,
         state: &Arc<ServerState>,
         provider: ProviderId,
         project_path: &str,
     ) -> Result<SkillsListResult, String> {
+        watch_project(&self.watched_skill_projects, provider, project_path);
         self.control(state, provider, None)?
             .list_skills(project_path)
             .map_err(|error| error.to_string())
@@ -279,9 +343,11 @@ impl AgentManager {
         &self,
         state: &Arc<ServerState>,
         provider: ProviderId,
+        project_path: &str,
         skill_id: &str,
         enabled: bool,
     ) -> Result<bool, String> {
+        watch_project(&self.watched_skill_projects, provider, project_path);
         self.control(state, provider, None)?
             .set_skill_enabled(skill_id, enabled)
             .map_err(|error| error.to_string())
@@ -294,6 +360,7 @@ impl AgentManager {
         project_path: &str,
         folder_path: &str,
     ) -> Result<Skill, String> {
+        watch_project(&self.watched_skill_projects, provider, project_path);
         let control = self.control(state, provider, None)?;
         let current = control
             .list_skills(project_path)
@@ -347,6 +414,8 @@ impl AgentManager {
         state: &Arc<ServerState>,
         request: StartThreadRequest,
     ) -> Result<Thread, String> {
+        let (mcp_servers, mcp_credentials) =
+            self.mcp_runtime_config(state, request.provider, &request.workspace_path)?;
         let provisional_id = format!("{}-{}", provider_key(request.provider), Uuid::new_v4());
         let worktree = request
             .isolate
@@ -372,9 +441,11 @@ impl AgentManager {
         };
         let bridge = Arc::new(EventBridge::new(Arc::downgrade(state)));
         let event_bridge = Arc::clone(&bridge);
-        let handlers = AgentHandlers::new(
-            move |event| event_bridge.emit(event),
-            |line| eprintln!("[agent] {line}"),
+        let handlers = session_handlers(
+            state,
+            event_bridge,
+            request.provider,
+            request.workspace_path.clone(),
         );
         let options = StartOptions {
             instructions: Some(REPLY_STYLE_INSTRUCTIONS.into()),
@@ -382,6 +453,8 @@ impl AgentManager {
             service_tier: request.service_tier,
             effort: request.effort,
             approval: request.approval,
+            mcp_servers,
+            mcp_credentials,
         };
         let workspace = worktree
             .as_ref()
@@ -572,6 +645,8 @@ impl AgentManager {
             live.terminal_while_starting.remove(thread_id);
             live.queues.remove(thread_id);
             live.draining.remove(thread_id);
+            live.session_order
+                .retain(|candidate| candidate != thread_id);
             live.sessions.remove(thread_id)
         };
         if let Some(session) = session {
@@ -587,6 +662,7 @@ impl AgentManager {
             live.terminal_while_starting.clear();
             live.queues.clear();
             live.draining.clear();
+            live.session_order.clear();
             live.sessions
                 .drain()
                 .map(|(_, session)| session)
@@ -717,6 +793,54 @@ impl AgentManager {
         }
     }
 
+    fn project_session(
+        &self,
+        state: &ServerState,
+        provider: ProviderId,
+        project_path: &str,
+    ) -> Result<Option<ProjectSession>, String> {
+        let candidates = {
+            let live = lock(&self.live);
+            live.session_order
+                .iter()
+                .filter_map(|thread_id| {
+                    live.sessions
+                        .get(thread_id)
+                        .cloned()
+                        .map(|session| (thread_id.clone(), session))
+                })
+                .collect::<Vec<_>>()
+        };
+        let store = lock(&state.store);
+        for (thread_id, session) in candidates {
+            let Some(thread) = store
+                .thread(&thread_id)
+                .map_err(|error| error.to_string())?
+            else {
+                continue;
+            };
+            if thread.closed_at.is_none()
+                && thread.provider == provider
+                && thread.project_path == project_path
+            {
+                return Ok(Some((thread_id, session)));
+            }
+        }
+        Ok(None)
+    }
+
+    fn mcp_runtime_config(
+        &self,
+        state: &ServerState,
+        provider: ProviderId,
+        project_path: &str,
+    ) -> Result<(Vec<McpServerConfig>, CredentialValues), String> {
+        let servers = lock(&state.mcp_config)
+            .list(provider, project_path)
+            .map_err(|error| error.to_string())?;
+        Ok((servers, CredentialValues::default()))
+    }
+
     fn control(
         &self,
         state: &Arc<ServerState>,
@@ -771,27 +895,53 @@ impl AgentManager {
             .runtimes
             .runtime(key.provider, key.agent.as_deref(), None)
             .map_err(|error| error.to_string())?;
-        let state = Arc::downgrade(state);
+        let auth_state = Arc::downgrade(state);
         let provider = key.provider;
         let agent = key.agent.clone();
+        let mcp_state = Arc::downgrade(state);
+        let mcp_projects = Arc::clone(&self.watched_mcp_projects);
+        let skill_state = Arc::downgrade(state);
+        let skill_projects = Arc::clone(&self.watched_skill_projects);
         runtime
-            .open_control(ControlHandlers::new(
-                move |event| {
-                    if let Some(state) = state.upgrade() {
-                        let _ = state.push.broadcast(
-                            channel::AUTH_EVENT,
-                            AuthEventPush {
-                                provider,
-                                agent: agent.clone(),
-                                login_id: event.login_id,
-                                success: event.success,
-                                error: event.error,
-                            },
+            .open_control(
+                ControlHandlers::new(
+                    move |event| {
+                        if let Some(state) = auth_state.upgrade() {
+                            let _ = state.push.broadcast(
+                                channel::AUTH_EVENT,
+                                AuthEventPush {
+                                    provider,
+                                    agent: agent.clone(),
+                                    login_id: event.login_id,
+                                    success: event.success,
+                                    error: event.error,
+                                },
+                            );
+                        }
+                    },
+                    |line| eprintln!("[agent control] {line}"),
+                )
+                .with_mcp_changed(move |_| {
+                    if let Some(state) = mcp_state.upgrade() {
+                        broadcast_watched_projects(
+                            &state,
+                            &mcp_projects,
+                            channel::MCP_CHANGED,
+                            provider,
                         );
                     }
-                },
-                |line| eprintln!("[agent control] {line}"),
-            ))
+                })
+                .with_skills_changed(move || {
+                    if let Some(state) = skill_state.upgrade() {
+                        broadcast_watched_projects(
+                            &state,
+                            &skill_projects,
+                            channel::SKILLS_CHANGED,
+                            provider,
+                        );
+                    }
+                }),
+            )
             .map_err(|error| error.to_string())
     }
 
@@ -811,16 +961,25 @@ impl AgentManager {
             .map_err(|error| error.to_string())?;
         let bridge = Arc::new(EventBridge::new(Arc::downgrade(state)));
         let event_bridge = Arc::clone(&bridge);
-        let handlers = AgentHandlers::new(
-            move |event| event_bridge.emit(event),
-            |line| eprintln!("[agent] {line}"),
+        let handlers = session_handlers(
+            state,
+            event_bridge,
+            stored.provider,
+            stored.project_path.clone(),
         );
         let workspace = stored
             .worktree_path
             .as_deref()
             .unwrap_or(&stored.project_path);
+        let (mcp_servers, mcp_credentials) =
+            self.mcp_runtime_config(state, stored.provider, &stored.project_path)?;
+        let options = StartOptions {
+            mcp_servers,
+            mcp_credentials,
+            ..StartOptions::default()
+        };
         let (thread, session) = runtime
-            .resume(thread_id, workspace, &StartOptions::default(), handlers)
+            .resume(thread_id, workspace, &options, handlers)
             .map_err(|error| error.to_string())?;
         if thread.id != thread_id {
             session.dispose();
@@ -840,7 +999,13 @@ impl AgentManager {
     }
 
     fn attach_session(&self, thread_id: &str, session: Arc<dyn AgentSession>) {
-        let previous = lock(&self.live).sessions.insert(thread_id.into(), session);
+        let previous = {
+            let mut live = lock(&self.live);
+            if !live.sessions.contains_key(thread_id) {
+                live.session_order.push(thread_id.into());
+            }
+            live.sessions.insert(thread_id.into(), session)
+        };
         if let Some(previous) = previous {
             previous.dispose();
         }
@@ -920,6 +1085,91 @@ impl AgentManager {
         }
         self.notify_queue(state, thread_id);
     }
+}
+
+fn session_handlers(
+    state: &Arc<ServerState>,
+    event_bridge: Arc<EventBridge>,
+    provider: ProviderId,
+    project_path: String,
+) -> AgentHandlers {
+    let oauth_state = Arc::downgrade(state);
+    let oauth_project = project_path.clone();
+    let mcp_state = Arc::downgrade(state);
+    let mcp_project = project_path.clone();
+    let skills_state = Arc::downgrade(state);
+    AgentHandlers::new(
+        move |event| event_bridge.emit(event),
+        |line| eprintln!("[agent] {line}"),
+    )
+    .with_control_handlers(
+        ControlHandlers::new(|_| {}, |_| {})
+            .with_mcp_o_auth(move |event| {
+                if let Some(state) = oauth_state.upgrade() {
+                    let _ = state.push.broadcast(
+                        channel::MCP_OAUTH,
+                        McpOAuthPush {
+                            provider,
+                            project_path: oauth_project.clone(),
+                            server_id: event.server_id,
+                            login_id: event.login_id,
+                            success: event.success,
+                            error: event.error,
+                        },
+                    );
+                }
+            })
+            .with_mcp_changed(move |_| {
+                if let Some(state) = mcp_state.upgrade() {
+                    broadcast_project_changed(&state, channel::MCP_CHANGED, provider, &mcp_project);
+                }
+            })
+            .with_skills_changed(move || {
+                if let Some(state) = skills_state.upgrade() {
+                    broadcast_project_changed(
+                        &state,
+                        channel::SKILLS_CHANGED,
+                        provider,
+                        &project_path,
+                    );
+                }
+            }),
+    )
+}
+
+fn watch_project(
+    projects: &Mutex<HashMap<ProviderId, HashSet<String>>>,
+    provider: ProviderId,
+    project_path: &str,
+) {
+    lock(projects)
+        .entry(provider)
+        .or_default()
+        .insert(project_path.into());
+}
+
+fn broadcast_watched_projects(
+    state: &ServerState,
+    projects: &Mutex<HashMap<ProviderId, HashSet<String>>>,
+    channel_name: &str,
+    provider: ProviderId,
+) {
+    let projects = lock(projects).get(&provider).cloned().unwrap_or_default();
+    for project_path in projects {
+        broadcast_project_changed(state, channel_name, provider, &project_path);
+    }
+}
+
+fn broadcast_project_changed(
+    state: &ServerState,
+    channel_name: &str,
+    provider: ProviderId,
+    project_path: &str,
+) {
+    let _ = state.push.broadcast(
+        channel_name,
+        serde_json::json!({ "provider": provider, "projectPath": project_path }),
+    );
 }
 
 struct EventBridge {

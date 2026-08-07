@@ -245,6 +245,42 @@ pub(crate) fn route(
             )?;
             empty_result()
         }
+        method::MCP_RELOAD => {
+            let params: ProviderProjectParams = decode(method_name, params)?;
+            require_non_empty(method_name, "projectPath", &params.project_path)?;
+            state
+                .agents
+                .reload_mcp_servers(state, params.provider, &params.project_path)
+                .map_err(RouteError::internal)?;
+            empty_result()
+        }
+        method::MCP_START_OAUTH => {
+            let params: McpOAuthParams = decode(method_name, params)?;
+            require_non_empty(method_name, "projectPath", &params.project_path)?;
+            require_non_empty(method_name, "serverId", &params.server_id)?;
+            encoded(
+                state
+                    .agents
+                    .start_mcp_o_auth(
+                        state,
+                        params.provider,
+                        &params.project_path,
+                        &params.server_id,
+                    )
+                    .map_err(RouteError::internal)?,
+            )
+        }
+        method::MCP_CANCEL_OAUTH => {
+            let params: McpCancelOAuthParams = decode(method_name, params)?;
+            require_non_empty(method_name, "projectPath", &params.project_path)?;
+            require_non_empty(method_name, "serverId", &params.server_id)?;
+            require_non_empty(method_name, "loginId", &params.login_id)?;
+            state
+                .agents
+                .cancel_mcp_o_auth(params.provider)
+                .map_err(RouteError::internal)?;
+            empty_result()
+        }
         method::SKILLS_LIST => {
             let params: ProviderProjectParams = decode(method_name, params)?;
             require_non_empty(method_name, "projectPath", &params.project_path)?;
@@ -261,7 +297,13 @@ pub(crate) fn route(
             require_non_empty(method_name, "skillId", &params.skill_id)?;
             let enabled = state
                 .agents
-                .set_skill_enabled(state, params.provider, &params.skill_id, params.enabled)
+                .set_skill_enabled(
+                    state,
+                    params.provider,
+                    &params.project_path,
+                    &params.skill_id,
+                    params.enabled,
+                )
                 .map_err(RouteError::internal)?;
             broadcast_provider_project(
                 state,
@@ -1236,6 +1278,23 @@ struct McpRemoveParams {
     provider: ProviderId,
     project_path: String,
     server_id: String,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct McpOAuthParams {
+    provider: ProviderId,
+    project_path: String,
+    server_id: String,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct McpCancelOAuthParams {
+    provider: ProviderId,
+    project_path: String,
+    server_id: String,
+    login_id: String,
 }
 
 #[derive(Deserialize)]

@@ -1,11 +1,12 @@
 use super::*;
 use harness_agent::{
     AgentError, AgentHandlers, AgentResult, AgentRuntime, AgentSession, ControlHandlers,
-    LoginEvent, ProviderControl, StartOptions, TurnOptions,
+    CredentialValues, LoginEvent, McpOAuthEvent, ProviderControl, StartOptions, TurnOptions,
 };
 use harness_protocol::{
     Account, ApprovalDecision, AuthStartLoginResult, Capabilities, DomainEvent, Item, ItemStatus,
-    ItemType, MessageRole, Model, ProviderId, ServiceTier, Thread, Turn, TurnStatus,
+    ItemType, McpOAuthStartResult, McpServerConfig, MessageRole, Model, ProviderId, ServiceTier,
+    Thread, Turn, TurnStatus,
 };
 use harness_store::{NewCheckpoint, NewThread as StoreNewThread};
 use serde_json::{Value, json};
@@ -882,6 +883,179 @@ fn live_transport_sends_welcome_drops_malformed_frames_and_reports_typed_errors(
 }
 
 #[test]
+fn live_mcp_session_routes_apply_config_reload_and_preserve_oauth_push_order() {
+    let runtime = Arc::new(FakeRuntime::default());
+    runtime
+        .complete_mcp_o_auth_during_start
+        .store(true, Ordering::Release);
+    let registry = Arc::new(FakeRuntimes {
+        runtime: Arc::clone(&runtime),
+    });
+    let (directory, server) = start_test_server_with_runtimes(registry);
+    let workspace = directory.path().join("workspace");
+    std::fs::create_dir(&workspace).unwrap();
+    let workspace = workspace.to_string_lossy().into_owned();
+    let mut socket = connect_native(&server, "");
+    assert_welcome(&mut socket);
+
+    send_request(
+        &mut socket,
+        "add",
+        "mcp.add",
+        json!({
+            "provider": "codex",
+            "projectPath": workspace,
+            "server": {
+                "id": "custom",
+                "enabled": true,
+                "transport": { "type": "http", "url": "https://example.com/mcp" }
+            }
+        }),
+    );
+    let _ = read_until_response(&mut socket, "add");
+
+    send_request(
+        &mut socket,
+        "start",
+        "thread.start",
+        json!({ "provider": "codex", "workspacePath": workspace }),
+    );
+    let _ = read_until_response(&mut socket, "start");
+    let options = runtime.start_options.lock().unwrap().clone().unwrap();
+    assert_eq!(options.mcp_servers.len(), 1);
+    assert_eq!(options.mcp_servers[0].id, "custom");
+    assert!(options.mcp_credentials.is_empty());
+
+    send_request(
+        &mut socket,
+        "reload",
+        "mcp.reload",
+        json!({ "provider": "codex", "projectPath": workspace }),
+    );
+    let (reload_pushes, reload) = read_until_response(&mut socket, "reload");
+    assert_eq!(reload["result"], json!({}));
+    assert_eq!(reload_pushes.len(), 1);
+    assert_eq!(reload_pushes[0]["channel"], "mcp.changed");
+    assert_eq!(reload_pushes[0]["data"]["projectPath"], workspace);
+    let session = runtime.session();
+    let reloads = session.mcp_reloads.lock().unwrap();
+    assert_eq!(reloads[0].0, "thread-1");
+    assert_eq!(reloads[0].1[0].id, "custom");
+    drop(reloads);
+
+    send_request(
+        &mut socket,
+        "list-live",
+        "mcp.list",
+        json!({ "provider": "codex", "projectPath": workspace }),
+    );
+    let listed = read_value(&mut socket);
+    assert_eq!(
+        listed["result"]["servers"][0]["displayName"],
+        "Session documentation"
+    );
+    assert_eq!(runtime.control_open_count.load(Ordering::Acquire), 0);
+
+    send_request(
+        &mut socket,
+        "oauth",
+        "mcp.startOAuth",
+        json!({
+            "provider": "codex",
+            "projectPath": workspace,
+            "serverId": "docs"
+        }),
+    );
+    let (oauth_pushes, oauth) = read_until_response(&mut socket, "oauth");
+    assert_eq!(oauth_pushes.len(), 1);
+    assert_eq!(oauth_pushes[0]["channel"], "mcp.oauth");
+    assert_eq!(oauth_pushes[0]["data"]["serverId"], "docs");
+    assert_eq!(
+        oauth_pushes[0]["data"]["loginId"],
+        oauth["result"]["loginId"]
+    );
+    assert_eq!(oauth_pushes[0]["data"]["success"], true);
+
+    send_request(
+        &mut socket,
+        "cancel-oauth",
+        "mcp.cancelOAuth",
+        json!({
+            "provider": "codex",
+            "projectPath": workspace,
+            "serverId": "docs",
+            "loginId": oauth["result"]["loginId"]
+        }),
+    );
+    let cancelled = read_value(&mut socket);
+    assert_eq!(cancelled["error"]["code"], "internal");
+    assert!(
+        cancelled["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("close the browser flow instead")
+    );
+
+    socket.close(None).unwrap();
+    server.close().unwrap();
+}
+
+#[test]
+fn resumed_sessions_receive_current_project_mcp_config() {
+    let runtime = Arc::new(FakeRuntime::default());
+    let registry = Arc::new(FakeRuntimes {
+        runtime: Arc::clone(&runtime),
+    });
+    let (_directory, server) = start_test_server_with_runtimes_and_seed(registry, |store| {
+        store.add_project("/repo", None).unwrap();
+        store
+            .add_thread(StoreNewThread {
+                id: "thread-resume-mcp".into(),
+                project_path: "/repo".into(),
+                provider: ProviderId::Codex,
+                agent: None,
+                title: "Resume MCP".into(),
+                created_at: Some(10),
+                worktree_path: None,
+                worktree_branch: None,
+            })
+            .unwrap();
+    });
+    let mut socket = connect_native(&server, "");
+    assert_welcome(&mut socket);
+    send_request(
+        &mut socket,
+        "add",
+        "mcp.add",
+        json!({
+            "provider": "codex",
+            "projectPath": "/repo",
+            "server": {
+                "id": "files",
+                "enabled": true,
+                "transport": { "type": "stdio", "command": "server.exe" }
+            }
+        }),
+    );
+    let _ = read_until_response(&mut socket, "add");
+    send_request(
+        &mut socket,
+        "turn",
+        "thread.sendTurn",
+        json!({ "threadId": "thread-resume-mcp", "text": "Resume" }),
+    );
+    let _ = read_until_response(&mut socket, "turn");
+
+    let options = runtime.resume_options.lock().unwrap().clone().unwrap();
+    assert_eq!(options.mcp_servers.len(), 1);
+    assert_eq!(options.mcp_servers[0].id, "files");
+    assert!(options.mcp_credentials.is_empty());
+
+    socket.close(None).unwrap();
+    server.close().unwrap();
+}
+
+#[test]
 fn live_provider_routes_report_the_catalog_and_refuse_client_selected_commands() {
     let (_directory, server) = start_test_server(None, |_| {});
     let mut socket = connect_native(&server, "");
@@ -1734,10 +1908,12 @@ impl crate::agents::RuntimeRegistry for FakeRuntimes {
 #[derive(Default)]
 struct FakeRuntime {
     start_options: Mutex<Option<StartOptions>>,
+    resume_options: Mutex<Option<StartOptions>>,
     sessions: Mutex<Vec<Arc<FakeSession>>>,
     controls: Mutex<Vec<Arc<FakeControl>>>,
     complete_during_send: Arc<AtomicBool>,
     complete_login_during_start: Arc<AtomicBool>,
+    complete_mcp_o_auth_during_start: Arc<AtomicBool>,
     resume_count: AtomicU64,
     resume_delay_ms: AtomicU64,
     control_open_count: AtomicU64,
@@ -1793,6 +1969,9 @@ impl AgentRuntime for FakeRuntime {
             user_inputs: Mutex::new(Vec::new()),
             sent_texts: Mutex::new(Vec::new()),
             steered_texts: Mutex::new(Vec::new()),
+            mcp_reloads: Mutex::new(Vec::new()),
+            next_mcp_login: AtomicU64::new(1),
+            complete_mcp_o_auth_during_start: Arc::clone(&self.complete_mcp_o_auth_during_start),
         });
         self.sessions.lock().unwrap().push(Arc::clone(&session));
         Ok((thread, session))
@@ -1802,10 +1981,11 @@ impl AgentRuntime for FakeRuntime {
         &self,
         thread_id: &str,
         workspace_path: &str,
-        _options: &StartOptions,
+        options: &StartOptions,
         handlers: AgentHandlers,
     ) -> AgentResult<(Thread, Arc<dyn AgentSession>)> {
         self.resume_count.fetch_add(1, Ordering::AcqRel);
+        *self.resume_options.lock().unwrap() = Some(options.clone());
         let delay = self.resume_delay_ms.load(Ordering::Acquire);
         if delay > 0 {
             std::thread::sleep(Duration::from_millis(delay));
@@ -1828,6 +2008,9 @@ impl AgentRuntime for FakeRuntime {
             user_inputs: Mutex::new(Vec::new()),
             sent_texts: Mutex::new(Vec::new()),
             steered_texts: Mutex::new(Vec::new()),
+            mcp_reloads: Mutex::new(Vec::new()),
+            next_mcp_login: AtomicU64::new(1),
+            complete_mcp_o_auth_during_start: Arc::clone(&self.complete_mcp_o_auth_during_start),
         });
         self.sessions.lock().unwrap().push(Arc::clone(&session));
         Ok((thread, session))
@@ -2043,6 +2226,9 @@ struct FakeSession {
     user_inputs: Mutex<FakeUserInputResponses>,
     sent_texts: Mutex<Vec<String>>,
     steered_texts: Mutex<Vec<String>>,
+    mcp_reloads: Mutex<Vec<(String, Vec<McpServerConfig>)>>,
+    next_mcp_login: AtomicU64,
+    complete_mcp_o_auth_during_start: Arc<AtomicBool>,
 }
 
 impl FakeSession {
@@ -2050,6 +2236,21 @@ impl FakeSession {
         self.handlers.emit_event(DomainEvent::TurnCompleted {
             turn_id: turn_id.into(),
             status: TurnStatus::Completed,
+        });
+    }
+
+    fn complete_mcp_o_auth(
+        &self,
+        server_id: &str,
+        login_id: &str,
+        success: bool,
+        error: Option<&str>,
+    ) {
+        self.handlers.emit_mcp_o_auth(McpOAuthEvent {
+            server_id: server_id.into(),
+            login_id: login_id.into(),
+            success,
+            error: error.map(str::to_owned),
         });
     }
 }
@@ -2124,6 +2325,66 @@ impl AgentSession for FakeSession {
             .unwrap()
             .push((request_id.into(), answers.clone()));
         Ok(true)
+    }
+
+    fn list_mcp_servers(&self, _thread_id: &str) -> AgentResult<harness_protocol::McpListResult> {
+        Ok(serde_json::from_value(json!({
+            "capabilities": {
+                "inventory": true,
+                "add": true,
+                "update": true,
+                "remove": true,
+                "reload": true,
+                "startOAuth": true,
+                "cancelOAuth": false
+            },
+            "servers": [{
+                "id": "docs",
+                "displayName": "Session documentation",
+                "scope": "global",
+                "enabled": true,
+                "auth": { "status": "not_required" },
+                "startup": { "state": "ready" },
+                "tools": [],
+                "resources": [],
+                "resourceTemplates": []
+            }]
+        }))
+        .unwrap())
+    }
+
+    fn reload_mcp_servers(
+        &self,
+        thread_id: &str,
+        servers: &[McpServerConfig],
+        credentials: &CredentialValues,
+    ) -> AgentResult<()> {
+        assert!(credentials.is_empty());
+        self.mcp_reloads
+            .lock()
+            .unwrap()
+            .push((thread_id.into(), servers.to_vec()));
+        self.handlers.emit_mcp_changed(Some(thread_id.into()));
+        Ok(())
+    }
+
+    fn start_mcp_o_auth(
+        &self,
+        server_id: &str,
+        _thread_id: &str,
+    ) -> AgentResult<McpOAuthStartResult> {
+        let index = self.next_mcp_login.fetch_add(1, Ordering::AcqRel);
+        let login_id = format!("mcp-login-{index}");
+        if self
+            .complete_mcp_o_auth_during_start
+            .load(Ordering::Acquire)
+        {
+            self.complete_mcp_o_auth(server_id, &login_id, true, None);
+        }
+        Ok(McpOAuthStartResult {
+            login_id: login_id.clone(),
+            auth_url: format!("https://auth.example/{login_id}"),
+        })
     }
 
     fn dispose(&self) {
