@@ -285,6 +285,7 @@ impl ChatView {
                                 )
                                 .child(diff_pill_button(
                                     "diff-toggle-review",
+                                    "diff-toggle-review-hover",
                                     if reviewing { "Close" } else { "Review" },
                                     None,
                                     false,
@@ -315,6 +316,7 @@ impl ChatView {
                                     list.child(
                                         div()
                                             .id("diff-toggle-files")
+                                            .group("diff-toggle-files-hover")
                                             .h(px(30.0))
                                             .flex()
                                             .items_center()
@@ -387,6 +389,7 @@ impl ChatView {
                     }))
                     .child(diff_pill_button(
                         "diff-refresh",
+                        "diff-refresh-hover",
                         "Refresh",
                         Some("icons/refresh-cw.svg"),
                         false,
@@ -507,6 +510,9 @@ impl ChatView {
                     },
                     file_index * 1_000 + hunk_index,
                 ),
+                SharedString::from(format!(
+                    "diff-hunk-action-hover:{file_index}:{hunk_index}:{index}"
+                )),
                 label,
                 Some(icon),
                 selected,
@@ -566,26 +572,28 @@ impl ChatView {
 }
 
 fn diff_files_chevron(open: bool, transition: u64, theme: Theme) -> AnyElement {
-    let icon = svg().path("icons/chevron-down.svg").size(px(14.0));
+    let icon = motion_icon(
+        "diff-files-chevron-icon",
+        "icons/chevron-down.svg",
+        14.0,
+        "diff-toggle-files-hover",
+        theme,
+    );
     if transition == 0 {
         return icon
-            .with_transformation(gpui::Transformation::rotate(gpui::percentage(if open {
-                0.5
-            } else {
-                0.0
-            })))
+            .with_transformation(IconTransformation::rotate(if open { 180.0 } else { 0.0 }))
             .into_any_element();
     }
     icon.with_animation(
         ("diff-files-chevron", transition),
         Animation::new(theme.motion.fast).with_easing(crate::theme::web_ease_out),
         move |icon, delta| {
-            let rotation = if open {
-                delta * 0.5
+            let rotation_degrees = if open {
+                delta * 180.0
             } else {
-                (1.0 - delta) * 0.5
+                (1.0 - delta) * 180.0
             };
-            icon.with_transformation(gpui::Transformation::rotate(gpui::percentage(rotation)))
+            icon.with_transformation(IconTransformation::rotate(rotation_degrees))
         },
     )
     .into_any_element()
@@ -636,6 +644,7 @@ fn diff_stat(added: usize, removed: usize, theme: Theme) -> impl IntoElement {
 
 fn diff_pill_button(
     id: impl Into<gpui::ElementId>,
+    hover_group: impl Into<SharedString>,
     label: &'static str,
     icon: Option<&'static str>,
     selected: bool,
@@ -644,8 +653,11 @@ fn diff_pill_button(
 ) -> impl IntoElement {
     let enabled = action.is_some();
     let reject = label.contains("Reject");
+    let hover_group = hover_group.into();
+    let icon_id = SharedString::from(format!("{hover_group}-icon"));
     div()
         .id(id)
+        .group(hover_group.clone())
         .h(px(30.0))
         .px(px(12.0))
         .flex()
@@ -685,7 +697,7 @@ fn diff_pill_button(
             button.on_click(move |_event, _window, cx| action(cx))
         })
         .when_some(icon, |button, icon| {
-            button.child(svg().path(icon).size(px(13.0)))
+            button.child(motion_icon(icon_id, icon, 13.0, hover_group, theme))
         })
         .child(label)
 }
