@@ -1414,6 +1414,7 @@ impl HarnessApp {
                 .child(settings_switch(
                     source_index * 10_000,
                     any_visible,
+                    true,
                     theme,
                     master,
                 ));
@@ -1439,6 +1440,7 @@ impl HarnessApp {
                     settings_switch(
                         source_index * 10_000 + model_index + 1,
                         visible,
+                        true,
                         theme,
                         action,
                     ),
@@ -1668,7 +1670,13 @@ impl HarnessApp {
                         this.apply_client_update(update, cx);
                     });
                 });
-                actions.push(settings_switch(920_000 + index, enabled, theme, action));
+                actions.push(settings_switch(
+                    920_000 + index,
+                    enabled,
+                    true,
+                    theme,
+                    action,
+                ));
             }
             if can_edit && !busy {
                 let path = project_path.clone();
@@ -2213,9 +2221,7 @@ impl HarnessApp {
         let mut rows = Vec::new();
         for (index, skill) in inventory.result.skills.iter().enumerate() {
             let busy = self.state.skills_busy.as_deref() == Some(skill.id.as_str());
-            let trailing = if busy {
-                status_pill("Saving…", false, theme)
-            } else if inventory.result.capabilities.configure {
+            let trailing = if inventory.result.capabilities.configure {
                 let id = skill.id.clone();
                 let path = project_path.clone();
                 let enabled = skill.enabled;
@@ -2228,13 +2234,9 @@ impl HarnessApp {
                         this.apply_client_update(update, cx);
                     });
                 });
-                settings_switch(930_000 + index, skill.enabled, theme, action)
+                settings_switch(930_000 + index, skill.enabled, !busy, theme, action)
             } else {
-                status_pill(
-                    if skill.enabled { "Enabled" } else { "Disabled" },
-                    skill.enabled,
-                    theme,
-                )
+                div().into_any_element()
             };
             rows.push(skill_settings_row(index, skill, trailing, theme));
         }
@@ -2333,7 +2335,7 @@ impl HarnessApp {
                             }),
                     ),
             )
-            .child(settings_switch(900_000, auto_settle, theme, toggle))
+            .child(settings_switch(900_000, auto_settle, true, theme, toggle))
             .into_any_element();
 
         settings_panel(
@@ -3471,7 +3473,13 @@ fn settings_nav_item(
         .into_any_element()
 }
 
-fn settings_switch(id: usize, on: bool, theme: Theme, action: SettingsAction) -> AnyElement {
+fn settings_switch(
+    id: usize,
+    on: bool,
+    enabled: bool,
+    theme: Theme,
+    action: SettingsAction,
+) -> AnyElement {
     let off_background = if theme.mode == ThemeMode::Light {
         chrome::recessed(theme)
     } else {
@@ -3501,8 +3509,12 @@ fn settings_switch(id: usize, on: bool, theme: Theme, action: SettingsAction) ->
         } else {
             off_background
         })
-        .cursor_pointer()
-        .on_click(move |_event, _window, cx| action(cx))
+        .opacity(if enabled { 1.0 } else { 0.5 })
+        .when(enabled, |switch| {
+            switch
+                .cursor_pointer()
+                .on_click(move |_event, _window, cx| action(cx))
+        })
         .child(
             div()
                 .absolute()
