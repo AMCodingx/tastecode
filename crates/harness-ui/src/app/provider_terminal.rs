@@ -57,6 +57,9 @@ pub(super) struct ProviderTerminalSnapshot {
     pub(super) phase: ProviderTerminalPhase,
     pub(super) visible: bool,
     pub(super) note: String,
+    pub(super) device_code: Option<String>,
+    pub(super) last_line: String,
+    pub(super) opened_auth_url: Option<String>,
 }
 
 pub(super) enum ProviderTerminalEvent {
@@ -128,7 +131,7 @@ impl ProviderTerminalView {
             selecting: false,
             cursor_visible: true,
             blink_generation: 0,
-            visible: true,
+            visible: false,
             log: String::new(),
             last_line: String::new(),
             opened_auth_url: None,
@@ -198,6 +201,11 @@ impl ProviderTerminalView {
             } else {
                 note
             },
+            device_code: (self.key.kind == ProviderTerminalKind::SignIn)
+                .then(|| device_code(&self.log))
+                .flatten(),
+            last_line: self.last_line.clone(),
+            opened_auth_url: self.opened_auth_url.clone(),
         }
     }
 
@@ -225,7 +233,7 @@ impl ProviderTerminalView {
         self.selecting = false;
         self.cursor_visible = true;
         self.blink_generation = self.blink_generation.wrapping_add(1);
-        self.visible = true;
+        self.visible = false;
         self.log.clear();
         self.last_line.clear();
         self.opened_auth_url = None;
@@ -252,8 +260,8 @@ impl ProviderTerminalView {
         self.phase = ProviderTerminalPhase::Running;
         self.status_message = None;
         self.exit_code = None;
-        self.visible = true;
-        self.focus_when_ready = true;
+        self.visible = false;
+        self.focus_when_ready = false;
         self.pending_output.extend(buffered_output);
         self.flush_output(cx);
         self.start_cursor_blink(cx);
@@ -627,6 +635,9 @@ impl HarnessApp {
         if self.state.provider_terminal_busy.is_some() {
             return;
         }
+        if kind == ProviderTerminalKind::SignIn {
+            self.copied_provider_code = None;
+        }
         let key = ProviderTerminalKey::new(target.clone(), kind);
         let terminal = if let Some(existing) = self.provider_terminals.get(&key).cloned() {
             if let Some(terminal_id) = existing.read(cx).terminal_id().map(str::to_owned) {
@@ -872,6 +883,38 @@ fn last_printable_line(log: &str) -> String {
         .to_owned()
 }
 
+fn device_code(log: &str) -> Option<String> {
+    let printable = strip_terminal_controls(log);
+    let tokens = printable
+        .split(|character: char| !(character.is_ascii_alphanumeric() || character == '-'))
+        .filter(|token| !token.is_empty())
+        .collect::<Vec<_>>();
+    for (index, token) in tokens.iter().enumerate() {
+        let labeled = index > 0 && tokens[index - 1].eq_ignore_ascii_case("code");
+        if (labeled && is_device_code(token)) || is_dashed_device_code(token) {
+            return Some((*token).to_owned());
+        }
+    }
+    None
+}
+
+fn is_device_code(value: &str) -> bool {
+    ((6..=9).contains(&value.len()) && value.bytes().all(|byte| byte.is_ascii_digit()))
+        || is_dashed_device_code(value)
+}
+
+fn is_dashed_device_code(value: &str) -> bool {
+    let Some((left, right)) = value.split_once('-') else {
+        return false;
+    };
+    (3..=5).contains(&left.len())
+        && left.len() == right.len()
+        && left
+            .bytes()
+            .chain(right.bytes())
+            .all(|byte| byte.is_ascii_uppercase() || byte.is_ascii_digit())
+}
+
 fn strip_terminal_controls(value: &str) -> String {
     #[derive(Clone, Copy)]
     enum State {
@@ -927,5 +970,18 @@ mod tests {
             last_printable_line("\u{1b}[32mInstalling\u{1b}[0m\r\nDone\r\n"),
             "Done"
         );
+    }
+
+    #[test]
+    fn device_codes_match_labeled_and_dashed_cli_output() {
+        assert_eq!(
+            device_code("Verification code: 12345678\r\n"),
+            Some("12345678".into())
+        );
+        assert_eq!(
+            device_code("Enter ABCD-EFGH in the browser"),
+            Some("ABCD-EFGH".into())
+        );
+        assert_eq!(device_code("https://example.com/oauth"), None);
     }
 }

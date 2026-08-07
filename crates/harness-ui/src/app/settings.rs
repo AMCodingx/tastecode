@@ -1,15 +1,19 @@
 use super::HarnessApp;
-use super::provider_terminal::{ProviderTerminalKey, ProviderTerminalPhase};
+use super::provider_terminal::{
+    ProviderTerminalKey, ProviderTerminalPhase, ProviderTerminalSnapshot,
+};
 use crate::client_state::{AuthTarget, ProviderTerminalKind};
 use crate::preferences::{FontPreference, NativePreferences, ThemePreference};
+use crate::provider_icon::{ProviderMark, agent_mark, connection_mark, mark_icon, provider_mark};
 use crate::theme::{Accent, Backdrop, Theme, ThemeMode};
 use crate::zoom::px;
 use gpui::{
-    Animation, AnimationExt, AnyElement, App, Context, Entity, FontWeight, PathPromptOptions,
-    PromptButton, PromptLevel, SharedString, Window, div, linear_color_stop, linear_gradient,
-    prelude::*, svg,
+    Animation, AnimationExt, AnyElement, App, ClipboardItem, Context, Entity, FontWeight,
+    PathPromptOptions, PromptButton, PromptLevel, SharedString, Window, div, linear_color_stop,
+    linear_gradient, prelude::*, svg,
 };
 use gpui_component::input::{Input, InputState};
+use gpui_component::tooltip::Tooltip;
 use harness_protocol::{
     McpAuth, McpAuthMethod, McpConfigValue, McpServer, McpServerConfig, McpStartupStatus,
     McpTransport, ModelConnectionInput, ModelConnectionPreset, ModelTransport, ProviderAuth,
@@ -260,16 +264,12 @@ impl HarnessApp {
     fn provider_settings(&self, cx: &mut Context<Self>) -> gpui::Div {
         let theme = self.theme;
         let mut blocks = Vec::new();
-        let refresh_view = cx.weak_entity();
-        let refresh: SettingsAction = Rc::new(move |cx| {
-            let _ = refresh_view.update(cx, |this, cx| {
-                this.state.refresh_model_catalog();
-                cx.notify();
-            });
-        });
 
         let mut providers = Vec::new();
         for (index, provider) in self.state.provider_statuses.iter().enumerate() {
+            if provider.id == ProviderId::Acp {
+                continue;
+            }
             let target = AuthTarget::provider(provider.id);
             let install_key =
                 ProviderTerminalKey::new(target.clone(), ProviderTerminalKind::Install);
@@ -333,9 +333,6 @@ impl HarnessApp {
             };
             let terminal =
                 terminal_key.and_then(|key| self.provider_terminal_snapshot(key, &idle_note, cx));
-            let note = terminal
-                .as_ref()
-                .map_or_else(|| idle_note.clone(), |terminal| terminal.note.clone());
             let busy = self.state.auth_busy.as_ref() == Some(&target)
                 || self.state.provider_terminal_busy.is_some();
             let trailing = if busy {
@@ -409,10 +406,11 @@ impl HarnessApp {
                 } else {
                     status_pill(status, false, theme)
                 }
-            } else if provider
-                .setup
-                .as_ref()
-                .is_some_and(|setup| setup.login == ProviderLogin::App)
+            } else if signed_in
+                || provider
+                    .setup
+                    .as_ref()
+                    .is_some_and(|setup| setup.login == ProviderLogin::App)
             {
                 let target = target.clone();
                 let view = cx.weak_entity();
@@ -454,9 +452,9 @@ impl HarnessApp {
                         provider_action_button(
                             index,
                             if terminal.as_ref().is_some_and(|terminal| terminal.visible) {
-                                "Hide terminal"
+                                "Hide details"
                             } else {
-                                "Show terminal"
+                                "Details"
                             },
                             false,
                             theme,
@@ -496,13 +494,67 @@ impl HarnessApp {
             } else {
                 status_pill(status, ready, theme)
             };
+            let issue = terminal
+                .as_ref()
+                .filter(|terminal| {
+                    matches!(
+                        terminal.phase,
+                        ProviderTerminalPhase::Failed | ProviderTerminalPhase::Error
+                    )
+                })
+                .map(|terminal| {
+                    (
+                        terminal.note.clone(),
+                        Some("Open the terminal for details, then retry.".into()),
+                    )
+                })
+                .or_else(|| {
+                    provider.problem.as_ref().map(|problem| {
+                        (
+                            problem.clone(),
+                            Some("Fix the provider installation, then refresh.".into()),
+                        )
+                    })
+                });
+            let inline_status = terminal
+                .as_ref()
+                .filter(|terminal| {
+                    matches!(
+                        terminal.phase,
+                        ProviderTerminalPhase::Starting
+                            | ProviderTerminalPhase::Running
+                            | ProviderTerminalPhase::Succeeded
+                    )
+                })
+                .map(|terminal| settings_status(terminal.note.clone(), false, theme))
+                .or_else(|| {
+                    provider
+                        .installed
+                        .then(|| account_status(account, signed_in, theme))
+                });
+            let trailing = provider_actions(
+                issue,
+                inline_status,
+                provider_mark(provider.id),
+                trailing,
+                theme,
+            );
             providers.push(settings_row(
                 index,
                 provider.display_name.clone(),
-                note,
+                "",
                 trailing,
                 theme,
             ));
+            if terminal_key == Some(&sign_in_key)
+                && let Some(snapshot) = terminal.as_ref()
+                && matches!(
+                    snapshot.phase,
+                    ProviderTerminalPhase::Starting | ProviderTerminalPhase::Running
+                )
+            {
+                providers.push(self.provider_sign_in_card(snapshot, cx));
+            }
             if let Some(key) = terminal_key
                 && let Some(terminal) = self.provider_terminal_element(key, cx)
             {
@@ -515,7 +567,6 @@ impl HarnessApp {
                 theme,
             ));
         }
-        blocks.push(settings_group("CLI providers", providers, theme));
         if let Some(error) = &self.state.auth_error {
             blocks.push(settings_error_group(
                 "Provider sign-in error",
@@ -526,20 +577,7 @@ impl HarnessApp {
 
         let mut connections = Vec::new();
         for (index, connection) in self.state.model_connections.iter().enumerate() {
-            let status = if !connection.enabled {
-                "Disabled"
-            } else if connection.problem.is_some() {
-                "Needs attention"
-            } else if connection.credential_configured {
-                "Ready"
-            } else {
-                "API key required"
-            };
-            let ready = connection.enabled
-                && connection.credential_configured
-                && connection.problem.is_none();
-            let trailing = if self.state.connection_busy.as_deref() == Some(connection.id.as_str())
-            {
+            let action = if self.state.connection_busy.as_deref() == Some(connection.id.as_str()) {
                 status_pill("Removing…", false, theme)
             } else {
                 let connection_id = connection.id.clone();
@@ -551,32 +589,34 @@ impl HarnessApp {
                         this.apply_client_update(update, cx);
                     });
                 });
-                div()
-                    .flex()
-                    .items_center()
-                    .gap(px(8.0))
-                    .child(status_pill(status, ready, theme))
-                    .child(connection_remove_button(index, theme, remove))
-                    .into_any_element()
+                connection_remove_button(index, theme, remove)
             };
+            let issue = connection.problem.as_ref().map(|problem| {
+                (
+                    problem.clone(),
+                    Some("Check this connection's endpoint and credentials.".into()),
+                )
+            });
+            let status = if connection.credential_configured {
+                settings_status(connection_preset(connection.preset).label, false, theme)
+            } else {
+                settings_status("Key missing", true, theme)
+            };
+            let trailing = provider_actions(
+                issue,
+                Some(status),
+                connection_mark(connection.preset),
+                action,
+                theme,
+            );
             connections.push(settings_row(
                 index,
                 connection.display_name.clone(),
-                connection
-                    .problem
-                    .clone()
-                    .unwrap_or_else(|| connection.base_url.clone()),
+                "",
                 trailing,
                 theme,
             ));
         }
-        if connections.is_empty() {
-            connections.push(settings_empty_row(
-                "No direct API connections are configured.",
-                theme,
-            ));
-        }
-        blocks.push(settings_group("Direct API connections", connections, theme));
         if let Some(error) = &self.state.connection_error {
             blocks.push(settings_error_group(
                 "Connection error",
@@ -584,8 +624,8 @@ impl HarnessApp {
                 theme,
             ));
         }
-        if self.connection_editor_open {
-            blocks.push(self.connection_form(cx));
+        let connection_control = if self.connection_editor_open {
+            self.connection_form(cx)
         } else {
             let add_view = cx.weak_entity();
             let add: SettingsAction = Rc::new(move |cx| {
@@ -595,23 +635,22 @@ impl HarnessApp {
                     cx.notify();
                 });
             });
-            blocks.push(
-                div()
-                    .flex()
-                    .justify_end()
-                    .child(settings_button(
-                        "add-connection",
-                        "Connect another plan or API",
-                        "icons/plus.svg",
-                        theme,
-                        add,
-                        false,
-                    ))
-                    .into_any_element(),
-            );
-        }
+            connection_add_button(theme, add)
+        };
 
-        let mut agents = Vec::new();
+        let mut agents = vec![settings_row(
+            0,
+            "Pi",
+            "",
+            provider_actions(
+                None,
+                None,
+                ProviderMark::Pi,
+                provider_action_disabled("Planned", theme),
+                theme,
+            ),
+            theme,
+        )];
         for (index, agent) in self.state.acp_agents.iter().enumerate() {
             let target = AuthTarget::agent(ProviderId::Acp, agent.id.clone());
             let install_key =
@@ -620,13 +659,6 @@ impl HarnessApp {
                 ProviderTerminalKey::new(target.clone(), ProviderTerminalKind::SignIn);
             let account = self.state.accounts.get(&target);
             let signed_in = account.is_some_and(|account| account.signed_in);
-            let status = if agent.installed && agent.verified && signed_in {
-                "Ready"
-            } else if agent.installed {
-                "CLI sign-in required"
-            } else {
-                "Not installed"
-            };
             let idle_note = agent.problem.clone().unwrap_or_else(|| {
                 if !agent.installed {
                     return agent
@@ -663,9 +695,6 @@ impl HarnessApp {
             };
             let terminal =
                 terminal_key.and_then(|key| self.provider_terminal_snapshot(key, &idle_note, cx));
-            let note = terminal
-                .as_ref()
-                .map_or_else(|| idle_note.clone(), |terminal| terminal.note.clone());
             let busy = self.state.provider_terminal_busy.is_some();
             let action_index = 1_000 + index;
             let trailing = if busy {
@@ -750,9 +779,9 @@ impl HarnessApp {
                         provider_action_button(
                             action_index,
                             if terminal.as_ref().is_some_and(|terminal| terminal.visible) {
-                                "Hide terminal"
+                                "Hide details"
                             } else {
-                                "Show terminal"
+                                "Details"
                             },
                             false,
                             theme,
@@ -790,40 +819,195 @@ impl HarnessApp {
                     }
                 }
             } else {
-                status_pill(status, agent.verified && signed_in, theme)
+                let target = target.clone();
+                let view = cx.weak_entity();
+                let action: SettingsAction = Rc::new(move |cx| {
+                    let target = target.clone();
+                    let _ = view.update(cx, |this, cx| {
+                        let update = this.state.sign_out(target);
+                        this.apply_client_update(update, cx);
+                    });
+                });
+                provider_action_button(action_index, "Sign out", true, theme, action)
             };
+            let issue = terminal
+                .as_ref()
+                .filter(|terminal| {
+                    matches!(
+                        terminal.phase,
+                        ProviderTerminalPhase::Failed | ProviderTerminalPhase::Error
+                    )
+                })
+                .map(|terminal| {
+                    (
+                        terminal.note.clone(),
+                        Some("Open the terminal for details, then retry.".into()),
+                    )
+                })
+                .or_else(|| {
+                    agent
+                        .problem
+                        .as_ref()
+                        .map(|problem| (problem.clone(), None))
+                });
+            let inline_status = terminal
+                .as_ref()
+                .filter(|terminal| {
+                    matches!(
+                        terminal.phase,
+                        ProviderTerminalPhase::Starting
+                            | ProviderTerminalPhase::Running
+                            | ProviderTerminalPhase::Succeeded
+                    )
+                })
+                .map(|terminal| settings_status(terminal.note.clone(), false, theme))
+                .or_else(|| {
+                    agent
+                        .installed
+                        .then(|| account_status(account, signed_in, theme))
+                });
+            let trailing =
+                provider_actions(issue, inline_status, agent_mark(&agent.id), trailing, theme);
             agents.push(settings_row(
-                index,
+                index + 1,
                 agent.name.clone(),
-                note,
+                "",
                 trailing,
                 theme,
             ));
+            if terminal_key == Some(&sign_in_key)
+                && let Some(snapshot) = terminal.as_ref()
+                && matches!(
+                    snapshot.phase,
+                    ProviderTerminalPhase::Starting | ProviderTerminalPhase::Running
+                )
+            {
+                agents.push(self.provider_sign_in_card(snapshot, cx));
+            }
             if let Some(key) = terminal_key
                 && let Some(terminal) = self.provider_terminal_element(key, cx)
             {
                 agents.push(terminal);
             }
         }
-        if !agents.is_empty() {
-            blocks.push(settings_group("ACP agents", agents, theme));
-        }
+        providers.extend(agents);
+        providers.push(settings_inside_title("API connections", theme));
+        providers.extend(connections);
+        providers.push(connection_control);
+        blocks.push(settings_group("", providers, theme));
+        settings_panel("Providers", blocks, theme)
+    }
 
-        blocks.push(
+    fn provider_sign_in_card(
+        &self,
+        snapshot: &ProviderTerminalSnapshot,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let theme = self.theme;
+        let copied = snapshot
+            .device_code
+            .as_ref()
+            .is_some_and(|code| self.copied_provider_code.as_ref() == Some(code));
+        let copy_action = snapshot.device_code.clone().map(|code| {
+            let view = cx.weak_entity();
+            Rc::new(move |cx: &mut App| {
+                cx.write_to_clipboard(ClipboardItem::new_string(code.clone()));
+                let code = code.clone();
+                let _ = view.update(cx, |this, cx| {
+                    this.copied_provider_code = Some(code);
+                    cx.notify();
+                });
+            }) as SettingsAction
+        });
+        let open_action = snapshot
+            .opened_auth_url
+            .clone()
+            .map(|url| Rc::new(move |cx: &mut App| cx.open_url(&url)) as SettingsAction);
+        let hint = if snapshot.opened_auth_url.is_some() {
+            "Your browser opened — approve the sign-in there"
+        } else {
+            "Starting the provider sign-in…"
+        };
+        let code_row = snapshot.device_code.clone().map(|code| {
             div()
                 .flex()
-                .justify_end()
-                .child(settings_button(
-                    "refresh-providers",
-                    "Refresh providers",
-                    "icons/rotate-ccw.svg",
-                    theme,
-                    refresh,
+                .items_center()
+                .flex_wrap()
+                .gap(px(10.0))
+                .min_w(px(0.0))
+                .child(
+                    div()
+                        .text_size(px(11.0))
+                        .text_color(theme.text_2.hsla())
+                        .child("Confirm this code in your browser"),
+                )
+                .child(
+                    div()
+                        .px(px(9.0))
+                        .py(px(3.0))
+                        .rounded(px(crate::RADIUS_SM))
+                        .border_1()
+                        .border_color(theme.line_strong.hsla())
+                        .bg(theme.surface_2.hsla())
+                        .font_family("Geist Mono")
+                        .text_size(px(14.0))
+                        .text_color(theme.text.hsla())
+                        .child(code),
+                )
+                .when_some(copy_action, |row, action| {
+                    row.child(provider_action_button(
+                        990_000,
+                        if copied { "Copied" } else { "Copy" },
+                        false,
+                        theme,
+                        action,
+                    ))
+                })
+                .into_any_element()
+        });
+        let details_hidden = !snapshot.visible && !snapshot.last_line.is_empty();
+        div()
+            .mx(px(12.0))
+            .mb(px(10.0))
+            .p(px(10.0))
+            .flex()
+            .items_center()
+            .flex_wrap()
+            .gap(px(10.0))
+            .rounded(px(crate::RADIUS_MD))
+            .border_1()
+            .border_color(theme.line.hsla())
+            .bg(theme.surface.hsla())
+            .when_some(code_row, |card, row| card.child(row))
+            .when(snapshot.device_code.is_none(), |card| {
+                card.child(
+                    div()
+                        .text_size(px(11.0))
+                        .text_color(theme.text_2.hsla())
+                        .child(hint),
+                )
+            })
+            .when_some(open_action, |card, action| {
+                card.child(provider_action_button(
+                    990_001,
+                    "Open link again",
                     false,
+                    theme,
+                    action,
                 ))
-                .into_any_element(),
-        );
-        settings_panel("Providers", blocks, theme)
+            })
+            .when(details_hidden, |card| {
+                card.child(
+                    div()
+                        .w_full()
+                        .truncate()
+                        .font_family("Geist Mono")
+                        .text_size(px(10.5))
+                        .text_color(theme.text_3.hsla())
+                        .child(snapshot.last_line.clone()),
+                )
+            })
+            .into_any_element()
     }
 
     fn connection_form(&self, cx: &mut Context<Self>) -> AnyElement {
@@ -1131,17 +1315,24 @@ impl HarnessApp {
                     this.set_models_visible(&keys, !any_visible, cx);
                 });
             });
+            let source_provider = choices.first().map(|choice| choice.provider);
             let header = div()
-                .min_h(px(58.0))
+                .min_h(px(46.0))
                 .w_full()
                 .flex()
                 .items_center()
                 .justify_between()
                 .px(px(16.0))
-                .py(px(10.0))
+                .py(px(7.0))
                 .child(
                     div()
                         .min_w(px(0.0))
+                        .flex()
+                        .items_center()
+                        .gap(px(9.0))
+                        .when_some(source_provider, |copy, provider| {
+                            copy.child(crate::provider_icon::provider_icon(provider, theme, 18.0))
+                        })
                         .child(
                             div()
                                 .text_size(px(12.5))
@@ -1151,18 +1342,9 @@ impl HarnessApp {
                         )
                         .child(
                             div()
-                                .mt(px(2.0))
                                 .text_size(px(11.0))
                                 .text_color(theme.text_3.hsla())
-                                .child(format!(
-                                    "{visible_count} of {} {} visible",
-                                    choices.len(),
-                                    if choices.len() == 1 {
-                                        "model"
-                                    } else {
-                                        "models"
-                                    }
-                                )),
+                                .child(format!("{visible_count}/{}", choices.len())),
                         ),
                 )
                 .child(settings_switch(
@@ -1186,10 +1368,7 @@ impl HarnessApp {
                 rows.push(settings_row(
                     model_index + 1,
                     choice.model.display_name,
-                    choice
-                        .model
-                        .description
-                        .unwrap_or_else(|| "Available from this provider".into()),
+                    "",
                     settings_switch(
                         source_index * 10_000 + model_index + 1,
                         visible,
@@ -1199,7 +1378,7 @@ impl HarnessApp {
                     theme,
                 ));
             }
-            blocks.push(settings_group(source.as_str(), rows, theme));
+            blocks.push(settings_group("", rows, theme));
         }
 
         if blocks.is_empty() {
@@ -2151,20 +2330,8 @@ impl HarnessApp {
             vec![settings_group(
                 "Sidebar",
                 vec![
-                    settings_row(
-                        0,
-                        "Sidebar version",
-                        "V2 is a stable cross-project inbox with snoozed and settled shelves.",
-                        version_picker,
-                        theme,
-                    ),
-                    settings_row(
-                        1,
-                        "Settle inactive threads",
-                        "Move eligible inactive work out of the inbox after this many days.",
-                        settle_control,
-                        theme,
-                    ),
+                    settings_row(0, "Sidebar version", "", version_picker, theme),
+                    settings_row(1, "Settle inactive threads", "", settle_control, theme),
                 ],
                 theme,
             )],
@@ -2670,7 +2837,7 @@ fn settings_panel(title: &str, blocks: Vec<AnyElement>, theme: Theme) -> gpui::D
         .w_full()
         .child(
             div()
-                .mb(px(40.0))
+                .mb(px(22.0))
                 .text_size(px(24.0))
                 .line_height(px(29.0))
                 .font_weight(FontWeight::MEDIUM)
@@ -2690,22 +2857,25 @@ fn settings_panel(title: &str, blocks: Vec<AnyElement>, theme: Theme) -> gpui::D
 fn settings_group(title: &str, rows: Vec<AnyElement>, theme: Theme) -> AnyElement {
     div()
         .w_full()
-        .child(
-            div()
-                .mb(px(12.0))
-                .text_size(px(12.5))
-                .font_weight(FontWeight::MEDIUM)
-                .text_color(theme.text_2.hsla())
-                .child(title.to_owned()),
-        )
+        .when(!title.is_empty(), |group| {
+            group.child(
+                div()
+                    .mb(px(12.0))
+                    .text_size(px(12.5))
+                    .font_weight(FontWeight::MEDIUM)
+                    .text_color(theme.text_2.hsla())
+                    .child(title.to_owned()),
+            )
+        })
         .child(
             div()
                 .w_full()
                 .overflow_hidden()
-                .rounded(px(10.0))
+                .rounded(px(crate::RADIUS_LG))
                 .border_1()
                 .border_color(theme.line_strong.hsla())
                 .bg(theme.rail.hsla())
+                .shadow_sm()
                 .children(rows),
         )
         .into_any_element()
@@ -2723,6 +2893,18 @@ fn settings_plain_group(title: &str, child: AnyElement, theme: Theme) -> AnyElem
                 .child(title.to_owned()),
         )
         .child(child)
+        .into_any_element()
+}
+
+fn settings_inside_title(title: &'static str, theme: Theme) -> AnyElement {
+    div()
+        .pt(px(14.0))
+        .pb(px(6.0))
+        .px(px(16.0))
+        .text_size(px(12.5))
+        .font_weight(FontWeight::MEDIUM)
+        .text_color(theme.text_2.hsla())
+        .child(title)
         .into_any_element()
 }
 
@@ -2789,15 +2971,17 @@ fn settings_row(
     trailing: AnyElement,
     theme: Theme,
 ) -> AnyElement {
+    let title = title.into();
+    let note = note.into();
     div()
-        .min_h(px(66.0))
+        .min_h(px(46.0))
         .w_full()
         .flex()
         .items_center()
         .justify_between()
-        .gap(px(20.0))
+        .gap(px(16.0))
         .px(px(16.0))
-        .py(px(12.0))
+        .py(px(6.0))
         .when(index > 0, |row| {
             row.border_t_1().border_color(theme.line.hsla())
         })
@@ -2811,16 +2995,18 @@ fn settings_row(
                         .text_size(px(12.5))
                         .font_weight(FontWeight::MEDIUM)
                         .text_color(theme.text.hsla())
-                        .child(title.into()),
+                        .child(title),
                 )
-                .child(
-                    div()
-                        .mt(px(2.0))
-                        .text_size(px(11.0))
-                        .line_height(px(16.0))
-                        .text_color(theme.text_3.hsla())
-                        .child(note.into()),
-                ),
+                .when(!note.is_empty(), |copy| {
+                    copy.child(
+                        div()
+                            .mt(px(2.0))
+                            .text_size(px(11.0))
+                            .line_height(px(16.0))
+                            .text_color(theme.text_3.hsla())
+                            .child(note),
+                    )
+                }),
         )
         .child(div().flex_none().child(trailing))
         .into_any_element()
@@ -2828,12 +3014,12 @@ fn settings_row(
 
 fn settings_empty_row(note: impl Into<SharedString>, theme: Theme) -> AnyElement {
     div()
-        .min_h(px(66.0))
+        .min_h(px(46.0))
         .w_full()
         .flex()
         .items_center()
         .px(px(16.0))
-        .py(px(12.0))
+        .py(px(7.0))
         .text_size(px(11.5))
         .line_height(px(17.0))
         .text_color(theme.text_3.hsla())
@@ -3001,6 +3187,28 @@ fn settings_button(
     settings_button_enabled(id, label, icon, theme, action, destructive, true)
 }
 
+fn connection_add_button(theme: Theme, action: SettingsAction) -> AnyElement {
+    div()
+        .id("add-connection")
+        .w_full()
+        .py(px(13.0))
+        .px(px(16.0))
+        .flex()
+        .items_center()
+        .gap(px(9.0))
+        .border_t_1()
+        .border_color(theme.line.hsla())
+        .text_size(px(11.5))
+        .text_color(theme.text_2.hsla())
+        .cursor_pointer()
+        .hover(move |style| style.bg(theme.surface.hsla()).text_color(theme.text.hsla()))
+        .active(|style| style.opacity(0.72))
+        .on_click(move |_event, _window, cx| action(cx))
+        .child(settings_icon("icons/plus.svg", 15.0))
+        .child("Connect another plan or API")
+        .into_any_element()
+}
+
 fn settings_button_enabled(
     id: &'static str,
     label: &'static str,
@@ -3098,6 +3306,22 @@ fn provider_action_button(
         })
         .active(|style| style.opacity(0.72))
         .on_click(move |_event, _window, cx| action(cx))
+        .child(label)
+        .into_any_element()
+}
+
+fn provider_action_disabled(label: &'static str, theme: Theme) -> AnyElement {
+    div()
+        .h(px(28.0))
+        .flex()
+        .items_center()
+        .px(px(10.0))
+        .rounded(px(crate::RADIUS_MD))
+        .border_1()
+        .border_color(theme.line.hsla())
+        .text_size(px(10.5))
+        .text_color(theme.text_3.hsla())
+        .opacity(0.55)
         .child(label)
         .into_any_element()
 }
@@ -3370,6 +3594,127 @@ fn status_pill(label: &'static str, ready: bool, theme: Theme) -> AnyElement {
             theme.text_3.hsla()
         })
         .child(label)
+        .into_any_element()
+}
+
+fn provider_actions(
+    issue: Option<(String, Option<String>)>,
+    status: Option<AnyElement>,
+    mark: ProviderMark,
+    action: AnyElement,
+    theme: Theme,
+) -> AnyElement {
+    div()
+        .flex()
+        .items_center()
+        .gap(px(10.0))
+        .when_some(issue, |actions, (message, tip)| {
+            actions.child(row_issue(message, tip, theme))
+        })
+        .when_some(status, |actions, status| actions.child(status))
+        .child(mark_icon(mark, theme, 17.0))
+        .child(action)
+        .into_any_element()
+}
+
+fn settings_status(label: impl Into<SharedString>, warning: bool, theme: Theme) -> AnyElement {
+    div()
+        .max_w(px(250.0))
+        .truncate()
+        .text_size(px(11.0))
+        .text_color(if warning {
+            theme.error.hsla()
+        } else {
+            theme.text_3.hsla()
+        })
+        .child(label.into())
+        .into_any_element()
+}
+
+fn account_status(
+    account: Option<&harness_protocol::Account>,
+    signed_in: bool,
+    theme: Theme,
+) -> AnyElement {
+    if !signed_in {
+        return settings_status("Not signed in", false, theme);
+    }
+    let Some(account) = account else {
+        return settings_status("Signed in", false, theme);
+    };
+    if account.email.is_none() && account.plan.is_none() {
+        return settings_status("Signed in", false, theme);
+    }
+    div()
+        .flex()
+        .items_center()
+        .min_w(px(0.0))
+        .text_size(px(11.0))
+        .text_color(theme.text_3.hsla())
+        .when_some(account.email.clone(), |status, email| {
+            status.child(account_email(email, theme))
+        })
+        .when(
+            account.email.is_some() && account.plan.is_some(),
+            |status| status.child(" · "),
+        )
+        .when_some(account.plan.clone(), |status, plan| status.child(plan))
+        .into_any_element()
+}
+
+fn account_email(email: String, theme: Theme) -> AnyElement {
+    let group: SharedString = format!("account-email:{email}").into();
+    let masked = mask_email(&email);
+    div()
+        .grid()
+        .grid_cols(1)
+        .grid_rows(1)
+        .group(group.clone())
+        .child(
+            div()
+                .col_start(1)
+                .row_start(1)
+                .opacity(1.0)
+                .group_hover(group.clone(), |label| label.opacity(0.0))
+                .child(masked),
+        )
+        .child(
+            div()
+                .col_start(1)
+                .row_start(1)
+                .opacity(0.0)
+                .text_color(theme.text_2.hsla())
+                .group_hover(group, |label| label.opacity(1.0))
+                .child(email),
+        )
+        .into_any_element()
+}
+
+fn mask_email(email: &str) -> String {
+    let Some(at) = email.find('@') else {
+        return email.into();
+    };
+    if at <= 1 {
+        return email.into();
+    }
+    let first = email.chars().next().unwrap_or_default();
+    format!("{first}…{}", &email[at..])
+}
+
+fn row_issue(message: String, tip: Option<String>, theme: Theme) -> AnyElement {
+    let tooltip = tip.map_or_else(|| message.clone(), |tip| format!("{message}\n{tip}"));
+    div()
+        .id(SharedString::from(format!("row-issue:{message}")))
+        .size(px(24.0))
+        .flex()
+        .items_center()
+        .justify_center()
+        .rounded(px(12.0))
+        .text_color(theme.error.hsla())
+        .cursor_pointer()
+        .hover(move |style| style.bg(theme.error.hsla().opacity(0.10)))
+        .tooltip(move |window, cx| Tooltip::new(tooltip.clone()).build(window, cx))
+        .child(settings_icon("icons/circle-alert.svg", 14.0))
         .into_any_element()
 }
 
