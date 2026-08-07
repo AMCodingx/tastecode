@@ -183,6 +183,46 @@ pub(crate) fn route(
                 .map_err(RouteError::internal)?;
             empty_result()
         }
+        method::MCP_LIST => {
+            let params: ProviderProjectParams = decode(method_name, params)?;
+            require_non_empty(method_name, "projectPath", &params.project_path)?;
+            encoded(
+                state
+                    .agents
+                    .list_mcp_servers(state, params.provider)
+                    .map_err(RouteError::internal)?,
+            )
+        }
+        method::SKILLS_LIST => {
+            let params: ProviderProjectParams = decode(method_name, params)?;
+            require_non_empty(method_name, "projectPath", &params.project_path)?;
+            encoded(
+                state
+                    .agents
+                    .list_skills(state, params.provider, &params.project_path)
+                    .map_err(RouteError::internal)?,
+            )
+        }
+        method::SKILLS_SET_ENABLED => {
+            let params: SkillToggleParams = decode(method_name, params)?;
+            require_non_empty(method_name, "projectPath", &params.project_path)?;
+            require_non_empty(method_name, "skillId", &params.skill_id)?;
+            let enabled = state
+                .agents
+                .set_skill_enabled(state, params.provider, &params.skill_id, params.enabled)
+                .map_err(RouteError::internal)?;
+            state
+                .push
+                .broadcast(
+                    channel::SKILLS_CHANGED,
+                    json!({
+                        "provider": params.provider,
+                        "projectPath": params.project_path,
+                    }),
+                )
+                .map_err(RouteError::internal)?;
+            encoded(harness_protocol::SkillEnabledResult { enabled })
+        }
         method::MODELS_LIST => {
             let params: ModelsListParams = decode(method_name, params)?;
             if params.agent.as_deref().is_some_and(str::is_empty) {
@@ -1080,6 +1120,22 @@ struct AuthUseApiKeyParams {
     #[serde(flatten)]
     target: AuthParams,
     api_key: String,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ProviderProjectParams {
+    provider: ProviderId,
+    project_path: String,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct SkillToggleParams {
+    provider: ProviderId,
+    project_path: String,
+    skill_id: String,
+    enabled: bool,
 }
 
 #[derive(Deserialize)]

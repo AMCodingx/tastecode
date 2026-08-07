@@ -621,6 +621,67 @@ fn concurrent_auth_requests_open_one_provider_control() {
 }
 
 #[test]
+fn live_mcp_and_skills_routes_share_control_and_push_invalidations() {
+    let runtime = Arc::new(FakeRuntime::default());
+    let registry = Arc::new(FakeRuntimes {
+        runtime: Arc::clone(&runtime),
+    });
+    let (_directory, server) = start_test_server_with_runtimes(registry);
+    let mut socket = connect_native(&server, "");
+    assert_welcome(&mut socket);
+
+    send_request(
+        &mut socket,
+        "mcp",
+        "mcp.list",
+        json!({ "provider": "codex", "projectPath": "/repo" }),
+    );
+    let mcp = read_value(&mut socket);
+    assert_eq!(mcp["result"]["servers"][0]["id"], "docs");
+    assert_eq!(mcp["result"]["capabilities"]["startOAuth"], true);
+
+    send_request(
+        &mut socket,
+        "skills",
+        "skills.list",
+        json!({ "provider": "codex", "projectPath": "/repo" }),
+    );
+    let skills = read_value(&mut socket);
+    assert_eq!(skills["result"]["skills"][0]["name"], "docs");
+
+    let skill_id = "/repo/.agents/skills/docs/SKILL.md";
+    send_request(
+        &mut socket,
+        "toggle",
+        "skills.setEnabled",
+        json!({
+            "provider": "codex",
+            "projectPath": "/repo",
+            "skillId": skill_id,
+            "enabled": false
+        }),
+    );
+    let (pushes, toggled) = read_until_response(&mut socket, "toggle");
+    assert_eq!(pushes.len(), 1);
+    assert_eq!(pushes[0]["channel"], "skills.changed");
+    assert_eq!(pushes[0]["data"]["projectPath"], "/repo");
+    assert_eq!(toggled["result"]["enabled"], false);
+    assert_eq!(
+        runtime.control().skill_toggles.lock().unwrap().as_slice(),
+        [(skill_id.into(), false)]
+    );
+    assert_eq!(runtime.control_open_count.load(Ordering::Acquire), 1);
+
+    send_request(
+        &mut socket,
+        "bad-project",
+        "skills.list",
+        json!({ "provider": "codex", "projectPath": "" }),
+    );
+    assert_eq!(read_value(&mut socket)["error"]["code"], "bad_request");
+}
+
+#[test]
 fn live_transport_sends_welcome_drops_malformed_frames_and_reports_typed_errors() {
     let (_directory, server) = start_test_server(None, |_| {});
     let mut socket = connect_native(&server, "");
@@ -1652,6 +1713,7 @@ impl AgentRuntime for FakeRuntime {
             complete_during_start: Arc::clone(&self.complete_login_during_start),
             cancelled: Mutex::new(Vec::new()),
             api_keys: Mutex::new(Vec::new()),
+            skill_toggles: Mutex::new(Vec::new()),
             disposed: AtomicBool::new(false),
         });
         self.controls.lock().unwrap().push(Arc::clone(&control));
@@ -1666,6 +1728,7 @@ struct FakeControl {
     complete_during_start: Arc<AtomicBool>,
     cancelled: Mutex<Vec<String>>,
     api_keys: Mutex<Vec<String>>,
+    skill_toggles: Mutex<Vec<(String, bool)>>,
     disposed: AtomicBool,
 }
 
@@ -1730,6 +1793,61 @@ impl ProviderControl for FakeControl {
 
     fn list_models(&self) -> AgentResult<Vec<Model>> {
         Ok(Vec::new())
+    }
+
+    fn list_mcp_servers(&self) -> AgentResult<harness_protocol::McpListResult> {
+        Ok(serde_json::from_value(json!({
+            "capabilities": {
+                "inventory": true,
+                "add": true,
+                "update": true,
+                "remove": true,
+                "reload": true,
+                "startOAuth": true,
+                "cancelOAuth": false
+            },
+            "servers": [{
+                "id": "docs",
+                "displayName": "Documentation",
+                "scope": "global",
+                "enabled": true,
+                "auth": { "status": "not_required" },
+                "startup": { "state": "ready" },
+                "tools": [],
+                "resources": [],
+                "resourceTemplates": []
+            }]
+        }))
+        .unwrap())
+    }
+
+    fn list_skills(&self, project_path: &str) -> AgentResult<harness_protocol::SkillsListResult> {
+        Ok(serde_json::from_value(json!({
+            "capabilities": { "inventory": true, "configure": true, "install": true },
+            "skills": [{
+                "id": format!("{project_path}/.agents/skills/docs/SKILL.md"),
+                "name": "docs",
+                "displayName": "Docs",
+                "description": "Read docs",
+                "source": {
+                    "type": "folder",
+                    "path": format!("{project_path}/.agents/skills/docs")
+                },
+                "scope": "project",
+                "enabled": true,
+                "dependencyErrors": []
+            }],
+            "errors": []
+        }))
+        .unwrap())
+    }
+
+    fn set_skill_enabled(&self, skill_id: &str, enabled: bool) -> AgentResult<bool> {
+        self.skill_toggles
+            .lock()
+            .unwrap()
+            .push((skill_id.into(), enabled));
+        Ok(enabled)
     }
 
     fn dispose(&self) {

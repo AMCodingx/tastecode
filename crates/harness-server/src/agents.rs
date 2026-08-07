@@ -5,9 +5,9 @@ use harness_agent::{
     StartOptions, TurnOptions,
 };
 use harness_protocol::{
-    Account, ApprovalDecision, AuthEventPush, AuthStartLoginResult, DomainEvent, Model, ProviderId,
-    QueuedTurn, SendTurnResult, Thread, ThreadEventPush, ThreadInboxStatus, ThreadLifecyclePush,
-    ThreadQueuePush, ThreadQueueResult, channel,
+    Account, ApprovalDecision, AuthEventPush, AuthStartLoginResult, DomainEvent, McpListResult,
+    Model, ProviderId, QueuedTurn, SendTurnResult, SkillsListResult, Thread, ThreadEventPush,
+    ThreadInboxStatus, ThreadLifecyclePush, ThreadQueuePush, ThreadQueueResult, channel,
 };
 use harness_store::{NewCheckpoint, NewThread};
 use harness_workspace::Worktree;
@@ -206,6 +206,39 @@ impl AgentManager {
     ) -> Result<(), String> {
         self.control(state, provider, agent)?
             .sign_out()
+            .map_err(|error| error.to_string())
+    }
+
+    pub(crate) fn list_mcp_servers(
+        &self,
+        state: &Arc<ServerState>,
+        provider: ProviderId,
+    ) -> Result<McpListResult, String> {
+        self.control(state, provider, None)?
+            .list_mcp_servers()
+            .map_err(|error| error.to_string())
+    }
+
+    pub(crate) fn list_skills(
+        &self,
+        state: &Arc<ServerState>,
+        provider: ProviderId,
+        project_path: &str,
+    ) -> Result<SkillsListResult, String> {
+        self.control(state, provider, None)?
+            .list_skills(project_path)
+            .map_err(|error| error.to_string())
+    }
+
+    pub(crate) fn set_skill_enabled(
+        &self,
+        state: &Arc<ServerState>,
+        provider: ProviderId,
+        skill_id: &str,
+        enabled: bool,
+    ) -> Result<bool, String> {
+        self.control(state, provider, None)?
+            .set_skill_enabled(skill_id, enabled)
             .map_err(|error| error.to_string())
     }
 
