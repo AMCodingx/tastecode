@@ -961,6 +961,29 @@ fn concurrent_auth_requests_open_one_provider_control() {
 }
 
 #[test]
+fn one_slow_request_does_not_block_later_requests_on_the_same_connection() {
+    let runtime = Arc::new(FakeRuntime::default());
+    runtime.model_delay_ms.store(250, Ordering::Release);
+    let runtimes = Arc::new(FakeRuntimes { runtime });
+    let (_directory, server) = start_test_server_with_runtimes(runtimes);
+    let mut socket = connect_native(&server, "");
+    assert_welcome(&mut socket);
+
+    send_request(
+        &mut socket,
+        "models",
+        "models.list",
+        json!({ "provider": "codex" }),
+    );
+    send_request(&mut socket, "system", "system.info", json!({}));
+
+    assert_eq!(read_value(&mut socket)["id"], "system");
+    assert_eq!(read_value(&mut socket)["id"], "models");
+    socket.close(None).unwrap();
+    server.close().unwrap();
+}
+
+#[test]
 fn live_connection_routes_keep_api_keys_only_in_the_credential_store() {
     let runtime = Arc::new(FakeRuntime::default());
     let registry = Arc::new(FakeRuntimes { runtime });
@@ -2925,6 +2948,7 @@ struct FakeRuntime {
     resume_delay_ms: AtomicU64,
     control_open_count: AtomicU64,
     control_delay_ms: AtomicU64,
+    model_delay_ms: AtomicU64,
 }
 
 impl FakeRuntime {
@@ -3026,6 +3050,10 @@ impl AgentRuntime for FakeRuntime {
     }
 
     fn list_models(&self) -> AgentResult<Vec<Model>> {
+        let delay = self.model_delay_ms.load(Ordering::Acquire);
+        if delay > 0 {
+            std::thread::sleep(Duration::from_millis(delay));
+        }
         Ok(vec![Model {
             id: "fake-model".into(),
             display_name: "Fake Model".into(),

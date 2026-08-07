@@ -20,7 +20,9 @@ pub use access::{allowed_origin, assert_safe_bind, has_access};
 pub use router::SERVER_VERSION;
 
 use harness_credentials::{CredentialStore, SystemCredentialStore};
-use harness_protocol::{Push, Request, Response, TerminalExitPush, TerminalOutputPush, channel};
+use harness_protocol::{
+    ErrorCode, Push, Request, Response, TerminalExitPush, TerminalOutputPush, WireError, channel,
+};
 use harness_store::Store;
 use harness_terminal::TerminalManager;
 use push::{PendingPush, PushBus};
@@ -30,7 +32,7 @@ use std::io::ErrorKind;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr, TcpListener, TcpStream};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::mpsc::{Receiver, TryRecvError};
+use std::sync::mpsc::{Receiver, Sender, TryRecvError};
 use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
 use std::time::Duration;
@@ -43,6 +45,7 @@ use tungstenite::{Error as WebSocketError, Message, WebSocket, accept_hdr};
 pub const DEFAULT_PORT: u16 = 4311;
 const IO_POLL_INTERVAL: Duration = Duration::from_millis(40);
 const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(2);
+const MAX_CONNECTION_REQUESTS: usize = 32;
 
 #[derive(Clone, Debug)]
 pub struct ServerConfig {
@@ -366,64 +369,141 @@ fn run_connection(
     pushes: Receiver<PendingPush>,
 ) {
     let mut sequence = 0_u64;
+    let (response_tx, response_rx) = std::sync::mpsc::channel();
+    let mut workers = Vec::new();
     loop {
+        reap_workers(&mut workers);
         if state.shutdown.load(Ordering::Acquire) {
             let _ = socket.close(None);
-            return;
+            break;
         }
-        if !flush_pushes(socket, &pushes, &mut sequence) {
-            return;
+        if !flush_pushes(socket, &pushes, &mut sequence)
+            || !flush_responses(socket, &pushes, &response_rx, &mut sequence)
+        {
+            break;
         }
         match socket.read() {
             Ok(Message::Text(text)) => {
-                if !handle_request(socket, state, connection_id, &pushes, &mut sequence, &text) {
-                    return;
-                }
+                dispatch_request(state, connection_id, &response_tx, &mut workers, &text);
             }
             Ok(Message::Binary(bytes)) => {
-                if let Ok(text) = std::str::from_utf8(&bytes)
-                    && !handle_request(socket, state, connection_id, &pushes, &mut sequence, text)
-                {
-                    return;
+                if let Ok(text) = std::str::from_utf8(&bytes) {
+                    dispatch_request(state, connection_id, &response_tx, &mut workers, text);
                 }
             }
             Ok(Message::Ping(_) | Message::Pong(_)) => {
                 if socket.flush().is_err() {
-                    return;
+                    break;
                 }
             }
-            Ok(Message::Close(_) | Message::Frame(_)) => return,
+            Ok(Message::Close(_) | Message::Frame(_)) => break,
             Err(error) if is_read_timeout(&error) => {}
-            Err(_) => return,
+            Err(_) => break,
+        }
+    }
+    for worker in workers {
+        let _ = worker.join();
+    }
+}
+
+fn dispatch_request(
+    state: &Arc<ServerState>,
+    connection_id: u64,
+    responses: &Sender<Response<Value>>,
+    workers: &mut Vec<JoinHandle<()>>,
+    text: &str,
+) {
+    let Ok(request) = serde_json::from_str::<Request<Value>>(text) else {
+        return;
+    };
+    if workers.len() >= MAX_CONNECTION_REQUESTS {
+        let _ = responses.send(Response::Failure {
+            id: request.id,
+            error: WireError {
+                code: ErrorCode::Internal,
+                message: "too many requests are already running on this connection".into(),
+                detail: None,
+            },
+        });
+        return;
+    }
+    let state = Arc::clone(state);
+    let worker_responses = responses.clone();
+    let request_id = request.id.clone();
+    let panic_request_id = request_id.clone();
+    let worker = thread::Builder::new()
+        .name("harness-request".into())
+        .spawn(move || {
+            let routed = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                router::route(&state, connection_id, &request.method, request.params)
+            }));
+            let response = match routed {
+                Ok(Ok(result)) => Response::Success {
+                    id: request.id,
+                    result,
+                },
+                Ok(Err(error)) => Response::Failure {
+                    id: request.id,
+                    error: error.0,
+                },
+                Err(_) => Response::Failure {
+                    id: panic_request_id,
+                    error: WireError {
+                        code: ErrorCode::Internal,
+                        message: "request handler panicked".into(),
+                        detail: None,
+                    },
+                },
+            };
+            let _ = worker_responses.send(response);
+        });
+    match worker {
+        Ok(worker) => workers.push(worker),
+        Err(error) => {
+            let _ = responses.send(Response::Failure {
+                id: request_id,
+                error: WireError {
+                    code: ErrorCode::Internal,
+                    message: format!("could not start request handler: {error}"),
+                    detail: None,
+                },
+            });
         }
     }
 }
 
-fn handle_request(
-    socket: &mut WebSocket<TcpStream>,
-    state: &Arc<ServerState>,
-    connection_id: u64,
-    pushes: &Receiver<PendingPush>,
-    sequence: &mut u64,
-    text: &str,
-) -> bool {
-    let Ok(request) = serde_json::from_str::<Request<Value>>(text) else {
-        return true;
-    };
-    let response = match router::route(state, connection_id, &request.method, request.params) {
-        Ok(result) => Response::Success {
-            id: request.id,
-            result,
-        },
-        Err(error) => Response::Failure {
-            id: request.id,
-            error: error.0,
-        },
-    };
+fn reap_workers(workers: &mut Vec<JoinHandle<()>>) {
+    let mut index = 0;
+    while index < workers.len() {
+        if workers[index].is_finished() {
+            let worker = workers.swap_remove(index);
+            let _ = worker.join();
+        } else {
+            index += 1;
+        }
+    }
+}
 
-    // Routes enqueue their pushes synchronously. Flush them first to retain the
-    // established push-before-response ordering of the TypeScript server.
-    flush_pushes(socket, pushes, sequence) && send_json(socket, &response)
+fn flush_responses(
+    socket: &mut WebSocket<TcpStream>,
+    pushes: &Receiver<PendingPush>,
+    responses: &Receiver<Response<Value>>,
+    sequence: &mut u64,
+) -> bool {
+    loop {
+        match responses.try_recv() {
+            Ok(response) => {
+                // A route enqueues its pushes before publishing its response.
+                // Drain that queue at the response boundary so the established
+                // push-before-response ordering survives concurrent requests.
+                if !flush_pushes(socket, pushes, sequence) || !send_json(socket, &response) {
+                    return false;
+                }
+            }
+            Err(TryRecvError::Empty) => return true,
+            Err(TryRecvError::Disconnected) => return false,
+        }
+    }
 }
 
 fn flush_pushes(
