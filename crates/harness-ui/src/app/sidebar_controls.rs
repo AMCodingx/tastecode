@@ -1,10 +1,11 @@
 use super::HarnessApp;
+use crate::chrome;
 use crate::sidebar::{SelectionModifiers, SidebarMenuRequest, ordered_inbox_ids};
 use crate::zoom::px;
 use chrono::{Datelike, Duration as ChronoDuration, Local, Timelike};
 use gpui::{
-    AnyElement, ClipboardItem, Context, Entity, FocusHandle, Pixels, Point, SharedString, Window,
-    div, prelude::*,
+    Animation, AnimationExt, AnyElement, ClipboardItem, Context, Entity, FocusHandle, FontWeight,
+    Pixels, Point, SharedString, Window, div, prelude::*, relative,
 };
 use gpui_component::input::{Input, InputState};
 use harness_protocol::{SessionSummary, ThreadInboxStatus, ThreadLifecycle};
@@ -18,6 +19,7 @@ pub(super) struct SidebarControlsState {
     reset_value: Option<String>,
     focus_pending: bool,
     archive_queue: VecDeque<String>,
+    discarding_checkout: Option<String>,
     pub(super) selected_ids: HashSet<String>,
     pub(super) selection_anchor: Option<String>,
     pub(super) row_focus: HashMap<String, FocusHandle>,
@@ -65,6 +67,7 @@ impl SidebarControlsState {
             reset_value: None,
             focus_pending: false,
             archive_queue: VecDeque::new(),
+            discarding_checkout: None,
             selected_ids: HashSet::new(),
             selection_anchor: None,
             row_focus: HashMap::new(),
@@ -164,6 +167,7 @@ impl HarnessApp {
 
     pub(super) fn close_sidebar_controls(&mut self, cx: &mut Context<Self>) {
         self.sidebar_controls.menu = None;
+        self.sidebar_controls.discarding_checkout = None;
         if let Some(SidebarDialog::DiscardCheckout { thread_id }) =
             self.sidebar_controls.dialog.take()
             && self.sidebar_controls.archive_queue.front() == Some(&thread_id)
@@ -224,17 +228,33 @@ impl HarnessApp {
 
     pub(super) fn show_archive_confirmation(&mut self, thread_id: String, cx: &mut Context<Self>) {
         self.sidebar_controls.menu = None;
+        self.sidebar_controls.discarding_checkout = None;
         self.sidebar_controls.dialog = Some(SidebarDialog::DiscardCheckout { thread_id });
         cx.notify();
     }
 
     pub(super) fn handle_thread_archived(&mut self, thread_id: String, cx: &mut Context<Self>) {
+        if self.sidebar_controls.discarding_checkout.as_deref() == Some(thread_id.as_str()) {
+            self.sidebar_controls.discarding_checkout = None;
+            self.sidebar_controls.dialog = None;
+        }
         if self.selected_thread_id.as_deref() == Some(thread_id.as_str()) {
             self.select_next_active_or_draft(&thread_id, cx);
         }
         if self.sidebar_controls.archive_queue.front() == Some(&thread_id) {
             self.sidebar_controls.archive_queue.pop_front();
             self.archive_next_queued_thread(cx);
+        }
+        cx.notify();
+    }
+
+    pub(super) fn handle_thread_archive_failed(
+        &mut self,
+        thread_id: String,
+        cx: &mut Context<Self>,
+    ) {
+        if self.sidebar_controls.discarding_checkout.as_deref() == Some(thread_id.as_str()) {
+            self.sidebar_controls.discarding_checkout = None;
         }
         cx.notify();
     }
@@ -391,6 +411,10 @@ impl HarnessApp {
                 self.archive_next_queued_thread(cx);
             }
             SidebarDialog::DiscardCheckout { thread_id } => {
+                self.sidebar_controls.discarding_checkout = Some(thread_id.clone());
+                self.sidebar_controls.dialog = Some(SidebarDialog::DiscardCheckout {
+                    thread_id: thread_id.clone(),
+                });
                 let update = self.state.force_archive_thread(thread_id);
                 self.apply_client_update(update, cx);
             }
@@ -882,6 +906,9 @@ impl HarnessApp {
     }
 
     fn sidebar_dialog_overlay(&self, dialog: SidebarDialog, cx: &Context<Self>) -> AnyElement {
+        if let SidebarDialog::DiscardCheckout { thread_id } = &dialog {
+            return self.checkout_discard_overlay(thread_id, cx);
+        }
         let theme = self.theme;
         let (title, body, action, destructive, rename): (
             SharedString,
@@ -1057,6 +1084,176 @@ impl HarnessApp {
             )
             .into_any_element()
     }
+
+    fn checkout_discard_overlay(&self, thread_id: &str, cx: &Context<Self>) -> AnyElement {
+        let theme = self.theme;
+        let session = self
+            .state
+            .projects
+            .iter()
+            .flat_map(|project| project.sessions.iter())
+            .find(|session| session.id == thread_id);
+        let title = session.map_or("this thread", |session| session.title.as_str());
+        let branch = session
+            .and_then(|session| session.worktree_branch.as_deref())
+            .unwrap_or("isolated checkout");
+        let busy = self.sidebar_controls.discarding_checkout.as_deref() == Some(thread_id);
+
+        div()
+            .absolute()
+            .inset(px(0.0))
+            .flex()
+            .items_center()
+            .justify_center()
+            .p(px(32.0))
+            .child(
+                div()
+                    .id("checkout-discard-scrim")
+                    .absolute()
+                    .inset(px(0.0))
+                    .bg(gpui::black().opacity(0.55))
+                    .cursor_default()
+                    .on_click(cx.listener(|this, _event, _window, cx| {
+                        this.close_sidebar_controls(cx);
+                    }))
+                    .with_animation(
+                        "checkout-discard-scrim",
+                        Animation::new(theme.motion.fast)
+                            .with_easing(crate::theme::web_ease_out),
+                        |scrim, delta| scrim.opacity(delta),
+                    ),
+            )
+            .child(
+                div()
+                    .id("checkout-discard-panel")
+                    .occlude()
+                    .relative()
+                    .w_full()
+                    .max_w(px(460.0))
+                    .max_h(relative(1.0))
+                    .overflow_y_scroll()
+                    .rounded(px(10.0))
+                    .border_1()
+                    .border_color(theme.line_strong.hsla())
+                    .bg(theme.rail.hsla())
+                    .shadow(chrome::panel_shadows(theme))
+                    .child(
+                        div()
+                            .w_full()
+                            .flex()
+                            .items_start()
+                            .justify_between()
+                            .gap(px(16.0))
+                            .px(px(16.0))
+                            .pt(px(14.0))
+                            .pb(px(10.0))
+                            .child(
+                                div()
+                                    .min_w(px(0.0))
+                                    .flex_1()
+                                    .child(
+                                        div()
+                                            .text_size(px(15.0))
+                                            .line_height(relative(1.25))
+                                            .font_weight(FontWeight(560.0))
+                                            .text_color(theme.text.hsla())
+                                            .child("This checkout has uncommitted work"),
+                                    )
+                                    .child(
+                                        div()
+                                            .mt(px(3.0))
+                                            .flex()
+                                            .items_center()
+                                            .gap(px(5.0))
+                                            .font_family("Geist Mono")
+                                            .text_size(px(11.5))
+                                            .text_color(theme.text_3.hsla())
+                                            .child(super::icon("icons/git-branch.svg", 12.0))
+                                            .child(
+                                                div()
+                                                    .min_w(px(0.0))
+                                                    .truncate()
+                                                    .child(branch.to_owned()),
+                                            ),
+                                    ),
+                            )
+                            .child(
+                                div()
+                                    .id("checkout-discard-close")
+                                    .size(px(28.0))
+                                    .flex_none()
+                                    .flex()
+                                    .items_center()
+                                    .justify_center()
+                                    .rounded(px(8.0))
+                                    .cursor_pointer()
+                                    .hover(move |style| style.bg(theme.surface_2.hsla()))
+                                    .on_click(cx.listener(|this, _event, _window, cx| {
+                                        this.close_sidebar_controls(cx);
+                                    }))
+                                    .child(super::icon("icons/x.svg", 13.0)),
+                            ),
+                    )
+                    .child(
+                        div()
+                            .w_full()
+                            .border_t_1()
+                            .border_color(theme.line.hsla())
+                            .px(px(16.0))
+                            .pt(px(12.0))
+                            .pb(px(16.0))
+                            .child(
+                                div()
+                                    .text_size(px(12.5))
+                                    .line_height(relative(1.55))
+                                    .text_color(theme.text_2.hsla())
+                                    .child(format!(
+                                        "Archiving “{title}” now would discard changes the agent has not committed."
+                                    )),
+                            )
+                            .child(
+                                div()
+                                    .mt(px(16.0))
+                                    .flex()
+                                    .justify_end()
+                                    .gap(px(6.0))
+                                    .child(checkout_dialog_button(
+                                        "checkout-discard-keep",
+                                        "Keep session",
+                                        false,
+                                        busy,
+                                        theme,
+                                        cx.listener(|this, _event, _window, cx| {
+                                            this.close_sidebar_controls(cx);
+                                        }),
+                                    ))
+                                    .child(checkout_dialog_button(
+                                        "checkout-discard-confirm",
+                                        if busy {
+                                            "Discarding…"
+                                        } else {
+                                            "Discard changes and archive"
+                                        },
+                                        true,
+                                        busy,
+                                        theme,
+                                        cx.listener(|this, _event, _window, cx| {
+                                            this.confirm_sidebar_dialog(cx);
+                                        }),
+                                    )),
+                            ),
+                    )
+                    .with_animation(
+                        "checkout-discard-panel",
+                        Animation::new(
+                            theme.motion_duration(std::time::Duration::from_millis(220)),
+                        )
+                        .with_easing(crate::theme::web_ease_out),
+                        |panel, delta| panel.top(px(8.0 * (1.0 - delta))).opacity(delta),
+                    ),
+            )
+            .into_any_element()
+    }
 }
 
 fn sidebar_menu_item(
@@ -1171,6 +1368,52 @@ fn dialog_button(
         })
         .on_click(listener)
         .child(label.into())
+        .into_any_element()
+}
+
+fn checkout_dialog_button(
+    id: &'static str,
+    label: &'static str,
+    destructive: bool,
+    disabled: bool,
+    theme: crate::Theme,
+    listener: impl Fn(&gpui::ClickEvent, &mut Window, &mut gpui::App) + 'static,
+) -> AnyElement {
+    div()
+        .id(id)
+        .h(px(30.0))
+        .flex()
+        .items_center()
+        .justify_center()
+        .px(px(11.0))
+        .rounded(px(8.0))
+        .border_1()
+        .border_color(if destructive {
+            theme.error.hsla()
+        } else {
+            theme.line_strong.hsla()
+        })
+        .bg(if destructive {
+            theme.error.hsla()
+        } else {
+            theme.surface.hsla()
+        })
+        .text_size(px(11.5))
+        .font_weight(FontWeight::MEDIUM)
+        .text_color(if destructive {
+            gpui::white()
+        } else {
+            theme.text_2.hsla()
+        })
+        .opacity(if disabled { 0.5 } else { 1.0 })
+        .when(!disabled, |button| {
+            button
+                .cursor_pointer()
+                .hover(|style| style.opacity(0.9))
+                .active(|style| style.top(px(1.0)))
+                .on_click(listener)
+        })
+        .child(label)
         .into_any_element()
 }
 

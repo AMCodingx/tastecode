@@ -511,6 +511,9 @@ pub(crate) enum ShellEvent {
     ArchiveNeedsConfirmation {
         thread_id: String,
     },
+    ArchiveFailed {
+        thread_id: String,
+    },
     ThreadArchived {
         thread_id: String,
     },
@@ -2521,15 +2524,25 @@ impl ClientState {
                     Some(
                         PendingRequest::ProjectMutation { .. }
                         | PendingRequest::ThreadSummaryMutation
-                        | PendingRequest::ThreadLifecycle { .. }
-                        | PendingRequest::ArchiveInspect { .. }
-                        | PendingRequest::ArchiveClose { .. }
-                        | PendingRequest::ArchiveDiscard { .. }
-                        | PendingRequest::ArchiveDelete { .. },
+                        | PendingRequest::ThreadLifecycle { .. },
                     ) => {
                         self.notice = Some(message);
                         self.request_projects();
                         ClientUpdate::shell_changed()
+                    }
+                    Some(
+                        PendingRequest::ArchiveInspect { thread_id }
+                        | PendingRequest::ArchiveClose { thread_id, .. }
+                        | PendingRequest::ArchiveDiscard { thread_id }
+                        | PendingRequest::ArchiveDelete { thread_id },
+                    ) => {
+                        self.notice = Some(message);
+                        self.request_projects();
+                        ClientUpdate {
+                            shell_changed: true,
+                            chat: Vec::new(),
+                            shell_events: vec![ShellEvent::ArchiveFailed { thread_id }],
+                        }
                     }
                     Some(PendingRequest::StartThread { request }) => {
                         ClientUpdate::chat(ChatUpdate::DraftError {
@@ -3284,14 +3297,22 @@ impl ClientState {
             }),
             PendingRequest::ProjectMutation { .. }
             | PendingRequest::ThreadSummaryMutation
-            | PendingRequest::ThreadLifecycle { .. }
-            | PendingRequest::ArchiveInspect { .. }
-            | PendingRequest::ArchiveClose { .. }
-            | PendingRequest::ArchiveDiscard { .. }
-            | PendingRequest::ArchiveDelete { .. } => {
+            | PendingRequest::ThreadLifecycle { .. } => {
                 self.notice =
                     Some("The server connection was lost while updating the sidebar.".into());
                 ClientUpdate::shell_changed()
+            }
+            PendingRequest::ArchiveInspect { thread_id }
+            | PendingRequest::ArchiveClose { thread_id, .. }
+            | PendingRequest::ArchiveDiscard { thread_id }
+            | PendingRequest::ArchiveDelete { thread_id } => {
+                self.notice =
+                    Some("The server connection was lost while archiving the thread.".into());
+                ClientUpdate {
+                    shell_changed: true,
+                    chat: Vec::new(),
+                    shell_events: vec![ShellEvent::ArchiveFailed { thread_id }],
+                }
             }
             PendingRequest::StartThread { request } => ClientUpdate::chat(ChatUpdate::DraftError {
                 message: "The server connection was lost before the session was created.".into(),
@@ -4930,6 +4951,57 @@ mod tests {
             update.shell_events.as_slice(),
             [ShellEvent::ArchiveNeedsConfirmation { thread_id }] if thread_id == "thread-1"
         ));
+    }
+
+    #[test]
+    fn failed_archive_releases_the_confirmation_busy_state() {
+        let mut state = ClientState::new(true);
+        state.pending.insert(
+            "archive-discard".into(),
+            PendingRequest::ArchiveDiscard {
+                thread_id: "thread-1".into(),
+            },
+        );
+
+        let update = state.handle_response(Response::Failure {
+            id: "archive-discard".into(),
+            error: harness_protocol::WireError {
+                code: ErrorCode::BadRequest,
+                message: "The checkout could not be discarded".into(),
+                detail: None,
+            },
+        });
+
+        assert!(matches!(
+            update.shell_events.as_slice(),
+            [ShellEvent::ArchiveFailed { thread_id }] if thread_id == "thread-1"
+        ));
+        assert_eq!(
+            state.notice.as_deref(),
+            Some("The checkout could not be discarded")
+        );
+    }
+
+    #[test]
+    fn interrupted_archive_releases_the_confirmation_busy_state() {
+        let mut state = ClientState::new(true);
+        state.pending.insert(
+            "archive-delete".into(),
+            PendingRequest::ArchiveDelete {
+                thread_id: "thread-1".into(),
+            },
+        );
+
+        let update = state.handle_aborted_request("archive-delete");
+
+        assert!(matches!(
+            update.shell_events.as_slice(),
+            [ShellEvent::ArchiveFailed { thread_id }] if thread_id == "thread-1"
+        ));
+        assert_eq!(
+            state.notice.as_deref(),
+            Some("The server connection was lost while archiving the thread.")
+        );
     }
 
     #[test]

@@ -785,6 +785,9 @@ impl HarnessApp {
             ShellEvent::ArchiveNeedsConfirmation { thread_id } => {
                 self.show_archive_confirmation(thread_id, cx);
             }
+            ShellEvent::ArchiveFailed { thread_id } => {
+                self.handle_thread_archive_failed(thread_id, cx);
+            }
             ShellEvent::ThreadArchived { thread_id } => {
                 self.handle_thread_archived(thread_id, cx);
             }
