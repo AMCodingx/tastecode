@@ -1476,7 +1476,13 @@ impl HarnessApp {
                         .items_center()
                         .gap(px(9.0))
                         .when_some(source_provider, |copy, provider| {
-                            copy.child(crate::provider_icon::provider_icon(provider, theme, 18.0))
+                            copy.child(motion_icon(
+                                ("model-source-provider-icon", source_index),
+                                provider_mark_path(provider_mark(provider)),
+                                18.0,
+                                "model-source-provider-icon-direct-hover",
+                                theme,
+                            ))
                         })
                         .child(
                             div()
