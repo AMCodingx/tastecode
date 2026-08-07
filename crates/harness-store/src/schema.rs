@@ -11,6 +11,7 @@ CREATE TABLE IF NOT EXISTS threads (
   project_path TEXT NOT NULL,
   provider     TEXT NOT NULL,
   agent        TEXT,
+  connection_id TEXT,
   title        TEXT NOT NULL,
   pinned       INTEGER NOT NULL DEFAULT 0,
   created_at   INTEGER NOT NULL,
@@ -61,6 +62,11 @@ CREATE TABLE IF NOT EXISTS restore_undos (
   checkpoints_json TEXT NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS provider_session_states (
+  thread_id  TEXT PRIMARY KEY,
+  state_json TEXT NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS schema_migrations (
   name TEXT PRIMARY KEY
 );
@@ -107,6 +113,11 @@ pub(crate) const ADDED_COLUMNS: &[AddedColumn] = &[
         table: "threads",
         column: "pinned",
         definition: "INTEGER NOT NULL DEFAULT 0",
+    },
+    AddedColumn {
+        table: "threads",
+        column: "connection_id",
+        definition: "TEXT",
     },
     AddedColumn {
         table: "threads",

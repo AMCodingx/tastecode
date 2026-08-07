@@ -2770,6 +2770,7 @@ dependencies = [
  "harness-agent",
  "harness-protocol",
  "reqwest",
+ "serde",
  "serde_json",
  "thiserror 2.0.19",
  "url",
@@ -2795,6 +2796,7 @@ name = "harness-agent"
 version = "0.1.0"
 dependencies = [
  "harness-protocol",
+ "serde_json",
  "thiserror 2.0.19",
 ]
 

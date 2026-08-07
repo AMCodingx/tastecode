@@ -98,15 +98,23 @@ fn start_test_server_with_services(
 
 fn start_test_server_with_native_runtimes() -> (TempDir, ServerHandle, Arc<MemoryCredentials>) {
     let directory = tempfile::tempdir().unwrap();
+    let credentials = Arc::new(MemoryCredentials::default());
+    let server = start_native_server_in(directory.path(), Arc::clone(&credentials));
+    (directory, server, credentials)
+}
+
+fn start_native_server_in(
+    directory: &std::path::Path,
+    credentials: Arc<MemoryCredentials>,
+) -> ServerHandle {
     let config = ServerConfig {
         address: SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 0),
         access_token: None,
-        store_path: directory.path().join("harness.db"),
-        mcp_config_path: directory.path().join("mcp.json"),
-        providers_config_path: directory.path().join("providers.json"),
+        store_path: directory.join("harness.db"),
+        mcp_config_path: directory.join("mcp.json"),
+        providers_config_path: directory.join("providers.json"),
     };
     Store::open(&config.store_path).unwrap().close().unwrap();
-    let credentials = Arc::new(MemoryCredentials::default());
     let credential_store: Arc<dyn CredentialStore> = credentials.clone();
     let model_connections = Arc::new(Mutex::new(
         crate::model_connections::ModelConnectionStore::new(
@@ -118,10 +126,7 @@ fn start_test_server_with_native_runtimes() -> (TempDir, ServerHandle, Arc<Memor
         Arc::clone(&model_connections),
         credential_store.clone(),
     ));
-    let server =
-        start_with_prepared_services(config, runtimes, credential_store, model_connections)
-            .unwrap();
-    (directory, server, credentials)
+    start_with_prepared_services(config, runtimes, credential_store, model_connections).unwrap()
 }
 
 #[derive(Default)]
@@ -227,44 +232,56 @@ fn serve_sse_once(
     std::sync::mpsc::Receiver<String>,
     std::thread::JoinHandle<()>,
 ) {
+    serve_sse(vec![body])
+}
+
+fn serve_sse(
+    bodies: Vec<String>,
+) -> (
+    String,
+    std::sync::mpsc::Receiver<String>,
+    std::thread::JoinHandle<()>,
+) {
     use std::io::{BufRead as _, BufReader, Read as _, Write as _};
     let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
     let address = listener.local_addr().unwrap();
     let (sender, receiver) = std::sync::mpsc::channel();
     let join = std::thread::spawn(move || {
-        let (mut stream, _) = listener.accept().unwrap();
-        let mut request = String::new();
-        {
-            let mut reader = BufReader::new(&mut stream);
-            loop {
-                let mut line = String::new();
-                reader.read_line(&mut line).unwrap();
-                request.push_str(&line);
-                if line == "\r\n" || line.is_empty() {
-                    break;
+        for body in bodies {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut request = String::new();
+            {
+                let mut reader = BufReader::new(&mut stream);
+                loop {
+                    let mut line = String::new();
+                    reader.read_line(&mut line).unwrap();
+                    request.push_str(&line);
+                    if line == "\r\n" || line.is_empty() {
+                        break;
+                    }
                 }
+                let content_length = request
+                    .lines()
+                    .find_map(|line| {
+                        line.to_ascii_lowercase()
+                            .strip_prefix("content-length:")
+                            .map(str::trim)
+                            .and_then(|value| value.parse::<usize>().ok())
+                    })
+                    .unwrap_or(0);
+                let mut payload = vec![0; content_length];
+                reader.read_exact(&mut payload).unwrap();
+                request.push_str(&String::from_utf8_lossy(&payload));
             }
-            let content_length = request
-                .lines()
-                .find_map(|line| {
-                    line.to_ascii_lowercase()
-                        .strip_prefix("content-length:")
-                        .map(str::trim)
-                        .and_then(|value| value.parse::<usize>().ok())
-                })
-                .unwrap_or(0);
-            let mut payload = vec![0; content_length];
-            reader.read_exact(&mut payload).unwrap();
-            request.push_str(&String::from_utf8_lossy(&payload));
+            sender.send(request).unwrap();
+            write!(
+                stream,
+                "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len()
+            )
+            .unwrap();
+            stream.flush().unwrap();
         }
-        sender.send(request).unwrap();
-        write!(
-            stream,
-            "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
-            body.len()
-        )
-        .unwrap();
-        stream.flush().unwrap();
     });
     (format!("http://{address}/v1"), receiver, join)
 }
@@ -1085,6 +1102,236 @@ fn live_native_api_runtime_streams_through_the_shared_server() {
     assert_eq!(closed["result"], json!({}));
     socket.close(None).unwrap();
     server.close().unwrap();
+}
+
+#[test]
+fn native_api_sessions_resume_identity_history_and_permissions_after_restart() {
+    let first_response = concat!(
+        "data: {\"choices\":[{\"delta\":{\"content\":\"First response.\"},\"finish_reason\":null}]}\n\n",
+        "data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n",
+        "data: [DONE]\n\n"
+    );
+    let write_response = concat!(
+        "data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"call-resume\",\"type\":\"function\",\"function\":{\"name\":\"write_file\",\"arguments\":\"{\\\"path\\\":\\\"resumed.txt\\\",\\\"content\\\":\\\"restored state\\\\n\\\",\\\"expectedSha256\\\":null}\"}}]},\"finish_reason\":null}]}\n\n",
+        "data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"tool_calls\"}]}\n\n",
+        "data: [DONE]\n\n"
+    );
+    let final_response = concat!(
+        "data: {\"choices\":[{\"delta\":{\"content\":\"Resumed successfully.\"},\"finish_reason\":null}]}\n\n",
+        "data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n",
+        "data: [DONE]\n\n"
+    );
+    let (base_url, provider_requests, provider_server) = serve_sse(vec![
+        first_response.into(),
+        write_response.into(),
+        final_response.into(),
+    ]);
+    let directory = tempfile::tempdir().unwrap();
+    let workspace = directory.path().join("workspace");
+    fs::create_dir(&workspace).unwrap();
+    let credentials = Arc::new(MemoryCredentials::default());
+
+    let bootstrap_server = start_native_server_in(directory.path(), Arc::clone(&credentials));
+    let mut bootstrap_socket = connect_native(&bootstrap_server, "");
+    assert_welcome(&mut bootstrap_socket);
+    send_request(
+        &mut bootstrap_socket,
+        "upsert",
+        "connections.upsert",
+        json!({
+            "id": "restart-compatible",
+            "displayName": "Restart Compatible",
+            "preset": "custom",
+            "transport": "openai-compatible",
+            "baseUrl": base_url,
+            "defaultModel": "connection-default",
+            "enabled": true
+        }),
+    );
+    assert_eq!(
+        read_value(&mut bootstrap_socket)["result"]["connection"]["id"],
+        "restart-compatible"
+    );
+    send_request(
+        &mut bootstrap_socket,
+        "credential",
+        "connections.setCredential",
+        json!({
+            "connectionId": "restart-compatible",
+            "apiKey": "restart-secret-key"
+        }),
+    );
+    assert_eq!(
+        read_value(&mut bootstrap_socket)["result"]["credentialConfigured"],
+        true
+    );
+    send_request(
+        &mut bootstrap_socket,
+        "start",
+        "thread.start",
+        json!({
+            "provider": "api",
+            "connectionId": "restart-compatible",
+            "workspacePath": workspace.to_string_lossy(),
+            "model": "persisted-model",
+            "approval": "full"
+        }),
+    );
+    let (_, started) = read_until_response(&mut bootstrap_socket, "start");
+    let thread_id = started["result"]["threadId"].as_str().unwrap().to_owned();
+    bootstrap_socket.close(None).unwrap();
+    bootstrap_server.close().unwrap();
+
+    let initial = Store::open(directory.path().join("harness.db")).unwrap();
+    let initial_state = initial.provider_session_state(&thread_id).unwrap().unwrap();
+    assert_eq!(initial_state["turn_counter"], 0);
+    assert_eq!(initial_state["instructions_pending"], true);
+    assert!(
+        initial_state["instructions"]
+            .as_str()
+            .unwrap()
+            .contains("Lead with the useful answer")
+    );
+    initial.close().unwrap();
+
+    let first_server = start_native_server_in(directory.path(), Arc::clone(&credentials));
+    let mut first_socket = connect_native(&first_server, "");
+    assert_welcome(&mut first_socket);
+    send_request(
+        &mut first_socket,
+        "first-turn",
+        "thread.sendTurn",
+        json!({ "threadId": thread_id, "text": "Remember this first turn" }),
+    );
+    let (mut first_pushes, first_turn) = read_until_response(&mut first_socket, "first-turn");
+    let first_turn_id = first_turn["result"]["turnId"].as_str().unwrap().to_owned();
+    while !first_pushes.iter().any(|push| {
+        push["channel"] == "thread.event"
+            && push["data"]["event"]["type"] == "turn.completed"
+            && push["data"]["event"]["turnId"] == first_turn_id
+    }) {
+        first_pushes.push(read_value(&mut first_socket));
+    }
+    let first_request = provider_requests
+        .recv_timeout(Duration::from_secs(2))
+        .unwrap();
+    let first_body: Value =
+        serde_json::from_str(first_request.split("\r\n\r\n").nth(1).unwrap()).unwrap();
+    assert_eq!(first_body["model"], "persisted-model");
+    assert!(
+        first_body["messages"][0]["content"]
+            .as_str()
+            .unwrap()
+            .contains("Lead with the useful answer")
+    );
+
+    first_socket.close(None).unwrap();
+    first_server.close().unwrap();
+
+    let persisted = Store::open(directory.path().join("harness.db")).unwrap();
+    assert_eq!(
+        persisted.thread_connection_id(&thread_id).unwrap(),
+        Some("restart-compatible".into())
+    );
+    let persisted_state = persisted
+        .provider_session_state(&thread_id)
+        .unwrap()
+        .unwrap();
+    assert_eq!(persisted_state["version"], 1);
+    assert_eq!(persisted_state["model"], "persisted-model");
+    assert_eq!(persisted_state["approval"], "full");
+    assert_eq!(persisted_state["turn_counter"], 1);
+    assert_eq!(persisted_state["instructions_pending"], false);
+    persisted.close().unwrap();
+
+    let second_server = start_native_server_in(directory.path(), Arc::clone(&credentials));
+    let mut second_socket = connect_native(&second_server, "");
+    assert_welcome(&mut second_socket);
+    send_request(
+        &mut second_socket,
+        "change-default",
+        "connections.upsert",
+        json!({
+            "id": "restart-compatible",
+            "displayName": "Restart Compatible",
+            "preset": "custom",
+            "transport": "openai-compatible",
+            "baseUrl": base_url,
+            "defaultModel": "changed-default",
+            "enabled": true
+        }),
+    );
+    assert_eq!(
+        read_value(&mut second_socket)["result"]["connection"]["defaultModel"],
+        "changed-default"
+    );
+    send_request(
+        &mut second_socket,
+        "second-turn",
+        "thread.sendTurn",
+        json!({ "threadId": thread_id, "text": "Continue after restart" }),
+    );
+    let (mut second_pushes, second_turn) = read_until_response(&mut second_socket, "second-turn");
+    let second_turn_id = second_turn["result"]["turnId"].as_str().unwrap().to_owned();
+    assert!(second_turn_id.ends_with("-turn-2"));
+    while !second_pushes.iter().any(|push| {
+        push["channel"] == "thread.event"
+            && push["data"]["event"]["type"] == "turn.completed"
+            && push["data"]["event"]["turnId"] == second_turn_id
+    }) {
+        second_pushes.push(read_value(&mut second_socket));
+    }
+    assert!(!second_pushes.iter().any(|push| {
+        push["channel"] == "thread.event" && push["data"]["event"]["type"] == "approval.requested"
+    }));
+    assert_eq!(
+        fs::read_to_string(workspace.join("resumed.txt")).unwrap(),
+        "restored state\n"
+    );
+
+    let resumed_request = provider_requests
+        .recv_timeout(Duration::from_secs(2))
+        .unwrap();
+    let resumed_body: Value =
+        serde_json::from_str(resumed_request.split("\r\n\r\n").nth(1).unwrap()).unwrap();
+    assert_eq!(resumed_body["model"], "persisted-model");
+    assert!(
+        resumed_body["messages"][0]["content"]
+            .as_str()
+            .unwrap()
+            .contains("Remember this first turn")
+    );
+    assert_eq!(resumed_body["messages"][1]["content"], "First response.");
+    assert_eq!(
+        resumed_body["messages"][2]["content"],
+        "Continue after restart"
+    );
+    let tool_result_request = provider_requests
+        .recv_timeout(Duration::from_secs(2))
+        .unwrap();
+    let tool_result_body: Value =
+        serde_json::from_str(tool_result_request.split("\r\n\r\n").nth(1).unwrap()).unwrap();
+    assert_eq!(tool_result_body["model"], "persisted-model");
+    assert_eq!(
+        tool_result_body["messages"]
+            .as_array()
+            .unwrap()
+            .last()
+            .unwrap()["role"],
+        "tool"
+    );
+
+    send_request(
+        &mut second_socket,
+        "close",
+        "thread.close",
+        json!({ "threadId": thread_id }),
+    );
+    let (_, closed) = read_until_response(&mut second_socket, "close");
+    assert_eq!(closed["result"], json!({}));
+    second_socket.close(None).unwrap();
+    second_server.close().unwrap();
+    provider_server.join().unwrap();
 }
 
 #[test]

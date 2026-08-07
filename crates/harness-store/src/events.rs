@@ -8,6 +8,7 @@ use harness_protocol::{
 use rusqlite::types::Value as SqlValue;
 use rusqlite::{OptionalExtension as _, params, params_from_iter};
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 use std::collections::HashMap;
 
 const SNIPPET_START: char = '\u{1}';
@@ -52,11 +53,31 @@ struct SearchRow {
 
 impl Store {
     pub fn append(&mut self, thread_id: &str, event: &DomainEvent) -> Result<u64> {
-        self.append_at(thread_id, event, now_ms()?)
+        self.append_with_provider_state(thread_id, event, None)
+    }
+
+    pub fn append_with_provider_state(
+        &mut self,
+        thread_id: &str,
+        event: &DomainEvent,
+        provider_state: Option<&Value>,
+    ) -> Result<u64> {
+        self.append_at_with_provider_state(thread_id, event, now_ms()?, provider_state)
     }
 
     pub fn append_at(&mut self, thread_id: &str, event: &DomainEvent, at: i64) -> Result<u64> {
+        self.append_at_with_provider_state(thread_id, event, at, None)
+    }
+
+    fn append_at_with_provider_state(
+        &mut self,
+        thread_id: &str,
+        event: &DomainEvent,
+        at: i64,
+        provider_state: Option<&Value>,
+    ) -> Result<u64> {
         let payload = serde_json::to_string(event)?;
+        let provider_state = provider_state.map(serde_json::to_string).transpose()?;
         let transaction = self.connection.transaction()?;
         transaction.execute(
             "INSERT INTO events (thread_id, at, payload) VALUES (?1, ?2, ?3)",
@@ -64,6 +85,13 @@ impl Store {
         )?;
         let seq = transaction.last_insert_rowid();
         index_event(&transaction, seq, thread_id, at, event)?;
+        if let Some(provider_state) = provider_state {
+            transaction.execute(
+                "INSERT INTO provider_session_states (thread_id, state_json) VALUES (?1, ?2)
+                 ON CONFLICT (thread_id) DO UPDATE SET state_json = excluded.state_json",
+                params![thread_id, provider_state],
+            )?;
+        }
         transaction.commit()?;
         Ok(seq.max(0) as u64)
     }

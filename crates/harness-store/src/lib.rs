@@ -219,17 +219,27 @@ impl Store {
     }
 
     pub fn add_thread(&self, thread: NewThread) -> Result<StoredThread> {
+        self.add_thread_with_connection(thread, None)
+    }
+
+    pub fn add_thread_with_connection(
+        &self,
+        thread: NewThread,
+        connection_id: Option<&str>,
+    ) -> Result<StoredThread> {
         let created_at = thread.created_at.unwrap_or(now_ms()?);
         self.connection.execute(
             "INSERT INTO threads
-               (id, project_path, provider, agent, title, created_at, worktree_path,
-                worktree_branch, lifecycle_state, keep_active, unread, last_active_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, 'active', 0, 0, ?6)",
+               (id, project_path, provider, agent, connection_id, title, created_at,
+                worktree_path, worktree_branch, lifecycle_state, keep_active, unread,
+                last_active_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, 'active', 0, 0, ?7)",
             params![
                 thread.id,
                 thread.project_path,
                 provider_key(thread.provider),
                 thread.agent,
+                connection_id,
                 thread.title,
                 created_at,
                 thread.worktree_path,
@@ -254,6 +264,44 @@ impl Store {
             unread: false,
             last_active_at: created_at,
         })
+    }
+
+    pub fn thread_connection_id(&self, thread_id: &str) -> Result<Option<String>> {
+        self.connection
+            .query_row(
+                "SELECT connection_id FROM threads WHERE id = ?1",
+                [thread_id],
+                |row| row.get(0),
+            )
+            .optional()?
+            .ok_or(StoreError::ThreadNotFound)
+    }
+
+    pub fn set_provider_session_state(&self, thread_id: &str, state: &Value) -> Result<()> {
+        if self.thread(thread_id)?.is_none() {
+            return Err(StoreError::ThreadNotFound);
+        }
+        self.connection.execute(
+            "INSERT INTO provider_session_states (thread_id, state_json) VALUES (?1, ?2)
+             ON CONFLICT (thread_id) DO UPDATE SET state_json = excluded.state_json",
+            params![thread_id, serde_json::to_string(state)?],
+        )?;
+        Ok(())
+    }
+
+    pub fn provider_session_state(&self, thread_id: &str) -> Result<Option<Value>> {
+        let state: Option<String> = self
+            .connection
+            .query_row(
+                "SELECT state_json FROM provider_session_states WHERE thread_id = ?1",
+                [thread_id],
+                |row| row.get(0),
+            )
+            .optional()?;
+        state
+            .map(|state| serde_json::from_str(&state))
+            .transpose()
+            .map_err(Into::into)
     }
 
     pub fn worktrees(&self) -> Result<Vec<StoredWorktree>> {
@@ -506,6 +554,7 @@ impl Store {
             "events",
             "checkpoints",
             "restore_undos",
+            "provider_session_states",
             "diff_decisions",
             "design_runs",
         ] {

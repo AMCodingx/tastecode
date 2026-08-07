@@ -1,6 +1,6 @@
 use crate::{
-    ApiAgentSession, ApiSessionOptions, ApiTool, ApiToolError, ApiToolExecutor, create_transport,
-    list_models,
+    ApiAgentSession, ApiSessionOptions, ApiSessionState, ApiTool, ApiToolError, ApiToolExecutor,
+    create_transport, list_models,
 };
 use harness_agent::{
     AgentError, AgentHandlers, AgentResult, AgentRuntime, AgentSession, StartOptions,
@@ -67,24 +67,60 @@ impl AgentRuntime for ApiRuntime {
             })?;
         let transport = create_transport(&self.connection, self.api_key.clone())
             .map_err(|error| AgentError::Failed(error.to_string()))?;
+        let approval = options.approval.unwrap_or(ApprovalMode::Ask);
         let tools = self
             .tools
-            .create(
-                workspace_path,
-                options.approval.unwrap_or(ApprovalMode::Ask),
-            )
+            .create(workspace_path, approval)
             .map_err(|error| AgentError::Failed(error.to_string()))?;
         let mut session_options = ApiSessionOptions::new(model, transport);
         session_options.tools = tools.definitions;
         session_options.executor = tools.executor;
         session_options.secrets = vec![self.api_key.clone()];
         session_options.instructions = options.instructions.clone();
+        session_options.approval = approval;
         let (thread, session) = ApiAgentSession::start(
             workspace_path,
             &self.connection.id,
             session_options,
             handlers,
         )?;
+        Ok((thread, session))
+    }
+
+    fn resume(
+        &self,
+        thread_id: &str,
+        workspace_path: &str,
+        options: &StartOptions,
+        handlers: AgentHandlers,
+    ) -> AgentResult<(Thread, Arc<dyn AgentSession>)> {
+        let saved = options
+            .resume_state
+            .as_ref()
+            .ok_or_else(|| AgentError::Failed("direct API session state is unavailable".into()))?;
+        let state = serde_json::from_value::<ApiSessionState>(saved.value().clone())
+            .map_err(|_| AgentError::Failed("direct API session state is invalid".into()))?;
+        if state.thread.id != thread_id
+            || state.thread.workspace_path != workspace_path
+            || state.thread.connection_id.as_deref() != Some(self.connection.id.as_str())
+        {
+            return Err(AgentError::Failed(
+                "direct API session state does not match the stored thread".into(),
+            ));
+        }
+        let transport = create_transport(&self.connection, self.api_key.clone())
+            .map_err(|error| AgentError::Failed(error.to_string()))?;
+        let tools = self
+            .tools
+            .create(workspace_path, state.approval)
+            .map_err(|error| AgentError::Failed(error.to_string()))?;
+        let mut session_options = ApiSessionOptions::new(&state.model, transport);
+        session_options.tools = tools.definitions;
+        session_options.executor = tools.executor;
+        session_options.secrets = vec![self.api_key.clone()];
+        session_options.instructions = state.instructions.clone();
+        session_options.approval = state.approval;
+        let (thread, session) = ApiAgentSession::resume(state, session_options, handlers)?;
         Ok((thread, session))
     }
 

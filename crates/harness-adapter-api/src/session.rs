@@ -2,11 +2,14 @@ use crate::{
     ApiAdapterError, ApiMessage, ApiRequest, ApiStreamEvent, ApiTool, ApiToolCall, ApiTransport,
     FinishReason,
 };
-use harness_agent::{AgentError, AgentHandlers, AgentResult, AgentSession, TurnOptions};
-use harness_protocol::{
-    ApprovalDecision, ApprovalKind, ApprovalRequest, Capabilities, DomainEvent, Item, ItemStatus,
-    ItemType, MessageRole, ProviderId, Thread, Turn, TurnStatus,
+use harness_agent::{
+    AgentError, AgentHandlers, AgentResult, AgentSession, AgentSessionState, TurnOptions,
 };
+use harness_protocol::{
+    ApprovalDecision, ApprovalKind, ApprovalMode, ApprovalRequest, Capabilities, DomainEvent, Item,
+    ItemStatus, ItemType, MessageRole, ProviderId, Thread, Turn, TurnStatus,
+};
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::HashSet;
 use std::panic::{AssertUnwindSafe, catch_unwind};
@@ -18,6 +21,7 @@ use uuid::Uuid;
 
 const DEFAULT_MAX_TOOL_CALLS: usize = 32;
 const APPROVAL_POLL_INTERVAL: Duration = Duration::from_millis(20);
+const SESSION_STATE_VERSION: u32 = 1;
 
 pub const API_CAPABILITIES: Capabilities = Capabilities {
     steer: false,
@@ -109,6 +113,7 @@ pub struct ApiSessionOptions {
     pub max_tool_calls: usize,
     pub secrets: Vec<String>,
     pub instructions: Option<String>,
+    pub approval: ApprovalMode,
 }
 
 impl ApiSessionOptions {
@@ -121,13 +126,20 @@ impl ApiSessionOptions {
             max_tool_calls: DEFAULT_MAX_TOOL_CALLS,
             secrets: Vec::new(),
             instructions: None,
+            approval: ApprovalMode::Ask,
         }
     }
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct ApiSessionState {
+    pub version: u32,
     pub thread: Thread,
+    pub model: String,
+    pub approval: ApprovalMode,
+    pub instructions: Option<String>,
+    pub instructions_pending: bool,
+    pub approved_tools: Vec<String>,
     pub messages: Vec<ApiMessage>,
     pub turn_counter: u64,
 }
@@ -145,6 +157,7 @@ struct SessionInner {
     max_tool_calls: usize,
     secrets: Vec<String>,
     instructions: Option<String>,
+    approval: ApprovalMode,
     handlers: AgentHandlers,
     state: Mutex<SessionState>,
     state_changed: Condvar,
@@ -197,6 +210,7 @@ impl ApiAgentSession {
             Vec::new(),
             0,
             instructions_pending,
+            HashSet::new(),
             options,
             handlers,
         )?;
@@ -208,17 +222,35 @@ impl ApiAgentSession {
         options: ApiSessionOptions,
         handlers: AgentHandlers,
     ) -> AgentResult<(Thread, Arc<Self>)> {
+        if state.version != SESSION_STATE_VERSION {
+            return Err(AgentError::Failed(
+                "direct API session state version is unsupported".into(),
+            ));
+        }
         if state.thread.provider != ProviderId::Api {
             return Err(AgentError::Failed(
                 "only API threads can resume here".into(),
             ));
         }
+        if state.model != options.model {
+            return Err(AgentError::Failed(
+                "direct API resume model does not match the saved session".into(),
+            ));
+        }
+        if state.approval != options.approval {
+            return Err(AgentError::Failed(
+                "direct API resume approval mode does not match the saved session".into(),
+            ));
+        }
         let thread = state.thread.clone();
+        let mut options = options;
+        options.instructions = state.instructions;
         let session = Self::from_parts(
             state.thread,
             state.messages,
             state.turn_counter,
-            false,
+            state.instructions_pending,
+            state.approved_tools.into_iter().collect(),
             options,
             handlers,
         )?;
@@ -230,6 +262,7 @@ impl ApiAgentSession {
         messages: Vec<ApiMessage>,
         turn_counter: u64,
         instructions_pending: bool,
+        approved_tools: HashSet<String>,
         options: ApiSessionOptions,
         handlers: AgentHandlers,
     ) -> AgentResult<Self> {
@@ -255,6 +288,7 @@ impl ApiAgentSession {
                     .filter(|secret| secret.chars().count() >= 4)
                     .collect(),
                 instructions: options.instructions,
+                approval: options.approval,
                 handlers,
                 state: Mutex::new(SessionState {
                     messages,
@@ -262,7 +296,7 @@ impl ApiAgentSession {
                     instructions_pending,
                     active: None,
                     approval: None,
-                    approved_tools: HashSet::new(),
+                    approved_tools,
                 }),
                 state_changed: Condvar::new(),
                 disposed: AtomicBool::new(false),
@@ -272,8 +306,16 @@ impl ApiAgentSession {
 
     pub fn snapshot(&self) -> ApiSessionState {
         let state = lock(&self.inner.state);
+        let mut approved_tools = state.approved_tools.iter().cloned().collect::<Vec<_>>();
+        approved_tools.sort();
         ApiSessionState {
+            version: SESSION_STATE_VERSION,
             thread: self.inner.thread.clone(),
+            model: self.inner.model.clone(),
+            approval: self.inner.approval,
+            instructions: self.inner.instructions.clone(),
+            instructions_pending: state.instructions_pending,
+            approved_tools,
             messages: state.messages.clone(),
             turn_counter: state.turn_counter,
         }
@@ -434,6 +476,15 @@ impl AgentSession for ApiAgentSession {
         decision: ApprovalDecision,
     ) -> AgentResult<bool> {
         ApiAgentSession::respond_to_approval(self, approval_id, decision)
+    }
+
+    fn export_state(&self) -> AgentResult<Option<AgentSessionState>> {
+        serde_json::to_value(self.snapshot())
+            .map(AgentSessionState::new)
+            .map(Some)
+            .map_err(|error| {
+                AgentError::Failed(format!("could not encode direct API state: {error}"))
+            })
     }
 
     fn dispose(&self) {
@@ -1062,13 +1113,27 @@ mod tests {
         ]));
         let mut options = ApiSessionOptions::new("test-model", transport.clone());
         options.instructions = Some("Answer plainly.".into());
-        let (thread, session) = ApiAgentSession::start(
+        let (thread, initial_session) = ApiAgentSession::start(
             "C:\\repo",
             "connection-1",
             options,
             AgentHandlers::default(),
         )
         .unwrap();
+        let initial_state = initial_session.snapshot();
+        assert_eq!(
+            initial_state.instructions.as_deref(),
+            Some("Answer plainly.")
+        );
+        assert!(initial_state.instructions_pending);
+        initial_session.dispose();
+        let (resumed_thread, session) = ApiAgentSession::resume(
+            initial_state,
+            ApiSessionOptions::new("test-model", transport.clone()),
+            AgentHandlers::default(),
+        )
+        .unwrap();
+        assert_eq!(resumed_thread, thread);
 
         let first = session
             .send_turn(&thread.id, "First", &[], &TurnOptions::default())
@@ -1095,13 +1160,11 @@ mod tests {
         ]]));
         let recording = recording_handlers();
         let events = Arc::clone(&recording.events);
-        let (thread, session) = ApiAgentSession::start(
-            "C:\\repo",
-            "connection-1",
-            ApiSessionOptions::new("test-model", transport),
-            recording.handlers,
-        )
-        .unwrap();
+        let mut options = ApiSessionOptions::new("test-model", transport);
+        options.approval = ApprovalMode::AutoReview;
+        let (thread, session) =
+            ApiAgentSession::start("C:\\repo", "connection-1", options, recording.handlers)
+                .unwrap();
         let turn_id = session
             .send_turn(&thread.id, "Hi", &[], &TurnOptions::default())
             .unwrap();
@@ -1117,6 +1180,12 @@ mod tests {
         }));
 
         let snapshot = session.snapshot();
+        assert_eq!(snapshot.version, SESSION_STATE_VERSION);
+        assert_eq!(snapshot.model, "test-model");
+        assert_eq!(snapshot.approval, ApprovalMode::AutoReview);
+        assert_eq!(snapshot.instructions, None);
+        assert!(!snapshot.instructions_pending);
+        assert!(snapshot.approved_tools.is_empty());
         assert_eq!(
             snapshot.messages,
             vec![
@@ -1130,17 +1199,30 @@ mod tests {
                 }
             ]
         );
+        let exported = session.export_state().unwrap().unwrap();
+        let decoded: ApiSessionState = serde_json::from_value(exported.into_value()).unwrap();
+        assert_eq!(decoded, snapshot);
+
+        let mut unsupported = snapshot.clone();
+        unsupported.version += 1;
+        let unsupported_transport = Arc::new(ScriptedTransport::new(Vec::new()));
+        assert!(matches!(
+            ApiAgentSession::resume(
+                unsupported,
+                ApiSessionOptions::new("test-model", unsupported_transport),
+                AgentHandlers::default(),
+            ),
+            Err(AgentError::Failed(message)) if message.contains("version")
+        ));
 
         let resumed_transport =
             Arc::new(ScriptedTransport::new(vec![vec![ApiStreamEvent::Finish(
                 FinishReason::Stop,
             )]]));
-        let (resumed_thread, resumed) = ApiAgentSession::resume(
-            snapshot,
-            ApiSessionOptions::new("test-model", resumed_transport),
-            AgentHandlers::default(),
-        )
-        .unwrap();
+        let mut resumed_options = ApiSessionOptions::new("test-model", resumed_transport);
+        resumed_options.approval = ApprovalMode::AutoReview;
+        let (resumed_thread, resumed) =
+            ApiAgentSession::resume(snapshot, resumed_options, AgentHandlers::default()).unwrap();
         assert_eq!(resumed_thread, thread);
         let resumed_turn = resumed
             .send_turn(&thread.id, "Again", &[], &TurnOptions::default())
@@ -1197,7 +1279,7 @@ mod tests {
         assert_eq!(executor.calls.load(Ordering::Acquire), 0);
         assert!(
             session
-                .respond_to_approval(&approval_id, ApprovalDecision::Approve)
+                .respond_to_approval(&approval_id, ApprovalDecision::ApproveSession)
                 .unwrap()
         );
         assert!(session.wait_for_turn(&turn_id, WAIT));
@@ -1225,6 +1307,41 @@ mod tests {
                     is_error: false,
                 }
             ]
+        );
+        drop(seen);
+
+        let snapshot = session.snapshot();
+        assert_eq!(snapshot.approved_tools.len(), 1);
+        let resumed_transport = Arc::new(ScriptedTransport::new(vec![
+            vec![
+                ApiStreamEvent::ToolCall(ApiToolCall {
+                    id: "call-2".into(),
+                    name: "read_file".into(),
+                    input: serde_json::json!({ "path": "README.md" }),
+                }),
+                ApiStreamEvent::Finish(FinishReason::ToolCalls),
+            ],
+            vec![ApiStreamEvent::Finish(FinishReason::Stop)],
+        ]));
+        let resumed_executor = Arc::new(TestExecutor {
+            review: true,
+            calls: AtomicUsize::new(0),
+        });
+        let resumed_recording = recording_handlers();
+        let resumed_events = Arc::clone(&resumed_recording.events);
+        let mut resumed_options = ApiSessionOptions::new("test-model", resumed_transport);
+        resumed_options.executor = resumed_executor.clone();
+        let (_, resumed) =
+            ApiAgentSession::resume(snapshot, resumed_options, resumed_recording.handlers).unwrap();
+        let resumed_turn = resumed
+            .send_turn(&thread.id, "Read it again", &[], &TurnOptions::default())
+            .unwrap();
+        assert!(resumed.wait_for_turn(&resumed_turn, WAIT));
+        assert_eq!(resumed_executor.calls.load(Ordering::Acquire), 1);
+        assert!(
+            !lock(&resumed_events)
+                .iter()
+                .any(|event| matches!(event, DomainEvent::ApprovalRequested { .. }))
         );
     }
 

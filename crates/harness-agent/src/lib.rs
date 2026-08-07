@@ -2,6 +2,7 @@ use harness_protocol::{
     Account, ApprovalDecision, ApprovalMode, AuthStartLoginResult, Capabilities, DomainEvent,
     McpListResult, McpOAuthStartResult, McpServerConfig, Model, SkillsListResult, Thread,
 };
+use serde_json::Value;
 use std::collections::HashMap;
 use std::sync::Arc;
 use thiserror::Error;
@@ -178,6 +179,29 @@ impl CredentialValues {
     }
 }
 
+#[derive(Clone, Default, PartialEq, Eq)]
+pub struct AgentSessionState(Value);
+
+impl AgentSessionState {
+    pub fn new(value: Value) -> Self {
+        Self(value)
+    }
+
+    pub fn value(&self) -> &Value {
+        &self.0
+    }
+
+    pub fn into_value(self) -> Value {
+        self.0
+    }
+}
+
+impl std::fmt::Debug for AgentSessionState {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("AgentSessionState([redacted])")
+    }
+}
+
 impl std::fmt::Debug for CredentialValues {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(formatter, "CredentialValues([redacted; {}])", self.0.len())
@@ -193,6 +217,7 @@ pub struct StartOptions {
     pub approval: Option<ApprovalMode>,
     pub mcp_servers: Vec<McpServerConfig>,
     pub mcp_credentials: CredentialValues,
+    pub resume_state: Option<AgentSessionState>,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -243,6 +268,10 @@ pub trait AgentSession: Send + Sync {
         _answers: &HashMap<String, Vec<String>>,
     ) -> AgentResult<bool> {
         Err(AgentError::Unsupported("structured input"))
+    }
+
+    fn export_state(&self) -> AgentResult<Option<AgentSessionState>> {
+        Ok(None)
     }
 
     fn list_mcp_servers(&self, _thread_id: &str) -> AgentResult<McpListResult> {
@@ -357,6 +386,19 @@ mod tests {
 
         let debug = format!("{credentials:?}");
         assert_eq!(debug, "CredentialValues([redacted; 1])");
+        assert!(!debug.contains("super-secret"));
+    }
+
+    #[test]
+    fn provider_session_state_never_exposes_contents_in_debug_output() {
+        let state = AgentSessionState::new(serde_json::json!({
+            "messages": [{ "content": "private conversation" }],
+            "token": "super-secret"
+        }));
+
+        let debug = format!("{state:?}");
+        assert_eq!(debug, "AgentSessionState([redacted])");
+        assert!(!debug.contains("private conversation"));
         assert!(!debug.contains("super-secret"));
     }
 

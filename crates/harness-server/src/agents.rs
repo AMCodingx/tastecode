@@ -4,8 +4,8 @@ use crate::model_connections::ModelConnectionStore;
 use harness_adapter_api::{ApiRuntime, ApiToolFactory};
 use harness_adapter_codex::CodexRuntime;
 use harness_agent::{
-    AgentError, AgentHandlers, AgentRuntime, AgentSession, ControlHandlers, CredentialValues,
-    ProviderControl, StartOptions, TurnOptions,
+    AgentError, AgentHandlers, AgentRuntime, AgentSession, AgentSessionState, ControlHandlers,
+    CredentialValues, ProviderControl, StartOptions, TurnOptions,
 };
 use harness_credentials::CredentialStore;
 use harness_protocol::{
@@ -469,6 +469,7 @@ impl AgentManager {
         state: &Arc<ServerState>,
         request: StartThreadRequest,
     ) -> Result<Thread, String> {
+        let stored_connection_id = request.connection_id.clone();
         let (mcp_servers, mcp_credentials) =
             self.mcp_runtime_config(state, request.provider, &request.workspace_path)?;
         let provisional_id = format!("{}-{}", provider_key(request.provider), Uuid::new_v4());
@@ -510,6 +511,7 @@ impl AgentManager {
             approval: request.approval,
             mcp_servers,
             mcp_credentials,
+            resume_state: None,
         };
         let workspace = worktree
             .as_ref()
@@ -522,26 +524,50 @@ impl AgentManager {
                 return Err(error.to_string());
             }
         };
+        let initial_state = match session.export_state() {
+            Ok(state) => state,
+            Err(_) => {
+                session.dispose();
+                cleanup_failed_worktree(worktree.as_ref());
+                return Err("provider could not prepare durable session state".into());
+            }
+        };
+        let mut inserted = false;
         let stored = {
             let store = lock(&state.store);
             store
                 .add_project(&request.workspace_path, None)
                 .and_then(|_| {
-                    store.add_thread(NewThread {
-                        id: thread.id.clone(),
-                        project_path: request.workspace_path,
-                        provider: request.provider,
-                        agent: request.agent,
-                        title: "New session".into(),
-                        created_at: Some(timestamp_i64(thread.created_at)),
-                        worktree_path: worktree
-                            .as_ref()
-                            .map(|entry| entry.path.to_string_lossy().into_owned()),
-                        worktree_branch: worktree.as_ref().map(|entry| entry.branch.clone()),
-                    })
+                    store.add_thread_with_connection(
+                        NewThread {
+                            id: thread.id.clone(),
+                            project_path: request.workspace_path,
+                            provider: request.provider,
+                            agent: request.agent,
+                            title: "New session".into(),
+                            created_at: Some(timestamp_i64(thread.created_at)),
+                            worktree_path: worktree
+                                .as_ref()
+                                .map(|entry| entry.path.to_string_lossy().into_owned()),
+                            worktree_branch: worktree.as_ref().map(|entry| entry.branch.clone()),
+                        },
+                        stored_connection_id.as_deref(),
+                    )
+                })
+                .and_then(|stored| {
+                    inserted = true;
+                    if let Some(initial_state) = initial_state.as_ref() {
+                        store.set_provider_session_state(&thread.id, initial_state.value())?;
+                    }
+                    Ok(stored)
                 })
         };
         if let Err(error) = stored {
+            if inserted {
+                let mut store = lock(&state.store);
+                let _ = store.forget_worktree(&thread.id);
+                let _ = store.delete_thread(&thread.id);
+            }
             session.dispose();
             cleanup_failed_worktree(worktree.as_ref());
             return Err(error.to_string());
@@ -1025,14 +1051,28 @@ impl AgentManager {
         state: &Arc<ServerState>,
         thread_id: &str,
     ) -> Result<Arc<dyn AgentSession>, String> {
-        let stored = lock(&state.store)
-            .thread(thread_id)
-            .map_err(|error| error.to_string())?
-            .filter(|thread| thread.closed_at.is_none())
-            .ok_or_else(|| format!("no such thread: {thread_id}"))?;
+        let (stored, connection_id, resume_state) = {
+            let store = lock(&state.store);
+            let stored = store
+                .thread(thread_id)
+                .map_err(|error| error.to_string())?
+                .filter(|thread| thread.closed_at.is_none())
+                .ok_or_else(|| format!("no such thread: {thread_id}"))?;
+            let connection_id = store
+                .thread_connection_id(thread_id)
+                .map_err(|error| error.to_string())?;
+            let resume_state = store
+                .provider_session_state(thread_id)
+                .map_err(|error| error.to_string())?;
+            (stored, connection_id, resume_state)
+        };
         let runtime = self
             .runtimes
-            .runtime(stored.provider, stored.agent.as_deref(), None)
+            .runtime(
+                stored.provider,
+                stored.agent.as_deref(),
+                connection_id.as_deref(),
+            )
             .map_err(|error| error.to_string())?;
         let bridge = Arc::new(EventBridge::new(Arc::downgrade(state)));
         let event_bridge = Arc::clone(&bridge);
@@ -1051,6 +1091,7 @@ impl AgentManager {
         let options = StartOptions {
             mcp_servers,
             mcp_credentials,
+            resume_state: resume_state.map(AgentSessionState::new),
             ..StartOptions::default()
         };
         let (thread, session) = runtime
@@ -1092,6 +1133,17 @@ impl AgentManager {
             .get(thread_id)
             .cloned()
             .ok_or_else(|| format!("no such live thread: {thread_id}"))
+    }
+
+    fn export_provider_session_state(&self, thread_id: &str) -> Option<AgentSessionState> {
+        let session = lock(&self.live).sessions.get(thread_id).cloned()?;
+        match session.export_state() {
+            Ok(state) => state,
+            Err(_) => {
+                eprintln!("[server] could not export provider state for {thread_id}");
+                None
+            }
+        }
     }
 
     fn notify_queue(&self, state: &ServerState, thread_id: &str) {
@@ -1296,9 +1348,13 @@ fn record_event(state: &Arc<ServerState>, thread_id: &str, event: DomainEvent) {
         event,
         DomainEvent::TurnCompleted { .. } | DomainEvent::ThreadError { .. }
     );
+    let provider_state = terminal
+        .then(|| state.agents.export_provider_session_state(thread_id))
+        .flatten();
     let lifecycle = {
         let mut store = lock(&state.store);
-        let Ok(seq) = store.append(thread_id, &event) else {
+        let provider_state = provider_state.as_ref().map(AgentSessionState::value);
+        let Ok(seq) = store.append_with_provider_state(thread_id, &event, provider_state) else {
             eprintln!("[server] could not persist agent event for {thread_id}");
             return;
         };

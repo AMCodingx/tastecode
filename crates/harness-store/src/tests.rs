@@ -112,6 +112,50 @@ fn threads_keep_provider_identity_order_and_worktree_ownership() {
 }
 
 #[test]
+fn provider_identity_and_opaque_session_state_survive_reopen_and_delete() {
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("harness.db");
+    let store = Store::open(&path).unwrap();
+    store.add_project("/repo", None).unwrap();
+    store
+        .add_thread_with_connection(
+            thread("api-thread", "/repo", ProviderId::Api),
+            Some("work-openrouter"),
+        )
+        .unwrap();
+    store
+        .set_provider_session_state(
+            "api-thread",
+            &json!({
+                "model": "openai/gpt-test",
+                "messages": [{ "role": "user", "content": "hello" }]
+            }),
+        )
+        .unwrap();
+    store.close().unwrap();
+
+    let mut reopened = Store::open(&path).unwrap();
+    assert_eq!(
+        reopened.thread_connection_id("api-thread").unwrap(),
+        Some("work-openrouter".into())
+    );
+    assert_eq!(
+        reopened.provider_session_state("api-thread").unwrap(),
+        Some(json!({
+            "model": "openai/gpt-test",
+            "messages": [{ "role": "user", "content": "hello" }]
+        }))
+    );
+    reopened.delete_thread("api-thread").unwrap();
+    assert!(
+        reopened
+            .provider_session_state("api-thread")
+            .unwrap()
+            .is_none()
+    );
+}
+
+#[test]
 fn lifecycle_and_sidebar_settings_survive_reopen() {
     let directory = tempfile::tempdir().unwrap();
     let path = directory.path().join("harness.db");
@@ -239,6 +283,14 @@ fn opening_an_old_database_adds_new_columns_without_losing_rows() {
     );
     let thread = migrated.thread("t1").unwrap().unwrap();
     assert_eq!(thread.title, "Old session");
+    assert_eq!(migrated.thread_connection_id("t1").unwrap(), None);
+    migrated
+        .set_provider_session_state("t1", &json!({ "legacy": true }))
+        .unwrap();
+    assert_eq!(
+        migrated.provider_session_state("t1").unwrap(),
+        Some(json!({ "legacy": true }))
+    );
     assert_eq!(
         thread.lifecycle,
         ThreadLifecycle::Active {
@@ -503,6 +555,9 @@ fn append_rolls_back_when_atomic_search_indexing_fails() {
     seeded
         .add_thread(thread("t1", "/repo", ProviderId::Codex))
         .unwrap();
+    seeded
+        .set_provider_session_state("t1", &json!({ "version": "before" }))
+        .unwrap();
     seeded.close().unwrap();
     let raw = Connection::open(&path).unwrap();
     raw.execute(
@@ -517,10 +572,18 @@ fn append_rolls_back_when_atomic_search_indexing_fails() {
     let mut reopened = Store::open(&path).unwrap();
     assert!(
         reopened
-            .append("t1", &message("t1", "atomic result", 1.0))
+            .append_with_provider_state(
+                "t1",
+                &message("t1", "atomic result", 1.0),
+                Some(&json!({ "version": "after" })),
+            )
             .is_err()
     );
     assert!(reopened.history("t1", 0).unwrap().is_empty());
+    assert_eq!(
+        reopened.provider_session_state("t1").unwrap(),
+        Some(json!({ "version": "before" }))
+    );
 }
 
 #[test]

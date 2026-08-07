@@ -1,6 +1,7 @@
 use crate::{ApiAdapterError, endpoint};
 use harness_protocol::{ModelConnectionInput, ModelConnectionPreset, ModelTransport, Usage};
 use reqwest::blocking::{Client, Response};
+use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value, json};
 use std::collections::BTreeMap;
 use std::io::{BufRead as _, BufReader, Read as _};
@@ -8,14 +9,14 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct ApiToolCall {
     pub id: String,
     pub name: String,
     pub input: Value,
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub enum ApiMessage {
     User {
         content: String,
