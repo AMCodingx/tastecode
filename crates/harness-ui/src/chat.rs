@@ -15,10 +15,10 @@ use crate::theme::{CHAT_WIDTH, RADIUS_XL, Theme, ThemeMode};
 use crate::zoom::px;
 use diff::DiffUiState;
 use gpui::{
-    Animation, AnimationExt, AnyElement, App, BoxShadow, ClipboardEntry, Context, Entity,
-    EventEmitter, Focusable, FontWeight, Image, ImageFormat, ListAlignment, ListOffset, ListState,
-    ObjectFit, Render, SharedString, StyledImage, Window, div, img, linear_color_stop,
-    linear_gradient, point, prelude::*, relative, svg,
+    Animation, AnimationExt, AnyElement, App, Background, BoxShadow, ClipboardEntry, Context,
+    Entity, EventEmitter, Focusable, FontWeight, Image, ImageFormat, ListAlignment, ListOffset,
+    ListState, ObjectFit, Render, ScrollWheelEvent, SharedString, StyledImage, Window, div, img,
+    linear_color_stop, linear_gradient, point, prelude::*, relative, svg,
 };
 use gpui_component::RopeExt;
 use gpui_component::input::{Input, InputEvent, InputState};
@@ -38,7 +38,7 @@ use std::io::Write as _;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use terminal::TerminalUiState;
 use voice::{MAX_RECORDING_DURATION, VOICE_SAMPLE_RATE, VoiceRecorder};
 
@@ -321,6 +321,7 @@ pub(crate) struct ChatView {
     user_input_answers: HashMap<String, String>,
     user_input_custom_question: Option<String>,
     user_input_field_sync: Option<InputFieldSync>,
+    last_user_input_wheel: Option<Instant>,
     pending_approvals: HashSet<String>,
     pending_user_inputs: HashSet<String>,
     action_errors: HashMap<String, String>,
@@ -447,6 +448,7 @@ impl ChatView {
             user_input_answers: HashMap::new(),
             user_input_custom_question: None,
             user_input_field_sync: None,
+            last_user_input_wheel: None,
             pending_approvals: HashSet::new(),
             pending_user_inputs: HashSet::new(),
             action_errors: HashMap::new(),
@@ -529,6 +531,7 @@ impl ChatView {
         self.user_input_step = 0;
         self.user_input_answers.clear();
         self.user_input_custom_question = None;
+        self.last_user_input_wheel = None;
         self.user_input_field_sync = Some(InputFieldSync {
             value: String::new(),
             masked: false,
@@ -1239,6 +1242,7 @@ impl ChatView {
             self.user_input_step = 0;
             self.user_input_answers.clear();
             self.user_input_custom_question = None;
+            self.last_user_input_wheel = None;
             self.user_input_field_sync = Some(InputFieldSync {
                 value: String::new(),
                 masked: false,
@@ -1404,6 +1408,43 @@ impl ChatView {
         self.active_user_input_id
             .as_ref()
             .is_some_and(|request_id| self.pending_user_inputs.contains(request_id))
+    }
+
+    fn navigate_user_input_wheel(&mut self, event: &ScrollWheelEvent, cx: &mut Context<Self>) {
+        if self.pending_user_input() {
+            return;
+        }
+        let delta_y = f32::from(event.delta.pixel_delta(px(40.0)).y);
+        if delta_y.abs() < 28.0 {
+            return;
+        }
+        let now = Instant::now();
+        if self
+            .last_user_input_wheel
+            .is_some_and(|last| now.duration_since(last) < Duration::from_millis(360))
+        {
+            return;
+        }
+        let can_advance = self
+            .current_user_input_question()
+            .and_then(|question| self.user_input_answers.get(&question.id))
+            .is_some_and(|answer| !answer.trim().is_empty())
+            && self
+                .active_user_input()
+                .is_some_and(|request| self.user_input_step + 1 < request.questions.len());
+        let moved = if delta_y > 0.0 && self.user_input_step > 0 {
+            self.back_user_input(cx);
+            true
+        } else if delta_y < 0.0 && can_advance {
+            self.advance_user_input(cx);
+            true
+        } else {
+            false
+        };
+        if moved {
+            self.last_user_input_wheel = Some(now);
+            cx.stop_propagation();
+        }
     }
 
     fn decide_approval(
@@ -2267,30 +2308,49 @@ impl ChatView {
         let bottom = (if is_new_session { 150.0 } else { 114.0 }) + attachment_offset;
 
         if pending {
+            let status_bottom = bottom - 2.0;
+            let request_animation_id = request.created_at.max(0.0) as u64;
             return Some(
                 div()
                     .absolute()
                     .left(px(0.0))
-                    .bottom(px(bottom))
+                    .bottom(px(status_bottom))
                     .h(px(36.0))
                     .flex()
                     .items_center()
                     .gap(px(9.0))
-                    .rounded(px(18.0))
+                    .rounded(px(20.0))
                     .border_1()
                     .border_color(theme.line_strong.hsla())
-                    .bg(theme.surface.hsla())
-                    .shadow_lg()
+                    .bg(theme.surface.hsla().opacity(0.94))
+                    .shadow(brief_flyout_shadows(theme))
                     .px(px(13.0))
-                    .text_size(px(11.5))
+                    .text_size(px(12.5))
                     .text_color(theme.text_2.hsla())
                     .child(
-                        div()
-                            .size(px(8.0))
-                            .rounded(px(4.0))
-                            .bg(theme.attention.hsla()),
+                        svg()
+                            .path("icons/loader-circle.svg")
+                            .size(px(14.0))
+                            .with_animation(
+                                ("brief-submit-spinner", request_animation_id),
+                                theme.repeating_animation(Duration::from_millis(700)),
+                                |spinner, delta| {
+                                    spinner.with_transformation(gpui::Transformation::rotate(
+                                        gpui::percentage(delta),
+                                    ))
+                                },
+                            ),
                     )
                     .child("Submitting answers…")
+                    .with_animation(
+                        ("brief-submit", request_animation_id),
+                        Animation::new(theme.motion_duration(Duration::from_millis(220)))
+                            .with_easing(crate::theme::web_ease_out),
+                        move |card, delta| {
+                            card.bottom(px(status_bottom - (8.0 * (1.0 - delta))))
+                                .opacity(delta)
+                        },
+                    )
                     .into_any_element(),
             );
         }
@@ -2314,26 +2374,28 @@ impl ChatView {
                 .gap(px(9.0))
                 .px(px(10.0))
                 .py(px(7.0))
-                .rounded(px(8.0))
+                .rounded(px(5.0))
                 .border_1()
                 .border_color(if active {
                     theme.text_2.hsla().opacity(0.74)
                 } else {
                     theme.line_strong.hsla().opacity(0.68)
                 })
-                .bg(if active {
-                    theme.surface_3.hsla()
-                } else {
-                    theme.surface_2.hsla().opacity(0.58)
-                })
+                .bg(brief_option_background(theme, active, false))
+                .shadow(vec![BoxShadow {
+                    color: gpui::black().opacity(0.16),
+                    offset: point(px(0.0), px(1.0)),
+                    blur_radius: px(1.0),
+                    spread_radius: px(0.0),
+                }])
                 .cursor_pointer()
                 .hover(move |style| {
                     style
                         .border_color(theme.line_strong.hsla())
-                        .bg(theme.surface_3.hsla())
+                        .bg(brief_option_background(theme, active, true))
                         .text_color(theme.text.hsla())
                 })
-                .active(|style| style.opacity(0.78))
+                .active(|style| style.opacity(0.985))
                 .on_click(move |_event, _window, cx| {
                     let question_id = question_id.clone();
                     let answer = answer.clone();
@@ -2346,8 +2408,8 @@ impl ChatView {
                     div()
                         .min_w(px(0.0))
                         .truncate()
-                        .text_size(px(11.5))
-                        .font_weight(FontWeight::MEDIUM)
+                        .text_size(px(12.5))
+                        .font_weight(FontWeight(530.0))
                         .text_color(if active {
                             theme.text.hsla()
                         } else {
@@ -2370,19 +2432,28 @@ impl ChatView {
                 .gap(px(9.0))
                 .px(px(10.0))
                 .py(px(5.0))
-                .rounded(px(8.0))
+                .rounded(px(5.0))
                 .border_1()
                 .border_color(if custom_selected {
                     theme.text_2.hsla().opacity(0.74)
                 } else {
                     theme.line_strong.hsla().opacity(0.68)
                 })
-                .bg(if custom_selected {
-                    theme.surface_3.hsla()
-                } else {
-                    theme.surface_2.hsla().opacity(0.58)
-                })
+                .bg(brief_option_background(theme, custom_selected, false))
+                .shadow(vec![BoxShadow {
+                    color: gpui::black().opacity(0.16),
+                    offset: point(px(0.0), px(1.0)),
+                    blur_radius: px(1.0),
+                    spread_radius: px(0.0),
+                }])
                 .cursor_pointer()
+                .hover(move |style| {
+                    style
+                        .border_color(theme.line_strong.hsla())
+                        .bg(brief_option_background(theme, custom_selected, true))
+                        .text_color(theme.text.hsla())
+                })
+                .active(|style| style.opacity(0.985))
                 .on_click(move |_event, _window, cx| {
                     let question_id = question_id.clone();
                     let _ = weak.update(cx, |this, cx| {
@@ -2398,7 +2469,7 @@ impl ChatView {
                             .focus_bordered(false)
                             .h(px(28.0))
                             .w_full()
-                            .text_size(px(11.5))
+                            .text_size(px(12.5))
                             .text_color(theme.text.hsla()),
                     )
                 })
@@ -2406,13 +2477,14 @@ impl ChatView {
                     row.child(
                         div()
                             .flex_1()
-                            .rounded(px(6.0))
+                            .min_h(px(28.0))
+                            .rounded(px(3.0))
                             .border_1()
                             .border_color(theme.line.hsla())
                             .bg(theme.surface.hsla().opacity(0.72))
                             .px(px(8.0))
                             .py(px(5.0))
-                            .text_size(px(11.5))
+                            .text_size(px(12.5))
                             .text_color(theme.text_3.hsla())
                             .child("Write your own answer…"),
                     )
@@ -2445,11 +2517,23 @@ impl ChatView {
                 .bottom(px(bottom))
                 .w_full()
                 .overflow_hidden()
-                .rounded(px(18.0))
+                .rounded(px(20.0))
                 .border_1()
                 .border_color(theme.line_strong.hsla())
-                .bg(theme.surface.hsla().opacity(0.98))
-                .shadow_lg()
+                .bg(theme.surface.hsla().opacity(0.94))
+                .shadow(brief_flyout_shadows(theme))
+                .on_scroll_wheel(cx.listener(|this, event, _window, cx| {
+                    this.navigate_user_input_wheel(event, cx);
+                }))
+                .child(
+                    div()
+                        .absolute()
+                        .top_0()
+                        .left_0()
+                        .right_0()
+                        .h(px(1.0))
+                        .bg(gpui::white().opacity(0.07)),
+                )
                 .child(
                     div()
                         .px(px(18.0))
@@ -2457,8 +2541,8 @@ impl ChatView {
                         .pb(px(14.0))
                         .child(
                             div()
-                                .text_size(px(14.0))
-                                .font_weight(FontWeight::SEMIBOLD)
+                                .text_size(px(15.0))
+                                .font_weight(FontWeight(600.0))
                                 .line_height(relative(1.35))
                                 .text_color(theme.text.hsla())
                                 .whitespace_normal()
@@ -2497,7 +2581,7 @@ impl ChatView {
                         .child(
                             div()
                                 .flex_1()
-                                .text_size(px(10.5))
+                                .text_size(px(11.5))
                                 .text_color(theme.text_3.hsla())
                                 .child(format!(
                                     "Question {} of {}",
@@ -2505,29 +2589,38 @@ impl ChatView {
                                     request.questions.len()
                                 )),
                         )
-                        .when_some(back_action, |footer, action| {
-                            footer.child(input_nav_button(
-                                "brief-back",
-                                "Back",
-                                false,
-                                theme,
-                                Some(action),
-                            ))
-                        })
-                        .child(input_nav_button(
-                            "brief-next",
-                            if last_step { "Submit" } else { "Next" },
-                            true,
-                            theme,
-                            next_action,
-                        )),
+                        .child(
+                            div()
+                                .flex()
+                                .items_center()
+                                .gap(px(6.0))
+                                .when_some(back_action, |actions, action| {
+                                    actions.child(input_nav_button(
+                                        "brief-back",
+                                        "Back",
+                                        false,
+                                        theme,
+                                        Some(action),
+                                    ))
+                                })
+                                .child(input_nav_button(
+                                    "brief-next",
+                                    if last_step { "Submit" } else { "Next" },
+                                    true,
+                                    theme,
+                                    next_action,
+                                )),
+                        ),
                 )
                 .with_animation(
                     ("brief-input", request_animation_id),
                     Animation::new(theme.motion_duration(Duration::from_millis(220)))
                         .with_easing(crate::theme::web_ease_out),
                     move |card, delta| {
+                        let horizontal_inset = 0.005 * (1.0 - delta);
                         card.bottom(px(bottom - (8.0 * (1.0 - delta))))
+                            .left(relative(horizontal_inset))
+                            .right(relative(horizontal_inset))
                             .opacity(delta)
                     },
                 )
@@ -4392,42 +4485,106 @@ fn input_nav_button(
         .flex()
         .items_center()
         .justify_center()
-        .rounded(px(8.0))
+        .rounded(px(5.0))
         .border_1()
         .border_color(if primary && enabled {
-            theme.text.hsla().opacity(0.54)
+            brief_primary_color(theme).opacity(0.54)
         } else {
             theme.line_strong.hsla().opacity(0.7)
         })
-        .bg(if primary && enabled {
-            theme.text.hsla()
-        } else {
-            theme.surface_2.hsla()
-        })
-        .text_size(px(11.5))
-        .font_weight(FontWeight::MEDIUM)
+        .bg(brief_action_background(theme, primary && enabled))
+        .shadow(vec![BoxShadow {
+            color: gpui::black().opacity(if primary && enabled { 0.28 } else { 0.18 }),
+            offset: point(px(0.0), px(1.0)),
+            blur_radius: px(if primary && enabled { 2.0 } else { 1.0 }),
+            spread_radius: px(0.0),
+        }])
+        .text_size(px(12.5))
+        .font_weight(FontWeight(570.0))
         .text_color(if primary && enabled {
-            theme.background.hsla()
+            brief_on_primary_color(theme)
         } else {
             theme.text_2.hsla()
         })
         .opacity(if enabled { 1.0 } else { 0.38 })
         .when(enabled, |button| {
-            button
-                .cursor_pointer()
-                .hover(move |style| {
-                    style.border_color(theme.line_strong.hsla()).bg(if primary {
-                        theme.text.hsla().opacity(0.88)
-                    } else {
-                        theme.surface_3.hsla()
-                    })
-                })
-                .active(|style| style.opacity(0.72))
+            button.cursor_pointer().active(|style| style.opacity(0.97))
         })
         .when_some(action, |button, action| {
             button.on_click(move |_event, _window, cx| action(cx))
         })
         .child(label)
+}
+
+fn brief_option_background(theme: Theme, selected: bool, hovered: bool) -> Background {
+    if selected {
+        return theme.surface_3.hsla().into();
+    }
+    let (top, bottom) = if hovered { (0.72, 0.50) } else { (0.50, 0.32) };
+    linear_gradient(
+        180.0,
+        linear_color_stop(theme.surface_3.hsla().opacity(top), 0.0),
+        linear_color_stop(theme.surface_2.hsla().opacity(bottom), 1.0),
+    )
+}
+
+fn brief_action_background(theme: Theme, primary: bool) -> Background {
+    if primary {
+        let top = brief_primary_color(theme);
+        let bottom = theme.surface_3.hsla().blend(top.opacity(0.82));
+        return linear_gradient(
+            180.0,
+            linear_color_stop(top, 0.0),
+            linear_color_stop(bottom, 1.0),
+        );
+    }
+    linear_gradient(
+        180.0,
+        linear_color_stop(theme.surface_3.hsla().opacity(0.58), 0.0),
+        linear_color_stop(theme.surface_2.hsla().opacity(0.38), 1.0),
+    )
+}
+
+fn brief_primary_color(theme: Theme) -> gpui::Hsla {
+    if theme.mode == ThemeMode::Dark {
+        gpui::white()
+    } else {
+        theme.text.hsla()
+    }
+}
+
+fn brief_on_primary_color(theme: Theme) -> gpui::Hsla {
+    if theme.mode == ThemeMode::Dark {
+        gpui::rgb(0x101010).into()
+    } else {
+        gpui::white()
+    }
+}
+
+fn brief_flyout_shadows(theme: Theme) -> Vec<BoxShadow> {
+    if theme.mode == ThemeMode::Dark {
+        vec![BoxShadow {
+            color: gpui::black().opacity(0.46),
+            offset: point(px(0.0), px(8.0)),
+            blur_radius: px(24.0),
+            spread_radius: px(-14.0),
+        }]
+    } else {
+        vec![
+            BoxShadow {
+                color: gpui::black().opacity(0.05),
+                offset: point(px(0.0), px(1.0)),
+                blur_radius: px(2.0),
+                spread_radius: px(0.0),
+            },
+            BoxShadow {
+                color: gpui::black().opacity(0.18),
+                offset: point(px(0.0), px(10.0)),
+                blur_radius: px(28.0),
+                spread_radius: px(-18.0),
+            },
+        ]
+    }
 }
 
 fn icon_tool_button(
