@@ -1,8 +1,8 @@
 use super::HarnessApp;
 use crate::zoom::px;
 use gpui::{
-    Animation, AnimationExt, AnyElement, BoxShadow, Context, Image, MouseButton, ObjectFit,
-    ScrollHandle, StyledImage, Window, div, img, point, prelude::*, relative, rgba, svg,
+    Animation, AnimationExt, AnyElement, BoxShadow, Context, FontFeatures, Image, MouseButton,
+    ObjectFit, ScrollHandle, StyledImage, Window, div, img, point, prelude::*, relative, rgba, svg,
 };
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -118,6 +118,8 @@ impl HarnessApp {
         let image_id = image.id();
         let zoom_out_disabled = zoom <= MIN_ZOOM;
         let zoom_in_disabled = zoom >= MAX_ZOOM;
+        let mut zoom_font = gpui::font(self.interface_font());
+        zoom_font.features = FontFeatures(Arc::new(vec![("tnum".into(), 1)]));
         let frame = div()
             .flex_none()
             .m_auto()
@@ -129,7 +131,7 @@ impl HarnessApp {
                     .id("image-viewer-image")
                     .max_w_full()
                     .max_h_full()
-                    .rounded(px(5.0))
+                    .rounded(px(3.0))
                     .shadow(vec![BoxShadow {
                         color: rgba(0x0000006b).into(),
                         offset: point(px(0.0), px(24.0)),
@@ -259,6 +261,7 @@ impl HarnessApp {
                                 .min_w(px(62.0))
                                 .flex()
                                 .justify_center()
+                                .font(zoom_font)
                                 .text_size(px(12.5))
                                 .child(format!("{}%", (zoom * 100.0).round() as u16)),
                         )
