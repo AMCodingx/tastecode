@@ -300,6 +300,12 @@ impl HarnessApp {
             &sidebar_editor_input,
             |this, _input, event: &InputEvent, cx| match event {
                 InputEvent::PressEnter { .. } => this.commit_sidebar_dialog(cx),
+                InputEvent::Blur
+                    if this.state.sidebar_settings.mode == SidebarMode::Classic
+                        && this.sidebar_controls.is_renaming() =>
+                {
+                    this.commit_sidebar_dialog(cx);
+                }
                 InputEvent::Change | InputEvent::Focus | InputEvent::Blur => cx.notify(),
             },
         )
@@ -1858,6 +1864,9 @@ impl Render for HarnessApp {
                 selected_scope: self.sidebar_scope.as_deref(),
                 query: &sidebar_query,
                 search_input: self.sidebar_search.clone(),
+                rename_input: self.sidebar_controls.input.clone(),
+                renaming_project: self.sidebar_controls.renaming_project(),
+                renaming_thread: self.sidebar_controls.renaming_thread(),
                 scope_open: self.scope_open,
                 new_thread_picker: self.new_thread_picker,
                 collapsed_projects: &self.collapsed_projects,

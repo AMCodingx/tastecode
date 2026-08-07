@@ -7,7 +7,7 @@ use gpui::{
     Animation, AnimationExt, AnyElement, ClipboardItem, Context, Entity, FocusHandle, FontWeight,
     Pixels, Point, SharedString, Window, div, prelude::*, relative,
 };
-use gpui_component::input::{Input, InputState};
+use gpui_component::input::{Input, InputState, SelectAll};
 use harness_protocol::{SessionSummary, ThreadInboxStatus, ThreadLifecycle};
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::process::Command;
@@ -76,6 +76,27 @@ impl SidebarControlsState {
 
     pub(super) fn is_open(&self) -> bool {
         self.menu.is_some() || self.dialog.is_some()
+    }
+
+    pub(super) fn is_renaming(&self) -> bool {
+        matches!(
+            self.dialog,
+            Some(SidebarDialog::RenameProject { .. } | SidebarDialog::RenameThread { .. })
+        )
+    }
+
+    pub(super) fn renaming_project(&self) -> Option<&str> {
+        match self.dialog.as_ref() {
+            Some(SidebarDialog::RenameProject { path }) => Some(path),
+            _ => None,
+        }
+    }
+
+    pub(super) fn renaming_thread(&self) -> Option<&str> {
+        match self.dialog.as_ref() {
+            Some(SidebarDialog::RenameThread { thread_id }) => Some(thread_id),
+            _ => None,
+        }
     }
 
     pub(super) fn sync_inbox_rows(&mut self, ordered_ids: &[String], cx: &mut Context<HarnessApp>) {
@@ -192,6 +213,9 @@ impl HarnessApp {
                 .input
                 .update(cx, |input, cx| input.focus(window, cx));
             self.sidebar_controls.focus_pending = false;
+            cx.on_next_frame(window, |_this, window, cx| {
+                window.dispatch_action(Box::new(SelectAll), cx);
+            });
         }
     }
 
@@ -204,6 +228,10 @@ impl HarnessApp {
             .trim()
             .to_owned();
         if value.is_empty() {
+            if self.sidebar_controls.is_renaming() {
+                self.sidebar_controls.dialog = None;
+                cx.notify();
+            }
             return;
         }
         let Some(dialog) = self.sidebar_controls.dialog.take() else {
@@ -428,6 +456,14 @@ impl HarnessApp {
         cx: &Context<Self>,
     ) -> Option<AnyElement> {
         if let Some(dialog) = self.sidebar_controls.dialog.clone() {
+            if self.state.sidebar_settings.mode == harness_protocol::SidebarMode::Classic
+                && matches!(
+                    dialog,
+                    SidebarDialog::RenameProject { .. } | SidebarDialog::RenameThread { .. }
+                )
+            {
+                return None;
+            }
             return Some(self.sidebar_dialog_overlay(dialog, cx));
         }
         let menu = self.sidebar_controls.menu.as_ref()?;

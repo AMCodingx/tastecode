@@ -7,6 +7,7 @@ use gpui::{
     FontWeight, Hsla, KeyDownEvent, Pixels, Point, SharedString, Window, div, linear_color_stop,
     linear_gradient, point, prelude::*, relative, svg,
 };
+use gpui_component::Sizable as _;
 use gpui_component::input::{Input, InputState};
 use harness_client::ConnectionState;
 use harness_protocol::{
@@ -80,6 +81,9 @@ pub(crate) struct SidebarProps<'a> {
     pub(crate) selected_scope: Option<&'a str>,
     pub(crate) query: &'a str,
     pub(crate) search_input: Entity<InputState>,
+    pub(crate) rename_input: Entity<InputState>,
+    pub(crate) renaming_project: Option<&'a str>,
+    pub(crate) renaming_thread: Option<&'a str>,
     pub(crate) scope_open: bool,
     pub(crate) new_thread_picker: bool,
     pub(crate) collapsed_projects: &'a std::collections::HashSet<String>,
@@ -110,6 +114,9 @@ pub fn sidebar(props: SidebarProps<'_>, actions: SidebarActions) -> impl IntoEle
         selected_scope,
         query,
         search_input,
+        rename_input,
+        renaming_project,
+        renaming_thread,
         scope_open,
         new_thread_picker,
         collapsed_projects,
@@ -166,6 +173,9 @@ pub fn sidebar(props: SidebarProps<'_>, actions: SidebarActions) -> impl IntoEle
                 selected_thread_id,
                 collapsed_projects,
                 expanded_project_sessions,
+                renaming_project,
+                renaming_thread,
+                &rename_input,
                 actions.clone(),
             )
             .into_any_element()
@@ -1047,19 +1057,21 @@ fn classic_sidebar_body(
     selected_thread_id: Option<&str>,
     collapsed_projects: &std::collections::HashSet<String>,
     expanded_project_sessions: &std::collections::HashSet<String>,
+    renaming_project: Option<&str>,
+    renaming_thread: Option<&str>,
+    rename_input: &Entity<InputState>,
     actions: SidebarActions,
 ) -> impl IntoElement {
+    let rename = ClassicRename {
+        project: renaming_project,
+        thread: renaming_thread,
+        input: rename_input,
+    };
     let mut pinned_sessions = projects
         .iter()
-        .flat_map(|project| {
-            project
-                .sessions
-                .iter()
-                .filter(|session| session.pinned)
-                .map(move |session| (project, session))
-        })
+        .flat_map(|project| project.sessions.iter().filter(|session| session.pinned))
         .collect::<Vec<_>>();
-    pinned_sessions.sort_by(|(_, left), (_, right)| newest_first(left, right));
+    pinned_sessions.sort_by(|left, right| newest_first(left, right));
     let mut ordered_projects = projects.iter().collect::<Vec<_>>();
     ordered_projects.sort_by_key(|project| !project.pinned);
     let status = match connection {
@@ -1082,12 +1094,12 @@ fn classic_sidebar_body(
         })
         .when(!pinned_sessions.is_empty(), |body| {
             body.child(section_label("Pinned".into(), theme)).children(
-                pinned_sessions.into_iter().map(|(project, session)| {
+                pinned_sessions.into_iter().map(|session| {
                     classic_session_row(
-                        project,
                         session,
                         selected_thread_id == Some(session.id.as_str()),
                         true,
+                        rename,
                         theme,
                         &actions,
                     )
@@ -1101,10 +1113,18 @@ fn classic_sidebar_body(
                 selected_thread_id,
                 !collapsed_projects.contains(&project.path),
                 expanded_project_sessions.contains(&project.path),
+                rename,
                 theme,
                 &actions,
             )
         }))
+}
+
+#[derive(Clone, Copy)]
+struct ClassicRename<'a> {
+    project: Option<&'a str>,
+    thread: Option<&'a str>,
+    input: &'a Entity<InputState>,
 }
 
 fn classic_project(
@@ -1112,6 +1132,7 @@ fn classic_project(
     selected_thread_id: Option<&str>,
     expanded: bool,
     show_all: bool,
+    rename: ClassicRename<'_>,
     theme: Theme,
     actions: &SidebarActions,
 ) -> AnyElement {
@@ -1135,103 +1156,115 @@ fn classic_project(
     };
     let drawer_height = classic_project_drawer_height(visible.len(), has_more);
     let drawer_open = expanded && !sessions.is_empty();
-    let header = div()
-        .group("classic-project")
-        .w_full()
-        .flex()
-        .items_center()
-        .gap(px(1.0))
-        .child(
-            div()
-                .id(SharedString::from(format!(
-                    "classic-project:{}",
-                    project.path
-                )))
-                .min_w(px(0.0))
-                .flex_1()
-                .flex()
-                .items_center()
-                .gap(px(8.0))
-                .px(px(8.0))
-                .py(px(5.0))
-                .rounded(px(RADIUS_MD))
-                .text_size(px(13.5))
-                .text_color(theme.text.hsla())
-                .cursor_pointer()
-                .hover(move |style| style.bg(chrome_raised(theme)).shadow(chrome_shadows(theme)))
-                .on_click({
-                    let toggle = actions.toggle_project.clone();
-                    let open_menu = actions.open_menu.clone();
-                    move |event, _window, cx| {
-                        if event.is_right_click() {
-                            cx.stop_propagation();
-                            open_menu(
-                                SidebarMenuRequest::Project(menu_path.clone()),
-                                event.position(),
-                                cx,
-                            );
-                        } else if event.standard_click() {
-                            toggle(toggle_path.clone(), cx);
+    let header = if rename.project == Some(project.path.as_str()) {
+        div()
+            .w_full()
+            .flex()
+            .items_center()
+            .child(classic_inline_rename(rename.input, theme))
+            .into_any_element()
+    } else {
+        div()
+            .group("classic-project")
+            .w_full()
+            .flex()
+            .items_center()
+            .gap(px(1.0))
+            .child(
+                div()
+                    .id(SharedString::from(format!(
+                        "classic-project:{}",
+                        project.path
+                    )))
+                    .min_w(px(0.0))
+                    .flex_1()
+                    .flex()
+                    .items_center()
+                    .gap(px(8.0))
+                    .px(px(8.0))
+                    .py(px(5.0))
+                    .rounded(px(RADIUS_MD))
+                    .text_size(px(13.5))
+                    .text_color(theme.text.hsla())
+                    .cursor_pointer()
+                    .hover(move |style| {
+                        style.bg(chrome_raised(theme)).shadow(chrome_shadows(theme))
+                    })
+                    .on_click({
+                        let toggle = actions.toggle_project.clone();
+                        let open_menu = actions.open_menu.clone();
+                        move |event, _window, cx| {
+                            if event.is_right_click() {
+                                cx.stop_propagation();
+                                open_menu(
+                                    SidebarMenuRequest::Project(menu_path.clone()),
+                                    event.position(),
+                                    cx,
+                                );
+                            } else if event.standard_click() {
+                                toggle(toggle_path.clone(), cx);
+                            }
                         }
-                    }
-                })
-                .child(
-                    div()
-                        .flex_none()
-                        .text_color(theme.text_3.hsla())
-                        .child(icon("icons/folder.svg", 12.0)),
-                )
-                .child(
-                    div()
-                        .min_w(px(0.0))
-                        .flex_1()
-                        .truncate()
-                        .child(project.name.clone()),
-                ),
-        )
-        .child(classic_project_menu_button(
-            format!("project-menu:{}", project.path).into(),
-            SidebarMenuRequest::Project(menu_button_path),
-            theme,
-            actions.open_menu.clone(),
-        ))
-        .child(
-            div()
-                .id(SharedString::from(format!("new-chat:{}", project.path)))
-                .size(px(22.0))
-                .flex_none()
-                .flex()
-                .items_center()
-                .justify_center()
-                .rounded(px(RADIUS_SM))
-                .text_color(theme.text_3.hsla())
-                .opacity(0.0)
-                .group_hover("classic-project", |button| button.opacity(1.0))
-                .cursor_pointer()
-                .hover(move |style| {
-                    style
-                        .bg(theme.surface_2.hsla())
-                        .text_color(theme.text.hsla())
-                })
-                .on_click({
-                    let new_chat = actions.new_chat_in_project.clone();
-                    move |_event, _window, cx| {
-                        cx.stop_propagation();
-                        new_chat(new_chat_path.clone(), cx);
-                    }
-                })
-                .active(|style| style.inset(px(0.66)))
-                .child(icon("icons/plus.svg", 13.0)),
-        );
+                    })
+                    .child(
+                        div()
+                            .flex_none()
+                            .text_color(theme.text_3.hsla())
+                            .child(icon("icons/folder.svg", 12.0)),
+                    )
+                    .child(
+                        div()
+                            .min_w(px(0.0))
+                            .flex_1()
+                            .truncate()
+                            .child(project.name.clone()),
+                    ),
+            )
+            .child(classic_project_menu_button(
+                format!("project-menu:{}", project.path).into(),
+                SidebarMenuRequest::Project(menu_button_path),
+                theme,
+                actions.open_menu.clone(),
+            ))
+            .child(
+                div()
+                    .id(SharedString::from(format!("new-chat:{}", project.path)))
+                    .size(px(22.0))
+                    .flex_none()
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .rounded(px(RADIUS_SM))
+                    .text_color(theme.text_3.hsla())
+                    .opacity(0.0)
+                    .group_hover("classic-project", |button| button.opacity(1.0))
+                    .cursor_pointer()
+                    .hover(move |style| {
+                        style
+                            .bg(theme.surface_2.hsla())
+                            .text_color(theme.text.hsla())
+                    })
+                    .on_click({
+                        let new_chat = actions.new_chat_in_project.clone();
+                        move |_event, _window, cx| {
+                            cx.stop_propagation();
+                            new_chat(new_chat_path.clone(), cx);
+                        }
+                    })
+                    .active(|style| style.inset(px(0.66)))
+                    .child(icon("icons/plus.svg", 13.0)),
+            )
+            .into_any_element()
+    };
 
     let mut drawer_rows = visible
         .iter()
         .map(|session| {
             classic_session_row(
-                project,
                 session,
                 selected_thread_id == Some(session.id.as_str()),
                 false,
+                rename,
                 theme,
                 actions,
             )
@@ -1312,6 +1345,31 @@ fn classic_project_drawer_state(open: bool, height: f32, progress: f32) -> (f32,
     (height * height_progress, opacity)
 }
 
+fn classic_inline_rename(input: &Entity<InputState>, theme: Theme) -> AnyElement {
+    div()
+        .h(px(26.0))
+        .w_full()
+        .flex()
+        .items_center()
+        .px(px(4.0))
+        .rounded(px(RADIUS_MD))
+        .border_1()
+        .border_color(theme.line_strong.hsla())
+        .bg(theme.surface_2.hsla())
+        .child(
+            Input::new(input)
+                .xsmall()
+                .appearance(false)
+                .bordered(false)
+                .focus_bordered(false)
+                .min_w(px(0.0))
+                .flex_1()
+                .text_size(px(12.5))
+                .text_color(theme.text.hsla()),
+        )
+        .into_any_element()
+}
+
 fn classic_project_menu_button(
     id: SharedString,
     request: SidebarMenuRequest,
@@ -1341,13 +1399,22 @@ fn classic_project_menu_button(
 }
 
 fn classic_session_row(
-    _project: &ProjectSummary,
     session: &SessionSummary,
     active: bool,
     standalone: bool,
+    rename: ClassicRename<'_>,
     theme: Theme,
     actions: &SidebarActions,
 ) -> AnyElement {
+    if rename.thread == Some(session.id.as_str()) {
+        return div()
+            .h(px(28.0))
+            .w_full()
+            .flex()
+            .items_center()
+            .child(classic_inline_rename(rename.input, theme))
+            .into_any_element();
+    }
     let thread_id = session.id.clone();
     let select_id = thread_id.clone();
     let menu_id = thread_id.clone();
