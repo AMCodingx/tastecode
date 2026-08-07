@@ -14,6 +14,7 @@ use gpui::{
     FontWeight, KeyDownEvent, PathPromptOptions, PromptButton, PromptLevel, SharedString, Window,
     div, linear_color_stop, linear_gradient, prelude::*, relative, svg,
 };
+use gpui_component::Sizable as _;
 use gpui_component::input::{Input, InputEvent, InputState};
 use gpui_component::tooltip::Tooltip;
 use harness_protocol::{
@@ -2334,9 +2335,12 @@ impl HarnessApp {
                 div()
                     .relative()
                     .w(px(64.0))
-                    .h(px(28.0))
+                    .h(px(31.375))
                     .flex_none()
-                    .overflow_hidden()
+                    .flex()
+                    .items_center()
+                    .px(px(7.0))
+                    .py(px(5.0))
                     .rounded(px(5.0))
                     .border_1()
                     .border_color(chrome::border(theme))
@@ -2345,14 +2349,15 @@ impl HarnessApp {
                     .child(chrome::inset_top_shade(theme))
                     .child(
                         Input::new(&self.auto_settle_days_input)
+                            .xsmall()
                             .appearance(false)
                             .bordered(false)
                             .focus_bordered(false)
                             .disabled(!auto_settle)
                             .w_full()
-                            .h_full()
-                            .px(px(7.0))
-                            .py(px(5.0))
+                            .px(px(0.0))
+                            .py(px(0.0))
+                            .line_height(relative(1.55))
                             .text_size(px(12.5))
                             .text_color(if auto_settle {
                                 theme.text.hsla()
