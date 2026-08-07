@@ -7,7 +7,9 @@ mod runtime;
 
 pub use harness_agent::{AgentHandlers as CodexHandlers, StartOptions, TurnOptions};
 pub use notification::{NotificationMappingError, map_domain_notification};
-pub use runtime::{CODEX_CAPABILITIES, CodexAdapter, CodexAdapterError, CodexLaunchOptions};
+pub use runtime::{
+    CODEX_CAPABILITIES, CodexAdapter, CodexAdapterError, CodexLaunchOptions, CodexRuntime,
+};
 
 /// Context supplied by the Codex lifecycle notification around a thread item.
 #[derive(Clone, Copy, Debug, PartialEq)]

@@ -1,6 +1,6 @@
 use crate::map_domain_notification;
 use harness_agent::{
-    AgentError, AgentHandlers, AgentResult, AgentSession, StartOptions, TurnOptions,
+    AgentError, AgentHandlers, AgentResult, AgentRuntime, AgentSession, StartOptions, TurnOptions,
 };
 use harness_proc::{
     JsonRpcError, ProcessError, RpcResponder, SpawnOptions, StdioJsonRpc, spawn_cli,
@@ -46,6 +46,33 @@ impl Default for CodexLaunchOptions {
             environment: Vec::new(),
             request_timeout: DEFAULT_REQUEST_TIMEOUT,
         }
+    }
+}
+
+pub struct CodexRuntime {
+    environment: Vec<(OsString, OsString)>,
+    request_timeout: Duration,
+}
+
+impl CodexRuntime {
+    pub fn new(options: CodexLaunchOptions) -> Self {
+        Self {
+            environment: options.environment,
+            request_timeout: options.request_timeout,
+        }
+    }
+
+    fn launch_options(&self) -> CodexLaunchOptions {
+        CodexLaunchOptions {
+            environment: self.environment.clone(),
+            request_timeout: self.request_timeout,
+        }
+    }
+}
+
+impl Default for CodexRuntime {
+    fn default() -> Self {
+        Self::new(CodexLaunchOptions::default())
     }
 }
 
@@ -395,6 +422,49 @@ impl AgentSession for CodexAdapter {
 
     fn dispose(&self) {
         CodexAdapter::dispose(self);
+    }
+}
+
+impl AgentRuntime for CodexRuntime {
+    fn start(
+        &self,
+        workspace_path: &str,
+        options: &StartOptions,
+        handlers: AgentHandlers,
+    ) -> AgentResult<(Thread, Arc<dyn AgentSession>)> {
+        let adapter = CodexAdapter::launch(self.launch_options(), handlers).map_err(agent_error)?;
+        match adapter.start_thread(workspace_path, options) {
+            Ok(thread) => Ok((thread, Arc::new(adapter))),
+            Err(error) => {
+                adapter.dispose();
+                Err(agent_error(error))
+            }
+        }
+    }
+
+    fn resume(
+        &self,
+        thread_id: &str,
+        workspace_path: &str,
+        options: &StartOptions,
+        handlers: AgentHandlers,
+    ) -> AgentResult<(Thread, Arc<dyn AgentSession>)> {
+        let adapter = CodexAdapter::launch(self.launch_options(), handlers).map_err(agent_error)?;
+        match adapter.resume_thread(thread_id, workspace_path, options.instructions.as_deref()) {
+            Ok(thread) => Ok((thread, Arc::new(adapter))),
+            Err(error) => {
+                adapter.dispose();
+                Err(agent_error(error))
+            }
+        }
+    }
+
+    fn list_models(&self) -> AgentResult<Vec<Model>> {
+        let adapter = CodexAdapter::launch(self.launch_options(), AgentHandlers::default())
+            .map_err(agent_error)?;
+        let result = adapter.list_models().map_err(agent_error);
+        adapter.dispose();
+        result
     }
 }
 
