@@ -7,10 +7,6 @@ import { SHORTCUTS, shortcutAria, shortcutLabel } from '../shortcuts.js'
  * Title bar. Holds the window-level controls — the sidebar toggle belongs here
  * rather than inside the sidebar it hides, so its position never moves.
  *
- * There is deliberately no product name in the rail below. Labelling the rail
- * with the app's own name is like writing "Browser" at the top of a browser;
- * the window already says what this is.
- *
  * Height comes from --titlebar-h, which the main process also uses for the
  * native caption buttons.
  */
@@ -28,8 +24,6 @@ function TitleBarComponent(props: { collapsed: boolean; onToggleRail: () => void
       >
         <PanelLeft size={15} aria-hidden />
       </button>
-
-      <span className="titlebar__name">Personal Harness</span>
     </header>
   )
 }
