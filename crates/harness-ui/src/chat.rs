@@ -2777,7 +2777,7 @@ impl ChatView {
                         .items_center()
                         .justify_center()
                         .gap(px(5.0))
-                        .rounded(px(8.0))
+                        .rounded(px(5.0))
                         .text_size(px(13.5))
                         .text_color(theme.queue_action.hsla())
                         .cursor_pointer()
@@ -2800,7 +2800,7 @@ impl ChatView {
                     .flex()
                     .items_center()
                     .justify_center()
-                    .rounded(px(8.0))
+                    .rounded(px(5.0))
                     .text_color(theme.queue_action.hsla())
                     .cursor_pointer()
                     .hover(move |style| {
@@ -2820,7 +2820,7 @@ impl ChatView {
                     .flex()
                     .items_center()
                     .justify_center()
-                    .rounded(px(8.0))
+                    .rounded(px(5.0))
                     .text_color(theme.queue_action.hsla())
                     .cursor_pointer()
                     .hover(move |style| {
