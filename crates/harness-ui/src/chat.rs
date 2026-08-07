@@ -1,5 +1,5 @@
 mod diff;
-mod terminal;
+pub(crate) mod terminal;
 
 use crate::client_state::{ChatUpdate, ModelChoice};
 use crate::theme::{CHAT_WIDTH, Theme};

@@ -16,12 +16,12 @@ use harness_client::ConnectionState;
 use std::collections::{HashMap, VecDeque};
 use std::sync::{Arc, Mutex};
 
-const DEFAULT_COLUMNS: u16 = 100;
-const DEFAULT_ROWS: u16 = 14;
+pub(crate) const DEFAULT_COLUMNS: u16 = 100;
+pub(crate) const DEFAULT_ROWS: u16 = 14;
 const DEFAULT_HEIGHT: f32 = 260.0;
 const MIN_HEIGHT: f32 = 160.0;
-const CELL_WIDTH: f32 = 7.5;
-const CELL_HEIGHT: f32 = 15.625;
+pub(crate) const CELL_WIDTH: f32 = 7.5;
+pub(crate) const CELL_HEIGHT: f32 = 15.625;
 const EARLY_OUTPUT_LIMIT: usize = 512 * 1024;
 const EARLY_TERMINAL_LIMIT: usize = 128 * 1024;
 
@@ -34,7 +34,7 @@ enum TerminalStatus {
     Error,
 }
 
-enum EngineEvent {
+pub(crate) enum EngineEvent {
     Input(String),
     ClipboardStore(String),
     ClipboardLoad(Arc<dyn Fn(&str) -> String + Sync + Send + 'static>),
@@ -92,7 +92,7 @@ impl EventListener for TerminalEventProxy {
     }
 }
 
-struct TerminalEngine {
+pub(crate) struct TerminalEngine {
     term: Term<TerminalEventProxy>,
     processor: Processor,
     events: Arc<Mutex<TerminalEventState>>,
@@ -101,7 +101,7 @@ struct TerminalEngine {
 }
 
 impl TerminalEngine {
-    fn new(columns: u16, rows: u16) -> Self {
+    pub(crate) fn new(columns: u16, rows: u16) -> Self {
         let events = Arc::new(Mutex::new(TerminalEventState {
             columns,
             rows,
@@ -124,11 +124,11 @@ impl TerminalEngine {
         }
     }
 
-    fn advance(&mut self, data: &str) {
+    pub(crate) fn advance(&mut self, data: &str) {
         self.processor.advance(&mut self.term, data.as_bytes());
     }
 
-    fn resize(&mut self, columns: u16, rows: u16) {
+    pub(crate) fn resize(&mut self, columns: u16, rows: u16) {
         if self.columns == columns && self.rows == rows {
             return;
         }
@@ -142,28 +142,28 @@ impl TerminalEngine {
         }
     }
 
-    fn scroll(&mut self, lines: i32) {
+    pub(crate) fn scroll(&mut self, lines: i32) {
         if lines != 0 && !self.term.mode().intersects(TermMode::ALT_SCREEN) {
             self.term.scroll_display(Scroll::Delta(lines));
         }
     }
 
-    fn application_cursor(&self) -> bool {
+    pub(crate) fn application_cursor(&self) -> bool {
         self.term.mode().contains(TermMode::APP_CURSOR)
     }
 
-    fn bracketed_paste(&self) -> bool {
+    pub(crate) fn bracketed_paste(&self) -> bool {
         self.term.mode().contains(TermMode::BRACKETED_PASTE)
     }
 
-    fn drain_events(&self) -> Vec<EngineEvent> {
+    pub(crate) fn drain_events(&self) -> Vec<EngineEvent> {
         self.events
             .lock()
             .map(|mut state| std::mem::take(&mut state.events))
             .unwrap_or_default()
     }
 
-    fn frame(
+    pub(crate) fn frame(
         &self,
         theme: Theme,
         selection: Option<TerminalSelection>,
@@ -226,7 +226,7 @@ impl TerminalEngine {
         TerminalFrame { rows }
     }
 
-    fn selected_text(&self, selection: TerminalSelection) -> Option<String> {
+    pub(crate) fn selected_text(&self, selection: TerminalSelection) -> Option<String> {
         if selection.is_empty() {
             return None;
         }
@@ -281,9 +281,9 @@ impl TerminalEngine {
 }
 
 #[derive(Clone, Copy)]
-struct TerminalSelection {
-    anchor: (usize, usize),
-    focus: (usize, usize),
+pub(crate) struct TerminalSelection {
+    pub(crate) anchor: (usize, usize),
+    pub(crate) focus: (usize, usize),
 }
 
 impl TerminalSelection {
@@ -295,12 +295,12 @@ impl TerminalSelection {
         }
     }
 
-    fn contains(self, row: usize, column: usize) -> bool {
+    pub(crate) fn contains(self, row: usize, column: usize) -> bool {
         let (start, end) = self.ordered();
         (row, column) >= start && (row, column) <= end
     }
 
-    fn is_empty(self) -> bool {
+    pub(crate) fn is_empty(self) -> bool {
         self.anchor == self.focus
     }
 }
@@ -324,14 +324,14 @@ enum TerminalCursorStyle {
     Beam,
 }
 
-struct TerminalRun {
+pub(crate) struct TerminalRun {
     text: String,
     columns: usize,
     style: TerminalTextStyle,
 }
 
-struct TerminalFrame {
-    rows: Vec<Vec<TerminalRun>>,
+pub(crate) struct TerminalFrame {
+    pub(crate) rows: Vec<Vec<TerminalRun>>,
 }
 
 #[derive(Default)]
@@ -1216,7 +1216,7 @@ fn terminal_action_button(
         .into_any_element()
 }
 
-fn render_terminal_run(run: TerminalRun) -> AnyElement {
+pub(crate) fn render_terminal_run(run: TerminalRun) -> AnyElement {
     let style = run.style;
     div()
         .h_full()
@@ -1355,7 +1355,7 @@ fn named_color(color: NamedColor, theme: Theme) -> u32 {
     }
 }
 
-fn ansi_index_rgb(index: usize, theme: Theme) -> TerminalRgb {
+pub(crate) fn ansi_index_rgb(index: usize, theme: Theme) -> TerminalRgb {
     let palette = match theme.mode {
         crate::theme::ThemeMode::Dark => [
             0x282c34, 0xe06c75, 0x98c379, 0xd8b26e, 0x61afef, 0xc678dd, 0x56b6c2, 0xd7dae0,
@@ -1411,7 +1411,10 @@ fn rgb_u32(color: TerminalRgb) -> u32 {
     (u32::from(color.r) << 16) | (u32::from(color.g) << 8) | u32::from(color.b)
 }
 
-fn terminal_input_for_keystroke(keystroke: &Keystroke, application_cursor: bool) -> Option<String> {
+pub(crate) fn terminal_input_for_keystroke(
+    keystroke: &Keystroke,
+    application_cursor: bool,
+) -> Option<String> {
     let key = keystroke.key.to_ascii_lowercase();
     if keystroke.modifiers.platform {
         return None;
@@ -1521,7 +1524,7 @@ fn terminal_input_for_keystroke(keystroke: &Keystroke, application_cursor: bool)
     })
 }
 
-fn terminal_paste_data(text: String, bracketed: bool) -> String {
+pub(crate) fn terminal_paste_data(text: String, bracketed: bool) -> String {
     let text = text.replace("\r\n", "\r").replace('\n', "\r");
     if bracketed {
         let text = text.replace("\u{1b}[201~", "");
