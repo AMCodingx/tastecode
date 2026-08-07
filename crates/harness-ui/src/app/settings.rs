@@ -1556,6 +1556,7 @@ impl HarnessApp {
                 mcp_action_button(
                     "mcp-add-server".into(),
                     "Add server".into(),
+                    Some("icons/plus.svg"),
                     false,
                     self.state.mcp_busy.is_none(),
                     theme,
@@ -1651,6 +1652,7 @@ impl HarnessApp {
                         "Signing in…"
                     }
                     .into(),
+                    None,
                     false,
                     can_cancel && !busy,
                     theme,
@@ -1665,6 +1667,7 @@ impl HarnessApp {
                 actions.push(mcp_action_button(
                     format!("mcp-oauth-{server_id}").into(),
                     "Sign in".into(),
+                    None,
                     false,
                     !busy,
                     theme,
@@ -1703,6 +1706,7 @@ impl HarnessApp {
                 actions.push(mcp_action_button(
                     format!("mcp-edit-{}", server.id).into(),
                     "Edit".into(),
+                    None,
                     false,
                     !busy,
                     theme,
@@ -1728,6 +1732,7 @@ impl HarnessApp {
                 actions.push(mcp_action_button(
                     format!("mcp-remove-{server_id}").into(),
                     "Remove".into(),
+                    Some("icons/trash-2.svg"),
                     true,
                     !busy,
                     theme,
@@ -1919,6 +1924,7 @@ impl HarnessApp {
         let cancel = mcp_action_button(
             "mcp-editor-cancel".into(),
             "Cancel".into(),
+            None,
             false,
             !saving,
             theme,
@@ -1932,6 +1938,7 @@ impl HarnessApp {
         let save = mcp_action_button(
             "mcp-editor-save".into(),
             if saving { "Saving…" } else { "Save server" }.into(),
+            None,
             false,
             can_save,
             theme,
@@ -3771,6 +3778,7 @@ fn provider_action_disabled(label: &'static str, sign_out: bool, theme: Theme) -
 fn mcp_action_button(
     id: SharedString,
     label: SharedString,
+    icon: Option<&'static str>,
     destructive: bool,
     enabled: bool,
     theme: Theme,
@@ -3779,10 +3787,11 @@ fn mcp_action_button(
     div()
         .id(id)
         .relative()
-        .h(px(28.0))
         .flex()
         .items_center()
+        .gap(px(6.0))
         .px(px(10.0))
+        .py(px(6.0))
         .rounded(px(5.0))
         .border_1()
         .border_color(chrome::border(theme))
@@ -3790,16 +3799,23 @@ fn mcp_action_button(
         .shadow(chrome::shadows(theme))
         .child(chrome::top_highlight(theme))
         .text_size(px(12.5))
+        .line_height(relative(1.55))
         .text_color(if destructive {
             theme.error.hsla()
         } else {
             theme.text_2.hsla()
         })
-        .opacity(if enabled { 1.0 } else { 0.48 })
+        .opacity(if enabled { 1.0 } else { 0.5 })
         .when(enabled, |button| {
             button
                 .cursor_pointer()
-                .hover(move |style| style.bg(theme.surface_3.hsla()))
+                .hover(move |style| {
+                    style.bg(theme.surface_3.hsla()).text_color(if destructive {
+                        theme.error.hsla()
+                    } else {
+                        theme.text.hsla()
+                    })
+                })
                 .active(move |style| {
                     style
                         .top(px(1.0))
@@ -3808,6 +3824,7 @@ fn mcp_action_button(
                 })
                 .on_click(action)
         })
+        .when_some(icon, |button, icon| button.child(settings_icon(icon, 13.0)))
         .child(label)
         .into_any_element()
 }
