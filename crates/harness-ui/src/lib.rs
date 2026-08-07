@@ -6,6 +6,7 @@ mod client_state;
 mod model_selection;
 mod preferences;
 mod preview_capture;
+mod provider_icon;
 mod shortcuts;
 mod sidebar;
 mod theme;

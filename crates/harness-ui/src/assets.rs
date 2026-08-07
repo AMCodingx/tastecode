@@ -28,6 +28,20 @@ impl AssetSource for HarnessAssets {
             "icons/palette.svg" => Some(include_bytes!("../assets/icons/palette.svg")),
             "icons/mic.svg" => Some(include_bytes!("../assets/icons/mic.svg")),
             "icons/openai.svg" => Some(include_bytes!("../assets/icons/openai.svg")),
+            "icons/anthropic.svg" => Some(include_bytes!("../assets/icons/anthropic.svg")),
+            "icons/grok.svg" => Some(include_bytes!("../assets/icons/grok.svg")),
+            "icons/cursor.svg" => Some(include_bytes!("../assets/icons/cursor.svg")),
+            "icons/opencode.svg" => Some(include_bytes!("../assets/icons/opencode.svg")),
+            "icons/openrouter.svg" => Some(include_bytes!("../assets/icons/openrouter.svg")),
+            "icons/kimi.svg" => Some(include_bytes!("../assets/icons/kimi.svg")),
+            "icons/qwen.svg" => Some(include_bytes!("../assets/icons/qwen.svg")),
+            "icons/zai.svg" => Some(include_bytes!("../assets/icons/zai.svg")),
+            "icons/antigravity.svg" => Some(include_bytes!("../assets/icons/antigravity.svg")),
+            "icons/pi.svg" => Some(include_bytes!("../assets/icons/pi.svg")),
+            "icons/acp.svg" => Some(include_bytes!("../assets/icons/acp.svg")),
+            "icons/custom-provider.svg" => {
+                Some(include_bytes!("../assets/icons/custom-provider.svg"))
+            }
             "icons/file-diff.svg" => Some(include_bytes!("../assets/icons/file-diff.svg")),
             "icons/rotate-ccw.svg" => Some(include_bytes!("../assets/icons/rotate-ccw.svg")),
             "icons/copy.svg" => Some(include_bytes!("../assets/icons/copy.svg")),

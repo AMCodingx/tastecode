@@ -1,5 +1,6 @@
 use super::HarnessApp;
 use crate::client_state::AuthTarget;
+use crate::provider_icon::provider_icon;
 use crate::theme::Theme;
 use crate::zoom::px;
 use gpui::{
@@ -255,7 +256,7 @@ impl HarnessApp {
                                 .flex()
                                 .items_center()
                                 .gap(px(9.0))
-                                .child(onboarding_provider_mark(card.provider, theme, 18.0))
+                                .child(provider_icon(card.provider, theme, 18.0))
                                 .child(
                                     div()
                                         .text_size(px(14.0))
@@ -761,7 +762,7 @@ impl HarnessApp {
                             .flex()
                             .items_center()
                             .gap(px(9.0))
-                            .child(onboarding_provider_mark(choice.provider, theme, 18.0))
+                            .child(provider_icon(choice.provider, theme, 18.0))
                             .child(
                                 div()
                                     .min_w(px(0.0))
@@ -1424,38 +1425,6 @@ fn onboarding_error(message: &str, theme: Theme) -> AnyElement {
         .line_height(px(18.0))
         .text_color(theme.error.hsla())
         .child(message.to_owned())
-        .into_any_element()
-}
-
-fn onboarding_provider_mark(provider: ProviderId, theme: Theme, size: f32) -> AnyElement {
-    if provider == ProviderId::Codex {
-        return div()
-            .text_color(theme.text_3.hsla())
-            .child(svg().path("icons/openai.svg").size(px(size)))
-            .into_any_element();
-    }
-    div()
-        .size(px(size))
-        .flex_none()
-        .flex()
-        .items_center()
-        .justify_center()
-        .rounded(px(4.0))
-        .bg(theme.surface_3.hsla())
-        .font_family("Geist Mono")
-        .text_size(px(8.0))
-        .font_weight(FontWeight::SEMIBOLD)
-        .text_color(theme.text_2.hsla())
-        .child(match provider {
-            ProviderId::ClaudeCode => "A",
-            ProviderId::Grok => "G",
-            ProviderId::Cursor => "C",
-            ProviderId::OpenCode => "O",
-            ProviderId::Antigravity => "A",
-            ProviderId::Acp => "A",
-            ProviderId::Api => "↔",
-            ProviderId::Codex => unreachable!(),
-        })
         .into_any_element()
 }
 

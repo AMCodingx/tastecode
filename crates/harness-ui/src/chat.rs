@@ -10,6 +10,7 @@ mod voice;
 
 use crate::client_state::{ChatUpdate, ModelChoice};
 use crate::model_selection::{fast_service_tier, is_fast_mode_enabled};
+use crate::provider_icon::provider_icon;
 use crate::theme::{CHAT_WIDTH, Theme};
 use crate::zoom::px;
 use diff::DiffUiState;
@@ -3455,7 +3456,7 @@ impl ChatView {
                             .child(svg_icon("icons/zap.svg", 12.0)),
                     )
                 })
-                .child(provider_mark(selected.provider, theme, 13.0))
+                .child(provider_icon(selected.provider, theme, 13.0))
                 .child(
                     div()
                         .min_w(px(0.0))
@@ -3757,7 +3758,7 @@ impl ChatView {
                         .text_size(px(10.0))
                         .font_weight(FontWeight::SEMIBOLD)
                         .text_color(theme.text_3.hsla())
-                        .child(provider_mark(choice.provider, theme, 13.0))
+                        .child(provider_icon(choice.provider, theme, 13.0))
                         .child(choice.source_name.clone())
                         .into_any_element(),
                 );
@@ -4268,37 +4269,6 @@ fn approval_meta(approval: ApprovalMode) -> (&'static str, &'static str) {
         ApprovalMode::AutoReview => ("icons/scan-eye.svg", "Auto-review"),
         ApprovalMode::Full => ("icons/lock-open.svg", "Full access"),
     }
-}
-
-fn provider_mark(provider: ProviderId, theme: Theme, size: f32) -> AnyElement {
-    if provider == ProviderId::Codex {
-        return div()
-            .text_color(theme.text_3.hsla())
-            .child(svg_icon("icons/openai.svg", size))
-            .into_any_element();
-    }
-    div()
-        .size(px(size))
-        .flex()
-        .items_center()
-        .justify_center()
-        .rounded(px(4.0))
-        .bg(theme.surface_3.hsla())
-        .font_family("Geist Mono")
-        .text_size(px(8.0))
-        .font_weight(FontWeight::SEMIBOLD)
-        .text_color(theme.text_2.hsla())
-        .child(match provider {
-            ProviderId::ClaudeCode => "A",
-            ProviderId::Grok => "G",
-            ProviderId::Cursor => "C",
-            ProviderId::OpenCode => "O",
-            ProviderId::Antigravity => "A",
-            ProviderId::Acp => "A",
-            ProviderId::Api => "↔",
-            ProviderId::Codex => unreachable!(),
-        })
-        .into_any_element()
 }
 
 fn title_case(value: &str) -> String {
