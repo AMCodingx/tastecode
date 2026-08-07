@@ -15,11 +15,11 @@ use crate::theme::{CHAT_WIDTH, RADIUS_XL, Theme, ThemeMode, cubic_bezier_timing}
 use crate::zoom::px;
 use diff::DiffUiState;
 use gpui::{
-    Animation, AnimationExt, AnyElement, App, Background, BoxShadow, ClipboardEntry, Context,
-    Entity, EventEmitter, Focusable, FontWeight, HighlightStyle, Image, ImageFormat, ListAlignment,
-    ListOffset, ListState, ObjectFit, Render, Rgba, ScrollWheelEvent, SharedString, StyledImage,
-    StyledText, Window, div, img, linear_color_stop, linear_gradient, point, prelude::*, relative,
-    svg,
+    Animation, AnimationExt, AnyElement, App, Background, Bounds, BoxShadow, ClipboardEntry,
+    Context, Entity, EventEmitter, FocusHandle, Focusable, FontWeight, HighlightStyle, Image,
+    ImageFormat, ListAlignment, ListOffset, ListState, ObjectFit, Pixels, Point, Render, Rgba,
+    ScrollWheelEvent, SharedString, StyledImage, StyledText, Window, canvas, div, fill, img,
+    linear_color_stop, linear_gradient, point, prelude::*, relative, size, svg,
 };
 use gpui_component::RopeExt;
 use gpui_component::input::{Input, InputEvent, InputState};
@@ -50,6 +50,12 @@ const MAX_PASTED_IMAGE_BYTES: usize = 25 * 1024 * 1024;
 const TRANSCRIPT_BOTTOM_SLACK: f32 = 80.0;
 const DESIGN_BEAM_DURATION: Duration = Duration::from_millis(2_400);
 const SEND_BEAM_DURATION: Duration = Duration::from_millis(1_960);
+const EFFORT_SLIDER_WIDTH: f32 = 314.0;
+const EFFORT_SLIDER_HEIGHT: f32 = 36.0;
+const EFFORT_SLIDER_INSET: f32 = 2.0;
+const EFFORT_SLIDER_MIN_FILL: f32 = 44.0;
+const EFFORT_DITHER_FADE_IN: Duration = Duration::from_millis(150);
+const EFFORT_DITHER_FADE_OUT: Duration = Duration::from_millis(140);
 
 #[derive(Clone)]
 pub(crate) struct SessionContext {
@@ -315,6 +321,13 @@ pub(crate) struct ChatView {
     delta_flush_scheduled: bool,
     composer_settings: ComposerSettings,
     design_hovered: bool,
+    effort_focus: FocusHandle,
+    effort_slider_bounds: Option<Bounds<Pixels>>,
+    effort_pointer: Option<Point<Pixels>>,
+    effort_dragging: bool,
+    effort_preview_index: Option<usize>,
+    effort_dither_fading: bool,
+    effort_dither_generation: u64,
     stage_settings: StageSettings,
     composer_menu: Option<ComposerMenu>,
     header_menu: Option<HeaderMenu>,
@@ -372,6 +385,7 @@ impl ChatView {
         .detach();
         let transcript_scroll_mode = Rc::new(Cell::new(TranscriptScrollMode::FollowEnd));
         let list_state = ListState::new(0, ListAlignment::Bottom, px(500.0));
+        let effort_focus = cx.focus_handle();
         let scroll_mode = transcript_scroll_mode.clone();
         let scroll_list = list_state.clone();
         list_state.set_scroll_handler(move |event, window, cx| {
@@ -443,6 +457,13 @@ impl ChatView {
             delta_flush_scheduled: false,
             composer_settings: ComposerSettings::default(),
             design_hovered: false,
+            effort_focus,
+            effort_slider_bounds: None,
+            effort_pointer: None,
+            effort_dragging: false,
+            effort_preview_index: None,
+            effort_dither_fading: false,
+            effort_dither_generation: 0,
             stage_settings: StageSettings::default(),
             composer_menu: None,
             header_menu: None,
@@ -532,6 +553,7 @@ impl ChatView {
         self.attachment_error = None;
         self.composer_menu = None;
         self.header_menu = None;
+        self.reset_effort_interaction();
         self.active_user_input_id = None;
         self.user_input_step = 0;
         self.user_input_answers.clear();
@@ -572,6 +594,25 @@ impl ChatView {
         cx: &mut Context<Self>,
     ) {
         self.composer_settings = settings;
+        if !self.effort_dragging
+            && self.effort_preview_index.is_some_and(|preview| {
+                self.selected_model().is_some_and(|choice| {
+                    selected_reasoning_effort(
+                        &choice.model,
+                        self.composer_settings.effort.as_deref(),
+                    )
+                    .and_then(|effort| {
+                        choice
+                            .model
+                            .reasoning_efforts
+                            .iter()
+                            .position(|candidate| candidate == effort)
+                    }) == Some(preview)
+                })
+            })
+        {
+            self.effort_preview_index = None;
+        }
         if !self.composer_settings.voice_available && self.voice_phase != VoicePhase::Idle {
             self.cancel_voice(cx);
         }
@@ -1772,11 +1813,15 @@ impl ChatView {
         if self.state.running {
             return;
         }
-        self.composer_menu = if self.composer_menu == Some(menu) {
+        let next = if self.composer_menu == Some(menu) {
             None
         } else {
             Some(menu)
         };
+        if self.composer_menu == Some(ComposerMenu::Model) && next != self.composer_menu {
+            self.reset_effort_interaction();
+        }
+        self.composer_menu = next;
         cx.notify();
     }
 
@@ -1804,11 +1849,171 @@ impl ChatView {
     }
 
     fn choose_model(&mut self, key: String, cx: &mut Context<Self>) {
+        self.reset_effort_interaction();
         cx.emit(ChatEvent::SelectModel { key });
     }
 
     fn choose_effort(&mut self, effort: String, cx: &mut Context<Self>) {
         cx.emit(ChatEvent::SelectEffort { effort });
+    }
+
+    fn reset_effort_interaction(&mut self) {
+        self.effort_slider_bounds = None;
+        self.effort_pointer = None;
+        self.effort_dragging = false;
+        self.effort_preview_index = None;
+        self.effort_dither_fading = false;
+        self.effort_dither_generation = self.effort_dither_generation.wrapping_add(1);
+    }
+
+    fn effort_slider_bounds_changed(&mut self, bounds: Bounds<Pixels>) {
+        if self.effort_slider_bounds != Some(bounds) {
+            self.effort_slider_bounds = Some(bounds);
+        }
+    }
+
+    fn effort_index_at(&self, position: Point<Pixels>, count: usize) -> usize {
+        let Some(bounds) = self.effort_slider_bounds else {
+            return 0;
+        };
+        effort_index_from_pointer(
+            f32::from(position.x),
+            f32::from(bounds.origin.x),
+            f32::from(bounds.size.width),
+            count,
+        )
+    }
+
+    fn effort_pointer_moved(
+        &mut self,
+        event: &gpui::MouseMoveEvent,
+        count: usize,
+        cx: &mut Context<Self>,
+    ) {
+        if count == 0 {
+            return;
+        }
+        let index = self.effort_index_at(event.position, count);
+        let pointer_changed = self.effort_pointer.is_none_or(|previous| {
+            (f32::from(previous.x - event.position.x)).abs() >= 0.5
+                || (f32::from(previous.y - event.position.y)).abs() >= 0.5
+        });
+        let preview_changed = self.effort_dragging && self.effort_preview_index != Some(index);
+        let activating = self.effort_pointer.is_none() || self.effort_dither_fading;
+        self.effort_pointer = Some(event.position);
+        if self.effort_dragging {
+            self.effort_preview_index = Some(index);
+        }
+        if activating {
+            self.effort_dither_fading = false;
+            self.effort_dither_generation = self.effort_dither_generation.wrapping_add(1);
+        }
+        if pointer_changed || preview_changed || activating {
+            cx.notify();
+        }
+    }
+
+    fn begin_effort_drag(
+        &mut self,
+        event: &gpui::MouseDownEvent,
+        count: usize,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if event.button != gpui::MouseButton::Left || count <= 1 {
+            return;
+        }
+        self.effort_focus.focus(window);
+        self.effort_dragging = true;
+        self.effort_preview_index = Some(self.effort_index_at(event.position, count));
+        self.effort_pointer = Some(event.position);
+        self.effort_dither_fading = false;
+        self.effort_dither_generation = self.effort_dither_generation.wrapping_add(1);
+        cx.stop_propagation();
+        cx.notify();
+    }
+
+    fn finish_effort_drag(
+        &mut self,
+        event: &gpui::MouseUpEvent,
+        efforts: &[String],
+        selected_index: usize,
+        cx: &mut Context<Self>,
+    ) {
+        if !self.effort_dragging || efforts.is_empty() {
+            return;
+        }
+        let index = self.effort_index_at(event.position, efforts.len());
+        self.effort_dragging = false;
+        self.effort_preview_index = Some(index);
+        self.effort_pointer = Some(event.position);
+        cx.stop_propagation();
+        if index != selected_index
+            && let Some(effort) = efforts.get(index)
+        {
+            self.choose_effort(effort.clone(), cx);
+        } else {
+            self.effort_preview_index = None;
+        }
+        cx.notify();
+    }
+
+    fn cancel_effort_drag(&mut self, cx: &mut Context<Self>) {
+        if self.effort_dragging {
+            self.effort_dragging = false;
+            self.effort_preview_index = None;
+        }
+        self.begin_effort_dither_fade(cx);
+    }
+
+    fn begin_effort_dither_fade(&mut self, cx: &mut Context<Self>) {
+        if self.effort_pointer.is_none() || self.effort_dither_fading {
+            return;
+        }
+        self.effort_dither_fading = true;
+        self.effort_dither_generation = self.effort_dither_generation.wrapping_add(1);
+        let generation = self.effort_dither_generation;
+        cx.notify();
+        cx.spawn(async move |view, cx| {
+            cx.background_executor().timer(EFFORT_DITHER_FADE_OUT).await;
+            let _ = view.update(cx, |this, cx| {
+                if this.effort_dither_generation == generation
+                    && this.effort_dither_fading
+                    && !this.effort_dragging
+                {
+                    this.effort_pointer = None;
+                    this.effort_dither_fading = false;
+                    cx.notify();
+                }
+            });
+        })
+        .detach();
+    }
+
+    fn effort_key_down(
+        &mut self,
+        event: &gpui::KeyDownEvent,
+        efforts: &[String],
+        selected_index: usize,
+        cx: &mut Context<Self>,
+    ) {
+        if efforts.len() <= 1 {
+            return;
+        }
+        let current = self.effort_preview_index.unwrap_or(selected_index);
+        let next = match event.keystroke.key.to_ascii_lowercase().as_str() {
+            "left" | "down" => current.saturating_sub(1),
+            "right" | "up" => (current + 1).min(efforts.len() - 1),
+            "home" => 0,
+            "end" => efforts.len() - 1,
+            _ => return,
+        };
+        cx.stop_propagation();
+        if next != current {
+            self.effort_preview_index = Some(next);
+            self.choose_effort(efforts[next].clone(), cx);
+            cx.notify();
+        }
     }
 
     fn choose_approval(&mut self, approval: ApprovalMode, cx: &mut Context<Self>) {
@@ -3052,7 +3257,7 @@ impl ChatView {
                 spread_radius: px(-18.0),
             }
         };
-        let popover = self.composer_popover(is_new_session, cx);
+        let popover = self.composer_popover(is_new_session, window, cx);
         let user_input = self.user_input_card(is_new_session, cx);
         let queue_panel = self.queue_panel(window, cx);
         let attach_view = cx.weak_entity();
@@ -3315,7 +3520,7 @@ impl ChatView {
                     .text_color(theme.text.hsla())
             })
             .active(|style| style.opacity(0.78).top(px(1.0)))
-            .on_hover(cx.listener(|this, hovered, _window, cx| {
+            .on_hover(cx.listener(|this, hovered: &bool, _window, cx| {
                 if this.design_hovered != *hovered {
                     this.design_hovered = *hovered;
                     cx.notify();
@@ -3864,12 +4069,11 @@ impl ChatView {
         let selected = self.selected_model()?.clone();
         let theme = self.theme;
         let open = self.composer_menu == Some(ComposerMenu::Model);
-        let effort = self
-            .composer_settings
-            .effort
-            .as_deref()
-            .map(title_case)
-            .unwrap_or_default();
+        let effort = friendly_effort_label(selected_reasoning_effort(
+            &selected.model,
+            self.composer_settings.effort.as_deref(),
+        ));
+        let model_name = compact_model_name(&selected.model.display_name);
         let fast = is_fast_mode_enabled(
             &selected.model,
             self.composer_settings.service_tier.as_deref(),
@@ -3879,16 +4083,34 @@ impl ChatView {
         } else {
             theme.prompt.hsla()
         };
+        let chevron = svg()
+            .path("icons/chevron-down.svg")
+            .size(px(16.0))
+            .with_animation(
+                ("composer-model-chevron", usize::from(open)),
+                Animation::new(theme.motion.fast).with_easing(crate::theme::web_ease_out),
+                move |icon, delta| {
+                    let rotation = if open {
+                        delta * 0.5
+                    } else {
+                        (1.0 - delta) * 0.5
+                    };
+                    icon.with_transformation(gpui::Transformation::rotate(gpui::percentage(
+                        rotation,
+                    )))
+                },
+            );
         Some(
             div()
                 .id("composer-model")
                 .min_h(px(32.0))
                 .max_w(px(270.0))
-                .px(px(13.0))
+                .pl(px(8.0))
+                .pr(px(9.0))
                 .py(px(5.0))
                 .flex()
                 .items_center()
-                .gap(px(6.0))
+                .gap(px(7.0))
                 .rounded(px(RADIUS_XL))
                 .border_1()
                 .border_color(if open {
@@ -3898,7 +4120,7 @@ impl ChatView {
                 })
                 .bg(background)
                 .shadow_sm()
-                .text_size(px(11.5))
+                .text_size(px(12.5))
                 .text_color(theme.text.hsla())
                 .opacity(if running { 0.42 } else { 1.0 })
                 .when(!running, |button| {
@@ -3921,34 +4143,55 @@ impl ChatView {
                 .when(fast, |button| {
                     button.child(
                         div()
-                            .text_color(theme.attention.hsla())
-                            .child(svg_icon("icons/zap.svg", 12.0)),
+                            .flex_none()
+                            .text_color(theme.text.hsla())
+                            .child(svg_icon("icons/zap-filled.svg", 13.0)),
                     )
                 })
-                .child(provider_icon(selected.provider, theme, 13.0))
                 .child(
                     div()
                         .min_w(px(0.0))
-                        .max_w(px(165.0))
-                        .truncate()
-                        .child(selected.model.display_name),
+                        .flex()
+                        .items_center()
+                        .gap(px(5.0))
+                        .child(
+                            div()
+                                .min_w(px(0.0))
+                                .max_w(px(165.0))
+                                .flex()
+                                .items_center()
+                                .gap(px(6.0))
+                                .truncate()
+                                .child(provider_icon(selected.provider, theme, 13.0))
+                                .child(model_name),
+                        )
+                        .child(
+                            div()
+                                .min_w(px(0.0))
+                                .truncate()
+                                .text_color(theme.text_3.hsla())
+                                .child(effort),
+                        ),
                 )
-                .when(!effort.is_empty(), |button| {
-                    button.child(div().text_color(theme.text_3.hsla()).child(effort))
-                })
                 .child(
                     div()
+                        .flex_none()
                         .text_color(theme.text_3.hsla())
-                        .child(svg_icon("icons/chevron-down.svg", 12.0)),
+                        .child(chevron),
                 )
                 .into_any_element(),
         )
     }
 
-    fn composer_popover(&self, is_new_session: bool, cx: &Context<Self>) -> Option<AnyElement> {
+    fn composer_popover(
+        &self,
+        is_new_session: bool,
+        window: &Window,
+        cx: &Context<Self>,
+    ) -> Option<AnyElement> {
         match self.composer_menu {
             Some(ComposerMenu::Permissions) => Some(self.permission_popover(is_new_session, cx)),
-            Some(ComposerMenu::Model) => Some(self.model_popover(is_new_session, cx)),
+            Some(ComposerMenu::Model) => Some(self.model_popover(is_new_session, window, cx)),
             Some(ComposerMenu::Project) => Some(self.project_popover(cx)),
             Some(ComposerMenu::Branch) => Some(self.branch_popover(cx)),
             None => None,
@@ -4206,26 +4449,42 @@ impl ChatView {
             .into_any_element()
     }
 
-    fn model_popover(&self, is_new_session: bool, cx: &Context<Self>) -> AnyElement {
+    fn model_popover(
+        &self,
+        is_new_session: bool,
+        window: &Window,
+        cx: &Context<Self>,
+    ) -> AnyElement {
         let theme = self.theme;
         let selected_key = self.composer_settings.selected_model_key.clone();
         let selected = self.selected_model().cloned();
         let mut last_source = None::<String>;
         let attachment_offset = self.attachment_shelf_height();
+        let menu_bottom = (if is_new_session { 183.0 } else { 147.0 }) + attachment_offset;
         let mut rows = Vec::new();
         for (index, choice) in self.composer_settings.models.iter().cloned().enumerate() {
             if last_source.as_deref() != Some(choice.source_name.as_str()) {
+                let first_group = last_source.is_none();
                 last_source = Some(choice.source_name.clone());
+                if !first_group {
+                    rows.push(
+                        div()
+                            .h(px(5.0))
+                            .mt(px(4.0))
+                            .border_t_1()
+                            .border_color(theme.line.hsla().opacity(0.6))
+                            .into_any_element(),
+                    );
+                }
                 rows.push(
                     div()
-                        .mt(if rows.is_empty() { px(0.0) } else { px(4.0) })
                         .h(px(27.0))
                         .flex()
                         .items_center()
                         .gap(px(6.0))
                         .px(px(8.0))
                         .text_size(px(10.0))
-                        .font_weight(FontWeight::SEMIBOLD)
+                        .font_weight(FontWeight(560.0))
                         .text_color(theme.text_3.hsla())
                         .child(provider_icon(choice.provider, theme, 13.0))
                         .child(choice.source_name.clone())
@@ -4244,9 +4503,15 @@ impl ChatView {
                     .gap(px(8.0))
                     .px(px(8.0))
                     .rounded(px(8.0))
-                    .when(active, |row| row.bg(theme.surface_3.hsla()))
+                    .when(active, |row| {
+                        row.bg(model_picker_selected_background(theme))
+                            .shadow(model_picker_selected_shadows(theme))
+                            .when(theme.mode == ThemeMode::Light, |row| {
+                                row.border_1().border_color(gpui::rgb(0xe3e3e6))
+                            })
+                    })
                     .cursor_pointer()
-                    .hover(move |style| style.bg(theme.surface_3.hsla()))
+                    .hover(move |style| style.bg(model_picker_hover_background(theme)))
                     .on_click(cx.listener(move |this, _event, _window, cx| {
                         this.choose_model(key.clone(), cx);
                     }))
@@ -4255,7 +4520,7 @@ impl ChatView {
                             .min_w(px(0.0))
                             .flex_1()
                             .truncate()
-                            .text_size(px(12.0))
+                            .text_size(px(12.5))
                             .text_color(theme.text.hsla())
                             .child(choice.model.display_name),
                     )
@@ -4267,15 +4532,13 @@ impl ChatView {
         div()
             .absolute()
             .right(px(38.0))
-            .bottom(px(
-                (if is_new_session { 183.0 } else { 147.0 }) + attachment_offset
-            ))
+            .bottom(px(menu_bottom))
             .w(px(330.0))
             .max_h(px(520.0))
-            .rounded(px(16.0))
+            .rounded(px(RADIUS_XL))
             .border_1()
-            .border_color(theme.line_strong.hsla())
-            .bg(theme.surface_2.hsla())
+            .border_color(model_picker_border(theme))
+            .bg(model_picker_background(theme))
             .shadow_lg()
             .overflow_hidden()
             .child(
@@ -4287,30 +4550,70 @@ impl ChatView {
                     .children(rows),
             )
             .when_some(selected, |menu, selected| {
-                menu.child(self.model_controls(selected, cx))
+                menu.child(self.model_controls(selected, window, cx))
             })
+            .with_animation(
+                "composer-model-menu",
+                Animation::new(theme.motion.fast).with_easing(crate::theme::web_ease_out),
+                move |menu, delta| {
+                    menu.opacity(delta)
+                        .bottom(px(menu_bottom - 2.0 * (1.0 - delta)))
+                },
+            )
             .into_any_element()
     }
 
-    fn model_controls(&self, selected: ModelChoice, cx: &Context<Self>) -> AnyElement {
+    fn model_controls(
+        &self,
+        selected: ModelChoice,
+        window: &Window,
+        cx: &Context<Self>,
+    ) -> AnyElement {
         let theme = self.theme;
-        let selected_effort = self.composer_settings.effort.clone();
         let fast = is_fast_mode_enabled(
             &selected.model,
             self.composer_settings.service_tier.as_deref(),
         );
         let has_fast = fast_service_tier(&selected.model).is_some();
+        let selected_effort =
+            selected_reasoning_effort(&selected.model, self.composer_settings.effort.as_deref())
+                .map(str::to_owned);
         let efforts = selected.model.reasoning_efforts;
+        let selected_index = selected_effort
+            .as_deref()
+            .and_then(|effort| efforts.iter().position(|candidate| candidate == effort))
+            .unwrap_or(0);
+        let display_index = self
+            .effort_preview_index
+            .unwrap_or(selected_index)
+            .min(efforts.len().saturating_sub(1));
+        let displayed_label = efforts
+            .get(display_index)
+            .map(|effort| friendly_effort_label(Some(effort)))
+            .unwrap_or_else(|| "Default".into());
+        let controls_background = if theme.mode == ThemeMode::Dark {
+            theme.surface_2.hsla().into()
+        } else {
+            linear_gradient(
+                180.0,
+                linear_color_stop(gpui::rgb(0xfafafa), 0.0),
+                linear_color_stop(gpui::rgb(0xf6f6f7), 1.0),
+            )
+        };
         div()
+            .flex()
+            .flex_col()
+            .gap(px(6.0))
             .border_t_1()
             .border_color(theme.line.hsla())
-            .bg(theme.surface.hsla())
+            .bg(controls_background)
             .p(px(8.0))
             .child(
                 div()
-                    .h(px(32.0))
+                    .min_h(px(30.0))
                     .flex()
                     .items_center()
+                    .justify_between()
                     .pl(px(6.0))
                     .child(
                         div()
@@ -4318,15 +4621,17 @@ impl ChatView {
                             .flex()
                             .items_center()
                             .text_size(px(11.5))
-                            .font_weight(FontWeight::MEDIUM)
+                            .font_weight(FontWeight(520.0))
                             .text_color(theme.text_3.hsla())
                             .child("Effort: ")
                             .child(
-                                div().text_color(theme.text.hsla()).child(
-                                    selected_effort
-                                        .as_deref()
-                                        .map_or_else(|| "Default".into(), title_case),
-                                ),
+                                div()
+                                    .text_color(if theme.mode == ThemeMode::Dark {
+                                        gpui::rgb(0xf5f5f7)
+                                    } else {
+                                        gpui::rgb(0x27272a)
+                                    })
+                                    .child(displayed_label),
                             ),
                     )
                     .when(has_fast, |row| {
@@ -4363,44 +4668,267 @@ impl ChatView {
                     }),
             )
             .when(!efforts.is_empty(), |controls| {
-                controls.child(
-                    div()
-                        .h(px(36.0))
-                        .w_full()
-                        .flex()
-                        .items_center()
-                        .justify_between()
-                        .px(px(12.0))
-                        .rounded(px(18.0))
-                        .border_1()
-                        .border_color(theme.line_strong.hsla())
-                        .bg(theme.surface_2.hsla())
-                        .children(efforts.into_iter().enumerate().map(|(index, effort)| {
-                            let active = selected_effort.as_deref() == Some(effort.as_str());
-                            let value = effort.clone();
-                            div()
-                                .id(("effort-stop", index))
-                                .size(px(20.0))
-                                .flex()
-                                .items_center()
-                                .justify_center()
-                                .cursor_pointer()
-                                .on_click(cx.listener(move |this, _event, _window, cx| {
-                                    this.choose_effort(value.clone(), cx);
-                                }))
-                                .child(
-                                    div()
-                                        .size(px(if active { 7.0 } else { 5.0 }))
-                                        .rounded(px(4.0))
-                                        .bg(if active {
-                                            theme.text_2.hsla()
-                                        } else {
-                                            theme.text_3.hsla().opacity(0.55)
-                                        }),
-                                )
-                        })),
-                )
+                controls.child(self.effort_slider(
+                    efforts,
+                    selected_index,
+                    display_index,
+                    window,
+                    cx,
+                ))
             })
+            .into_any_element()
+    }
+
+    fn effort_slider(
+        &self,
+        efforts: Vec<String>,
+        selected_index: usize,
+        display_index: usize,
+        window: &Window,
+        cx: &Context<Self>,
+    ) -> AnyElement {
+        let theme = self.theme;
+        let count = efforts.len();
+        let disabled = count <= 1;
+        let selected_width = effort_fill_width(selected_index, count);
+        let display_width = effort_fill_width(display_index, count);
+        let entity = cx.entity();
+        let bounds_probe = canvas(
+            move |bounds, _, cx| {
+                entity.update(cx, |this, _| {
+                    this.effort_slider_bounds_changed(bounds);
+                });
+            },
+            |_, _, _, _| {},
+        )
+        .absolute()
+        .inset_0();
+
+        let base_dither = canvas(
+            |_, _, _| {},
+            move |bounds, _, window, _| {
+                paint_effort_dither(bounds, None, false, theme, window);
+            },
+        )
+        .absolute()
+        .inset_0();
+
+        let pointer = self.effort_pointer;
+        let fading = self.effort_dither_fading;
+        let generation = self.effort_dither_generation;
+        let dither = pointer.map(|pointer| {
+            canvas(
+                |_, _, _| {},
+                move |bounds, _, window, _| {
+                    paint_effort_dither(bounds, Some(pointer), true, theme, window);
+                },
+            )
+            .absolute()
+            .inset_0()
+            .with_animation(
+                SharedString::from(format!("effort-dither:{generation}:{fading}")),
+                Animation::new(theme.motion_duration(if fading {
+                    EFFORT_DITHER_FADE_OUT
+                } else {
+                    EFFORT_DITHER_FADE_IN
+                }))
+                .with_easing(ease_out_cubic),
+                move |layer, delta| layer.opacity(if fading { 1.0 - delta } else { delta }),
+            )
+        });
+
+        let track_background = if theme.mode == ThemeMode::Dark {
+            gpui::rgb(0x171719).into()
+        } else {
+            linear_gradient(
+                180.0,
+                linear_color_stop(gpui::rgb(0xf3f3f5), 0.0),
+                linear_color_stop(gpui::white(), 1.0),
+            )
+        };
+        let track_border = if theme.mode == ThemeMode::Dark {
+            gpui::white().opacity(0.008)
+        } else {
+            gpui::rgb(0xdedee2).into()
+        };
+        let track_shadows = if theme.mode == ThemeMode::Dark {
+            vec![BoxShadow {
+                color: gpui::black().opacity(0.18),
+                offset: point(px(0.0), px(1.0)),
+                blur_radius: px(2.0),
+                spread_radius: px(0.0),
+            }]
+        } else {
+            vec![BoxShadow {
+                color: gpui::rgba(0x18181b12).into(),
+                offset: point(px(0.0), px(1.0)),
+                blur_radius: px(2.0),
+                spread_radius: px(0.0),
+            }]
+        };
+        let fill_background = if theme.mode == ThemeMode::Dark {
+            linear_gradient(
+                180.0,
+                linear_color_stop(gpui::rgb(0x2d2d2f), 0.0),
+                linear_color_stop(gpui::rgb(0x363638), 1.0),
+            )
+        } else {
+            linear_gradient(
+                180.0,
+                linear_color_stop(gpui::rgb(0xfafafa), 0.0),
+                linear_color_stop(gpui::rgb(0xececef), 1.0),
+            )
+        };
+        let fill_shadows = if theme.mode == ThemeMode::Dark {
+            vec![BoxShadow {
+                color: gpui::white().opacity(0.025),
+                offset: point(px(0.0), px(-1.0)),
+                blur_radius: px(0.0),
+                spread_radius: px(0.0),
+            }]
+        } else {
+            vec![
+                BoxShadow {
+                    color: gpui::white(),
+                    offset: point(px(0.0), px(1.0)),
+                    blur_radius: px(0.0),
+                    spread_radius: px(0.0),
+                },
+                BoxShadow {
+                    color: gpui::rgba(0x18181b12).into(),
+                    offset: point(px(0.0), px(1.0)),
+                    blur_radius: px(2.0),
+                    spread_radius: px(0.0),
+                },
+            ]
+        };
+
+        let fill = div()
+            .absolute()
+            .top(px(EFFORT_SLIDER_INSET))
+            .bottom(px(EFFORT_SLIDER_INSET))
+            .left(px(EFFORT_SLIDER_INSET))
+            .w(px(display_width))
+            .rounded_full()
+            .overflow_hidden()
+            .bg(fill_background)
+            .shadow(fill_shadows)
+            .child(base_dither)
+            .when_some(dither, |fill, dither| fill.child(dither))
+            .with_animation(
+                ("effort-slider-fill", display_index),
+                Animation::new(theme.motion_duration(Duration::from_millis(170)))
+                    .with_easing(crate::theme::web_ease_out),
+                move |fill, delta| {
+                    fill.w(px(selected_width + (display_width - selected_width) * delta))
+                },
+            );
+
+        let stops = div()
+            .absolute()
+            .inset_0()
+            .left(px(22.0))
+            .right(px(22.0))
+            .children((0..count).map(|index| {
+                let active = index <= display_index;
+                let progress = effort_progress(index, count);
+                let stop_background: gpui::Hsla = if active {
+                    if theme.mode == ThemeMode::Dark {
+                        gpui::rgba(0xf5f5f7d6).into()
+                    } else {
+                        gpui::rgba(0x27272ad6).into()
+                    }
+                } else {
+                    theme.text_3.hsla().opacity(0.52)
+                };
+                div()
+                    .id(("effort-stop", index))
+                    .absolute()
+                    .top(relative(0.5))
+                    .left(relative(progress))
+                    .mt(px(-2.0))
+                    .ml(px(-2.0))
+                    .size(px(4.0))
+                    .rounded_full()
+                    .bg(stop_background)
+                    .shadow(vec![BoxShadow {
+                        color: gpui::black().opacity(0.10),
+                        offset: point(px(0.0), px(0.0)),
+                        blur_radius: px(0.0),
+                        spread_radius: px(1.0),
+                    }])
+            }));
+
+        let track = div()
+            .absolute()
+            .inset_0()
+            .rounded_full()
+            .border_1()
+            .border_color(track_border)
+            .bg(track_background)
+            .shadow(track_shadows)
+            .overflow_hidden()
+            .child(fill)
+            .child(stops);
+
+        let slider = div()
+            .id("model-effort-slider")
+            .relative()
+            .h(px(EFFORT_SLIDER_HEIGHT))
+            .w_full()
+            .track_focus(&self.effort_focus)
+            .opacity(if disabled { 0.45 } else { 1.0 })
+            .child(bounds_probe)
+            .child(track)
+            .when(
+                self.effort_focus.is_focused(window) && !disabled,
+                |slider| {
+                    slider.child(
+                        div()
+                            .absolute()
+                            .inset(px(-3.0))
+                            .rounded_full()
+                            .border_1()
+                            .border_color(theme.text_2.hsla()),
+                    )
+                },
+            );
+
+        if disabled {
+            return slider.into_any_element();
+        }
+
+        let efforts_for_up = efforts.clone();
+        slider
+            .on_key_down(cx.listener(move |this, event, _window, cx| {
+                this.effort_key_down(event, &efforts, selected_index, cx);
+            }))
+            .on_mouse_down(
+                gpui::MouseButton::Left,
+                cx.listener(move |this, event, window, cx| {
+                    this.begin_effort_drag(event, count, window, cx);
+                }),
+            )
+            .on_mouse_move(cx.listener(move |this, event, _window, cx| {
+                this.effort_pointer_moved(event, count, cx);
+            }))
+            .on_mouse_up(
+                gpui::MouseButton::Left,
+                cx.listener(move |this, event, _window, cx| {
+                    this.finish_effort_drag(event, &efforts_for_up, selected_index, cx);
+                }),
+            )
+            .on_mouse_up_out(
+                gpui::MouseButton::Left,
+                cx.listener(|this, _event, _window, cx| {
+                    this.cancel_effort_drag(cx);
+                }),
+            )
+            .on_hover(cx.listener(|this, hovered: &bool, _window, cx| {
+                if !*hovered && !this.effort_dragging {
+                    this.begin_effort_dither_fade(cx);
+                }
+            }))
             .into_any_element()
     }
 }
@@ -4953,6 +5481,75 @@ fn design_shimmer_label(progress: f32) -> StyledText {
     }))
 }
 
+fn model_picker_background(theme: Theme) -> Background {
+    if theme.mode == ThemeMode::Dark {
+        theme.surface_2.hsla().into()
+    } else {
+        linear_gradient(
+            180.0,
+            linear_color_stop(gpui::white(), 0.0),
+            linear_color_stop(gpui::rgb(0xfafafa), 1.0),
+        )
+    }
+}
+
+fn model_picker_border(theme: Theme) -> gpui::Hsla {
+    if theme.mode == ThemeMode::Dark {
+        theme.line_strong.hsla()
+    } else {
+        gpui::rgb(0xe3e3e6).into()
+    }
+}
+
+fn model_picker_selected_background(theme: Theme) -> Background {
+    if theme.mode == ThemeMode::Dark {
+        linear_gradient(
+            180.0,
+            linear_color_stop(theme.surface_3.hsla().opacity(0.92), 0.0),
+            linear_color_stop(theme.surface.hsla().opacity(0.56), 1.0),
+        )
+    } else {
+        linear_gradient(
+            180.0,
+            linear_color_stop(gpui::white(), 0.0),
+            linear_color_stop(gpui::rgb(0xf5f5f6), 1.0),
+        )
+    }
+}
+
+fn model_picker_hover_background(theme: Theme) -> Background {
+    if theme.mode == ThemeMode::Dark {
+        theme.surface_3.hsla().into()
+    } else {
+        linear_gradient(
+            180.0,
+            linear_color_stop(gpui::white(), 0.0),
+            linear_color_stop(gpui::rgb(0xfafafa), 1.0),
+        )
+    }
+}
+
+fn model_picker_selected_shadows(theme: Theme) -> Vec<BoxShadow> {
+    if theme.mode == ThemeMode::Dark {
+        Vec::new()
+    } else {
+        vec![
+            BoxShadow {
+                color: gpui::rgba(0x18181b14).into(),
+                offset: point(px(0.0), px(1.0)),
+                blur_radius: px(2.0),
+                spread_radius: px(0.0),
+            },
+            BoxShadow {
+                color: gpui::rgba(0x18181b29).into(),
+                offset: point(px(0.0), px(4.0)),
+                blur_radius: px(10.0),
+                spread_radius: px(-8.0),
+            },
+        ]
+    }
+}
+
 fn fast_toggle_background(theme: Theme, fast: bool) -> Background {
     if fast {
         if theme.mode == ThemeMode::Dark {
@@ -5086,6 +5683,187 @@ fn approval_meta(approval: ApprovalMode) -> (&'static str, &'static str) {
         ApprovalMode::Auto => ("icons/shield-check.svg", "Auto"),
         ApprovalMode::AutoReview => ("icons/scan-eye.svg", "Auto-review"),
         ApprovalMode::Full => ("icons/lock-open.svg", "Full access"),
+    }
+}
+
+fn selected_reasoning_effort<'a>(
+    model: &'a harness_protocol::Model,
+    current: Option<&'a str>,
+) -> Option<&'a str> {
+    current
+        .filter(|effort| {
+            model
+                .reasoning_efforts
+                .iter()
+                .any(|candidate| candidate == effort)
+        })
+        .or_else(|| {
+            model.default_reasoning_effort.as_deref().filter(|effort| {
+                model
+                    .reasoning_efforts
+                    .iter()
+                    .any(|candidate| candidate == effort)
+            })
+        })
+        .or_else(|| model.reasoning_efforts.first().map(String::as_str))
+}
+
+fn friendly_effort_label(value: Option<&str>) -> String {
+    let Some(value) = value.filter(|value| !value.is_empty()) else {
+        return "Default".into();
+    };
+    value
+        .split(['_', '-'])
+        .filter(|word| !word.is_empty())
+        .flat_map(|word| {
+            let mut labels = Vec::with_capacity(2);
+            if word.len() > 1
+                && word.starts_with(['x', 'X'])
+                && word.as_bytes()[1].is_ascii_alphabetic()
+            {
+                labels.push("Extra".into());
+                labels.push(title_case(&word[1..]));
+            } else {
+                labels.push(title_case(word));
+            }
+            labels
+        })
+        .collect::<Vec<String>>()
+        .join(" ")
+}
+
+fn compact_model_name(display_name: &str) -> String {
+    let display_name = display_name.trim();
+    let without_prefix = display_name
+        .get(..3)
+        .filter(|prefix| prefix.eq_ignore_ascii_case("gpt"))
+        .map_or(display_name, |_| {
+            display_name[3..]
+                .trim_start_matches(|character: char| character == '-' || character.is_whitespace())
+        });
+    let compact = without_prefix.replace('-', " ").trim().to_owned();
+    if compact.is_empty() {
+        "Model".into()
+    } else {
+        compact
+    }
+}
+
+fn effort_index_from_pointer(client_x: f32, left: f32, width: f32, stop_count: usize) -> usize {
+    if stop_count <= 1 {
+        return 0;
+    }
+    let inner_width = width - EFFORT_SLIDER_INSET * 2.0;
+    if inner_width <= EFFORT_SLIDER_MIN_FILL {
+        return 0;
+    }
+    let travel_width = inner_width - EFFORT_SLIDER_MIN_FILL;
+    let relative_x = client_x - left - EFFORT_SLIDER_INSET - EFFORT_SLIDER_MIN_FILL;
+    let progress = (relative_x / travel_width).clamp(0.0, 1.0);
+    (progress * (stop_count - 1) as f32).round() as usize
+}
+
+fn effort_progress(index: usize, count: usize) -> f32 {
+    if count <= 1 {
+        0.5
+    } else {
+        index.min(count - 1) as f32 / (count - 1) as f32
+    }
+}
+
+fn effort_fill_width(index: usize, count: usize) -> f32 {
+    EFFORT_SLIDER_MIN_FILL
+        + effort_progress(index, count)
+            * (EFFORT_SLIDER_WIDTH - EFFORT_SLIDER_MIN_FILL - EFFORT_SLIDER_INSET * 2.0)
+}
+
+fn ease_out_cubic(progress: f32) -> f32 {
+    1.0 - (1.0 - progress.clamp(0.0, 1.0)).powi(3)
+}
+
+fn dither_noise_threshold(x: u32, y: u32) -> f32 {
+    let mut hash = (x + 1).wrapping_mul(374_761_393) ^ (y + 1).wrapping_mul(668_265_263);
+    hash = (hash ^ (hash >> 13)).wrapping_mul(1_274_126_177);
+    (hash ^ (hash >> 16)) as f32 / 4_294_967_296.0
+}
+
+fn smoothstep(progress: f32) -> f32 {
+    let progress = progress.clamp(0.0, 1.0);
+    progress * progress * (3.0 - 2.0 * progress)
+}
+
+fn paint_effort_dither(
+    bounds: Bounds<Pixels>,
+    pointer: Option<Point<Pixels>>,
+    active_only: bool,
+    theme: Theme,
+    window: &mut Window,
+) {
+    const CELL_SIZE: f32 = 4.0;
+    const DOT_FILL: f32 = 0.42;
+    const INNER_RADIUS: f32 = 20.0;
+    const OUTER_RADIUS: f32 = 60.0;
+
+    let width = f32::from(bounds.size.width);
+    let height = f32::from(bounds.size.height);
+    if width <= 0.0 || height <= 0.0 {
+        return;
+    }
+    let columns = (width / CELL_SIZE).ceil().max(4.0) as u32;
+    let rows = (height / CELL_SIZE).ceil().max(4.0) as u32;
+    let dot_size = CELL_SIZE * DOT_FILL;
+    let dot_inset = (CELL_SIZE - dot_size) / 2.0;
+    let dark = theme.mode == ThemeMode::Dark;
+    let texture_color: gpui::Hsla = if dark {
+        gpui::rgb(0xededed).into()
+    } else {
+        gpui::rgb(0x121212).into()
+    };
+    let texture_opacity = if dark { 1.0 } else { 0.26 };
+    let bloom_opacity = if dark { 0.44 } else { 0.05 };
+    let pointer = pointer.map(|pointer| (f32::from(pointer.x), f32::from(pointer.y)));
+
+    for y in 0..rows {
+        for x in 0..columns {
+            let threshold = dither_noise_threshold(x, y);
+            let center_x = f32::from(bounds.origin.x) + x as f32 * CELL_SIZE + CELL_SIZE / 2.0;
+            let center_y = f32::from(bounds.origin.y) + y as f32 * CELL_SIZE + CELL_SIZE / 2.0;
+            let bright = pointer.is_some_and(|(pointer_x, pointer_y)| {
+                let distance = (center_x - pointer_x).hypot(center_y - pointer_y);
+                let radial = smoothstep(
+                    ((OUTER_RADIUS - distance) / (OUTER_RADIUS - INNER_RADIUS)).clamp(0.0, 1.0),
+                );
+                threshold <= radial * 0.5
+            });
+            if active_only {
+                if !bright {
+                    continue;
+                }
+            } else if threshold > 0.5 {
+                continue;
+            }
+
+            let alpha = if active_only { 0.88 } else { 0.025 };
+            let origin_x = f32::from(bounds.origin.x) + x as f32 * CELL_SIZE + dot_inset;
+            let origin_y = f32::from(bounds.origin.y) + y as f32 * CELL_SIZE + dot_inset;
+            let bloom_size = dot_size + if dark { 3.5 } else { 2.5 };
+            let bloom_inset = (bloom_size - dot_size) / 2.0;
+            let bloom_bounds = Bounds {
+                origin: point(px(origin_x - bloom_inset), px(origin_y - bloom_inset)),
+                size: size(px(bloom_size), px(bloom_size)),
+            };
+            window.paint_quad(
+                fill(bloom_bounds, texture_color.opacity(alpha * bloom_opacity))
+                    .corner_radii(px(bloom_size / 2.0)),
+            );
+            window.paint_quad(fill(
+                Bounds {
+                    origin: point(px(origin_x), px(origin_y)),
+                    size: size(px(dot_size), px(dot_size)),
+                },
+                texture_color.opacity(alpha * texture_opacity),
+            ));
+        }
     }
 }
 
@@ -5352,6 +6130,53 @@ mod tests {
             transcript_mode_for_bottom_gap(px(80.0)),
             TranscriptScrollMode::Free
         );
+    }
+
+    #[test]
+    fn model_labels_match_the_web_selector() {
+        assert_eq!(compact_model_name("GPT-5.6-Sol"), "5.6 Sol");
+        assert_eq!(compact_model_name("gpt 5.4 mini"), "5.4 mini");
+        assert_eq!(compact_model_name("Claude-Sonnet-4.5"), "Claude Sonnet 4.5");
+        assert_eq!(friendly_effort_label(None), "Default");
+        assert_eq!(friendly_effort_label(Some("xhigh")), "Extra High");
+        assert_eq!(friendly_effort_label(Some("xlow")), "Extra Low");
+        assert_eq!(friendly_effort_label(Some("extra_high")), "Extra High");
+    }
+
+    #[test]
+    fn effort_slider_geometry_matches_the_web_component() {
+        let left = 100.0;
+        assert_eq!(effort_index_from_pointer(100.0, left, 314.0, 4), 0);
+        assert_eq!(effort_index_from_pointer(146.0, left, 314.0, 4), 0);
+        assert_eq!(effort_index_from_pointer(279.0, left, 314.0, 4), 2);
+        assert_eq!(effort_index_from_pointer(412.0, left, 314.0, 4), 3);
+        assert_eq!(effort_index_from_pointer(500.0, left, 314.0, 4), 3);
+        assert!((effort_fill_width(0, 4) - 44.0).abs() < f32::EPSILON);
+        assert!((effort_fill_width(3, 4) - 310.0).abs() < f32::EPSILON);
+        assert!((effort_fill_width(0, 1) - 177.0).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn effort_resolution_keeps_valid_selection_then_uses_model_default() {
+        let model = harness_protocol::Model {
+            id: "gpt-5.6".into(),
+            display_name: "GPT-5.6".into(),
+            description: None,
+            is_default: true,
+            reasoning_efforts: vec!["low".into(), "medium".into(), "high".into()],
+            default_reasoning_effort: Some("medium".into()),
+            service_tiers: Vec::new(),
+            default_service_tier: None,
+        };
+        assert_eq!(
+            selected_reasoning_effort(&model, Some("high")),
+            Some("high")
+        );
+        assert_eq!(
+            selected_reasoning_effort(&model, Some("max")),
+            Some("medium")
+        );
+        assert_eq!(selected_reasoning_effort(&model, None), Some("medium"));
     }
 
     #[test]
