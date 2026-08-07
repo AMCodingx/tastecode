@@ -375,6 +375,29 @@ fn read_until_response(socket: &mut ClientSocket, response_id: &str) -> (Vec<Val
     }
 }
 
+fn read_until_matching(socket: &mut ClientSocket, matches: impl Fn(&Value) -> bool) -> Value {
+    loop {
+        let frame = read_value(socket);
+        if matches(&frame) {
+            return frame;
+        }
+    }
+}
+
+fn wait_for_sent_count(session: &FakeSession, expected: usize) {
+    let deadline = Instant::now() + Duration::from_secs(3);
+    while Instant::now() < deadline {
+        if session.sent_texts.lock().unwrap().len() >= expected {
+            return;
+        }
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    panic!(
+        "expected {expected} sent turns, got {}",
+        session.sent_texts.lock().unwrap().len()
+    );
+}
+
 #[test]
 fn native_claude_runtime_exposes_the_captured_model_catalog() {
     let (_directory, server, _credentials) = start_test_server_with_native_runtimes();
@@ -721,6 +744,611 @@ fn live_agent_routes_persist_stream_queue_and_resume_draining() {
     let (_, closed) = read_until_response(&mut socket, "close");
     assert_eq!(closed["result"], json!({}));
     assert!(runtime.session().disposed.load(Ordering::Acquire));
+}
+
+#[test]
+fn design_mode_runs_native_artifact_pipeline_and_drains_queue() {
+    let runtime = Arc::new(FakeRuntime::default());
+    runtime.images_disabled.store(true, Ordering::Release);
+    let registry = Arc::new(FakeRuntimes {
+        runtime: Arc::clone(&runtime),
+    });
+    let (directory, server) = start_test_server_with_runtimes(registry);
+    let workspace = directory.path().join("workspace");
+    fs::create_dir(&workspace).unwrap();
+    let preview_listener = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
+    let preview_port = preview_listener.local_addr().unwrap().port();
+    drop(preview_listener);
+    fs::write(
+        workspace.join("preview.mjs"),
+        format!(
+            "import {{ createServer }} from 'node:http';\ncreateServer((_request, response) => response.end('ready')).listen({preview_port}, '127.0.0.1');\n"
+        ),
+    )
+    .unwrap();
+
+    let mut socket = connect_native(&server, "");
+    assert_welcome(&mut socket);
+    send_request(
+        &mut socket,
+        "start-design",
+        "thread.start",
+        json!({
+            "provider": "codex",
+            "workspacePath": workspace.to_string_lossy()
+        }),
+    );
+    let _ = read_until_response(&mut socket, "start-design");
+    send_request(
+        &mut socket,
+        "design-turn",
+        "thread.sendTurn",
+        json!({
+            "threadId": "thread-1",
+            "text": "Build a focused coffee landing page.",
+            "attachments": [
+                harness_design_agent::DESIGN_BRIEF_ATTACHMENT,
+                "/repo/reference.png"
+            ],
+            "model": "design-model",
+            "serviceTier": "priority",
+            "effort": "xhigh"
+        }),
+    );
+    let (_, started) = read_until_response(&mut socket, "design-turn");
+    assert_eq!(started["result"]["turnId"], "turn-1");
+
+    send_request(
+        &mut socket,
+        "after-design",
+        "thread.sendTurn",
+        json!({ "threadId": "thread-1", "text": "Continue normally." }),
+    );
+    let (_, queued) = read_until_response(&mut socket, "after-design");
+    assert_eq!(queued["result"]["queued"], true);
+
+    let outputs = vec![
+        json!({
+            "status": "complete",
+            "message": "Brief complete.",
+            "questions": [],
+            "brief": {
+                "originalRequest": "Build a focused coffee landing page.",
+                "subject": "Coffee",
+                "pageType": "Landing page",
+                "scope": "One responsive page",
+                "primaryGoal": "Sell coffee",
+                "audience": "Home brewers",
+                "offer": "Fresh roasted coffee",
+                "primaryAction": "Buy coffee",
+                "requiredContent": [],
+                "constraints": [],
+                "brandInputs": [],
+                "creativeControl": "Agent decides",
+                "explicitAnswers": [],
+                "assumptions": [],
+                "unresolved": []
+            }
+        }),
+        json!({
+            "version": 1,
+            "creativeDirection": {
+                "summary": "Warm precision.",
+                "keywords": ["warm", "focused"],
+                "avoid": ["generic gradients"]
+            },
+            "colorPalette": [{"name": "Ink", "value": "#171512", "usage": "Text"}],
+            "typefaces": [{
+                "family": "Inter",
+                "source": "Project",
+                "roles": ["UI"],
+                "weights": [400, 600]
+            }],
+            "interfaceDirection": "Editorial commerce.",
+            "imageDirection": {
+                "summary": "Coffee in context.",
+                "subjects": ["coffee"],
+                "treatment": "Natural light.",
+                "avoid": ["stock poses"]
+            },
+            "motionDirection": {
+                "summary": "Fast tactile feedback.",
+                "principles": ["interruptible"],
+                "avoid": ["decorative loops"]
+            },
+            "voice": {"summary": "Direct.", "avoid": ["hype"]}
+        }),
+        json!({
+            "version": 1,
+            "page": {"title": "Fresh Coffee", "route": "/", "description": "Coffee."},
+            "navigation": [{"label": "Shop", "target": "#shop"}],
+            "sections": [{
+                "id": "hero",
+                "purpose": "Lead the offer.",
+                "copy": {
+                    "heading": "Fresh coffee, delivered.",
+                    "body": ["Roasted for home brewers."],
+                    "callsToAction": [{"label": "Buy coffee", "target": "#shop"}]
+                },
+                "layout": "Editorial split.",
+                "componentNeeds": [],
+                "assetNeeds": []
+            }],
+            "responsive": ["Stack the hero on narrow screens."],
+            "interactions": ["Anchor navigation."],
+            "acceptanceCriteria": ["The primary action is visible."]
+        }),
+        json!({"version": 1, "assets": []}),
+        json!({
+            "status": "complete",
+            "summary": "Implemented the page.",
+            "files": ["index.html"],
+            "checks": ["local check passed"]
+        }),
+        json!({
+            "version": 1,
+            "command": "node",
+            "args": ["preview.mjs"],
+            "cwd": ".",
+            "url": format!("http://127.0.0.1:{preview_port}"),
+            "viewports": [{"name": "desktop", "width": 1440, "height": 1000}]
+        }),
+    ];
+    let session = runtime.session();
+    for (index, output) in outputs.iter().enumerate() {
+        session.complete_with_output(&format!("turn-{}", index + 1), &output.to_string());
+        if index + 1 < outputs.len() {
+            wait_for_sent_count(&session, index + 2);
+        }
+    }
+
+    let completion = read_until_matching(&mut socket, |frame| {
+        frame["channel"] == "thread.event"
+            && frame["data"]["event"]["type"] == "item.completed"
+            && frame["data"]["event"]["item"]["text"]
+                .as_str()
+                .is_some_and(|text| text.starts_with("Website built."))
+    });
+    assert_eq!(
+        completion["data"]["event"]["item"]["text"],
+        format!(
+            "Website built. Preview ready at http://127.0.0.1:{preview_port}/. Visual review skipped because the selected provider does not declare image support."
+        )
+    );
+    wait_for_sent_count(&session, 7);
+
+    let sent_texts = session.sent_texts.lock().unwrap().clone();
+    assert!(sent_texts[0].contains("Personal Harness Design Briefing mode"));
+    assert!(sent_texts[1].contains("Brand phase"));
+    assert!(sent_texts[2].contains("Page Blueprint phase"));
+    assert!(sent_texts[3].contains("Asset phase"));
+    assert!(sent_texts[4].contains("Build phase"));
+    assert!(sent_texts[5].contains("Preview Setup phase"));
+    assert_eq!(sent_texts[6], "Continue normally.");
+    let sent_options = session.sent_options.lock().unwrap();
+    for options in &sent_options[..6] {
+        assert_eq!(options.model.as_deref(), Some("design-model"));
+        assert_eq!(options.service_tier.as_deref(), Some("priority"));
+        assert_eq!(options.effort.as_deref(), Some("low"));
+    }
+    let sent_attachments = session.sent_attachments.lock().unwrap();
+    assert_eq!(sent_attachments[0], ["/repo/reference.png"]);
+    assert!(sent_attachments[1..6].iter().all(Vec::is_empty));
+
+    send_request(
+        &mut socket,
+        "design-history",
+        "thread.history",
+        json!({ "threadId": "thread-1" }),
+    );
+    let (_, history) = read_until_response(&mut socket, "design-history");
+    let events = history["result"]["events"].as_array().unwrap();
+    let activities = events
+        .iter()
+        .filter_map(|entry| {
+            let event = &entry["event"];
+            (event["type"] == "item.started")
+                .then(|| event["item"]["text"].as_str())
+                .flatten()
+                .filter(|text| text.starts_with("design:"))
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        activities,
+        [
+            "design:brief",
+            "design:brand",
+            "design:page",
+            "design:assets",
+            "design:build",
+            "design:preview"
+        ]
+    );
+    for output in &outputs {
+        let output = output.to_string();
+        assert!(!events.iter().any(|entry| {
+            entry["event"]["item"]["role"] == "assistant"
+                && entry["event"]["item"]["text"] == output
+        }));
+    }
+
+    let mut artifacts = fs::read_dir(workspace.join(".taste"))
+        .unwrap()
+        .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+        .collect::<Vec<_>>();
+    artifacts.sort();
+    assert_eq!(
+        artifacts,
+        ["assets.json", "brand.json", "brief.json", "page.json"]
+    );
+
+    socket.close(None).unwrap();
+    server.close().unwrap();
+    let store = Store::open(directory.path().join("harness.db")).unwrap();
+    assert!(store.design_run("thread-1").unwrap().is_none());
+    store.close().unwrap();
+    assert!(std::net::TcpListener::bind(("127.0.0.1", preview_port)).is_ok());
+}
+
+#[test]
+fn design_mode_recovers_questions_without_forwarding_them_to_the_provider() {
+    let runtime = Arc::new(FakeRuntime::default());
+    let registry = Arc::new(FakeRuntimes {
+        runtime: Arc::clone(&runtime),
+    });
+    let (directory, server) = start_test_server_with_runtimes(registry);
+    let workspace = directory.path().join("workspace");
+    fs::create_dir(&workspace).unwrap();
+    let mut socket = connect_native(&server, "");
+    assert_welcome(&mut socket);
+    send_request(
+        &mut socket,
+        "question-start",
+        "thread.start",
+        json!({
+            "provider": "codex",
+            "workspacePath": workspace.to_string_lossy()
+        }),
+    );
+    let _ = read_until_response(&mut socket, "question-start");
+    send_request(
+        &mut socket,
+        "question-design",
+        "thread.sendTurn",
+        json!({
+            "threadId": "thread-1",
+            "text": "Build a studio site.",
+            "attachments": [harness_design_agent::DESIGN_BRIEF_ATTACHMENT],
+            "model": "question-model",
+            "effort": "xhigh"
+        }),
+    );
+    let _ = read_until_response(&mut socket, "question-design");
+
+    let session = runtime.session();
+    session.complete_with_output("turn-1", "not json");
+    wait_for_sent_count(&session, 2);
+    assert!(session.sent_texts.lock().unwrap()[1].contains("failed validation"));
+    session.complete_with_output(
+        "turn-2",
+        &json!({
+            "status": "questions",
+            "message": "Preparing questions.",
+            "questions": [{
+                "id": "audience",
+                "header": "Audience",
+                "question": "Who is this for?",
+                "allowOther": true,
+                "options": [{
+                    "label": "Independent founders (Recommended)",
+                    "description": "A focused commercial audience."
+                }]
+            }],
+            "brief": null
+        })
+        .to_string(),
+    );
+    let question = read_until_matching(&mut socket, |frame| {
+        frame["channel"] == "thread.event"
+            && frame["data"]["event"]["type"] == "user_input.requested"
+            && frame["data"]["event"]["request"]["questions"][0]["id"] == "audience"
+    });
+    let question_id = question["data"]["event"]["request"]["id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    send_request(
+        &mut socket,
+        "answer-audience",
+        "thread.respondToUserInput",
+        json!({
+            "threadId": "thread-1",
+            "requestId": question_id,
+            "answers": {"audience": ["Independent founders"]}
+        }),
+    );
+    let _ = read_until_response(&mut socket, "answer-audience");
+    wait_for_sent_count(&session, 3);
+    assert!(session.sent_texts.lock().unwrap()[2].contains("Independent founders"));
+
+    session.complete_with_output(
+        "turn-3",
+        &json!({
+            "status": "complete",
+            "message": "Brief complete.",
+            "questions": [],
+            "brief": {
+                "originalRequest": "Build a studio site.",
+                "subject": "Independent studio",
+                "pageType": "Marketing site",
+                "scope": "Single responsive page",
+                "primaryGoal": "Generate enquiries",
+                "audience": "Independent founders",
+                "offer": "Design services",
+                "primaryAction": "Start a project",
+                "requiredContent": [],
+                "constraints": [],
+                "brandInputs": [],
+                "creativeControl": "Agent-led",
+                "explicitAnswers": [],
+                "assumptions": [],
+                "unresolved": []
+            }
+        })
+        .to_string(),
+    );
+    let final_question = read_until_matching(&mut socket, |frame| {
+        frame["channel"] == "thread.event"
+            && frame["data"]["event"]["type"] == "user_input.requested"
+            && frame["data"]["event"]["request"]["questions"][0]["id"] == "final_note"
+    });
+    let final_question_id = final_question["data"]["event"]["request"]["id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    send_request(
+        &mut socket,
+        "answer-final",
+        "thread.respondToUserInput",
+        json!({
+            "threadId": "thread-1",
+            "requestId": final_question_id,
+            "answers": {"final_note": ["No, that's everything (Recommended)"]}
+        }),
+    );
+    let _ = read_until_response(&mut socket, "answer-final");
+    wait_for_sent_count(&session, 4);
+    assert!(session.sent_texts.lock().unwrap()[3].contains("Brand phase"));
+    assert!(session.user_inputs.lock().unwrap().is_empty());
+    assert!(
+        session
+            .sent_attachments
+            .lock()
+            .unwrap()
+            .iter()
+            .all(Vec::is_empty)
+    );
+    for options in session.sent_options.lock().unwrap().iter() {
+        assert_eq!(options.model.as_deref(), Some("question-model"));
+        assert_eq!(options.effort.as_deref(), Some("low"));
+    }
+    let brief: Value = serde_json::from_str(
+        &fs::read_to_string(workspace.join(".taste").join("brief.json")).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(
+        brief["explicitAnswers"],
+        json!([{"question": "Who is this for?", "answer": "Independent founders"}])
+    );
+
+    session.handlers.emit_event(DomainEvent::ThreadError {
+        thread_id: "thread-1".into(),
+        message: "provider failed".into(),
+    });
+    send_request(
+        &mut socket,
+        "normal-after-error",
+        "thread.sendTurn",
+        json!({"threadId": "thread-1", "text": "Continue normally."}),
+    );
+    let (_, normal) = read_until_response(&mut socket, "normal-after-error");
+    assert_eq!(normal["result"]["queued"], false);
+    wait_for_sent_count(&session, 5);
+    assert_eq!(session.sent_texts.lock().unwrap()[4], "Continue normally.");
+
+    socket.close(None).unwrap();
+    server.close().unwrap();
+    let store = Store::open(directory.path().join("harness.db")).unwrap();
+    assert!(store.design_run("thread-1").unwrap().is_none());
+    store.close().unwrap();
+}
+
+#[test]
+fn design_mode_not_design_verdict_completes_activity_and_releases_the_thread() {
+    let runtime = Arc::new(FakeRuntime::default());
+    let registry = Arc::new(FakeRuntimes {
+        runtime: Arc::clone(&runtime),
+    });
+    let (directory, server) = start_test_server_with_runtimes(registry);
+    let workspace = directory.path().join("workspace");
+    fs::create_dir(&workspace).unwrap();
+    let mut socket = connect_native(&server, "");
+    assert_welcome(&mut socket);
+    send_request(
+        &mut socket,
+        "not-design-start",
+        "thread.start",
+        json!({
+            "provider": "codex",
+            "workspacePath": workspace.to_string_lossy()
+        }),
+    );
+    let _ = read_until_response(&mut socket, "not-design-start");
+    send_request(
+        &mut socket,
+        "not-design-turn",
+        "thread.sendTurn",
+        json!({
+            "threadId": "thread-1",
+            "text": "Explain this Rust type.",
+            "attachments": [harness_design_agent::DESIGN_BRIEF_ATTACHMENT]
+        }),
+    );
+    let _ = read_until_response(&mut socket, "not-design-turn");
+    let session = runtime.session();
+    session.complete_with_output(
+        "turn-1",
+        &json!({
+            "status": "not_design",
+            "message": "This is not a website design task.",
+            "questions": [],
+            "brief": null
+        })
+        .to_string(),
+    );
+    send_request(
+        &mut socket,
+        "after-not-design",
+        "thread.sendTurn",
+        json!({"threadId": "thread-1", "text": "Continue normally."}),
+    );
+    let (_, response) = read_until_response(&mut socket, "after-not-design");
+    assert_eq!(response["result"]["queued"], false);
+    wait_for_sent_count(&session, 2);
+
+    send_request(
+        &mut socket,
+        "not-design-history",
+        "thread.history",
+        json!({"threadId": "thread-1"}),
+    );
+    let (_, history) = read_until_response(&mut socket, "not-design-history");
+    let activities = history["result"]["events"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|entry| {
+            let item = &entry["event"]["item"];
+            if item["text"] == "design:brief" {
+                Some((entry["event"]["type"].as_str()?, item["status"].as_str()?))
+            } else {
+                None
+            }
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        activities,
+        [("item.started", "started"), ("item.completed", "completed")]
+    );
+
+    socket.close(None).unwrap();
+    server.close().unwrap();
+    let store = Store::open(directory.path().join("harness.db")).unwrap();
+    assert!(store.design_run("thread-1").unwrap().is_none());
+    store.close().unwrap();
+}
+
+#[test]
+fn persisted_design_mode_resumes_before_a_new_prompt() {
+    let runtime = Arc::new(FakeRuntime::default());
+    let registry = Arc::new(FakeRuntimes {
+        runtime: Arc::clone(&runtime),
+    });
+    let workspace = tempfile::tempdir().unwrap();
+    harness_design_agent::write_design_brief(
+        workspace.path(),
+        &json!({
+            "originalRequest": "Build a studio site.",
+            "subject": "Studio",
+            "pageType": "Marketing site",
+            "scope": "Single page",
+            "primaryGoal": "Generate enquiries",
+            "audience": "Prospective clients",
+            "offer": "Design services",
+            "primaryAction": "Start a project",
+            "requiredContent": [],
+            "constraints": [],
+            "brandInputs": [],
+            "creativeControl": "Agent-led",
+            "explicitAnswers": [],
+            "assumptions": [],
+            "unresolved": []
+        }),
+    )
+    .unwrap();
+    let workspace_path = workspace.path().to_string_lossy().into_owned();
+    let stored_workspace = workspace_path.clone();
+    let (directory, server) = start_test_server_with_runtimes_and_seed(registry, move |store| {
+        store.add_project(&stored_workspace, None).unwrap();
+        store
+            .add_thread(StoreNewThread {
+                id: "persisted-design".into(),
+                project_path: stored_workspace,
+                provider: ProviderId::Codex,
+                agent: None,
+                title: "Persisted design".into(),
+                created_at: Some(1_000),
+                worktree_path: None,
+                worktree_branch: None,
+            })
+            .unwrap();
+        store
+            .set_design_run(
+                "persisted-design",
+                &json!({
+                    "workspacePath": "ignored-stale-path",
+                    "originalRequest": "Build a studio site.",
+                    "options": {
+                        "model": "shared-model",
+                        "serviceTier": "priority",
+                        "effort": "low"
+                    },
+                    "phase": "brand",
+                    "askedQuestions": false,
+                    "finalAsked": false,
+                    "explicitAnswers": []
+                }),
+            )
+            .unwrap();
+    });
+    let mut socket = connect_native(&server, "");
+    assert_welcome(&mut socket);
+    send_request(
+        &mut socket,
+        "resume-design",
+        "thread.sendTurn",
+        json!({
+            "threadId": "persisted-design",
+            "text": "Do this after Design Mode."
+        }),
+    );
+    let (_, response) = read_until_response(&mut socket, "resume-design");
+    assert_eq!(response["result"]["queued"], true);
+    assert_eq!(
+        response["result"]["queuedTurn"]["text"],
+        "Do this after Design Mode."
+    );
+
+    let session = runtime.session();
+    wait_for_sent_count(&session, 1);
+    assert_eq!(runtime.resume_count.load(Ordering::Acquire), 1);
+    assert!(session.sent_texts.lock().unwrap()[0].contains("Brand phase"));
+    assert_eq!(
+        session.sent_options.lock().unwrap()[0],
+        TurnOptions {
+            model: Some("shared-model".into()),
+            service_tier: Some("priority".into()),
+            effort: Some("low".into())
+        }
+    );
+
+    socket.close(None).unwrap();
+    server.close().unwrap();
+    let store = Store::open(directory.path().join("harness.db")).unwrap();
+    let stored = store.design_run("persisted-design").unwrap().unwrap();
+    assert_eq!(stored["phase"], "brand");
+    assert_eq!(stored["workspacePath"], workspace_path);
+    store.close().unwrap();
 }
 
 #[test]
@@ -3175,6 +3803,7 @@ struct FakeRuntime {
     complete_during_send: Arc<AtomicBool>,
     complete_login_during_start: Arc<AtomicBool>,
     complete_mcp_o_auth_during_start: Arc<AtomicBool>,
+    images_disabled: Arc<AtomicBool>,
     resume_count: AtomicU64,
     resume_delay_ms: AtomicU64,
     control_open_count: AtomicU64,
@@ -3230,11 +3859,14 @@ impl AgentRuntime for FakeRuntime {
             approvals: Mutex::new(Vec::new()),
             user_inputs: Mutex::new(Vec::new()),
             sent_texts: Mutex::new(Vec::new()),
+            sent_attachments: Mutex::new(Vec::new()),
+            sent_options: Mutex::new(Vec::new()),
             steered_texts: Mutex::new(Vec::new()),
             mcp_reloads: Mutex::new(Vec::new()),
             mcp_reload_has_credentials: Mutex::new(Vec::new()),
             next_mcp_login: AtomicU64::new(1),
             complete_mcp_o_auth_during_start: Arc::clone(&self.complete_mcp_o_auth_during_start),
+            images_disabled: Arc::clone(&self.images_disabled),
         });
         self.sessions.lock().unwrap().push(Arc::clone(&session));
         Ok((thread, session))
@@ -3270,11 +3902,14 @@ impl AgentRuntime for FakeRuntime {
             approvals: Mutex::new(Vec::new()),
             user_inputs: Mutex::new(Vec::new()),
             sent_texts: Mutex::new(Vec::new()),
+            sent_attachments: Mutex::new(Vec::new()),
+            sent_options: Mutex::new(Vec::new()),
             steered_texts: Mutex::new(Vec::new()),
             mcp_reloads: Mutex::new(Vec::new()),
             mcp_reload_has_credentials: Mutex::new(Vec::new()),
             next_mcp_login: AtomicU64::new(1),
             complete_mcp_o_auth_during_start: Arc::clone(&self.complete_mcp_o_auth_during_start),
+            images_disabled: Arc::clone(&self.images_disabled),
         });
         self.sessions.lock().unwrap().push(Arc::clone(&session));
         Ok((thread, session))
@@ -3516,11 +4151,14 @@ struct FakeSession {
     approvals: Mutex<Vec<(String, ApprovalDecision)>>,
     user_inputs: Mutex<FakeUserInputResponses>,
     sent_texts: Mutex<Vec<String>>,
+    sent_attachments: Mutex<Vec<Vec<String>>>,
+    sent_options: Mutex<Vec<TurnOptions>>,
     steered_texts: Mutex<Vec<String>>,
     mcp_reloads: Mutex<Vec<(String, Vec<McpServerConfig>)>>,
     mcp_reload_has_credentials: Mutex<Vec<bool>>,
     next_mcp_login: AtomicU64,
     complete_mcp_o_auth_during_start: Arc<AtomicBool>,
+    images_disabled: Arc<AtomicBool>,
 }
 
 impl FakeSession {
@@ -3529,6 +4167,39 @@ impl FakeSession {
             turn_id: turn_id.into(),
             status: TurnStatus::Completed,
         });
+    }
+
+    fn complete_with_output(&self, turn_id: &str, text: &str) {
+        let item = Item {
+            id: format!("assistant-{turn_id}"),
+            turn_id: turn_id.into(),
+            item_type: ItemType::Message,
+            status: ItemStatus::Started,
+            role: Some(MessageRole::Assistant),
+            text: Some(String::new()),
+            command: None,
+            exit_code: None,
+            duration_ms: None,
+            path: None,
+            lines_added: None,
+            lines_removed: None,
+            created_at: 1_000.0,
+        };
+        self.handlers
+            .emit_event(DomainEvent::ItemStarted { item: item.clone() });
+        self.handlers.emit_event(DomainEvent::ItemDelta {
+            turn_id: turn_id.into(),
+            item_id: item.id.clone(),
+            text_delta: text.into(),
+        });
+        self.handlers.emit_event(DomainEvent::ItemCompleted {
+            item: Item {
+                status: ItemStatus::Completed,
+                text: Some(text.into()),
+                ..item
+            },
+        });
+        self.complete(turn_id);
     }
 
     fn complete_mcp_o_auth(
@@ -3557,7 +4228,7 @@ impl AgentSession for FakeSession {
             approvals: true,
             user_input: Some(true),
             auto_review: Some(false),
-            images: true,
+            images: !self.images_disabled.load(Ordering::Acquire),
         }
     }
 
@@ -3565,10 +4236,15 @@ impl AgentSession for FakeSession {
         &self,
         thread_id: &str,
         text: &str,
-        _attachments: &[String],
-        _options: &TurnOptions,
+        attachments: &[String],
+        options: &TurnOptions,
     ) -> AgentResult<String> {
         self.sent_texts.lock().unwrap().push(text.into());
+        self.sent_attachments
+            .lock()
+            .unwrap()
+            .push(attachments.to_vec());
+        self.sent_options.lock().unwrap().push(options.clone());
         let index = self.next_turn.fetch_add(1, Ordering::AcqRel);
         let turn_id = format!("turn-{index}");
         self.handlers.emit_event(DomainEvent::TurnStarted {
