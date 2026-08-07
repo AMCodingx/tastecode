@@ -1,4 +1,5 @@
 use crate::CursorEventMapper;
+use crate::models::{get_cursor_index, resolve_cursor_model};
 use harness_agent::{
     AgentError, AgentHandlers, AgentResult, AgentSession, AgentSessionState, StartOptions,
     TurnOptions,
@@ -50,6 +51,10 @@ pub struct CursorSessionState {
     pub version: u32,
     pub thread: Thread,
     pub model: Option<String>,
+    #[serde(default)]
+    pub effort: Option<String>,
+    #[serde(default)]
+    pub service_tier: Option<String>,
     pub approval: Option<ApprovalMode>,
     pub instructions: Option<String>,
     pub instructions_pending: bool,
@@ -65,6 +70,8 @@ struct SessionInner {
     thread: Thread,
     workspace: PathBuf,
     model: Option<String>,
+    effort: Option<String>,
+    service_tier: Option<String>,
     approval: Option<ApprovalMode>,
     instructions: Option<String>,
     command: CursorCommand,
@@ -109,6 +116,8 @@ impl CursorSession {
                 version: SESSION_STATE_VERSION,
                 thread: thread.clone(),
                 model: options.model.clone(),
+                effort: options.effort.clone(),
+                service_tier: options.service_tier.clone(),
                 approval: options.approval,
                 instructions: options.instructions.clone(),
                 instructions_pending: options
@@ -164,6 +173,8 @@ impl CursorSession {
                 thread: state.thread,
                 workspace,
                 model: state.model,
+                effort: state.effort,
+                service_tier: state.service_tier,
                 approval: state.approval,
                 instructions: state.instructions,
                 command,
@@ -186,6 +197,8 @@ impl CursorSession {
             version: SESSION_STATE_VERSION,
             thread: self.inner.thread.clone(),
             model: self.inner.model.clone(),
+            effort: self.inner.effort.clone(),
+            service_tier: self.inner.service_tier.clone(),
             approval: self.inner.approval,
             instructions: self.inner.instructions.clone(),
             instructions_pending: state.instructions_pending,
@@ -229,6 +242,7 @@ impl CursorSession {
         thread_id: &str,
         text: &str,
         attachments: &[String],
+        options: &TurnOptions,
     ) -> AgentResult<String> {
         self.require_thread(thread_id)?;
         if !attachments.is_empty() {
@@ -239,6 +253,22 @@ impl CursorSession {
         if self.inner.disposed.load(Ordering::Acquire) {
             return Err(AgentError::Failed("Cursor session is closed".into()));
         }
+
+        let model = options.model.as_deref().or(self.inner.model.as_deref());
+        let effort = options.effort.as_deref().or(self.inner.effort.as_deref());
+        let service_tier = options
+            .service_tier
+            .as_deref()
+            .or(self.inner.service_tier.as_deref());
+        if model.is_some()
+            && (effort.is_some() || service_tier.is_some())
+            && get_cursor_index().is_none()
+        {
+            let _ = crate::runtime::list_cursor_models(&self.inner.command);
+        }
+        let index = get_cursor_index();
+        let concrete_model =
+            model.map(|model| resolve_cursor_model(index.as_ref(), model, effort, service_tier));
 
         let mut state = lock(&self.inner.state);
         if state.active.is_some() {
@@ -256,7 +286,7 @@ impl CursorSession {
                 .flatten(),
         );
         let turn_args = cursor_turn_args(
-            self.inner.model.as_deref(),
+            concrete_model.as_deref(),
             self.inner.approval,
             state.session_id.as_deref(),
             &prompt,
@@ -362,9 +392,9 @@ impl AgentSession for CursorSession {
         thread_id: &str,
         text: &str,
         attachments: &[String],
-        _options: &TurnOptions,
+        options: &TurnOptions,
     ) -> AgentResult<String> {
-        self.send_turn_inner(thread_id, text, attachments)
+        self.send_turn_inner(thread_id, text, attachments, options)
     }
 
     fn interrupt(&self, thread_id: &str) -> AgentResult<()> {
@@ -676,6 +706,8 @@ mod tests {
                 &StartOptions {
                     instructions: Some("Answer plainly.".into()),
                     model: Some("composer-2.5".into()),
+                    effort: Some("high".into()),
+                    service_tier: Some("fast".into()),
                     approval: Some(ApprovalMode::Ask),
                     ..StartOptions::default()
                 },
@@ -693,6 +725,8 @@ mod tests {
             serde_json::from_value(session.export_state().unwrap().unwrap().into_value()).unwrap();
         assert!(initial.instructions_pending);
         assert_eq!(initial.turn_counter, 0);
+        assert_eq!(initial.effort.as_deref(), Some("high"));
+        assert_eq!(initial.service_tier.as_deref(), Some("fast"));
 
         let first = session
             .send_turn(&thread.id, "Update README", &[], &TurnOptions::default())
