@@ -1,14 +1,16 @@
 use async_channel::Receiver as EventReceiver;
 use harness_client::{ClientEvent, ClientHandle, ConnectionState, Endpoint};
 use harness_protocol::{
-    AcpAgent, AcpAgentsResult, ApprovalDecision, ApprovalMode, DiffDecision, DomainEvent,
-    ErrorCode, McpListResult, McpServer, Model, ModelConnection, ModelConnectionsResult,
-    ModelsListResult, PROTOCOL_VERSION, ProjectAddedResult, ProjectSummary, ProjectsListResult,
-    ProviderId, ProviderStatus, ProvidersListResult, Response, ReviewDiffResult, SendTurnResult,
-    ServerWelcome, SessionDiff, SessionSummary, SidebarMode, SidebarSettings, SkillEnabledResult,
-    SkillInstalledResult, SkillsListResult, TerminalExitPush, TerminalOpenedResult,
-    TerminalOutputPush, ThreadEventPush, ThreadHistoryResult, ThreadInboxStatus, ThreadLifecycle,
-    ThreadLifecyclePush, ThreadQueuePush, ThreadQueueResult, ThreadStartResult, channel, method,
+    Account, AcpAgent, AcpAgentsResult, ApprovalDecision, ApprovalMode, AuthEventPush,
+    AuthStartLoginResult, CredentialConfiguredResult, DiffDecision, DomainEvent, ErrorCode,
+    McpListResult, McpServer, Model, ModelConnection, ModelConnectionInput, ModelConnectionResult,
+    ModelConnectionsResult, ModelsListResult, PROTOCOL_VERSION, ProjectAddedResult, ProjectSummary,
+    ProjectsListResult, ProviderId, ProviderStatus, ProvidersListResult, Response,
+    ReviewDiffResult, SendTurnResult, ServerWelcome, SessionDiff, SessionSummary, SidebarMode,
+    SidebarSettings, SkillEnabledResult, SkillInstalledResult, SkillsListResult, TerminalExitPush,
+    TerminalOpenedResult, TerminalOutputPush, ThreadEventPush, ThreadHistoryResult,
+    ThreadInboxStatus, ThreadLifecycle, ThreadLifecyclePush, ThreadQueuePush, ThreadQueueResult,
+    ThreadStartResult, channel, method,
 };
 use serde::Deserialize;
 use serde_json::{Value, json};
@@ -23,6 +25,11 @@ pub(crate) struct ClientState {
     pub(crate) sidebar_settings: SidebarSettings,
     pub(crate) provider_statuses: Vec<ProviderStatus>,
     pub(crate) model_connections: Vec<ModelConnection>,
+    pub(crate) connection_busy: Option<String>,
+    pub(crate) connection_error: Option<String>,
+    pub(crate) accounts: HashMap<AuthTarget, Account>,
+    pub(crate) auth_busy: Option<AuthTarget>,
+    pub(crate) auth_error: Option<String>,
     pub(crate) acp_agents: Vec<AcpAgent>,
     pub(crate) model_catalog: Vec<ModelChoice>,
     pub(crate) model_catalog_loaded: bool,
@@ -68,6 +75,28 @@ pub(crate) struct ScopedSkillsInventory {
     pub(crate) provider: ProviderId,
     pub(crate) project_path: String,
     pub(crate) result: SkillsListResult,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub(crate) struct AuthTarget {
+    pub(crate) provider: ProviderId,
+    pub(crate) agent: Option<String>,
+}
+
+impl AuthTarget {
+    pub(crate) fn provider(provider: ProviderId) -> Self {
+        Self {
+            provider,
+            agent: None,
+        }
+    }
+
+    pub(crate) fn agent(provider: ProviderId, agent: String) -> Self {
+        Self {
+            provider,
+            agent: Some(agent),
+        }
+    }
 }
 
 #[derive(Deserialize)]
@@ -127,6 +156,25 @@ enum PendingRequest {
     UpdateSidebarSettings,
     Providers,
     Connections,
+    ConnectionUpsert {
+        connection_id: String,
+        api_key: String,
+    },
+    ConnectionCredential {
+        connection_id: String,
+    },
+    ConnectionRemove {
+        connection_id: String,
+    },
+    AuthStatus {
+        target: AuthTarget,
+    },
+    AuthStart {
+        target: AuthTarget,
+    },
+    AuthSignOut {
+        target: AuthTarget,
+    },
     AcpAgents,
     Models {
         source: ModelSource,
@@ -229,6 +277,9 @@ pub(crate) enum ShellEvent {
         project_path: String,
         title: String,
         provider: ProviderId,
+    },
+    OpenUrl {
+        url: String,
     },
 }
 
@@ -338,6 +389,11 @@ impl ClientState {
             },
             provider_statuses: Vec::new(),
             model_connections: Vec::new(),
+            connection_busy: None,
+            connection_error: None,
+            accounts: HashMap::new(),
+            auth_busy: None,
+            auth_error: None,
             acp_agents: Vec::new(),
             model_catalog: Vec::new(),
             model_catalog_loaded: fixture,
@@ -436,6 +492,86 @@ impl ClientState {
             PendingRequest::UpdateSidebarSettings,
         );
         ClientUpdate::shell_changed()
+    }
+
+    pub(crate) fn upsert_connection(
+        &mut self,
+        connection: ModelConnectionInput,
+        api_key: String,
+    ) -> ClientUpdate {
+        let connection_id = connection.id.clone();
+        self.connection_busy = Some(connection_id.clone());
+        self.connection_error = None;
+        let params = match serde_json::to_value(connection) {
+            Ok(params) => params,
+            Err(error) => {
+                self.connection_busy = None;
+                self.connection_error = Some(format!("Could not encode the connection: {error}"));
+                return ClientUpdate::shell_changed();
+            }
+        };
+        if !self.send_request(
+            method::CONNECTIONS_UPSERT,
+            params,
+            PendingRequest::ConnectionUpsert {
+                connection_id,
+                api_key,
+            },
+        ) {
+            self.connection_busy = None;
+            self.connection_error = self.notice.clone();
+        }
+        ClientUpdate::shell_changed()
+    }
+
+    pub(crate) fn remove_connection(&mut self, connection_id: String) -> ClientUpdate {
+        self.connection_busy = Some(connection_id.clone());
+        self.connection_error = None;
+        if !self.send_request(
+            method::CONNECTIONS_REMOVE,
+            json!({ "connectionId": connection_id }),
+            PendingRequest::ConnectionRemove { connection_id },
+        ) {
+            self.connection_busy = None;
+            self.connection_error = self.notice.clone();
+        }
+        ClientUpdate::shell_changed()
+    }
+
+    pub(crate) fn start_auth(&mut self, target: AuthTarget) -> ClientUpdate {
+        self.auth_busy = Some(target.clone());
+        self.auth_error = None;
+        if !self.send_request(
+            method::AUTH_START_LOGIN,
+            auth_params(&target),
+            PendingRequest::AuthStart { target },
+        ) {
+            self.auth_busy = None;
+            self.auth_error = self.notice.clone();
+        }
+        ClientUpdate::shell_changed()
+    }
+
+    pub(crate) fn sign_out(&mut self, target: AuthTarget) -> ClientUpdate {
+        self.auth_busy = Some(target.clone());
+        self.auth_error = None;
+        if !self.send_request(
+            method::AUTH_SIGN_OUT,
+            auth_params(&target),
+            PendingRequest::AuthSignOut { target },
+        ) {
+            self.auth_busy = None;
+            self.auth_error = self.notice.clone();
+        }
+        ClientUpdate::shell_changed()
+    }
+
+    fn request_auth_status(&mut self, target: AuthTarget) {
+        self.send_request(
+            method::AUTH_STATUS,
+            auth_params(&target),
+            PendingRequest::AuthStatus { target },
+        );
     }
 
     pub(crate) fn request_mcp_inventory(
@@ -968,6 +1104,34 @@ impl ClientState {
                     None => error.message,
                 };
                 match pending {
+                    Some(PendingRequest::AuthStatus { target }) => {
+                        self.accounts.insert(
+                            target,
+                            Account {
+                                signed_in: false,
+                                email: None,
+                                plan: None,
+                            },
+                        );
+                        ClientUpdate::shell_changed()
+                    }
+                    Some(PendingRequest::AuthStart { target })
+                    | Some(PendingRequest::AuthSignOut { target }) => {
+                        if self.auth_busy.as_ref() == Some(&target) {
+                            self.auth_busy = None;
+                        }
+                        self.auth_error = Some(message);
+                        ClientUpdate::shell_changed()
+                    }
+                    Some(PendingRequest::ConnectionUpsert { connection_id, .. })
+                    | Some(PendingRequest::ConnectionCredential { connection_id })
+                    | Some(PendingRequest::ConnectionRemove { connection_id }) => {
+                        if self.connection_busy.as_deref() == Some(connection_id.as_str()) {
+                            self.connection_busy = None;
+                        }
+                        self.connection_error = Some(message);
+                        ClientUpdate::shell_changed()
+                    }
                     Some(PendingRequest::McpList {
                         provider,
                         project_path,
@@ -1099,6 +1263,25 @@ impl ClientState {
                 }
                 Some(PendingRequest::Providers) => self.handle_providers_response(result),
                 Some(PendingRequest::Connections) => self.handle_connections_response(result),
+                Some(PendingRequest::AuthStatus { target }) => {
+                    self.handle_auth_status_response(result, target)
+                }
+                Some(PendingRequest::AuthStart { target }) => {
+                    self.handle_auth_start_response(result, target)
+                }
+                Some(PendingRequest::AuthSignOut { target }) => {
+                    self.handle_auth_sign_out_response(target)
+                }
+                Some(PendingRequest::ConnectionUpsert {
+                    connection_id,
+                    api_key,
+                }) => self.handle_connection_upsert_response(result, connection_id, api_key),
+                Some(PendingRequest::ConnectionCredential { connection_id }) => {
+                    self.handle_connection_credential_response(result, connection_id)
+                }
+                Some(PendingRequest::ConnectionRemove { connection_id }) => {
+                    self.handle_connection_remove_response(connection_id)
+                }
                 Some(PendingRequest::AcpAgents) => self.handle_acp_agents_response(result),
                 Some(PendingRequest::Models { source }) => {
                     self.handle_models_response(result, source)
@@ -1255,6 +1438,28 @@ impl ClientState {
             return ClientUpdate::shell_changed();
         }
         match pending {
+            PendingRequest::AuthStatus { target } => {
+                if self.auth_busy.as_ref() == Some(&target) {
+                    self.auth_busy = None;
+                }
+                self.auth_error =
+                    Some("The server connection was lost while checking provider sign-in.".into());
+                ClientUpdate::shell_changed()
+            }
+            PendingRequest::AuthStart { .. } | PendingRequest::AuthSignOut { .. } => {
+                self.auth_busy = None;
+                self.auth_error =
+                    Some("The server connection was lost while updating provider sign-in.".into());
+                ClientUpdate::shell_changed()
+            }
+            PendingRequest::ConnectionUpsert { .. }
+            | PendingRequest::ConnectionCredential { .. }
+            | PendingRequest::ConnectionRemove { .. } => {
+                self.connection_busy = None;
+                self.connection_error =
+                    Some("The server connection was lost while updating API connections.".into());
+                ClientUpdate::shell_changed()
+            }
             PendingRequest::McpList { .. }
             | PendingRequest::McpMutation { .. }
             | PendingRequest::McpReload { .. } => {
@@ -1472,6 +1677,18 @@ impl ClientState {
         match serde_json::from_value::<ProvidersListResult>(result) {
             Ok(result) => {
                 self.provider_statuses = result.providers;
+                let auth_targets = self
+                    .provider_statuses
+                    .iter()
+                    .filter(|provider| {
+                        provider.installed
+                            && !matches!(provider.id, ProviderId::Acp | ProviderId::Api)
+                    })
+                    .map(|provider| AuthTarget::provider(provider.id))
+                    .collect::<Vec<_>>();
+                for target in auth_targets {
+                    self.request_auth_status(target);
+                }
                 let sources = self
                     .provider_statuses
                     .iter()
@@ -1554,6 +1771,15 @@ impl ClientState {
         match serde_json::from_value::<AcpAgentsResult>(result) {
             Ok(result) => {
                 self.acp_agents = result.agents;
+                let auth_targets = self
+                    .acp_agents
+                    .iter()
+                    .filter(|agent| agent.installed)
+                    .map(|agent| AuthTarget::agent(ProviderId::Acp, agent.id.clone()))
+                    .collect::<Vec<_>>();
+                for target in auth_targets {
+                    self.request_auth_status(target);
+                }
                 for (source_index, agent) in self
                     .acp_agents
                     .clone()
@@ -1647,6 +1873,135 @@ impl ClientState {
             }
             _ => {}
         }
+    }
+
+    fn handle_connection_upsert_response(
+        &mut self,
+        result: Value,
+        connection_id: String,
+        api_key: String,
+    ) -> ClientUpdate {
+        match serde_json::from_value::<ModelConnectionResult>(result) {
+            Ok(result) => {
+                self.model_connections
+                    .retain(|connection| connection.id != result.connection.id);
+                self.model_connections.push(result.connection);
+            }
+            Err(error) => {
+                self.connection_busy = None;
+                self.connection_error = Some(format!("connections.upsert was invalid: {error}"));
+                return ClientUpdate::shell_changed();
+            }
+        }
+        if api_key.trim().is_empty() {
+            self.connection_busy = None;
+            self.refresh_model_catalog();
+            return ClientUpdate::shell_changed();
+        }
+        if !self.send_request(
+            method::CONNECTIONS_SET_CREDENTIAL,
+            json!({ "connectionId": connection_id, "apiKey": api_key }),
+            PendingRequest::ConnectionCredential { connection_id },
+        ) {
+            self.connection_busy = None;
+        }
+        ClientUpdate::shell_changed()
+    }
+
+    fn handle_connection_credential_response(
+        &mut self,
+        result: Value,
+        connection_id: String,
+    ) -> ClientUpdate {
+        match serde_json::from_value::<CredentialConfiguredResult>(result) {
+            Ok(result) if result.credential_configured => {
+                self.connection_busy = None;
+                self.connection_error = None;
+                self.refresh_model_catalog();
+            }
+            Ok(_) => {
+                self.connection_busy = None;
+                self.connection_error =
+                    Some("The credential store did not confirm the API key.".into());
+            }
+            Err(error) => {
+                self.connection_busy = None;
+                self.connection_error = Some(format!(
+                    "connections.setCredential was invalid for {connection_id}: {error}"
+                ));
+            }
+        }
+        ClientUpdate::shell_changed()
+    }
+
+    fn handle_connection_remove_response(&mut self, connection_id: String) -> ClientUpdate {
+        self.connection_busy = None;
+        self.connection_error = None;
+        self.model_connections
+            .retain(|connection| connection.id != connection_id);
+        self.refresh_model_catalog();
+        ClientUpdate::shell_changed()
+    }
+
+    fn handle_auth_status_response(&mut self, result: Value, target: AuthTarget) -> ClientUpdate {
+        match serde_json::from_value::<Account>(result) {
+            Ok(account) => {
+                let refresh_catalog = self.auth_busy.as_ref() == Some(&target);
+                self.accounts.insert(target.clone(), account);
+                if refresh_catalog {
+                    self.auth_busy = None;
+                    self.refresh_model_catalog();
+                }
+                self.auth_error = None;
+            }
+            Err(error) => {
+                if self.auth_busy.as_ref() == Some(&target) {
+                    self.auth_busy = None;
+                }
+                self.auth_error = Some(format!("auth.status was invalid: {error}"));
+            }
+        }
+        ClientUpdate::shell_changed()
+    }
+
+    fn handle_auth_start_response(&mut self, result: Value, target: AuthTarget) -> ClientUpdate {
+        match serde_json::from_value::<AuthStartLoginResult>(result) {
+            Ok(result) => {
+                self.auth_busy = Some(target);
+                self.auth_error = None;
+                ClientUpdate {
+                    shell_changed: true,
+                    chat: Vec::new(),
+                    shell_events: result
+                        .auth_url
+                        .map(|url| ShellEvent::OpenUrl { url })
+                        .into_iter()
+                        .collect(),
+                }
+            }
+            Err(error) => {
+                self.auth_busy = None;
+                self.auth_error = Some(format!("auth.startLogin was invalid: {error}"));
+                ClientUpdate::shell_changed()
+            }
+        }
+    }
+
+    fn handle_auth_sign_out_response(&mut self, target: AuthTarget) -> ClientUpdate {
+        self.accounts.insert(
+            target.clone(),
+            Account {
+                signed_in: false,
+                email: None,
+                plan: None,
+            },
+        );
+        if self.auth_busy.as_ref() == Some(&target) {
+            self.auth_busy = None;
+        }
+        self.auth_error = None;
+        self.refresh_model_catalog();
+        ClientUpdate::shell_changed()
     }
 
     fn update_catalog_loaded(&mut self) {
@@ -1822,6 +2177,33 @@ impl ClientState {
     fn handle_push(&mut self, channel_name: &str, data: Value) -> ClientUpdate {
         match channel_name {
             channel::SERVER_WELCOME => self.handle_welcome(data),
+            channel::AUTH_EVENT => match serde_json::from_value::<AuthEventPush>(data) {
+                Ok(push) => {
+                    let target = AuthTarget {
+                        provider: push.provider,
+                        agent: push.agent,
+                    };
+                    if push.success {
+                        self.auth_busy = Some(target.clone());
+                        self.auth_error = None;
+                        self.request_auth_status(target);
+                    } else {
+                        if self.auth_busy.as_ref() == Some(&target) {
+                            self.auth_busy = None;
+                        }
+                        self.auth_error = Some(
+                            push.error
+                                .unwrap_or_else(|| "Provider sign-in was cancelled.".into()),
+                        );
+                    }
+                    ClientUpdate::shell_changed()
+                }
+                Err(error) => {
+                    self.auth_busy = None;
+                    self.auth_error = Some(format!("auth.event push was invalid: {error}"));
+                    ClientUpdate::shell_changed()
+                }
+            },
             channel::SIDEBAR_SETTINGS => {
                 match serde_json::from_value::<SidebarSettings>(data) {
                     Ok(settings) => self.sidebar_settings = settings,
@@ -2023,6 +2405,12 @@ impl PendingRequest {
             | Self::RenameThread
             | Self::Providers
             | Self::Connections
+            | Self::ConnectionUpsert { .. }
+            | Self::ConnectionCredential { .. }
+            | Self::ConnectionRemove { .. }
+            | Self::AuthStatus { .. }
+            | Self::AuthStart { .. }
+            | Self::AuthSignOut { .. }
             | Self::AcpAgents
             | Self::Models { .. }
             | Self::McpList { .. }
@@ -2073,6 +2461,17 @@ fn provider_key(provider: ProviderId) -> &'static str {
         ProviderId::Acp => "acp",
         ProviderId::Api => "api",
     }
+}
+
+fn auth_params(target: &AuthTarget) -> Value {
+    let mut params = serde_json::Map::from_iter([(
+        "provider".into(),
+        serde_json::to_value(target.provider).expect("provider ids always serialize"),
+    )]);
+    if let Some(agent) = &target.agent {
+        params.insert("agent".into(), Value::String(agent.clone()));
+    }
+    Value::Object(params)
 }
 
 #[cfg(test)]
@@ -2431,5 +2830,17 @@ mod tests {
 
         assert!(current.shell_changed);
         assert!(state.mcp_inventory.is_some());
+    }
+
+    #[test]
+    fn auth_targets_preserve_optional_acp_agent_identity() {
+        assert_eq!(
+            auth_params(&AuthTarget::provider(ProviderId::Codex)),
+            json!({ "provider": "codex" })
+        );
+        assert_eq!(
+            auth_params(&AuthTarget::agent(ProviderId::Acp, "gemini".into())),
+            json!({ "provider": "acp", "agent": "gemini" })
+        );
     }
 }

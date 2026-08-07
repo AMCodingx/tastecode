@@ -16,7 +16,8 @@ use gpui::{
     point, prelude::*, px, size, svg,
 };
 use gpui_component::Root;
-use harness_protocol::{ApprovalMode, Model};
+use gpui_component::input::{InputEvent, InputState};
+use harness_protocol::{ApprovalMode, Model, ModelConnectionPreset};
 use std::rc::Rc;
 
 const APP_WIDTH: f32 = 1180.0;
@@ -82,6 +83,13 @@ struct HarnessApp {
     settings_focus_pending: bool,
     system_theme_mode: ThemeMode,
     preferences: NativePreferences,
+    connection_editor_open: bool,
+    connection_submission_id: Option<String>,
+    connection_preset: ModelConnectionPreset,
+    connection_name: Entity<InputState>,
+    connection_base_url: Entity<InputState>,
+    connection_default_model: Entity<InputState>,
+    connection_api_key: Entity<InputState>,
     fixture: bool,
 }
 
@@ -104,6 +112,40 @@ impl HarnessApp {
         };
         let theme = Theme::new(mode, preferences.backdrop, preferences.accent);
         let chat = cx.new(|cx| ChatView::new(theme, window, cx));
+        let connection_name = cx.new(|cx| {
+            InputState::new(window, cx)
+                .default_value("OpenAI API")
+                .placeholder("Connection name")
+        });
+        let connection_base_url = cx.new(|cx| {
+            InputState::new(window, cx)
+                .default_value("https://api.openai.com/v1")
+                .placeholder("https://api.example.com/v1")
+        });
+        let connection_default_model =
+            cx.new(|cx| InputState::new(window, cx).placeholder("Optional model ID"));
+        let connection_api_key = cx.new(|cx| {
+            InputState::new(window, cx)
+                .placeholder("API key")
+                .masked(true)
+        });
+
+        for input in [
+            &connection_name,
+            &connection_base_url,
+            &connection_default_model,
+            &connection_api_key,
+        ] {
+            cx.subscribe(input, |_this, _input, event, cx| {
+                if matches!(
+                    event,
+                    InputEvent::Change | InputEvent::Focus | InputEvent::Blur
+                ) {
+                    cx.notify();
+                }
+            })
+            .detach();
+        }
 
         cx.subscribe(&chat, |this, _chat, event, cx| match event {
             ChatEvent::NeedHistory {
@@ -290,6 +332,13 @@ impl HarnessApp {
             settings_focus_pending: false,
             system_theme_mode,
             preferences,
+            connection_editor_open: false,
+            connection_submission_id: None,
+            connection_preset: ModelConnectionPreset::Openai,
+            connection_name,
+            connection_base_url,
+            connection_default_model,
+            connection_api_key,
             fixture,
         }
     }
@@ -312,6 +361,12 @@ impl HarnessApp {
         }
         for event in update.shell_events {
             self.apply_shell_event(event, cx);
+        }
+        if self.connection_submission_id.is_some() && self.state.connection_busy.is_none() {
+            if self.state.connection_error.is_none() {
+                self.connection_editor_open = false;
+            }
+            self.connection_submission_id = None;
         }
         if shell_changed {
             self.sync_composer_settings(cx);
@@ -395,6 +450,7 @@ impl HarnessApp {
                 });
                 self.state.select_thread(&thread_id);
             }
+            ShellEvent::OpenUrl { url } => cx.open_url(&url),
         }
     }
 

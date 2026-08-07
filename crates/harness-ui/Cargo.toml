@@ -17,3 +17,5 @@ harness-protocol = { path = "../harness-protocol" }
 harness-state = { path = "../harness-state" }
 serde.workspace = true
 serde_json.workspace = true
+uuid.workspace = true
+url.workspace = true

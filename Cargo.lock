@@ -2574,6 +2574,8 @@ dependencies = [
  "harness-state",
  "serde",
  "serde_json",
+ "url",
+ "uuid",
 ]
 
 [[package]]

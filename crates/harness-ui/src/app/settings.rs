@@ -1,13 +1,16 @@
 use super::HarnessApp;
+use crate::client_state::AuthTarget;
 use crate::preferences::{FontPreference, NativePreferences, ThemePreference};
 use crate::theme::{Accent, Backdrop, Theme, ThemeMode};
 use gpui::{
-    Animation, AnimationExt, AnyElement, App, Context, FontWeight, PathPromptOptions, SharedString,
-    div, ease_out_quint, prelude::*, px, svg,
+    Animation, AnimationExt, AnyElement, App, Context, Entity, FontWeight, PathPromptOptions,
+    SharedString, Window, div, ease_out_quint, prelude::*, px, svg,
 };
+use gpui_component::input::{Input, InputState};
 use harness_protocol::{
-    McpAuth, McpServer, McpStartupStatus, ProviderAuth, ProviderId, SidebarMode, SidebarSettings,
-    Skill, SkillScope,
+    McpAuth, McpServer, McpStartupStatus, ModelConnectionInput, ModelConnectionPreset,
+    ModelTransport, ProviderAuth, ProviderId, ProviderLogin, SidebarMode, SidebarSettings, Skill,
+    SkillScope,
 };
 use std::rc::Rc;
 
@@ -240,31 +243,88 @@ impl HarnessApp {
 
         let mut providers = Vec::new();
         for (index, provider) in self.state.provider_statuses.iter().enumerate() {
-            let ready = provider.installed
-                && provider.problem.is_none()
-                && provider.auth != ProviderAuth::Unauthenticated;
+            let target = AuthTarget::provider(provider.id);
+            let account = self.state.accounts.get(&target);
+            let signed_in = account
+                .map(|account| account.signed_in)
+                .unwrap_or(provider.auth == ProviderAuth::Authenticated);
+            let ready = provider.installed && provider.problem.is_none() && signed_in;
             let status = if !provider.installed {
                 "Not installed"
             } else if provider.problem.is_some() {
                 "Needs attention"
             } else {
-                match provider.auth {
-                    ProviderAuth::Authenticated => "Ready",
-                    ProviderAuth::Unauthenticated => "Sign-in required",
-                    ProviderAuth::Unknown => "Installed",
+                match (signed_in, provider.setup.as_ref().map(|setup| setup.login)) {
+                    (true, _) => "Ready",
+                    (false, Some(ProviderLogin::Provider)) => "CLI sign-in required",
+                    (false, _) => "Sign-in required",
                 }
             };
             let note = provider.problem.clone().unwrap_or_else(|| {
-                provider.version.as_ref().map_or_else(
-                    || "Local provider adapter".into(),
-                    |version| format!("Version {version}"),
-                )
+                if let Some(account) = account
+                    && account.signed_in
+                {
+                    let identity = [account.email.as_deref(), account.plan.as_deref()]
+                        .into_iter()
+                        .flatten()
+                        .collect::<Vec<_>>()
+                        .join(" · ");
+                    if identity.is_empty() {
+                        "Signed in".into()
+                    } else {
+                        identity
+                    }
+                } else {
+                    provider.version.as_ref().map_or_else(
+                        || "Local provider adapter".into(),
+                        |version| format!("Version {version}"),
+                    )
+                }
             });
+            let busy = self.state.auth_busy.as_ref() == Some(&target);
+            let trailing = if busy {
+                status_pill("Working…", false, theme)
+            } else if !provider.installed {
+                if let Some(setup) = &provider.setup {
+                    let url = setup.install_url.clone();
+                    let action: SettingsAction = Rc::new(move |cx| cx.open_url(&url));
+                    provider_action_button(index, "Install guide", false, theme, action)
+                } else {
+                    status_pill(status, false, theme)
+                }
+            } else if provider
+                .setup
+                .as_ref()
+                .is_some_and(|setup| setup.login == ProviderLogin::App)
+            {
+                let target = target.clone();
+                let view = cx.weak_entity();
+                let action: SettingsAction = Rc::new(move |cx| {
+                    let target = target.clone();
+                    let _ = view.update(cx, |this, cx| {
+                        let update = if signed_in {
+                            this.state.sign_out(target)
+                        } else {
+                            this.state.start_auth(target)
+                        };
+                        this.apply_client_update(update, cx);
+                    });
+                });
+                provider_action_button(
+                    index,
+                    if signed_in { "Sign out" } else { "Sign in" },
+                    signed_in,
+                    theme,
+                    action,
+                )
+            } else {
+                status_pill(status, ready, theme)
+            };
             providers.push(settings_row(
                 index,
                 provider.display_name.clone(),
                 note,
-                status_pill(status, ready, theme),
+                trailing,
                 theme,
             ));
         }
@@ -275,6 +335,13 @@ impl HarnessApp {
             ));
         }
         blocks.push(settings_group("CLI providers", providers, theme));
+        if let Some(error) = &self.state.auth_error {
+            blocks.push(settings_error_group(
+                "Provider sign-in error",
+                error.clone(),
+                theme,
+            ));
+        }
 
         let mut connections = Vec::new();
         for (index, connection) in self.state.model_connections.iter().enumerate() {
@@ -287,6 +354,30 @@ impl HarnessApp {
             } else {
                 "API key required"
             };
+            let ready = connection.enabled
+                && connection.credential_configured
+                && connection.problem.is_none();
+            let trailing = if self.state.connection_busy.as_deref() == Some(connection.id.as_str())
+            {
+                status_pill("Removing…", false, theme)
+            } else {
+                let connection_id = connection.id.clone();
+                let view = cx.weak_entity();
+                let remove: SettingsAction = Rc::new(move |cx| {
+                    let connection_id = connection_id.clone();
+                    let _ = view.update(cx, |this, cx| {
+                        let update = this.state.remove_connection(connection_id);
+                        this.apply_client_update(update, cx);
+                    });
+                });
+                div()
+                    .flex()
+                    .items_center()
+                    .gap(px(8.0))
+                    .child(status_pill(status, ready, theme))
+                    .child(connection_remove_button(index, theme, remove))
+                    .into_any_element()
+            };
             connections.push(settings_row(
                 index,
                 connection.display_name.clone(),
@@ -294,13 +385,7 @@ impl HarnessApp {
                     .problem
                     .clone()
                     .unwrap_or_else(|| connection.base_url.clone()),
-                status_pill(
-                    status,
-                    connection.enabled
-                        && connection.credential_configured
-                        && connection.problem.is_none(),
-                    theme,
-                ),
+                trailing,
                 theme,
             ));
         }
@@ -311,24 +396,84 @@ impl HarnessApp {
             ));
         }
         blocks.push(settings_group("Direct API connections", connections, theme));
+        if let Some(error) = &self.state.connection_error {
+            blocks.push(settings_error_group(
+                "Connection error",
+                error.clone(),
+                theme,
+            ));
+        }
+        if self.connection_editor_open {
+            blocks.push(self.connection_form(cx));
+        } else {
+            let add_view = cx.weak_entity();
+            let add: SettingsAction = Rc::new(move |cx| {
+                let _ = add_view.update(cx, |this, cx| {
+                    this.state.connection_error = None;
+                    this.connection_editor_open = true;
+                    cx.notify();
+                });
+            });
+            blocks.push(
+                div()
+                    .flex()
+                    .justify_end()
+                    .child(settings_button(
+                        "add-connection",
+                        "Connect another plan or API",
+                        "icons/plus.svg",
+                        theme,
+                        add,
+                        false,
+                    ))
+                    .into_any_element(),
+            );
+        }
 
         let mut agents = Vec::new();
         for (index, agent) in self.state.acp_agents.iter().enumerate() {
-            let status = if agent.installed && agent.verified {
+            let target = AuthTarget::agent(ProviderId::Acp, agent.id.clone());
+            let account = self.state.accounts.get(&target);
+            let signed_in = account.is_some_and(|account| account.signed_in);
+            let status = if agent.installed && agent.verified && signed_in {
                 "Ready"
             } else if agent.installed {
-                "Unverified"
+                "CLI sign-in required"
             } else {
                 "Not installed"
+            };
+            let note = agent.problem.clone().unwrap_or_else(|| {
+                if let Some(account) = account
+                    && account.signed_in
+                {
+                    let identity = [account.email.as_deref(), account.plan.as_deref()]
+                        .into_iter()
+                        .flatten()
+                        .collect::<Vec<_>>()
+                        .join(" · ");
+                    if identity.is_empty() {
+                        "Signed in".into()
+                    } else {
+                        identity
+                    }
+                } else if agent.verified {
+                    "Captured ACP protocol adapter".into()
+                } else {
+                    "ACP-compatible coding agent".into()
+                }
+            });
+            let trailing = if !agent.installed {
+                let url = agent.setup.install_url.clone();
+                let action: SettingsAction = Rc::new(move |cx| cx.open_url(&url));
+                provider_action_button(1_000 + index, "Install guide", false, theme, action)
+            } else {
+                status_pill(status, agent.verified && signed_in, theme)
             };
             agents.push(settings_row(
                 index,
                 agent.name.clone(),
-                agent
-                    .problem
-                    .clone()
-                    .unwrap_or_else(|| "ACP-compatible coding agent".into()),
-                status_pill(status, agent.installed && agent.verified, theme),
+                note,
+                trailing,
                 theme,
             ));
         }
@@ -351,6 +496,277 @@ impl HarnessApp {
                 .into_any_element(),
         );
         settings_panel("Providers", blocks, theme)
+    }
+
+    fn connection_form(&self, cx: &mut Context<Self>) -> AnyElement {
+        let theme = self.theme;
+        let presets = [
+            (ModelConnectionPreset::Openai, "OpenAI"),
+            (ModelConnectionPreset::Anthropic, "Anthropic"),
+            (ModelConnectionPreset::Openrouter, "OpenRouter"),
+            (ModelConnectionPreset::Kimi, "Kimi"),
+            (ModelConnectionPreset::Zai, "Z.ai"),
+            (ModelConnectionPreset::Custom, "Custom"),
+        ];
+        let mut preset_buttons = Vec::new();
+        for (index, (preset, label)) in presets.into_iter().enumerate() {
+            let selected = self.connection_preset == preset;
+            preset_buttons.push(
+                div()
+                    .id(("connection-preset", index))
+                    .h(px(28.0))
+                    .flex()
+                    .items_center()
+                    .px(px(10.0))
+                    .rounded(px(7.0))
+                    .border_1()
+                    .border_color(if selected {
+                        theme.attention.hsla()
+                    } else {
+                        theme.line.hsla()
+                    })
+                    .bg(if selected {
+                        theme.surface_2.hsla()
+                    } else {
+                        theme.surface.hsla()
+                    })
+                    .text_size(px(10.5))
+                    .text_color(if selected {
+                        theme.text.hsla()
+                    } else {
+                        theme.text_3.hsla()
+                    })
+                    .cursor_pointer()
+                    .hover(move |style| style.bg(theme.surface_2.hsla()))
+                    .on_click(cx.listener(move |this, _event, window, cx| {
+                        this.select_connection_preset(preset, window, cx);
+                    }))
+                    .child(label)
+                    .into_any_element(),
+            );
+        }
+        let busy = self.state.connection_busy.is_some();
+        let can_submit = !busy
+            && !self.connection_name.read(cx).value().trim().is_empty()
+            && !self.connection_base_url.read(cx).value().trim().is_empty()
+            && !self
+                .connection_api_key
+                .read(cx)
+                .unmask_value()
+                .trim()
+                .is_empty();
+
+        let cancel = div()
+            .id("cancel-connection")
+            .h(px(30.0))
+            .flex()
+            .items_center()
+            .gap(px(7.0))
+            .px(px(10.0))
+            .rounded(px(8.0))
+            .border_1()
+            .border_color(theme.line_strong.hsla())
+            .bg(theme.surface.hsla())
+            .text_size(px(11.0))
+            .text_color(theme.text_2.hsla())
+            .when(!busy, |button| {
+                button
+                    .cursor_pointer()
+                    .hover(move |style| style.bg(theme.surface_2.hsla()))
+                    .active(|style| style.opacity(0.72))
+                    .on_click(cx.listener(|this, _event, window, cx| {
+                        this.cancel_connection_editor(window, cx)
+                    }))
+            })
+            .child(settings_icon("icons/x.svg", 13.0))
+            .child("Cancel")
+            .into_any_element();
+        let submit = if can_submit {
+            div()
+                .id("submit-connection")
+                .h(px(30.0))
+                .flex()
+                .items_center()
+                .px(px(12.0))
+                .rounded(px(8.0))
+                .bg(theme.attention.hsla())
+                .text_size(px(11.0))
+                .font_weight(FontWeight::MEDIUM)
+                .text_color(gpui::white())
+                .cursor_pointer()
+                .hover(|style| style.opacity(0.9))
+                .active(|style| style.opacity(0.72))
+                .on_click(
+                    cx.listener(|this, _event, window, cx| this.submit_connection(window, cx)),
+                )
+                .child("Connect")
+                .into_any_element()
+        } else {
+            div()
+                .h(px(30.0))
+                .flex()
+                .items_center()
+                .px(px(12.0))
+                .rounded(px(8.0))
+                .bg(theme.surface_3.hsla())
+                .text_size(px(11.0))
+                .text_color(theme.text_3.hsla())
+                .opacity(0.62)
+                .child(if busy { "Connecting…" } else { "Connect" })
+                .into_any_element()
+        };
+
+        div()
+            .w_full()
+            .child(
+                div()
+                    .mb(px(12.0))
+                    .text_size(px(12.5))
+                    .font_weight(FontWeight::MEDIUM)
+                    .text_color(theme.text_2.hsla())
+                    .child("New API connection"),
+            )
+            .child(
+                div()
+                    .w_full()
+                    .rounded(px(10.0))
+                    .border_1()
+                    .border_color(theme.line_strong.hsla())
+                    .bg(theme.rail.hsla())
+                    .p(px(16.0))
+                    .child(
+                        div()
+                            .mb(px(14.0))
+                            .flex()
+                            .flex_wrap()
+                            .gap(px(7.0))
+                            .children(preset_buttons),
+                    )
+                    .child(
+                        div()
+                            .w_full()
+                            .flex()
+                            .flex_wrap()
+                            .gap(px(12.0))
+                            .child(connection_field(
+                                "Name",
+                                &self.connection_name,
+                                false,
+                                theme,
+                            ))
+                            .child(connection_field(
+                                "Default model",
+                                &self.connection_default_model,
+                                false,
+                                theme,
+                            ))
+                            .child(connection_field(
+                                "Base URL",
+                                &self.connection_base_url,
+                                true,
+                                theme,
+                            ))
+                            .child(connection_field(
+                                "API key",
+                                &self.connection_api_key,
+                                true,
+                                theme,
+                            )),
+                    )
+                    .child(
+                        div()
+                            .mt(px(16.0))
+                            .flex()
+                            .items_center()
+                            .justify_end()
+                            .gap(px(8.0))
+                            .child(cancel)
+                            .child(submit),
+                    ),
+            )
+            .into_any_element()
+    }
+
+    fn select_connection_preset(
+        &mut self,
+        preset: ModelConnectionPreset,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.connection_preset = preset;
+        let config = connection_preset(preset);
+        self.connection_name
+            .update(cx, |input, cx| input.set_value(config.label, window, cx));
+        self.connection_base_url
+            .update(cx, |input, cx| input.set_value(config.base_url, window, cx));
+        self.connection_default_model
+            .update(cx, |input, cx| input.set_value("", window, cx));
+        self.state.connection_error = None;
+        cx.notify();
+    }
+
+    fn submit_connection(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.state.connection_busy.is_some() {
+            return;
+        }
+        let display_name = self.connection_name.read(cx).value().trim().to_owned();
+        let base_url = self.connection_base_url.read(cx).value().trim().to_owned();
+        let default_model = self
+            .connection_default_model
+            .read(cx)
+            .value()
+            .trim()
+            .to_owned();
+        let api_key = self
+            .connection_api_key
+            .read(cx)
+            .unmask_value()
+            .trim()
+            .to_owned();
+        if display_name.is_empty() || base_url.is_empty() || api_key.is_empty() {
+            self.state.connection_error = Some("Name, base URL, and API key are required.".into());
+            cx.notify();
+            return;
+        }
+        if let Err(message) = validate_model_endpoint(&base_url) {
+            self.state.connection_error = Some(message);
+            cx.notify();
+            return;
+        }
+        let config = connection_preset(self.connection_preset);
+        let connection_id = format!(
+            "{}-{}",
+            connection_preset_id(self.connection_preset),
+            uuid::Uuid::new_v4()
+        );
+        let update = self.state.upsert_connection(
+            ModelConnectionInput {
+                id: connection_id.clone(),
+                display_name,
+                preset: self.connection_preset,
+                transport: config.transport,
+                base_url,
+                default_model: (!default_model.is_empty()).then_some(default_model),
+                enabled: true,
+            },
+            api_key,
+        );
+        self.connection_submission_id = Some(connection_id);
+        self.connection_api_key
+            .update(cx, |input, cx| input.set_value("", window, cx));
+        self.apply_client_update(update, cx);
+    }
+
+    fn cancel_connection_editor(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.state.connection_busy.is_some() {
+            return;
+        }
+        self.connection_api_key
+            .update(cx, |input, cx| input.set_value("", window, cx));
+        self.connection_editor_open = false;
+        self.connection_submission_id = None;
+        self.state.connection_error = None;
+        cx.notify();
     }
 
     fn model_settings(&self, cx: &mut Context<Self>) -> gpui::Div {
@@ -1734,6 +2150,164 @@ fn settings_button(
         .into_any_element()
 }
 
+fn connection_remove_button(index: usize, theme: Theme, action: SettingsAction) -> AnyElement {
+    div()
+        .id(("remove-connection", index))
+        .h(px(26.0))
+        .flex()
+        .items_center()
+        .px(px(9.0))
+        .rounded(px(7.0))
+        .border_1()
+        .border_color(theme.error.hsla().opacity(0.32))
+        .text_size(px(10.5))
+        .text_color(theme.error.hsla())
+        .cursor_pointer()
+        .hover(move |style| style.bg(theme.error.hsla().opacity(0.09)))
+        .active(|style| style.opacity(0.72))
+        .on_click(move |_event, _window, cx| action(cx))
+        .child("Remove")
+        .into_any_element()
+}
+
+fn provider_action_button(
+    index: usize,
+    label: &'static str,
+    destructive: bool,
+    theme: Theme,
+    action: SettingsAction,
+) -> AnyElement {
+    div()
+        .id(("provider-action", index))
+        .h(px(28.0))
+        .flex()
+        .items_center()
+        .px(px(10.0))
+        .rounded(px(7.0))
+        .border_1()
+        .border_color(if destructive {
+            theme.error.hsla().opacity(0.32)
+        } else {
+            theme.line_strong.hsla()
+        })
+        .bg(theme.surface.hsla())
+        .text_size(px(10.5))
+        .text_color(if destructive {
+            theme.error.hsla()
+        } else {
+            theme.text_2.hsla()
+        })
+        .cursor_pointer()
+        .hover(move |style| {
+            style.bg(if destructive {
+                theme.error.hsla().opacity(0.09)
+            } else {
+                theme.surface_2.hsla()
+            })
+        })
+        .active(|style| style.opacity(0.72))
+        .on_click(move |_event, _window, cx| action(cx))
+        .child(label)
+        .into_any_element()
+}
+
+fn connection_field(
+    label: &'static str,
+    state: &Entity<InputState>,
+    wide: bool,
+    theme: Theme,
+) -> AnyElement {
+    div()
+        .min_w(px(if wide { 0.0 } else { 220.0 }))
+        .when(wide, |field| field.w_full().flex_none())
+        .when(!wide, |field| field.flex_1())
+        .child(
+            div()
+                .mb(px(6.0))
+                .text_size(px(10.5))
+                .text_color(theme.text_3.hsla())
+                .child(label),
+        )
+        .child(
+            Input::new(state)
+                .appearance(false)
+                .bordered(false)
+                .focus_bordered(false)
+                .h(px(34.0))
+                .w_full()
+                .px(px(10.0))
+                .rounded(px(8.0))
+                .border_1()
+                .border_color(theme.line_strong.hsla())
+                .bg(theme.surface.hsla())
+                .text_size(px(11.5))
+                .text_color(theme.text.hsla()),
+        )
+        .into_any_element()
+}
+
+#[derive(Clone, Copy)]
+struct ConnectionPresetConfig {
+    label: &'static str,
+    base_url: &'static str,
+    transport: ModelTransport,
+}
+
+fn connection_preset(preset: ModelConnectionPreset) -> ConnectionPresetConfig {
+    match preset {
+        ModelConnectionPreset::Openai => ConnectionPresetConfig {
+            label: "OpenAI API",
+            base_url: "https://api.openai.com/v1",
+            transport: ModelTransport::OpenaiResponses,
+        },
+        ModelConnectionPreset::Anthropic => ConnectionPresetConfig {
+            label: "Anthropic API",
+            base_url: "https://api.anthropic.com/v1",
+            transport: ModelTransport::AnthropicMessages,
+        },
+        ModelConnectionPreset::Openrouter => ConnectionPresetConfig {
+            label: "OpenRouter",
+            base_url: "https://openrouter.ai/api/v1",
+            transport: ModelTransport::OpenaiCompatible,
+        },
+        ModelConnectionPreset::Kimi => ConnectionPresetConfig {
+            label: "Kimi API",
+            base_url: "https://api.moonshot.ai/v1",
+            transport: ModelTransport::OpenaiCompatible,
+        },
+        ModelConnectionPreset::Zai => ConnectionPresetConfig {
+            label: "Z.ai API",
+            base_url: "https://api.z.ai/api/paas/v4",
+            transport: ModelTransport::OpenaiCompatible,
+        },
+        ModelConnectionPreset::Custom => ConnectionPresetConfig {
+            label: "Custom endpoint",
+            base_url: "http://127.0.0.1:11434/v1",
+            transport: ModelTransport::OpenaiCompatible,
+        },
+    }
+}
+
+fn connection_preset_id(preset: ModelConnectionPreset) -> &'static str {
+    match preset {
+        ModelConnectionPreset::Openai => "openai",
+        ModelConnectionPreset::Anthropic => "anthropic",
+        ModelConnectionPreset::Openrouter => "openrouter",
+        ModelConnectionPreset::Kimi => "kimi",
+        ModelConnectionPreset::Zai => "zai",
+        ModelConnectionPreset::Custom => "custom",
+    }
+}
+
+fn validate_model_endpoint(value: &str) -> Result<(), String> {
+    let url = url::Url::parse(value).map_err(|_| "Base URL must be a valid URL.".to_owned())?;
+    match url.scheme() {
+        "https" => Ok(()),
+        "http" if url.host_str() == Some("127.0.0.1") => Ok(()),
+        _ => Err("Use HTTPS, or loopback HTTP on 127.0.0.1 for a local server.".into()),
+    }
+}
+
 fn status_pill(label: &'static str, ready: bool, theme: Theme) -> AnyElement {
     div()
         .h(px(24.0))
@@ -2002,4 +2576,33 @@ fn provider_label(provider: ProviderId) -> &'static str {
 
 fn settings_icon(path: &'static str, size: f32) -> impl IntoElement {
     svg().path(path).size(px(size))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn model_endpoints_require_https_or_literal_loopback_http() {
+        assert!(validate_model_endpoint("https://api.example.com/v1").is_ok());
+        assert!(validate_model_endpoint("http://127.0.0.1:11434/v1").is_ok());
+        assert!(validate_model_endpoint("http://localhost:11434/v1").is_err());
+        assert!(validate_model_endpoint("http://api.example.com/v1").is_err());
+    }
+
+    #[test]
+    fn connection_presets_keep_the_web_transport_contract() {
+        assert_eq!(
+            connection_preset(ModelConnectionPreset::Openai).transport,
+            ModelTransport::OpenaiResponses
+        );
+        assert_eq!(
+            connection_preset(ModelConnectionPreset::Anthropic).transport,
+            ModelTransport::AnthropicMessages
+        );
+        assert_eq!(
+            connection_preset(ModelConnectionPreset::Custom).base_url,
+            "http://127.0.0.1:11434/v1"
+        );
+    }
 }
