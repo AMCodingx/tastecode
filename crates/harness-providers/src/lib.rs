@@ -31,6 +31,17 @@ pub const CLAUDE_CAPABILITIES: Capabilities = Capabilities {
     images: false,
 };
 
+pub const GROK_CAPABILITIES: Capabilities = Capabilities {
+    steer: false,
+    fork: false,
+    interrupt: true,
+    reasoning_items: true,
+    approvals: false,
+    user_input: None,
+    auto_review: None,
+    images: false,
+};
+
 pub const CURSOR_CAPABILITIES: Capabilities = Capabilities {
     steer: false,
     fork: false,
@@ -48,6 +59,17 @@ pub const OPENCODE_CAPABILITIES: Capabilities = Capabilities {
     interrupt: true,
     reasoning_items: true,
     approvals: true,
+    user_input: None,
+    auto_review: None,
+    images: false,
+};
+
+pub const ANTIGRAVITY_CAPABILITIES: Capabilities = Capabilities {
+    steer: false,
+    fork: false,
+    interrupt: true,
+    reasoning_items: false,
+    approvals: false,
     user_input: None,
     auto_review: None,
     images: false,
@@ -89,6 +111,17 @@ const PROVIDERS: &[ProviderDefinition] = &[
         supported_version: None,
     },
     ProviderDefinition {
+        id: ProviderId::Grok,
+        display_name: "Grok",
+        command: "grok",
+        capabilities: &GROK_CAPABILITIES,
+        install_url: "https://x.ai/",
+        install_command: None,
+        login: ProviderLogin::Provider,
+        login_command: Some("grok login"),
+        supported_version: None,
+    },
+    ProviderDefinition {
         id: ProviderId::Cursor,
         display_name: "Cursor",
         command: "cursor-agent",
@@ -110,6 +143,17 @@ const PROVIDERS: &[ProviderDefinition] = &[
         login_command: Some("opencode auth login"),
         supported_version: None,
     },
+    ProviderDefinition {
+        id: ProviderId::Antigravity,
+        display_name: "Antigravity",
+        command: "agy",
+        capabilities: &ANTIGRAVITY_CAPABILITIES,
+        install_url: "https://antigravity.google/docs/cli",
+        install_command: None,
+        login: ProviderLogin::Provider,
+        login_command: Some("agy"),
+        supported_version: None,
+    },
 ];
 
 struct AcpDefinition {
@@ -122,6 +166,7 @@ struct AcpDefinition {
     install_command: Option<&'static str>,
     login: ProviderLogin,
     problem: Option<&'static str>,
+    retired: bool,
 }
 
 const ACP_AGENTS: &[AcpDefinition] = &[
@@ -137,6 +182,7 @@ const ACP_AGENTS: &[AcpDefinition] = &[
         problem: Some(
             "Google ended individual sign-in (June 2026) — use an organization account or set GEMINI_API_KEY.",
         ),
+        retired: true,
     },
     AcpDefinition {
         id: "kimi",
@@ -148,6 +194,7 @@ const ACP_AGENTS: &[AcpDefinition] = &[
         install_command: Some("npm install -g @moonshot-ai/kimi-code"),
         login: ProviderLogin::Provider,
         problem: None,
+        retired: false,
     },
     AcpDefinition {
         id: "qwen",
@@ -159,6 +206,7 @@ const ACP_AGENTS: &[AcpDefinition] = &[
         install_command: Some("npm install -g @qwen-code/qwen-code@latest"),
         login: ProviderLogin::Provider,
         problem: None,
+        retired: true,
     },
 ];
 
@@ -227,6 +275,7 @@ pub fn detect_agents_with(system: &dyn SystemProbe) -> Vec<AcpAgent> {
     thread::scope(|scope| {
         ACP_AGENTS
             .iter()
+            .filter(|definition| !definition.retired)
             .map(|definition| {
                 scope.spawn(move || AcpAgent {
                     id: definition.id.into(),
@@ -417,8 +466,10 @@ mod tests {
             [
                 ProviderId::Codex,
                 ProviderId::ClaudeCode,
+                ProviderId::Grok,
                 ProviderId::Cursor,
                 ProviderId::OpenCode,
+                ProviderId::Antigravity,
                 ProviderId::Acp,
             ]
         );
@@ -467,7 +518,7 @@ mod tests {
     }
 
     #[test]
-    fn acp_status_names_every_present_agent_and_keeps_agent_metadata() {
+    fn acp_status_lists_only_agents_available_for_new_sessions() {
         let system = FakeSystem {
             installed: ["gemini", "kimi"].into_iter().map(str::to_owned).collect(),
             ..FakeSystem::default()
@@ -477,18 +528,13 @@ mod tests {
             .iter()
             .find(|provider| provider.id == ProviderId::Acp)
             .unwrap();
-        assert_eq!(acp.version.as_deref(), Some("Gemini CLI, Kimi CLI"));
+        assert_eq!(acp.version.as_deref(), Some("Kimi CLI"));
         assert!(acp.problem.is_none());
         let agents = detect_agents_with(&system);
+        assert_eq!(agents.len(), 1);
+        assert_eq!(agents[0].id, "kimi");
         assert!(agents[0].verified);
-        assert!(
-            agents[0]
-                .problem
-                .as_deref()
-                .unwrap()
-                .contains("individual sign-in")
-        );
-        assert!(!agents[2].verified);
+        assert!(agents[0].problem.is_none());
     }
 
     #[test]
@@ -515,6 +561,16 @@ mod tests {
                 .unwrap()
                 .command,
             "opencode auth login"
+        );
+        assert_eq!(
+            launch_command_for(ProviderId::Grok, None).unwrap().command,
+            "grok login"
+        );
+        assert_eq!(
+            launch_command_for(ProviderId::Antigravity, None)
+                .unwrap()
+                .command,
+            "agy"
         );
         assert_eq!(
             launch_command_for(ProviderId::Acp, Some("kimi"))
