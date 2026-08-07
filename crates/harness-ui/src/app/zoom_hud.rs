@@ -69,7 +69,7 @@ impl HarnessApp {
         let next = next_zoom_factor(previous, action);
         self.app_zoom.factor = next;
         zoom::set_factor(next);
-        sync_component_theme(self.theme, cx);
+        sync_component_theme(self.theme, self.interface_font(), cx);
         window.set_rem_size(gpui::px(13.5 * next));
         self.chat.update(cx, |chat, cx| {
             chat.app_zoom_changed(previous, next, cx);

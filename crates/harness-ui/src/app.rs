@@ -16,7 +16,7 @@ use crate::client_state::{
 use crate::model_selection::{
     fast_mode_off_value, fast_service_tier, is_fast_mode_enabled, next_service_tier, source_key,
 };
-use crate::preferences::{NativePreferences, SourceSelection, ThemePreference};
+use crate::preferences::{FontPreference, NativePreferences, SourceSelection, ThemePreference};
 use crate::preview_capture::PreviewCaptureRuntime;
 use crate::sidebar::{
     SelectionModifiers, SessionDropPosition, SidebarActions, SidebarMenuRequest, SidebarProps,
@@ -143,6 +143,7 @@ struct HarnessApp {
     system_theme_mode: ThemeMode,
     reduced_motion: bool,
     preferences: NativePreferences,
+    available_fonts: HashSet<String>,
     connection_editor_open: bool,
     connection_submission_id: Option<String>,
     connection_preset: ModelConnectionPreset,
@@ -183,6 +184,12 @@ impl HarnessApp {
         if !fixture {
             state.restore_model_catalog_snapshot(preferences.restored_model_catalog());
         }
+        let available_fonts = cx
+            .text_system()
+            .all_font_names()
+            .into_iter()
+            .map(|name| name.to_ascii_lowercase())
+            .collect::<HashSet<_>>();
         let has_boot_model_catalog = !state.model_catalog.is_empty();
         let sidebar_width = f32::from(preferences.rail_width);
         let system_theme_mode = theme_mode_for_appearance(window.appearance());
@@ -194,7 +201,8 @@ impl HarnessApp {
         let reduced_motion = crate::accessibility::prefers_reduced_motion();
         let theme = Theme::new(mode, preferences.backdrop, preferences.accent)
             .with_reduced_motion(reduced_motion);
-        sync_component_theme(theme, cx);
+        let interface_font = resolve_interface_font(preferences.font, &available_fonts);
+        sync_component_theme(theme, interface_font, cx);
         let chat = cx.new(|cx| ChatView::new(theme, window, cx));
         let connection_name = cx.new(|cx| {
             InputState::new(window, cx)
@@ -625,6 +633,7 @@ impl HarnessApp {
             system_theme_mode,
             reduced_motion,
             preferences,
+            available_fonts,
             connection_editor_open: false,
             connection_submission_id: None,
             connection_preset: ModelConnectionPreset::Openai,
@@ -2495,14 +2504,63 @@ fn title_from(text: &str) -> String {
     }
 }
 
-fn sync_component_theme(theme: Theme, cx: &mut App) {
+fn resolve_interface_font(
+    preference: FontPreference,
+    available_fonts: &HashSet<String>,
+) -> &'static str {
+    let first_available = |candidates: &'static [(&'static str, &'static str)],
+                           fallback: &'static str| {
+        candidates
+            .iter()
+            .find_map(|(family, normalized)| {
+                available_fonts.contains(*normalized).then_some(*family)
+            })
+            .unwrap_or(fallback)
+    };
+
+    match preference {
+        FontPreference::Geist => "Geist",
+        FontPreference::System => first_available(
+            &[("Segoe UI Variable Text", "segoe ui variable text")],
+            ".SystemUIFont",
+        ),
+        FontPreference::Humanist => first_available(
+            &[
+                ("Aptos", "aptos"),
+                ("Candara", "candara"),
+                ("Segoe UI", "segoe ui"),
+            ],
+            ".SystemUIFont",
+        ),
+        FontPreference::Rounded => first_available(
+            &[
+                ("SF Pro Rounded", "sf pro rounded"),
+                ("Arial Rounded MT Bold", "arial rounded mt bold"),
+            ],
+            ".SystemUIFont",
+        ),
+        FontPreference::Serif => first_available(
+            &[
+                ("Charter", "charter"),
+                ("Iowan Old Style", "iowan old style"),
+                ("Georgia", "georgia"),
+                ("Times New Roman", "times new roman"),
+                ("Times", "times"),
+            ],
+            ".SystemUIFont",
+        ),
+        FontPreference::Mono => "Geist Mono",
+    }
+}
+
+fn sync_component_theme(theme: Theme, interface_font: &'static str, cx: &mut App) {
     let mode = match theme.mode {
         ThemeMode::Dark => gpui_component::ThemeMode::Dark,
         ThemeMode::Light => gpui_component::ThemeMode::Light,
     };
     gpui_component::Theme::change(mode, None, cx);
     let component = gpui_component::Theme::global_mut(cx);
-    component.font_family = "Geist".into();
+    component.font_family = interface_font.into();
     component.font_size = px(13.5);
     component.mono_font_family = "Geist Mono".into();
     component.mono_font_size = px(12.5);
@@ -2687,5 +2745,53 @@ mod tests {
             ["new", "b", "a"]
         );
         assert!(!apply_project_session_order(&mut sessions, &order));
+    }
+
+    #[test]
+    fn interface_fonts_follow_the_web_fallback_order() {
+        let fonts = HashSet::from([
+            "aptos".to_owned(),
+            "candara".to_owned(),
+            "segoe ui".to_owned(),
+            "sf pro rounded".to_owned(),
+            "arial rounded mt bold".to_owned(),
+            "georgia".to_owned(),
+            "times new roman".to_owned(),
+        ]);
+
+        assert_eq!(
+            resolve_interface_font(FontPreference::Humanist, &fonts),
+            "Aptos"
+        );
+        assert_eq!(
+            resolve_interface_font(FontPreference::Rounded, &fonts),
+            "SF Pro Rounded"
+        );
+        assert_eq!(
+            resolve_interface_font(FontPreference::Serif, &fonts),
+            "Georgia"
+        );
+        assert_eq!(
+            resolve_interface_font(FontPreference::Mono, &HashSet::new()),
+            "Geist Mono"
+        );
+    }
+
+    #[test]
+    fn unavailable_interface_fonts_fall_back_without_inventing_a_family() {
+        let fonts = HashSet::from(["avenir next".to_owned()]);
+
+        assert_eq!(
+            resolve_interface_font(FontPreference::Humanist, &fonts),
+            ".SystemUIFont"
+        );
+        assert_eq!(
+            resolve_interface_font(FontPreference::Rounded, &fonts),
+            ".SystemUIFont"
+        );
+        assert_eq!(
+            resolve_interface_font(FontPreference::Serif, &fonts),
+            ".SystemUIFont"
+        );
     }
 }

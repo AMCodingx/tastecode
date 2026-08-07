@@ -2394,7 +2394,7 @@ impl HarnessApp {
             font_choices.push(appearance_choice(
                 index,
                 label,
-                font_family(preference),
+                super::resolve_interface_font(preference, &self.available_fonts),
                 None,
                 self.preferences.font == preference,
                 theme,
@@ -2812,6 +2812,7 @@ impl HarnessApp {
 
     fn set_font_preference(&mut self, preference: FontPreference, cx: &mut Context<Self>) {
         self.preferences.font = preference;
+        super::sync_component_theme(self.theme, self.interface_font(), cx);
         self.persist_native_preferences();
         cx.notify();
     }
@@ -2840,7 +2841,7 @@ impl HarnessApp {
         };
         self.theme = Theme::new(mode, self.preferences.backdrop, self.preferences.accent)
             .with_reduced_motion(self.reduced_motion);
-        super::sync_component_theme(self.theme, cx);
+        super::sync_component_theme(self.theme, self.interface_font(), cx);
         let theme = self.theme;
         self.chat
             .update(cx, |chat, cx| chat.update_theme(theme, cx));
@@ -2871,7 +2872,7 @@ impl HarnessApp {
     }
 
     pub(super) fn interface_font(&self) -> &'static str {
-        font_family(self.preferences.font)
+        super::resolve_interface_font(self.preferences.font, &self.available_fonts)
     }
 }
 
@@ -4438,35 +4439,6 @@ fn appearance_choice_shell(
         .child(preview)
         .child(label)
         .into_any_element()
-}
-
-fn font_family(preference: FontPreference) -> &'static str {
-    match preference {
-        FontPreference::Geist => "Geist",
-        FontPreference::System => ".SystemUIFont",
-        FontPreference::Humanist => {
-            if cfg!(target_os = "windows") {
-                "Segoe UI"
-            } else {
-                "Avenir Next"
-            }
-        }
-        FontPreference::Rounded => {
-            if cfg!(target_os = "windows") {
-                "Arial Rounded MT Bold"
-            } else {
-                "SF Pro Rounded"
-            }
-        }
-        FontPreference::Serif => {
-            if cfg!(target_os = "windows") {
-                "Georgia"
-            } else {
-                "Charter"
-            }
-        }
-        FontPreference::Mono => "Geist Mono",
-    }
 }
 
 fn mcp_status(server: &McpServer) -> (&'static str, bool) {
