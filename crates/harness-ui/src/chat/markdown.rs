@@ -4,9 +4,13 @@ use crate::zoom::px;
 use ::markdown::{ParseOptions, mdast::Node};
 use gpui::{
     Animation, AnimationExt, AnyElement, App, ClipboardItem, FontWeight, SharedString,
-    StyleRefinement, Styled, Window, div, prelude::*, relative, rems, svg,
+    StyleRefinement, Styled, StyledText, Window, div, prelude::*, relative, rems, svg,
 };
+use gpui_component::highlighter::SyntaxHighlighter;
+use gpui_component::scroll::ScrollableElement;
 use gpui_component::text::{TextView, TextViewStyle};
+use gpui_component::{ActiveTheme, Rope};
+use std::cell::RefCell;
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
 
@@ -119,6 +123,7 @@ pub(super) fn markdown_view(
         reveals,
         definitions: &definitions,
         theme,
+        reveal_ordinals: RefCell::new(HashMap::new()),
     };
     let mut blocks = Vec::with_capacity(root.children.len());
     let visible_count = root
@@ -162,6 +167,7 @@ struct RenderContext<'a> {
     reveals: &'a [StreamRevealBatch],
     definitions: &'a HashMap<String, String>,
     theme: Theme,
+    reveal_ordinals: RefCell<HashMap<u64, usize>>,
 }
 
 fn render_block(
@@ -219,6 +225,20 @@ fn render_block(
                 .into_any_element()
         }
         Node::List(list) => render_list(list, last, depth, context, window, cx),
+        Node::Code(code) => render_code_block(code, last, context, window, cx),
+        Node::Math(math) => render_code_block(
+            &::markdown::mdast::Code {
+                value: math.value.clone(),
+                position: math.position.clone(),
+                lang: None,
+                meta: None,
+            },
+            last,
+            context,
+            window,
+            cx,
+        ),
+        Node::Table(table) => render_table(table, last, context, window, cx),
         Node::ThematicBreak(_) => div()
             .w_full()
             .h(px(1.0))
@@ -229,6 +249,251 @@ fn render_block(
         Node::Definition(_) => div().into_any_element(),
         _ => fallback_node(node, last, context, window, cx),
     }
+}
+
+#[derive(Default)]
+struct CopyFeedbackState {
+    copied: bool,
+    generation: u64,
+}
+
+fn render_code_block(
+    code: &::markdown::mdast::Code,
+    last: bool,
+    context: &RenderContext<'_>,
+    window: &mut Window,
+    cx: &mut App,
+) -> AnyElement {
+    let start = code
+        .position
+        .as_ref()
+        .map_or(0, |position| position.start.offset);
+    let block_id = format!("{}:code:{start}", context.id);
+    let group: SharedString = format!("markdown-code-group:{block_id}").into();
+    let highlights = code.lang.as_deref().map_or_else(Vec::new, |language| {
+        let rope = Rope::from(code.value.as_str());
+        let mut highlighter = SyntaxHighlighter::new(language);
+        highlighter.update(None, &rope);
+        highlighter.styles(&(0..code.value.len()), &cx.theme().highlight_theme)
+    });
+    let content = if highlights.is_empty() {
+        StyledText::new(code.value.clone())
+    } else {
+        StyledText::new(code.value.clone()).with_highlights(highlights)
+    };
+    let copy = copy_control(
+        format!("{block_id}:copy"),
+        code.value.clone(),
+        group.clone(),
+        context.theme,
+        window,
+        cx,
+    );
+
+    div()
+        .group(group)
+        .w_full()
+        .when(!last, |block| block.mb(px(14.0)))
+        .child(
+            div()
+                .h(px(26.0))
+                .px(px(2.0))
+                .flex()
+                .items_center()
+                .justify_between()
+                .gap(px(8.0))
+                .font_family("Geist Mono")
+                .text_size(px(11.5))
+                .text_color(context.theme.text_3.hsla())
+                .child(code.lang.clone().unwrap_or_default())
+                .child(copy),
+        )
+        .child(
+            div()
+                .id(SharedString::from(format!("{block_id}:scroll")))
+                .w_full()
+                .overflow_x_scrollbar()
+                .rounded(px(8.0))
+                .border_1()
+                .border_color(context.theme.line.hsla())
+                .bg(context.theme.surface.hsla())
+                .px(px(13.0))
+                .py(px(11.0))
+                .font_family("Geist Mono")
+                .text_size(px(12.5))
+                .line_height(relative(1.52))
+                .text_color(context.theme.response_text.hsla())
+                .whitespace_nowrap()
+                .child(content),
+        )
+        .into_any_element()
+}
+
+fn render_table(
+    table: &::markdown::mdast::Table,
+    last: bool,
+    context: &RenderContext<'_>,
+    window: &mut Window,
+    cx: &mut App,
+) -> AnyElement {
+    let start = table
+        .position
+        .as_ref()
+        .map_or(0, |position| position.start.offset);
+    let table_id = format!("{}:table:{start}", context.id);
+    let group: SharedString = format!("markdown-table-group:{table_id}").into();
+    let column_count = table
+        .children
+        .iter()
+        .filter_map(|row| match row {
+            Node::TableRow(row) => Some(row.children.len()),
+            _ => None,
+        })
+        .max()
+        .unwrap_or_default();
+    let copy = copy_control(
+        format!("{table_id}:copy"),
+        table_plain_text(table),
+        group.clone(),
+        context.theme,
+        window,
+        cx,
+    );
+    let mut rows = Vec::with_capacity(table.children.len());
+    for (row_index, row) in table.children.iter().enumerate() {
+        let Node::TableRow(row) = row else {
+            continue;
+        };
+        let mut cells = Vec::with_capacity(row.children.len());
+        for (column_index, cell) in row.children.iter().enumerate() {
+            let Node::TableCell(cell) = cell else {
+                continue;
+            };
+            cells.push(
+                div()
+                    .min_w(px(120.0))
+                    .flex_1()
+                    .border_l_1()
+                    .border_b_1()
+                    .when(row_index == 0, |cell| cell.border_t_1())
+                    .when(column_index + 1 == row.children.len(), |cell| {
+                        cell.border_r_1()
+                    })
+                    .border_color(context.theme.line.hsla())
+                    .when(row_index == 0, |cell| {
+                        cell.bg(context.theme.surface.hsla())
+                            .font_weight(FontWeight(540.0))
+                    })
+                    .px(px(9.0))
+                    .py(px(5.0))
+                    .child(render_inline_flow(&cell.children, context)),
+            );
+        }
+        rows.push(
+            div()
+                .w_full()
+                .min_w(px(column_count as f32 * 120.0))
+                .flex()
+                .children(cells),
+        );
+    }
+
+    div()
+        .group(group)
+        .relative()
+        .w_full()
+        .when(!last, |table| table.mb(px(14.0)))
+        .text_size(px(12.5))
+        .child(
+            div()
+                .id(SharedString::from(format!("{table_id}:scroll")))
+                .w_full()
+                .overflow_x_scrollbar()
+                .children(rows),
+        )
+        .child(div().absolute().top(px(3.0)).right(px(3.0)).child(copy))
+        .into_any_element()
+}
+
+fn copy_control(
+    id: String,
+    value: String,
+    group: SharedString,
+    theme: Theme,
+    window: &mut Window,
+    cx: &mut App,
+) -> AnyElement {
+    let state = window.use_keyed_state(SharedString::from(format!("{id}:state")), cx, |_, _| {
+        CopyFeedbackState::default()
+    });
+    let copied = state.read(cx).copied;
+    div()
+        .id(SharedString::from(id))
+        .size(px(24.0))
+        .flex()
+        .items_center()
+        .justify_center()
+        .rounded(px(5.0))
+        .border_1()
+        .border_color(theme.line.hsla())
+        .bg(theme.surface_2.hsla())
+        .text_color(theme.text_3.hsla())
+        .cursor_pointer()
+        .opacity(0.0)
+        .group_hover(group, |control| control.opacity(1.0))
+        .hover(move |control| control.text_color(theme.text.hsla()))
+        .on_click(move |_event, _window, cx| {
+            cx.stop_propagation();
+            cx.write_to_clipboard(ClipboardItem::new_string(value.clone()));
+            state.update(cx, |state, cx| {
+                state.copied = true;
+                state.generation = state.generation.wrapping_add(1);
+                cx.notify();
+            });
+            let generation = state.read(cx).generation;
+            let state = state.clone();
+            cx.spawn(async move |cx| {
+                cx.background_executor().timer(Duration::from_secs(2)).await;
+                let _ = state.update(cx, |state, cx| {
+                    if state.generation == generation {
+                        state.copied = false;
+                        cx.notify();
+                    }
+                });
+            })
+            .detach();
+        })
+        .child(
+            svg()
+                .path(if copied {
+                    "icons/check.svg"
+                } else {
+                    "icons/copy.svg"
+                })
+                .size(px(13.0)),
+        )
+        .into_any_element()
+}
+
+fn table_plain_text(table: &::markdown::mdast::Table) -> String {
+    table
+        .children
+        .iter()
+        .filter_map(|row| match row {
+            Node::TableRow(row) => Some(
+                row.children
+                    .iter()
+                    .filter_map(|cell| match cell {
+                        Node::TableCell(cell) => Some(flatten_inline_text(&cell.children)),
+                        _ => None,
+                    })
+                    .collect::<Vec<_>>()
+                    .join("\t"),
+            ),
+            _ => None,
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 fn render_list(
@@ -484,11 +749,10 @@ fn render_inline_flow(children: &[Node], context: &RenderContext<'_>) -> AnyElem
     let mut builder = InlineBuilder::default();
     let style = InlineStyle::default();
     collect_inline(children, &style, context, &mut builder);
-    let mut reveal_ordinals = HashMap::new();
     let units = builder
         .units
         .into_iter()
-        .map(|unit| render_inline_unit(unit, context, &mut reveal_ordinals));
+        .map(|unit| render_inline_unit(unit, context));
     div()
         .w_full()
         .flex()
@@ -577,11 +841,7 @@ fn collect_inline(
     }
 }
 
-fn render_inline_unit(
-    unit: InlineUnit,
-    context: &RenderContext<'_>,
-    reveal_ordinals: &mut HashMap<u64, usize>,
-) -> AnyElement {
+fn render_inline_unit(unit: InlineUnit, context: &RenderContext<'_>) -> AnyElement {
     if matches!(unit.kind, InlineUnitKind::Break) {
         return div().w_full().h(px(0.0)).flex_none().into_any_element();
     }
@@ -593,6 +853,7 @@ fn render_inline_unit(
             .find(|batch| unit.end > batch.from && unit.start < batch.to)
     });
     let reveal = reveal.flatten().map(|batch| {
+        let mut reveal_ordinals = context.reveal_ordinals.borrow_mut();
         let ordinal = reveal_ordinals.entry(batch.generation).or_default();
         let result = (batch.generation, *ordinal);
         *ordinal += 1;
@@ -984,5 +1245,26 @@ mod tests {
             &ParseOptions::gfm(),
         );
         assert!(matches!(parsed, Ok(Node::Root(_))));
+    }
+
+    #[test]
+    fn table_copy_uses_tsv_without_markdown_delimiters() {
+        let parsed = ::markdown::to_mdast(
+            "| Name | Count |\n| --- | ---: |\n| A | 2 |",
+            &ParseOptions::gfm(),
+        )
+        .expect("GFM table should parse");
+        let Node::Root(root) = parsed else {
+            panic!("expected a Markdown root");
+        };
+        let table = root.children.iter().find_map(|node| match node {
+            Node::Table(table) => Some(table),
+            _ => None,
+        });
+
+        assert_eq!(
+            table.map(table_plain_text),
+            Some("Name\tCount\nA\t2".into())
+        );
     }
 }
