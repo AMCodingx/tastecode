@@ -1773,20 +1773,19 @@ impl ChatView {
         let session = self.session.clone();
         div()
             .relative()
-            .h(px(44.0))
             .min_h(px(44.0))
             .w_full()
             .flex()
             .items_center()
             .gap(px(10.0))
             .px(px(16.0))
+            .py(px(8.0))
             .child(self.header_project_picker(cx))
             .child(
                 div()
                     .min_w(px(0.0))
-                    .flex_1()
                     .truncate()
-                    .text_size(px(12.0))
+                    .text_size(px(12.5))
                     .text_color(theme.text_3.hsla())
                     .child(session.as_ref().map_or_else(
                         || SharedString::from(""),
@@ -1799,25 +1798,37 @@ impl ChatView {
                         },
                     )),
             )
-            .when_some(
-                session.as_ref().and_then(|value| value.branch.clone()),
-                |row, branch| {
-                    row.child(
-                        div()
-                            .max_w(px(190.0))
-                            .truncate()
-                            .font_family("Geist Mono")
-                            .text_size(px(10.5))
-                            .text_color(theme.text_3.hsla())
-                            .child(branch),
+            .child(
+                div()
+                    .ml_auto()
+                    .flex_none()
+                    .flex()
+                    .items_center()
+                    .gap(px(8.0))
+                    .child(self.terminal_header_button(cx))
+                    .when_some(
+                        session.as_ref().and_then(|value| value.branch.clone()),
+                        |tools, branch| {
+                            tools.child(
+                                div()
+                                    .max_w(px(190.0))
+                                    .min_w(px(0.0))
+                                    .flex()
+                                    .items_center()
+                                    .gap(px(5.0))
+                                    .truncate()
+                                    .font_family("Geist Mono")
+                                    .text_size(px(11.5))
+                                    .text_color(theme.text_3.hsla())
+                                    .child(svg_icon("icons/git-branch.svg", 12.0))
+                                    .child(div().min_w(px(0.0)).truncate().child(branch)),
+                            )
+                        },
                     )
-                },
-            )
-            .child(self.terminal_header_button(cx))
-            .child(self.review_header_button(cx))
-            .when(
-                !self.state.running && !self.stage_settings.checkpoints.is_empty(),
-                |row| row.child(self.rollback_header_button(cx)),
+                    .when(
+                        !self.state.running && !self.stage_settings.checkpoints.is_empty(),
+                        |tools| tools.child(self.rollback_header_button(cx)),
+                    ),
             )
             .when(self.header_menu == Some(HeaderMenu::Project), |row| {
                 row.child(self.header_project_menu(cx))
@@ -1834,14 +1845,14 @@ impl ChatView {
         );
         div()
             .id("header-project")
-            .h(px(28.0))
+            .h(px(31.0))
             .max_w(px(190.0))
             .flex_none()
             .flex()
             .items_center()
             .gap(px(6.0))
-            .px(px(7.0))
-            .rounded(px(7.0))
+            .px(px(8.0))
+            .rounded(px(5.0))
             .border_1()
             .border_color(if open {
                 theme.line_strong.hsla()
@@ -1849,7 +1860,7 @@ impl ChatView {
                 theme.line.hsla().opacity(0.0)
             })
             .text_size(px(12.5))
-            .font_weight(FontWeight::MEDIUM)
+            .font_weight(FontWeight(520.0))
             .text_color(theme.text.hsla())
             .opacity(if enabled { 1.0 } else { 0.48 })
             .when(enabled, |picker| {
@@ -1964,12 +1975,12 @@ impl ChatView {
         div()
             .id("header-checkpoints")
             .h(px(28.0))
-            .px(px(7.0))
+            .px(px(8.0))
             .flex()
             .items_center()
             .gap(px(5.0))
-            .rounded(px(7.0))
-            .text_size(px(11.5))
+            .rounded(px(3.0))
+            .text_size(px(12.5))
             .text_color(theme.text_3.hsla())
             .cursor_pointer()
             .hover(move |style| style.bg(theme.surface.hsla()).text_color(theme.text.hsla()))

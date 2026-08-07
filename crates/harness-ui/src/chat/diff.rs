@@ -84,38 +84,6 @@ impl ChatView {
             .sync_summary(self.state.diff.as_ref().map(|(_, source)| source.as_str()));
     }
 
-    pub(super) fn review_header_button(&self, cx: &Context<Self>) -> AnyElement {
-        let enabled = self.diff_ui.summary.is_some() && !self.state.running;
-        let open = self.diff_ui.reviewing;
-        div()
-            .id("header-review")
-            .h(px(28.0))
-            .px(px(7.0))
-            .flex()
-            .items_center()
-            .rounded(px(7.0))
-            .text_size(px(11.5))
-            .text_color(if open {
-                self.theme.text.hsla()
-            } else {
-                self.theme.text_3.hsla()
-            })
-            .opacity(if enabled { 1.0 } else { 0.42 })
-            .when(enabled, |button| {
-                let theme = self.theme;
-                button
-                    .cursor_pointer()
-                    .hover(move |style| {
-                        style.bg(theme.surface.hsla()).text_color(theme.text.hsla())
-                    })
-                    .on_click(cx.listener(|this, _event, _window, cx| {
-                        this.toggle_diff_review(cx);
-                    }))
-            })
-            .child(if open { "Close" } else { "Review" })
-            .into_any_element()
-    }
-
     pub(super) fn control_surface(&self, cx: &Context<Self>) -> Option<AnyElement> {
         if self.state.running {
             let steps = &self.state.plan.as_ref()?.1;

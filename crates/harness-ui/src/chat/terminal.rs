@@ -517,12 +517,12 @@ impl ChatView {
         div()
             .id("header-terminal")
             .h(px(28.0))
-            .px(px(7.0))
+            .px(px(8.0))
             .flex()
             .items_center()
             .gap(px(5.0))
-            .rounded(px(7.0))
-            .text_size(px(11.5))
+            .rounded(px(3.0))
+            .text_size(px(12.5))
             .text_color(if open {
                 theme.text.hsla()
             } else {
