@@ -844,57 +844,61 @@ fn sidebar_body(
                     ))
                 })
         })
-        .child(collapsed_group(
-            "Snoozed".into(),
-            Some(snoozed.len().to_string().into()),
-            snoozed_open,
-            theme,
-            Some(actions.toggle_snoozed.clone()),
-        ))
-        .when(snoozed_open, |body| {
-            body.children(snoozed.into_iter().map(|(project, session)| {
-                settled_row(
-                    session.id.clone().into(),
-                    session.title.clone().into(),
-                    format!(
-                        "{} · wakes {}",
-                        project.name,
-                        wake_label(session).unwrap_or_else(|| "later".into())
+        .when(!snoozed.is_empty(), |body| {
+            body.child(collapsed_group(
+                "Snoozed".into(),
+                Some(snoozed.len().to_string().into()),
+                snoozed_open,
+                theme,
+                Some(actions.toggle_snoozed.clone()),
+            ))
+            .when(snoozed_open, |body| {
+                body.children(snoozed.into_iter().map(|(project, session)| {
+                    settled_row(
+                        session.id.clone().into(),
+                        session.title.clone().into(),
+                        format!(
+                            "{} · wakes {}",
+                            project.name,
+                            wake_label(session).unwrap_or_else(|| "later".into())
+                        )
+                        .into(),
+                        theme,
+                        selected_thread_id == Some(session.id.as_str()),
+                        Some(actions.select_session.clone()),
+                        Some(actions.open_menu.clone()),
                     )
-                    .into(),
-                    theme,
-                    selected_thread_id == Some(session.id.as_str()),
-                    Some(actions.select_session.clone()),
-                    Some(actions.open_menu.clone()),
-                )
-            }))
+                }))
+            })
         })
-        .child(collapsed_group(
-            "Settled".into(),
-            Some(settled_count.to_string().into()),
-            settled_open,
-            theme,
-            Some(actions.toggle_settled.clone()),
-        ))
-        .when(settled_open, |body| {
-            body.children(visible_settled.into_iter().map(|(project, session)| {
-                settled_row(
-                    session.id.clone().into(),
-                    session.title.clone().into(),
-                    format!(
-                        "{} · {}",
-                        project.name,
-                        relative_time(settled_at(session).unwrap_or(session.created_at))
+        .when(settled_count > 0, |body| {
+            body.child(collapsed_group(
+                "Settled".into(),
+                Some(settled_count.to_string().into()),
+                settled_open,
+                theme,
+                Some(actions.toggle_settled.clone()),
+            ))
+            .when(settled_open, |body| {
+                body.children(visible_settled.into_iter().map(|(project, session)| {
+                    settled_row(
+                        session.id.clone().into(),
+                        session.title.clone().into(),
+                        format!(
+                            "{} · {}",
+                            project.name,
+                            relative_time(settled_at(session).unwrap_or(session.created_at))
+                        )
+                        .into(),
+                        theme,
+                        selected_thread_id == Some(session.id.as_str()),
+                        Some(actions.select_session.clone()),
+                        Some(actions.open_menu.clone()),
                     )
-                    .into(),
-                    theme,
-                    selected_thread_id == Some(session.id.as_str()),
-                    Some(actions.select_session.clone()),
-                    Some(actions.open_menu.clone()),
-                )
-            }))
-            .when(!query_active && settled_count > settled_limit, |body| {
-                body.child(show_more_settled(theme, actions.show_more_settled.clone()))
+                }))
+                .when(!query_active && settled_count > settled_limit, |body| {
+                    body.child(show_more_settled(theme, actions.show_more_settled.clone()))
+                })
             })
         })
         .when(query_active && !has_matches, |body| {
