@@ -41,7 +41,6 @@ import { CommandPalette, type CommandScope, type PaletteCommand } from './ui/Com
 import { CheckoutDiscardDialog } from './ui/CheckoutDiscardDialog.js'
 import { Composer, type WorkspaceInfo } from './ui/Composer.js'
 import { getNextServiceTierForModel } from './ui/ModelSelector.js'
-import { Onboarding } from './ui/Onboarding.js'
 import { RollbackDialog, type Checkpoint } from './ui/RollbackDialog.js'
 import { SessionSearch } from './ui/SessionSearch.js'
 import { Settings } from './ui/Settings.js'
@@ -91,6 +90,16 @@ import {
 
 const SERVER_BASE_URL = import.meta.env.VITE_HARNESS_SERVER_URL ?? 'ws://127.0.0.1:4311'
 const SETUP_KEY = 'harness.provider'
+const PROVIDER_IDS = [
+  'codex',
+  'claude-code',
+  'grok',
+  'cursor',
+  'opencode',
+  'antigravity',
+  'acp',
+  'api',
+] as const satisfies readonly ProviderId[]
 /** Which ACP agent was chosen. Meaningless unless the provider is `acp`. */
 const AGENT_KEY = 'harness.acpAgent'
 const AGENT_NAME_KEY = 'harness.acpAgentName'
@@ -138,13 +147,9 @@ function takeLegacyProjects(): Array<{ path: string; name?: string }> {
 export function App() {
   const [connectionUrl, setConnectionUrl] = useState(() => serverUrl(SERVER_BASE_URL))
   const transport = useMemo(() => new Transport(connectionUrl), [connectionUrl])
-  const [provider, setProvider] = useState<ProviderId | null>(() => {
-    // Validated like every other stored key: a provider id from an older
-    // build would skip onboarding and send every request somewhere the
-    // server rejects — a broken app whose only cure was a full reset.
+  const [provider, setProvider] = useState<ProviderId>(() => {
     const stored = readSetting(SETUP_KEY)
-    const known: string[] = ['codex', 'claude-code', 'cursor', 'opencode', 'acp', 'api']
-    return stored !== null && known.includes(stored) ? (stored as ProviderId) : null
+    return PROVIDER_IDS.find((id) => id === stored) ?? 'codex'
   })
   const [acpAgent, setAcpAgent] = useState<string | undefined>(
     () => readSetting(AGENT_KEY) ?? undefined,
@@ -296,7 +301,7 @@ export function App() {
   // (including effects that write settings) a new dependency each frame.
   const implicitChoice = useMemo(
     () =>
-      provider && provider !== 'api'
+      provider !== 'api'
         ? choicesFor(
             {
               provider,
@@ -687,7 +692,7 @@ export function App() {
   }, [transport, catalogRequest])
 
   useEffect(() => {
-    if (!isDesktop || !provider || !canCaptureVoice()) {
+    if (!isDesktop || !canCaptureVoice()) {
       setVoiceAvailable(false)
       return
     }
@@ -706,7 +711,6 @@ export function App() {
   }, [transport, provider, account?.signedIn])
 
   useEffect(() => {
-    if (!provider) return
     let cancelled = false
     setAutoReviewSupported(false)
     void transport
@@ -756,7 +760,6 @@ export function App() {
   }, [transport, activePath, thread.running])
 
   useEffect(() => {
-    if (!provider) return
     void transport
       .request('auth.status', { provider })
       .then(setAccount)
@@ -873,10 +876,6 @@ export function App() {
   const usageThreadId = activeId && !activeId.startsWith('pending:') ? activeId : undefined
 
   useEffect(() => {
-    if (!provider) {
-      setUsageSummary(undefined)
-      return
-    }
     let cancelled = false
     void transport
       .request('usage.summary', usageThreadId ? { threadId: usageThreadId } : { provider })
@@ -1882,7 +1881,6 @@ export function App() {
 
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
-      if (!provider) return
       if (event.defaultPrevented || event.repeat) return
 
       if (matchesShortcut(event, SHORTCUTS.searchSessions)) {
@@ -2247,28 +2245,6 @@ export function App() {
     selectSession,
   ])
 
-  if (!provider) {
-    return (
-      <Onboarding
-        transport={transport}
-        models={models}
-        hiddenModels={hiddenModels}
-        onModelVisibilityChange={changeModelVisibility}
-        onRefreshModels={refreshCatalog}
-        onDone={(id, agent) => {
-          writeSetting(SETUP_KEY, id)
-          if (agent) {
-            writeSetting(AGENT_KEY, agent.id)
-            writeSetting(AGENT_NAME_KEY, agent.name)
-          }
-          setAcpAgent(agent?.id)
-          setAcpAgentName(agent?.name)
-          setProvider(id)
-        }}
-      />
-    )
-  }
-
   return (
     <div
       className={`shell ${collapsed ? 'is-narrow' : ''}`}
@@ -2308,13 +2284,10 @@ export function App() {
 
         <main className="stage">
           <StageHeader
-            projects={projects}
-            activePath={activePath}
             title={active?.session.title}
             checkpointCount={thread.running ? 0 : checkpoints.length}
             worktreeBranch={active?.session.worktreeBranch}
             terminalOpen={terminalOpen}
-            onSelectProject={selectProject}
             onOpenRollback={openRollback}
             onToggleTerminal={toggleTerminal}
           />
@@ -2773,18 +2746,8 @@ function readSourceSelections(): Record<string, SourceSelection> {
  */
 function readStoredModelChoice(): ModelChoice | undefined {
   const storedProvider = readSetting(SETUP_KEY)
-  const providers: string[] = [
-    'codex',
-    'claude-code',
-    'grok',
-    'cursor',
-    'opencode',
-    'antigravity',
-    'acp',
-    'api',
-  ]
-  if (!storedProvider || !providers.includes(storedProvider)) return undefined
-  const provider = storedProvider as ProviderId
+  const provider = PROVIDER_IDS.find((id) => id === storedProvider)
+  if (!provider) return undefined
   const storedKey = readSetting(MODEL_KEY)
   if (!storedKey) return undefined
   const agentId = provider === 'acp' ? (readSetting(AGENT_KEY) ?? undefined) : undefined

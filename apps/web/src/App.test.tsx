@@ -371,6 +371,18 @@ function openSettings() {
 }
 
 describe('web client', () => {
+  it('opens the workspace directly on first launch', async () => {
+    localStorage.removeItem('harness.provider')
+
+    render(<App />)
+
+    expect(screen.queryByText('Set up Personal Harness')).toBeNull()
+    expect(document.querySelector('.shell')).not.toBeNull()
+    await waitFor(() => {
+      expect(transport.request).toHaveBeenCalledWith('auth.status', { provider: 'codex' })
+    })
+  })
+
   it('restores the selected model immediately on the first cache-enabled launch', () => {
     const request = transport.request.getMockImplementation()
     if (!request) throw new Error('missing request mock')
@@ -1664,7 +1676,7 @@ describe('global shortcuts', () => {
     )
   })
 
-  it('opens the project switcher directly and keeps its shortcut out of the picker', async () => {
+  it('opens the project switcher directly without rendering a top project control', async () => {
     serverSidebarSettings.mode = 'classic'
     serverProjects = [
       {
@@ -1689,7 +1701,7 @@ describe('global shortcuts', () => {
     expect(actions).not.toBeNull()
     expect(within(actions!).getByText('⌘N')).toBeTruthy()
     expect(within(actions!).getByText('⌘⇧O')).toBeTruthy()
-    expect(screen.getByRole('button', { name: 'Project' }).textContent).not.toContain('⌘P')
+    expect(screen.queryByRole('button', { name: 'Project' })).toBeNull()
 
     fireEvent.keyDown(window, { key: 'p', metaKey: true })
 

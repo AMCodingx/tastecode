@@ -28,7 +28,6 @@ import {
   PinOff,
   Plus,
   Search,
-  Settings as SettingsIcon,
   X,
 } from 'lucide-react'
 import { isDesktop, isMacOS, revealPath } from '../bridge.js'
@@ -295,91 +294,76 @@ function SidebarComponent(props: {
           </>
         )}
 
-        <div className={`rail__foot${inbox ? ' rail__foot--inbox' : ''}`}>
-          {inbox ? (
-            <button
-              className="navitem inbox-settings"
-              type="button"
-              aria-keyshortcuts={shortcutAria(SHORTCUTS.settings)}
-              onClick={() => {
-                props.onOpenSettings()
-                closeOnNarrowViewport()
-              }}
-            >
-              <SettingsIcon size={15} aria-hidden />
-              <span>Settings</span>
-            </button>
-          ) : (
-            <Menu
-              drop="up"
-              label="Account"
-              panelClassName="menu--settings"
-              trigger={() => (
-                <span className="account">
-                  <span className="account__avatar">
-                    {initial(props.account, props.providerName)}
-                  </span>
-                  <span className="account__name">{props.providerName}</span>
+        <div className="rail__foot">
+          <Menu
+            drop="up"
+            label="Account"
+            panelClassName="menu--settings"
+            trigger={() => (
+              <span className="account">
+                <span className="account__avatar">
+                  {initial(props.account, props.providerName)}
                 </span>
-              )}
-            >
-              {(close) => (
-                <>
-                  <div className="account-menu__usage">
-                    <div className="account-menu__usage-head">
-                      <Gauge size={14} aria-hidden />
-                      <span>Limits</span>
-                    </div>
-                    {limits.length > 0 ? (
-                      limits.map((limit) => (
-                        <div className="account-menu__limit" key={limit.label}>
-                          <div className="account-menu__limit-row">
-                            <span className="account-menu__limit-label">{limit.label}</span>
-                            <span>{Math.round(100 - limit.usedPercent)}% left</span>
-                          </div>
-                          <div
-                            className="account-menu__limit-bar"
-                            role="progressbar"
-                            aria-label={`${limit.label} used`}
-                            aria-valuenow={Math.round(limit.usedPercent)}
-                            aria-valuemin={0}
-                            aria-valuemax={100}
-                          >
-                            <span
-                              style={{
-                                width: `${Math.min(100, Math.max(0, limit.usedPercent))}%`,
-                              }}
-                            />
-                          </div>
-                          {limit.resetsAt ? (
-                            <span className="account-menu__limit-reset">
-                              Resets {resetLabel(limit.resetsAt)}
-                            </span>
-                          ) : null}
-                        </div>
-                      ))
-                    ) : (
-                      // Honest, not vague: of the wired CLIs only Codex
-                      // answers with subscription windows today.
-                      <span className="account-menu__usage-note">
-                        {props.providerName} reports no limits
-                      </span>
-                    )}
+                <span className="account__name">{props.providerName}</span>
+              </span>
+            )}
+          >
+            {(close) => (
+              <>
+                <div className="account-menu__usage">
+                  <div className="account-menu__usage-head">
+                    <Gauge size={14} aria-hidden />
+                    <span>Limits</span>
                   </div>
-                  <MenuItem
-                    title="Settings"
-                    shortcut={shortcutLabel(SHORTCUTS.settings, macOS)}
-                    shortcutAria={shortcutAria(SHORTCUTS.settings)}
-                    onClick={() => {
-                      props.onOpenSettings()
-                      closeOnNarrowViewport()
-                      close()
-                    }}
-                  />
-                </>
-              )}
-            </Menu>
-          )}
+                  {limits.length > 0 ? (
+                    limits.map((limit) => (
+                      <div className="account-menu__limit" key={limit.label}>
+                        <div className="account-menu__limit-row">
+                          <span className="account-menu__limit-label">{limit.label}</span>
+                          <span>{Math.round(100 - limit.usedPercent)}% left</span>
+                        </div>
+                        <div
+                          className="account-menu__limit-bar"
+                          role="progressbar"
+                          aria-label={`${limit.label} left`}
+                          aria-valuenow={Math.round(100 - limit.usedPercent)}
+                          aria-valuemin={0}
+                          aria-valuemax={100}
+                        >
+                          <span
+                            style={{
+                              width: `${Math.min(100, Math.max(0, 100 - limit.usedPercent))}%`,
+                            }}
+                          />
+                        </div>
+                        {limit.resetsAt ? (
+                          <span className="account-menu__limit-reset">
+                            Resets {resetLabel(limit.resetsAt)}
+                          </span>
+                        ) : null}
+                      </div>
+                    ))
+                  ) : (
+                    // Honest, not vague: of the wired CLIs only Codex
+                    // answers with subscription windows today.
+                    <span className="account-menu__usage-note">
+                      {props.providerName} reports no limits
+                    </span>
+                  )}
+                </div>
+                <MenuItem
+                  title="Settings"
+                  shortcut={shortcutLabel(SHORTCUTS.settings, macOS)}
+                  shortcutAria={shortcutAria(SHORTCUTS.settings)}
+                  onClick={() => {
+                    props.onOpenSettings()
+                    closeOnNarrowViewport()
+                    close()
+                  }}
+                />
+              </>
+            )}
+          </Menu>
         </div>
       </nav>
       {!props.collapsed ? (
