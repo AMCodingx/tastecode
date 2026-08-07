@@ -117,6 +117,12 @@ pub struct Theme {
     pub queue_text: ColorToken,
     pub queue_action: ColorToken,
     pub queue_hover: ColorToken,
+    pub composer_placeholder: ColorToken,
+    pub composer_review: ColorToken,
+    pub composer_danger: ColorToken,
+    pub composer_orb: ColorToken,
+    pub composer_on_orb: ColorToken,
+    pub composer_stop: ColorToken,
     pub line: ColorToken,
     pub line_strong: ColorToken,
     pub text: ColorToken,
@@ -159,6 +165,12 @@ impl Theme {
             queue_text: ColorToken(0xededed),
             queue_action: ColorToken(0x8a8a8a),
             queue_hover: ColorToken(0x2b2b2b),
+            composer_placeholder: ColorToken(0x6f6f6f),
+            composer_review: ColorToken(0x65b8ff),
+            composer_danger: ColorToken(0xfe8549),
+            composer_orb: ColorToken(0xededed),
+            composer_on_orb: ColorToken(0x101010),
+            composer_stop: ColorToken(0x2b2b2b),
             line: ColorToken(0x262626),
             line_strong: ColorToken(0x333333),
             text: ColorToken(0xededed),
@@ -191,6 +203,12 @@ impl Theme {
             queue_text: ColorToken(0x18181b),
             queue_action: ColorToken(0x96969a),
             queue_hover: ColorToken(0xf5f5f6),
+            composer_placeholder: ColorToken(0xc7c7ca),
+            composer_review: ColorToken(0x2d72dc),
+            composer_danger: ColorToken(0xef4d05),
+            composer_orb: ColorToken(0x1d1d1f),
+            composer_on_orb: ColorToken(0xffffff),
+            composer_stop: ColorToken(0x1d1d1f),
             line: ColorToken(0xebebed),
             line_strong: ColorToken(0xdedee2),
             text: ColorToken(0x27272a),
@@ -384,6 +402,12 @@ mod tests {
         assert_eq!(dark.queue_background, ColorToken(0x222222));
         assert_eq!(dark.queue_line, ColorToken(0x2b2b2b));
         assert_eq!(dark.queue_action, ColorToken(0x8a8a8a));
+        assert_eq!(dark.composer_placeholder, ColorToken(0x6f6f6f));
+        assert_eq!(dark.composer_review, ColorToken(0x65b8ff));
+        assert_eq!(dark.composer_danger, ColorToken(0xfe8549));
+        assert_eq!(dark.composer_orb, ColorToken(0xededed));
+        assert_eq!(dark.composer_on_orb, ColorToken(0x101010));
+        assert_eq!(dark.composer_stop, ColorToken(0x2b2b2b));
         assert_eq!(dark.file_reference, ColorToken(0x515aad));
         assert_eq!(dark.effort, ColorToken(0xef706e));
         assert_eq!(light.background, ColorToken(0xfdfdfd));
@@ -392,6 +416,12 @@ mod tests {
         assert_eq!(light.queue_background, ColorToken(0xffffff));
         assert_eq!(light.queue_line, ColorToken(0xeeeeef));
         assert_eq!(light.queue_action, ColorToken(0x96969a));
+        assert_eq!(light.composer_placeholder, ColorToken(0xc7c7ca));
+        assert_eq!(light.composer_review, ColorToken(0x2d72dc));
+        assert_eq!(light.composer_danger, ColorToken(0xef4d05));
+        assert_eq!(light.composer_orb, ColorToken(0x1d1d1f));
+        assert_eq!(light.composer_on_orb, ColorToken(0xffffff));
+        assert_eq!(light.composer_stop, ColorToken(0x1d1d1f));
         assert_eq!(light.file_reference, ColorToken(0x4a53a8));
         assert_eq!(light.effort, ColorToken(0xc2413d));
     }

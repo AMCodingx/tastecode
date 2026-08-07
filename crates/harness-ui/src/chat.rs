@@ -372,11 +372,7 @@ impl ChatView {
         cx: &mut Context<Self>,
     ) -> Self {
         thinking_orb::initialize_clock();
-        let composer = cx.new(|cx| {
-            InputState::new(window, cx)
-                .auto_grow(2, 11)
-                .placeholder("Do anything")
-        });
+        let composer = cx.new(|cx| InputState::new(window, cx).auto_grow(2, 11).placeholder(""));
         let model_search = cx.new(|cx| InputState::new(window, cx).placeholder("Search models"));
         let user_input_custom =
             cx.new(|cx| InputState::new(window, cx).placeholder("Type your answer…"));
@@ -2952,22 +2948,17 @@ impl ChatView {
         let theme = self.theme;
         let stopping = show_stop && self.interrupt_pending;
         let disabled = !show_stop && send_disabled;
-        let composer_orb: gpui::Hsla = if theme.mode == ThemeMode::Dark {
-            gpui::rgb(0xededed).into()
-        } else {
-            gpui::rgb(0x1d1d1f).into()
-        };
-        let composer_stop: gpui::Hsla = if theme.mode == ThemeMode::Dark {
-            gpui::rgb(0x2b2b2b).into()
-        } else {
-            gpui::rgb(0x1d1d1f).into()
-        };
+        let sending = !show_stop && self.sending;
+        let composer_orb = theme.composer_orb.hsla();
+        let composer_stop = theme.composer_stop.hsla();
         let stopping_background: gpui::Hsla = if theme.mode == ThemeMode::Dark {
-            gpui::rgb(0x2b2b2b).into()
+            theme.composer_stop.hsla()
         } else {
-            gpui::rgb(0x7a7a7c).into()
+            gpui::rgb(0x7a7a7d).into()
         };
-        let background = if disabled {
+        let background = if sending {
+            composer_orb
+        } else if disabled {
             theme.surface_3.hsla()
         } else if stopping {
             stopping_background
@@ -2976,12 +2967,12 @@ impl ChatView {
         } else {
             composer_orb.opacity(0.90)
         };
-        let foreground = if disabled {
+        let foreground = if sending {
+            theme.composer_on_orb.hsla()
+        } else if disabled {
             theme.text_3.hsla()
-        } else if theme.mode == ThemeMode::Dark {
-            gpui::rgb(0x101010).into()
         } else {
-            gpui::white()
+            theme.composer_on_orb.hsla()
         };
         let hover_background: gpui::Hsla = if show_stop {
             if theme.mode == ThemeMode::Dark {
@@ -3054,6 +3045,7 @@ impl ChatView {
     fn composer(&self, window: &Window, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = self.theme;
         let session = self.session.clone();
+        let composer_empty = self.composer.read(cx).value().is_empty();
         let has_text = !self.composer.read(cx).value().trim().is_empty();
         let has_draft = has_text || !self.attachments.is_empty();
         let show_stop = self.state.running && !has_draft;
@@ -3211,17 +3203,35 @@ impl ChatView {
                                         prompt.child(chips)
                                     })
                                     .child(
-                                        Input::new(&self.composer)
-                                            .appearance(false)
-                                            .bordered(false)
-                                            .focus_bordered(false)
-                                            .h(px(68.0))
-                                            .px(px(18.0))
-                                            .pt(px(16.0))
-                                            .pb(px(8.0))
-                                            .text_size(px(14.0))
-                                            .line_height(relative(1.55))
-                                            .text_color(theme.text.hsla()),
+                                        div()
+                                            .relative()
+                                            .child(
+                                                Input::new(&self.composer)
+                                                    .appearance(false)
+                                                    .bordered(false)
+                                                    .focus_bordered(false)
+                                                    .h(px(68.0))
+                                                    .px(px(18.0))
+                                                    .pt(px(16.0))
+                                                    .pb(px(8.0))
+                                                    .text_size(px(14.0))
+                                                    .line_height(relative(1.55))
+                                                    .text_color(theme.text.hsla()),
+                                            )
+                                            .when(composer_empty, |input| {
+                                                input.child(
+                                                    div()
+                                                        .absolute()
+                                                        .top(px(16.0))
+                                                        .left(px(18.0))
+                                                        .text_size(px(14.0))
+                                                        .line_height(relative(1.55))
+                                                        .text_color(
+                                                            theme.composer_placeholder.hsla(),
+                                                        )
+                                                        .child("Do anything"),
+                                                )
+                                            }),
                                     )
                                     .child(
                                         div()
@@ -3855,6 +3865,10 @@ impl ChatView {
         let approval = self.composer_settings.approval;
         let open = self.composer_menu == Some(ComposerMenu::Permissions);
         let (icon_path, label) = approval_meta(approval);
+        let semantic_color = approval_semantic_color(approval, theme);
+        let label_color = semantic_color.unwrap_or_else(|| theme.text_2.hsla());
+        let icon_color = semantic_color.unwrap_or_else(|| theme.text_3.hsla());
+        let group: SharedString = "composer-permission-trigger".into();
         let background = if theme.mode == ThemeMode::Dark {
             theme.surface_3.hsla()
         } else {
@@ -3868,6 +3882,7 @@ impl ChatView {
             .flex()
             .items_center()
             .gap(px(6.0))
+            .group(group.clone())
             .rounded(px(RADIUS_XL))
             .border_1()
             .border_color(if open {
@@ -3878,11 +3893,7 @@ impl ChatView {
             .bg(background)
             .shadow_sm()
             .text_size(px(13.5))
-            .text_color(if approval == ApprovalMode::Full {
-                theme.error.hsla()
-            } else {
-                theme.text_2.hsla()
-            })
+            .text_color(label_color)
             .opacity(if running { 0.42 } else { 1.0 })
             .when(!running, |button| {
                 button
@@ -3895,14 +3906,21 @@ impl ChatView {
                                 theme.surface.hsla()
                             })
                             .border_color(theme.text_3.hsla().opacity(0.72))
-                            .text_color(theme.text.hsla())
+                            .text_color(semantic_color.unwrap_or_else(|| theme.text.hsla()))
                     })
                     .active(|style| style.opacity(0.78).top(px(1.0)))
                     .on_click(cx.listener(|this, _event, _window, cx| {
                         this.toggle_composer_menu(ComposerMenu::Permissions, cx);
                     }))
             })
-            .child(svg_icon(icon_path, 13.0))
+            .child(
+                div()
+                    .text_color(icon_color)
+                    .when(semantic_color.is_none(), |icon| {
+                        icon.group_hover(group, |style| style.text_color(theme.text.hsla()))
+                    })
+                    .child(svg_icon(icon_path, 13.0)),
+            )
             .child(label)
             .into_any_element()
     }
@@ -4235,6 +4253,9 @@ impl ChatView {
                     .map(|(index, (mode, title, detail))| {
                         let active = mode == selected;
                         let (icon_path, _) = approval_meta(mode);
+                        let semantic_color = approval_semantic_color(mode, theme);
+                        let title_color = semantic_color.unwrap_or_else(|| theme.text.hsla());
+                        let icon_color = semantic_color.unwrap_or_else(|| theme.text_3.hsla());
                         div()
                             .id(("permission-option", index))
                             .min_h(px(48.0))
@@ -4256,11 +4277,7 @@ impl ChatView {
                                     .flex()
                                     .items_center()
                                     .justify_center()
-                                    .text_color(if mode == ApprovalMode::Full {
-                                        theme.error.hsla()
-                                    } else {
-                                        theme.text_2.hsla()
-                                    })
+                                    .text_color(icon_color)
                                     .child(svg_icon(icon_path, 14.0)),
                             )
                             .child(
@@ -4273,7 +4290,7 @@ impl ChatView {
                                         div()
                                             .text_size(px(12.0))
                                             .font_weight(FontWeight::MEDIUM)
-                                            .text_color(theme.text.hsla())
+                                            .text_color(title_color)
                                             .child(title),
                                     )
                                     .child(
@@ -5741,6 +5758,14 @@ fn approval_meta(approval: ApprovalMode) -> (&'static str, &'static str) {
         ApprovalMode::Auto => ("icons/shield-check.svg", "Auto"),
         ApprovalMode::AutoReview => ("icons/scan-eye.svg", "Auto-review"),
         ApprovalMode::Full => ("icons/lock-open.svg", "Full access"),
+    }
+}
+
+fn approval_semantic_color(approval: ApprovalMode, theme: Theme) -> Option<gpui::Hsla> {
+    match approval {
+        ApprovalMode::AutoReview => Some(theme.composer_review.hsla()),
+        ApprovalMode::Full => Some(theme.composer_danger.hsla()),
+        ApprovalMode::Ask | ApprovalMode::Auto => None,
     }
 }
 
