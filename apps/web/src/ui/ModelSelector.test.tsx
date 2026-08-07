@@ -326,6 +326,42 @@ describe('ModelSelector', () => {
     expect(onModelChange).not.toHaveBeenCalled()
   })
 
+  it('searches the active provider without changing the selected model', () => {
+    const claudeModel: ModelChoice = {
+      key: 'claude-code:sonnet',
+      provider: 'claude-code',
+      sourceName: 'Claude Code',
+      mark: 'anthropic',
+      model: {
+        id: 'sonnet',
+        displayName: 'Sonnet 5',
+        description: '',
+        isDefault: false,
+        reasoningEfforts: [],
+        serviceTiers: [],
+      },
+    }
+    const { onModelChange } = renderSelector({ models: [...MODELS, claudeModel] })
+    fireEvent.click(screen.getByRole('button', { name: 'Model and reasoning' }))
+
+    const search = screen.getByRole('searchbox', { name: 'Search Codex models' })
+    fireEvent.change(search, { target: { value: 'mini' } })
+
+    expect(screen.queryByRole('button', { name: 'Use GPT-5.6 Sol through Codex' })).toBeNull()
+    expect(screen.getByRole('button', { name: 'Use GPT-5.6 Mini through Codex' })).toBeTruthy()
+    expect(onModelChange).not.toHaveBeenCalled()
+
+    fireEvent.change(search, { target: { value: 'sonnet' } })
+    expect(screen.getByRole('status').textContent).toBe('No matching models.')
+    fireEvent.click(screen.getByRole('button', { name: 'Show Claude Code models' }))
+    expect(screen.getByRole('button', { name: 'Use Sonnet 5 through Claude Code' })).toBeTruthy()
+
+    const claudeSearch = screen.getByRole('searchbox', { name: 'Search Claude Code models' })
+    fireEvent.keyDown(claudeSearch, { key: 'Escape' })
+    expect((claudeSearch as HTMLInputElement).value).toBe('')
+    expect(screen.getByRole('dialog', { name: 'Model and reasoning' })).toBeTruthy()
+  })
+
   it('maps pointer positions onto discrete effort stops', () => {
     expect(
       getEffortIndexFromPointer({

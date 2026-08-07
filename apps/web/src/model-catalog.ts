@@ -26,6 +26,20 @@ export type ModelChoice = {
   model: Model
 }
 
+const MODEL_SEARCH_WHITESPACE = /\s+/
+
+export function filterModelChoicesByQuery(choices: ModelChoice[], query: string): ModelChoice[] {
+  const normalizedQuery = query.trim().toLowerCase()
+  if (!normalizedQuery) return choices
+
+  const terms = normalizedQuery.split(MODEL_SEARCH_WHITESPACE)
+  return choices.filter((choice) => {
+    const searchableText =
+      `${choice.sourceName} ${choice.model.displayName} ${choice.model.id}`.toLowerCase()
+    return terms.every((term) => searchableText.includes(term))
+  })
+}
+
 const REASONING_EFFORT_RANKS = new Map([
   ['none', 0],
   ['minimal', 1],

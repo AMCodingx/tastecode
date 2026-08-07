@@ -1,6 +1,11 @@
 import { describe, expect, it } from 'vitest'
 import type { Model } from '@harness/contracts'
-import { agentMark, choicesFor, resolveReasoningEffort } from './model-catalog.js'
+import {
+  agentMark,
+  choicesFor,
+  filterModelChoicesByQuery,
+  resolveReasoningEffort,
+} from './model-catalog.js'
 
 const model: Model = {
   id: 'shared-model',
@@ -54,6 +59,17 @@ describe('model catalog', () => {
         false,
       ),
     ).toEqual([])
+  })
+
+  it('filters model choices by case-insensitive words from their visible name or id', () => {
+    const choices = choicesFor({ provider: 'opencode', sourceName: 'OpenCode', mark: 'opencode' }, [
+      { ...model, id: 'openrouter/claude-opus-5', displayName: 'OpenRouter · Claude Opus 5' },
+      { ...model, id: 'qwen/qwen3.8-max', displayName: 'OpenCode Go · Qwen3.8 Max' },
+    ])
+
+    expect(filterModelChoicesByQuery(choices, 'OPUS openrouter')).toEqual([choices[0]])
+    expect(filterModelChoicesByQuery(choices, 'qwen3.8-max')).toEqual([choices[1]])
+    expect(filterModelChoicesByQuery(choices, '  ')).toBe(choices)
   })
 
   it('keeps an effort that the next model supports', () => {

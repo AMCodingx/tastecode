@@ -1,0 +1,48 @@
+import { useRef } from 'react'
+import { Search, X } from 'lucide-react'
+
+export function ModelSearchField(props: {
+  value: string
+  label: string
+  className?: string
+  autoFocus?: boolean
+  onChange: (value: string) => void
+}) {
+  const input = useRef<HTMLInputElement>(null)
+
+  return (
+    <div className={`model-search${props.className ? ` ${props.className}` : ''}`}>
+      <Search size={13} aria-hidden />
+      <input
+        ref={input}
+        type="search"
+        value={props.value}
+        placeholder="Search models"
+        aria-label={props.label}
+        autoComplete="off"
+        autoCapitalize="none"
+        autoFocus={props.autoFocus}
+        spellCheck={false}
+        onChange={(event) => props.onChange(event.currentTarget.value)}
+        onKeyDown={(event) => {
+          if (event.key !== 'Escape' || !props.value) return
+          event.preventDefault()
+          event.stopPropagation()
+          props.onChange('')
+        }}
+      />
+      {props.value ? (
+        <button
+          type="button"
+          aria-label={`Clear ${props.label}`}
+          onClick={() => {
+            props.onChange('')
+            input.current?.focus()
+          }}
+        >
+          <X size={12} aria-hidden />
+        </button>
+      ) : null}
+    </div>
+  )
+}

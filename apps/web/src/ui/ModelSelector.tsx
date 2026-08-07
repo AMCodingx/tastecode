@@ -1,8 +1,20 @@
-import { useRef, useState, type CSSProperties, type KeyboardEvent, type PointerEvent } from 'react'
+import {
+  useDeferredValue,
+  useRef,
+  useState,
+  type CSSProperties,
+  type KeyboardEvent,
+  type PointerEvent,
+} from 'react'
 import { Check, ChevronDown, Zap } from 'lucide-react'
-import { resolveReasoningEffort, type ModelChoice } from '../model-catalog.js'
+import {
+  filterModelChoicesByQuery,
+  resolveReasoningEffort,
+  type ModelChoice,
+} from '../model-catalog.js'
 import { DitherSlider } from './dither-kit/DitherSlider.js'
 import { Menu } from './Menu.js'
+import { ModelSearchField } from './ModelSearchField.js'
 import { ProviderIcon } from './ProviderIcon.js'
 
 const SLIDER_DITHER_MIN_WIDTH = 44
@@ -142,6 +154,8 @@ function ProviderModelList(props: {
   onModelSelect: (choice: ModelChoice) => void
 }) {
   const groups = groupModelsBySource(props.models)
+  const [query, setQuery] = useState('')
+  const deferredQuery = useDeferredValue(query)
   const selectedGroupKey = props.selectedChoice
     ? modelSourceKey(props.selectedChoice)
     : groups[0]?.key
@@ -150,6 +164,9 @@ function ProviderModelList(props: {
     groups.find((group) => group.key === activeGroupKey) ??
     groups.find((group) => group.key === selectedGroupKey) ??
     groups[0]
+  const filteredEntries = activeGroup
+    ? filterModelChoicesByQuery(activeGroup.entries, deferredQuery)
+    : []
 
   return (
     <div className="model-selector__catalog">
@@ -180,23 +197,38 @@ function ProviderModelList(props: {
       >
         {activeGroup ? (
           <section className="model-selector__group">
-            <p className="model-selector__group-title">{activeGroup.name}</p>
-            {activeGroup.entries.map((entry) => {
-              const selected = entry.key === props.selectedChoice?.key
-              return (
-                <button
-                  key={entry.key}
-                  type="button"
-                  className={`model-selector__model${selected ? ' is-selected' : ''}`}
-                  aria-pressed={selected}
-                  aria-label={`Use ${entry.model.displayName} through ${entry.sourceName}`}
-                  onClick={() => props.onModelSelect(entry)}
-                >
-                  <span className="model-selector__model-name">{entry.model.displayName}</span>
-                  {selected ? <Check size={14} aria-hidden /> : null}
-                </button>
-              )
-            })}
+            <div className="model-selector__group-head">
+              <p className="model-selector__group-title">{activeGroup.name}</p>
+              <ModelSearchField
+                className="model-selector__search"
+                value={query}
+                label={`Search ${activeGroup.name} models`}
+                autoFocus
+                onChange={setQuery}
+              />
+            </div>
+            {filteredEntries.length > 0 ? (
+              filteredEntries.map((entry) => {
+                const selected = entry.key === props.selectedChoice?.key
+                return (
+                  <button
+                    key={entry.key}
+                    type="button"
+                    className={`model-selector__model${selected ? ' is-selected' : ''}`}
+                    aria-pressed={selected}
+                    aria-label={`Use ${entry.model.displayName} through ${entry.sourceName}`}
+                    onClick={() => props.onModelSelect(entry)}
+                  >
+                    <span className="model-selector__model-name">{entry.model.displayName}</span>
+                    {selected ? <Check size={14} aria-hidden /> : null}
+                  </button>
+                )
+              })
+            ) : (
+              <p className="model-selector__empty" role="status">
+                No matching models.
+              </p>
+            )}
           </section>
         ) : null}
       </div>
