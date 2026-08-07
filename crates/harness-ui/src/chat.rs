@@ -9,6 +9,7 @@ mod transcript;
 mod voice;
 
 use crate::client_state::{ChatUpdate, ModelChoice};
+use crate::model_selection::{fast_service_tier, is_fast_mode_enabled};
 use crate::theme::{CHAT_WIDTH, Theme};
 use crate::zoom::px;
 use diff::DiffUiState;
@@ -3412,7 +3413,10 @@ impl ChatView {
             .as_deref()
             .map(title_case)
             .unwrap_or_default();
-        let fast = self.composer_settings.service_tier.is_some();
+        let fast = is_fast_mode_enabled(
+            &selected.model,
+            self.composer_settings.service_tier.as_deref(),
+        );
         Some(
             div()
                 .id("composer-model")
@@ -3821,9 +3825,12 @@ impl ChatView {
     fn model_controls(&self, selected: ModelChoice, cx: &Context<Self>) -> AnyElement {
         let theme = self.theme;
         let selected_effort = self.composer_settings.effort.clone();
-        let fast = self.composer_settings.service_tier.is_some();
+        let fast = is_fast_mode_enabled(
+            &selected.model,
+            self.composer_settings.service_tier.as_deref(),
+        );
+        let has_fast = fast_service_tier(&selected.model).is_some();
         let efforts = selected.model.reasoning_efforts;
-        let has_fast = !selected.model.service_tiers.is_empty();
         div()
             .border_t_1()
             .border_color(theme.line.hsla())

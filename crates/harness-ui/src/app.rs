@@ -14,7 +14,10 @@ use crate::client_state::{
     ChatUpdate, ClientState, ClientUpdate, NewThreadRequest, ReviewHunkRequest, SendTurnRequest,
     ShellEvent,
 };
-use crate::preferences::{NativePreferences, ThemePreference};
+use crate::model_selection::{
+    fast_mode_off_value, fast_service_tier, is_fast_mode_enabled, next_service_tier, source_key,
+};
+use crate::preferences::{NativePreferences, SourceSelection, ThemePreference};
 use crate::preview_capture::PreviewCaptureRuntime;
 use crate::sidebar::{SidebarActions, SidebarMenuRequest, SidebarProps, sidebar};
 use crate::theme::{TITLEBAR_HEIGHT, Theme, ThemeMode};
@@ -313,6 +316,7 @@ impl HarnessApp {
             ChatEvent::SelectModel { key } => this.select_model(key, cx),
             ChatEvent::SelectEffort { effort } => {
                 this.effort = Some(effort.clone());
+                this.remember_model_selection();
                 this.sync_composer_settings(cx);
             }
             ChatEvent::ToggleFast => this.toggle_fast(cx),
@@ -472,7 +476,7 @@ impl HarnessApp {
             selected_thread_id: None,
             active_project_path: None,
             chat_visible: false,
-            selected_model_key: None,
+            selected_model_key: preferences.selected_model_key.clone(),
             effort: None,
             service_tier: None,
             approval: ApprovalMode::Ask,
@@ -603,39 +607,40 @@ impl HarnessApp {
         if !self.state.model_catalog_loaded {
             return;
         }
-        if self.selected_model_key.as_ref().is_some_and(|selected| {
-            self.state.model_catalog.iter().any(|choice| {
+        let current = self.selected_model_key.as_ref().and_then(|selected| {
+            self.state.model_catalog.iter().find(|choice| {
                 choice.key == *selected && !self.preferences.hidden_models.contains(&choice.key)
             })
-        }) {
-            return;
-        }
-        let Some(choice) = self
-            .state
-            .model_catalog
-            .iter()
-            .filter(|choice| !self.preferences.hidden_models.contains(&choice.key))
-            .find(|choice| choice.model.is_default)
+        });
+        let Some(choice) = current
+            .or_else(|| {
+                self.state
+                    .model_catalog
+                    .iter()
+                    .filter(|choice| !self.preferences.hidden_models.contains(&choice.key))
+                    .find(|choice| choice.model.is_default)
+            })
             .or_else(|| {
                 self.state
                     .model_catalog
                     .iter()
                     .find(|choice| !self.preferences.hidden_models.contains(&choice.key))
             })
+            .cloned()
         else {
             self.selected_model_key = None;
             self.effort = None;
             self.service_tier = None;
+            if self.preferences.selected_model_key.take().is_some() {
+                self.persist_native_preferences();
+            }
             return;
         };
+        let (effort, service_tier) = self.remembered_model_settings(&choice);
         self.selected_model_key = Some(choice.key.clone());
-        self.effort = choice
-            .model
-            .default_reasoning_effort
-            .clone()
-            .filter(|effort| choice.model.reasoning_efforts.contains(effort))
-            .or_else(|| choice.model.reasoning_efforts.first().cloned());
-        self.service_tier = choice.model.default_service_tier.clone();
+        self.effort = effort;
+        self.service_tier = service_tier;
+        self.remember_model_selection();
     }
 
     fn apply_shell_event(&mut self, event: ShellEvent, cx: &mut Context<Self>) {
@@ -1075,19 +1080,28 @@ impl HarnessApp {
         let current_model = self
             .selected_model_choice()
             .map(|choice| choice.model.clone());
-        self.effort =
-            resolve_reasoning_effort(self.effort.as_deref(), current_model.as_ref(), &next.model);
-        self.service_tier = self
-            .service_tier
-            .clone()
-            .filter(|tier| {
-                next.model
-                    .service_tiers
-                    .iter()
-                    .any(|entry| entry.id == *tier)
-            })
-            .or_else(|| next.model.default_service_tier.clone());
+        let remembered = self
+            .preferences
+            .model_by_source
+            .get(&source_key(&next))
+            .filter(|selection| selection.model_key == next.key)
+            .cloned();
+        if remembered.is_some() {
+            (self.effort, self.service_tier) = self.remembered_model_settings(&next);
+        } else {
+            self.effort = resolve_reasoning_effort(
+                self.effort.as_deref(),
+                current_model.as_ref(),
+                &next.model,
+            );
+            self.service_tier = next_service_tier(
+                current_model.as_ref(),
+                &next.model,
+                self.service_tier.as_deref(),
+            );
+        }
         self.selected_model_key = Some(next.key);
+        self.remember_model_selection();
         self.chat.update(cx, |chat, cx| {
             chat.update_draft_provider(next.provider, cx);
         });
@@ -1095,18 +1109,71 @@ impl HarnessApp {
     }
 
     fn toggle_fast(&mut self, cx: &mut Context<Self>) {
-        if self.service_tier.is_some() {
-            self.service_tier = None;
-        } else if let Some(choice) = self.selected_model_choice() {
-            self.service_tier = choice.model.default_service_tier.clone().or_else(|| {
+        let Some(model) = self
+            .selected_model_choice()
+            .map(|choice| choice.model.clone())
+        else {
+            return;
+        };
+        self.service_tier = if is_fast_mode_enabled(&model, self.service_tier.as_deref()) {
+            fast_mode_off_value(&model)
+        } else {
+            fast_service_tier(&model).map(|tier| tier.id.clone())
+        };
+        self.remember_model_selection();
+        self.sync_composer_settings(cx);
+    }
+
+    fn remembered_model_settings(
+        &self,
+        choice: &crate::client_state::ModelChoice,
+    ) -> (Option<String>, Option<String>) {
+        let remembered = self
+            .preferences
+            .model_by_source
+            .get(&source_key(choice))
+            .filter(|selection| selection.model_key == choice.key);
+        let effort = remembered
+            .and_then(|selection| selection.effort.as_ref())
+            .filter(|effort| choice.model.reasoning_efforts.contains(effort))
+            .cloned()
+            .or_else(|| default_reasoning_effort(&choice.model));
+        let service_tier = remembered
+            .and_then(|selection| selection.service_tier.as_ref())
+            .filter(|selected| {
                 choice
                     .model
                     .service_tiers
-                    .first()
-                    .map(|tier| tier.id.clone())
-            });
+                    .iter()
+                    .any(|tier| tier.id == **selected)
+            })
+            .cloned()
+            .or_else(|| choice.model.default_service_tier.clone());
+        (effort, service_tier)
+    }
+
+    fn remember_model_selection(&mut self) {
+        let Some(choice) = self.selected_model_choice().cloned() else {
+            return;
+        };
+        let entry = SourceSelection {
+            model_key: choice.key.clone(),
+            effort: self.effort.clone(),
+            service_tier: self.service_tier.clone(),
+        };
+        let source = source_key(&choice);
+        let mut changed =
+            self.preferences.selected_model_key.as_deref() != Some(choice.key.as_str());
+        if changed {
+            self.preferences.selected_model_key = Some(choice.key);
         }
-        self.sync_composer_settings(cx);
+        if self.preferences.model_by_source.get(&source) != Some(&entry) {
+            self.preferences.model_by_source.insert(source, entry);
+            changed = true;
+        }
+        if changed {
+            self.persist_native_preferences();
+        }
     }
 
     fn sync_composer_settings(&mut self, cx: &mut Context<Self>) {
@@ -1659,6 +1726,15 @@ fn resolve_reasoning_effort(
             .or_else(default);
     }
     default()
+}
+
+fn default_reasoning_effort(model: &Model) -> Option<String> {
+    model
+        .default_reasoning_effort
+        .as_ref()
+        .filter(|effort| model.reasoning_efforts.contains(effort))
+        .cloned()
+        .or_else(|| model.reasoning_efforts.first().cloned())
 }
 
 fn reasoning_effort_rank(value: &str) -> Option<u8> {

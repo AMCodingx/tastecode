@@ -2,11 +2,11 @@ use crate::theme::{Accent, Backdrop};
 use anyhow::{Context as _, Result};
 use harness_protocol::ProviderId;
 use serde::{Deserialize, Serialize};
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::PathBuf;
 
-const PREFERENCES_VERSION: u8 = 2;
+const PREFERENCES_VERSION: u8 = 3;
 const PREFERENCES_FILE: &str = "gpui-settings.json";
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -40,6 +40,8 @@ pub(crate) struct NativePreferences {
     pub(crate) backdrop: Backdrop,
     pub(crate) sidebar_glass: u8,
     pub(crate) hidden_models: HashSet<String>,
+    pub(crate) selected_model_key: Option<String>,
+    pub(crate) model_by_source: HashMap<String, SourceSelection>,
     pub(crate) setup_provider: Option<ProviderId>,
     pub(crate) setup_agent: Option<String>,
     pub(crate) setup_agent_name: Option<String>,
@@ -55,11 +57,23 @@ impl Default for NativePreferences {
             backdrop: Backdrop::Default,
             sidebar_glass: 0,
             hidden_models: HashSet::new(),
+            selected_model_key: None,
+            model_by_source: HashMap::new(),
             setup_provider: None,
             setup_agent: None,
             setup_agent_name: None,
         }
     }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct SourceSelection {
+    pub(crate) model_key: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) effort: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) service_tier: Option<String>,
 }
 
 impl NativePreferences {
@@ -119,6 +133,8 @@ mod tests {
         assert_eq!(preferences.font, FontPreference::Geist);
         assert_eq!(preferences.accent, Accent::Neutral);
         assert!(preferences.hidden_models.is_empty());
+        assert_eq!(preferences.selected_model_key, None);
+        assert!(preferences.model_by_source.is_empty());
         assert_eq!(preferences.setup_provider, None);
     }
 
@@ -133,6 +149,15 @@ mod tests {
             ..NativePreferences::default()
         };
         preferences.hidden_models.insert("codex:gpt-5".into());
+        preferences.selected_model_key = Some("cursor:composer-2".into());
+        preferences.model_by_source.insert(
+            "cursor".into(),
+            SourceSelection {
+                model_key: "cursor:composer-2".into(),
+                effort: Some("high".into()),
+                service_tier: Some("fast".into()),
+            },
+        );
         preferences.setup_provider = Some(ProviderId::Acp);
         preferences.setup_agent = Some("gemini".into());
         preferences.setup_agent_name = Some("Gemini CLI".into());

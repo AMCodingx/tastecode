@@ -3,6 +3,7 @@ mod app;
 mod assets;
 mod chat;
 mod client_state;
+mod model_selection;
 mod preferences;
 mod preview_capture;
 mod shortcuts;

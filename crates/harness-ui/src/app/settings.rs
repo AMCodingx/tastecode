@@ -2668,6 +2668,9 @@ impl HarnessApp {
 
     fn reset_native_preferences(&mut self, cx: &mut Context<Self>) {
         self.preferences = NativePreferences::default();
+        self.selected_model_key = None;
+        self.effort = None;
+        self.service_tier = None;
         match NativePreferences::reset_file() {
             Ok(()) => self.state.notice = Some("Native preferences were reset.".into()),
             Err(error) => self.state.notice = Some(format!("Could not reset preferences: {error}")),
