@@ -74,6 +74,7 @@ pub mod method {
     pub const CLIENT_CAPABILITIES: &str = "client.capabilities";
     pub const PREVIEW_CAPTURE_RESULT: &str = "preview.captureResult";
     pub const SYSTEM_INFO: &str = "system.info";
+    pub const SEARCH_SESSIONS: &str = "search.sessions";
     pub const SYSTEM_UPDATE_CHECK: &str = "system.updateCheck";
     pub const VOICE_STATUS: &str = "voice.status";
     pub const VOICE_TRANSCRIBE: &str = "voice.transcribe";
@@ -102,6 +103,9 @@ pub mod method {
     pub const AUTH_SIGN_OUT: &str = "auth.signOut";
     pub const PROJECTS_LIST: &str = "projects.list";
     pub const PROJECTS_ADD: &str = "projects.add";
+    pub const PROJECTS_PIN: &str = "projects.pin";
+    pub const PROJECTS_RENAME: &str = "projects.rename";
+    pub const PROJECTS_REMOVE: &str = "projects.remove";
     pub const TERMINAL_OPEN: &str = "terminal.open";
     pub const TERMINAL_INPUT: &str = "terminal.input";
     pub const TERMINAL_RESIZE: &str = "terminal.resize";
@@ -109,6 +113,13 @@ pub mod method {
     pub const MODELS_LIST: &str = "models.list";
     pub const THREAD_START: &str = "thread.start";
     pub const THREAD_RENAME: &str = "thread.rename";
+    pub const THREAD_PIN: &str = "thread.pin";
+    pub const THREAD_SETTLE: &str = "thread.settle";
+    pub const THREAD_UNSETTLE: &str = "thread.unsettle";
+    pub const THREAD_SNOOZE: &str = "thread.snooze";
+    pub const THREAD_UNSNOOZE: &str = "thread.unsnooze";
+    pub const THREAD_SET_KEEP_ACTIVE: &str = "thread.setKeepActive";
+    pub const THREAD_DELETE: &str = "thread.delete";
     pub const THREAD_HISTORY: &str = "thread.history";
     pub const THREAD_DIFF: &str = "thread.diff";
     pub const THREAD_REVIEW_HUNK: &str = "thread.reviewHunk";
@@ -117,10 +128,13 @@ pub mod method {
     pub const THREAD_RESPOND_TO_APPROVAL: &str = "thread.respondToApproval";
     pub const THREAD_RESPOND_TO_USER_INPUT: &str = "thread.respondToUserInput";
     pub const THREAD_INTERRUPT: &str = "thread.interrupt";
+    pub const THREAD_CLOSE: &str = "thread.close";
+    pub const THREAD_CHECKPOINTS: &str = "thread.checkpoints";
     pub const THREAD_QUEUE: &str = "thread.queue";
     pub const THREAD_STEER_QUEUED_TURN: &str = "thread.steerQueuedTurn";
     pub const SIDEBAR_SETTINGS: &str = "sidebar.settings";
     pub const SIDEBAR_UPDATE_SETTINGS: &str = "sidebar.updateSettings";
+    pub const USAGE_SUMMARY: &str = "usage.summary";
 }
 
 pub mod channel {
@@ -194,6 +208,24 @@ mod tests {
         assert_eq!(method::SIDEBAR_SETTINGS, "sidebar.settings");
         assert_eq!(method::SIDEBAR_UPDATE_SETTINGS, "sidebar.updateSettings");
         assert_eq!(channel::SIDEBAR_SETTINGS, "sidebar.settings");
+    }
+
+    #[test]
+    fn durable_store_methods_keep_the_existing_names() {
+        assert_eq!(method::SEARCH_SESSIONS, "search.sessions");
+        assert_eq!(method::PROJECTS_PIN, "projects.pin");
+        assert_eq!(method::PROJECTS_RENAME, "projects.rename");
+        assert_eq!(method::PROJECTS_REMOVE, "projects.remove");
+        assert_eq!(method::THREAD_PIN, "thread.pin");
+        assert_eq!(method::THREAD_SETTLE, "thread.settle");
+        assert_eq!(method::THREAD_UNSETTLE, "thread.unsettle");
+        assert_eq!(method::THREAD_SNOOZE, "thread.snooze");
+        assert_eq!(method::THREAD_UNSNOOZE, "thread.unsnooze");
+        assert_eq!(method::THREAD_SET_KEEP_ACTIVE, "thread.setKeepActive");
+        assert_eq!(method::THREAD_DELETE, "thread.delete");
+        assert_eq!(method::THREAD_CLOSE, "thread.close");
+        assert_eq!(method::THREAD_CHECKPOINTS, "thread.checkpoints");
+        assert_eq!(method::USAGE_SUMMARY, "usage.summary");
     }
 
     #[test]

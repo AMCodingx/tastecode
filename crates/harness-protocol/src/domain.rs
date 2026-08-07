@@ -1151,6 +1151,44 @@ pub struct ThreadHistoryResult {
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct UsageLimit {
+    pub label: String,
+    pub used_percent: f64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub resets_at: Option<f64>,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UsageSummaryResult {
+    pub session: Usage,
+    pub today: Usage,
+    pub limits: Vec<UsageLimit>,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ThreadLifecycleResult {
+    pub lifecycle: ThreadLifecycle,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CheckpointSummary {
+    pub id: u64,
+    pub seq: u64,
+    pub label: String,
+    pub created_at: f64,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ThreadCheckpointsResult {
+    pub checkpoints: Vec<CheckpointSummary>,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct QueuedTurn {
     pub id: String,
     pub text: String,
@@ -1528,5 +1566,64 @@ mod tests {
         }))
         .unwrap();
         assert_eq!(oauth.server_id, "docs");
+    }
+
+    #[test]
+    fn durable_server_results_match_the_typescript_wire_shape() {
+        let lifecycle = ThreadLifecycleResult {
+            lifecycle: ThreadLifecycle::Active {
+                keep_active: true,
+                woke_at: Some(42),
+            },
+        };
+        assert_eq!(
+            serde_json::to_value(lifecycle).unwrap(),
+            json!({
+                "lifecycle": { "state": "active", "keepActive": true, "wokeAt": 42 }
+            })
+        );
+
+        let checkpoints = ThreadCheckpointsResult {
+            checkpoints: vec![CheckpointSummary {
+                id: 1,
+                seq: 7,
+                label: "After setup".into(),
+                created_at: 100.0,
+            }],
+        };
+        assert_eq!(
+            serde_json::to_value(checkpoints).unwrap(),
+            json!({
+                "checkpoints": [{
+                    "id": 1,
+                    "seq": 7,
+                    "label": "After setup",
+                    "createdAt": 100.0
+                }]
+            })
+        );
+
+        let summary = UsageSummaryResult {
+            session: Usage {
+                input_tokens: 1.0,
+                cached_input_tokens: 2.0,
+                output_tokens: 3.0,
+                reasoning_tokens: 4.0,
+                total_tokens: 10.0,
+                cost_usd: None,
+                context_window: None,
+            },
+            today: Usage {
+                input_tokens: 0.0,
+                cached_input_tokens: 0.0,
+                output_tokens: 0.0,
+                reasoning_tokens: 0.0,
+                total_tokens: 0.0,
+                cost_usd: None,
+                context_window: None,
+            },
+            limits: Vec::new(),
+        };
+        assert_eq!(serde_json::to_value(summary).unwrap()["limits"], json!([]));
     }
 }
