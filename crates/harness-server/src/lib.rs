@@ -7,6 +7,7 @@
 mod access;
 mod agents;
 mod inbox;
+mod mcp_config;
 mod push;
 mod router;
 
@@ -42,14 +43,17 @@ pub struct ServerConfig {
     pub address: SocketAddr,
     pub access_token: Option<String>,
     pub store_path: PathBuf,
+    pub mcp_config_path: PathBuf,
 }
 
 impl ServerConfig {
     pub fn loopback(store_path: impl Into<PathBuf>) -> Self {
+        let store_path = store_path.into();
         Self {
             address: SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), DEFAULT_PORT),
             access_token: None,
-            store_path: store_path.into(),
+            mcp_config_path: store_path.with_file_name("mcp.json"),
+            store_path,
         }
     }
 
@@ -67,10 +71,15 @@ impl ServerConfig {
             })
             .transpose()?
             .unwrap_or(DEFAULT_PORT);
+        let config_root = std::env::var_os("HARNESS_CONFIG_DIR")
+            .map(PathBuf::from)
+            .or_else(|| dirs::home_dir().map(|home| home.join(".personalharness")))
+            .ok_or(ServerError::MissingConfigDirectory)?;
         Ok(Self {
             address: SocketAddr::new(host, port),
             access_token: std::env::var("HARNESS_ACCESS_TOKEN").ok(),
             store_path: store_location()?,
+            mcp_config_path: config_root.join("mcp.json"),
         })
     }
 }
@@ -89,6 +98,8 @@ pub enum ServerError {
     InvalidPort(String),
     #[error("the operating system did not provide a per-user data directory")]
     MissingDataDirectory,
+    #[error("the operating system did not provide a home directory for MCP configuration")]
+    MissingConfigDirectory,
     #[error("the Harness server thread panicked")]
     ThreadPanicked,
 }
@@ -163,6 +174,7 @@ fn start_with_runtimes(
     let state = Arc::new(ServerState {
         store: Mutex::new(store),
         inbox: Mutex::new(inbox::InboxProjections::default()),
+        mcp_config: Mutex::new(mcp_config::McpConfigStore::new(config.mcp_config_path)),
         push,
         terminals,
         agents: agents::AgentManager::new(runtimes),
@@ -210,6 +222,7 @@ pub fn store_location() -> Result<PathBuf, ServerError> {
 pub(crate) struct ServerState {
     store: Mutex<Store>,
     inbox: Mutex<inbox::InboxProjections>,
+    mcp_config: Mutex<mcp_config::McpConfigStore>,
     push: Arc<PushBus>,
     terminals: TerminalManager,
     agents: agents::AgentManager,

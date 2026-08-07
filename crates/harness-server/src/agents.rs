@@ -5,9 +5,10 @@ use harness_agent::{
     StartOptions, TurnOptions,
 };
 use harness_protocol::{
-    Account, ApprovalDecision, AuthEventPush, AuthStartLoginResult, DomainEvent, McpListResult,
-    Model, ProviderId, QueuedTurn, SendTurnResult, SkillsListResult, Thread, ThreadEventPush,
-    ThreadInboxStatus, ThreadLifecyclePush, ThreadQueuePush, ThreadQueueResult, channel,
+    Account, ApprovalDecision, AuthEventPush, AuthStartLoginResult, DomainEvent, McpAuth,
+    McpListResult, McpServer, McpServerScope, McpStartupStatus, Model, ProviderId, QueuedTurn,
+    SendTurnResult, SkillsListResult, Thread, ThreadEventPush, ThreadInboxStatus,
+    ThreadLifecyclePush, ThreadQueuePush, ThreadQueueResult, channel,
 };
 use harness_store::{NewCheckpoint, NewThread};
 use harness_workspace::Worktree;
@@ -213,10 +214,54 @@ impl AgentManager {
         &self,
         state: &Arc<ServerState>,
         provider: ProviderId,
+        project_path: &str,
     ) -> Result<McpListResult, String> {
-        self.control(state, provider, None)?
+        let mut inventory = self
+            .control(state, provider, None)?
             .list_mcp_servers()
-            .map_err(|error| error.to_string())
+            .map_err(|error| error.to_string())?;
+        let configured = lock(&state.mcp_config)
+            .list(provider, project_path)
+            .map_err(|error| error.to_string())?;
+        let mut positions = inventory
+            .servers
+            .iter()
+            .enumerate()
+            .map(|(index, server)| (server.id.clone(), index))
+            .collect::<HashMap<_, _>>();
+        for config in configured {
+            let index = positions.get(&config.id).copied().unwrap_or_else(|| {
+                inventory.servers.push(McpServer {
+                    id: config.id.clone(),
+                    display_name: None,
+                    description: None,
+                    version: None,
+                    scope: McpServerScope::Project,
+                    enabled: config.enabled,
+                    transport: None,
+                    auth: McpAuth::NotRequired,
+                    startup: McpStartupStatus::Stopped,
+                    tools: Vec::new(),
+                    resources: Vec::new(),
+                    resource_templates: Vec::new(),
+                });
+                let index = inventory.servers.len() - 1;
+                positions.insert(config.id.clone(), index);
+                index
+            });
+            let server = &mut inventory.servers[index];
+            server.scope = McpServerScope::Project;
+            server.enabled = config.enabled;
+            if config.enabled {
+                server.transport = config.transport;
+                if config.display_name.is_some() {
+                    server.display_name = config.display_name;
+                }
+            } else {
+                server.startup = McpStartupStatus::Stopped;
+            }
+        }
+        Ok(inventory)
     }
 
     pub(crate) fn list_skills(

@@ -34,6 +34,7 @@ fn start_test_server(
     let server = start(ServerConfig {
         address: SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 0),
         access_token: access_token.map(str::to_owned),
+        mcp_config_path: directory.path().join("mcp.json"),
         store_path,
     })
     .unwrap();
@@ -59,6 +60,7 @@ fn start_test_server_with_runtimes_and_seed(
         ServerConfig {
             address: SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 0),
             access_token: None,
+            mcp_config_path: directory.path().join("mcp.json"),
             store_path,
         },
         runtimes,
@@ -626,7 +628,7 @@ fn live_mcp_and_skills_routes_share_control_and_push_invalidations() {
     let registry = Arc::new(FakeRuntimes {
         runtime: Arc::clone(&runtime),
     });
-    let (_directory, server) = start_test_server_with_runtimes(registry);
+    let (directory, server) = start_test_server_with_runtimes(registry);
     let mut socket = connect_native(&server, "");
     assert_welcome(&mut socket);
 
@@ -639,6 +641,117 @@ fn live_mcp_and_skills_routes_share_control_and_push_invalidations() {
     let mcp = read_value(&mut socket);
     assert_eq!(mcp["result"]["servers"][0]["id"], "docs");
     assert_eq!(mcp["result"]["capabilities"]["startOAuth"], true);
+
+    send_request(
+        &mut socket,
+        "disable-docs",
+        "mcp.add",
+        json!({
+            "provider": "codex",
+            "projectPath": "/repo",
+            "server": { "id": "docs", "enabled": false }
+        }),
+    );
+    let (pushes, disabled) = read_until_response(&mut socket, "disable-docs");
+    assert_eq!(pushes[0]["channel"], "mcp.changed");
+    assert_eq!(pushes[0]["data"]["projectPath"], "/repo");
+    assert_eq!(disabled["result"], json!({}));
+    send_request(
+        &mut socket,
+        "mcp-disabled",
+        "mcp.list",
+        json!({ "provider": "codex", "projectPath": "/repo" }),
+    );
+    let disabled_inventory = read_value(&mut socket);
+    let docs = &disabled_inventory["result"]["servers"][0];
+    assert_eq!(docs["scope"], "project");
+    assert_eq!(docs["enabled"], false);
+    assert_eq!(docs["startup"]["state"], "stopped");
+
+    let custom_server = json!({
+        "id": "custom",
+        "enabled": true,
+        "displayName": "Custom",
+        "transport": { "type": "http", "url": "https://example.com/mcp" }
+    });
+    send_request(
+        &mut socket,
+        "add-custom",
+        "mcp.add",
+        json!({
+            "provider": "codex",
+            "projectPath": "/repo",
+            "server": custom_server
+        }),
+    );
+    let _ = read_until_response(&mut socket, "add-custom");
+    send_request(
+        &mut socket,
+        "duplicate",
+        "mcp.add",
+        json!({
+            "provider": "codex",
+            "projectPath": "/repo",
+            "server": custom_server
+        }),
+    );
+    assert_eq!(read_value(&mut socket)["error"]["code"], "internal");
+    send_request(
+        &mut socket,
+        "bad-server",
+        "mcp.add",
+        json!({
+            "provider": "codex",
+            "projectPath": "/repo",
+            "server": { "id": "missing-transport", "enabled": true }
+        }),
+    );
+    assert_eq!(read_value(&mut socket)["error"]["code"], "bad_request");
+    send_request(
+        &mut socket,
+        "update-custom",
+        "mcp.update",
+        json!({
+            "provider": "codex",
+            "projectPath": "/repo",
+            "server": {
+                "id": "custom",
+                "enabled": true,
+                "displayName": "Updated",
+                "transport": { "type": "http", "url": "https://example.com/v2" }
+            }
+        }),
+    );
+    let _ = read_until_response(&mut socket, "update-custom");
+    send_request(
+        &mut socket,
+        "mcp-updated",
+        "mcp.list",
+        json!({ "provider": "codex", "projectPath": "/repo" }),
+    );
+    let updated = read_value(&mut socket);
+    let custom = updated["result"]["servers"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|server| server["id"] == "custom")
+        .unwrap();
+    assert_eq!(custom["displayName"], "Updated");
+    assert_eq!(custom["transport"]["url"], "https://example.com/v2");
+    send_request(
+        &mut socket,
+        "remove-custom",
+        "mcp.remove",
+        json!({
+            "provider": "codex",
+            "projectPath": "/repo",
+            "serverId": "custom"
+        }),
+    );
+    let _ = read_until_response(&mut socket, "remove-custom");
+    let config = std::fs::read_to_string(directory.path().join("mcp.json")).unwrap();
+    assert!(config.contains("docs"));
+    assert!(!config.contains("custom"));
 
     send_request(
         &mut socket,

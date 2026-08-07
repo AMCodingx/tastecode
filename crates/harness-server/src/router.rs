@@ -189,9 +189,61 @@ pub(crate) fn route(
             encoded(
                 state
                     .agents
-                    .list_mcp_servers(state, params.provider)
+                    .list_mcp_servers(state, params.provider, &params.project_path)
                     .map_err(RouteError::internal)?,
             )
+        }
+        method::MCP_ADD => {
+            let params: McpMutationParams = decode(method_name, params)?;
+            require_non_empty(method_name, "projectPath", &params.project_path)?;
+            state
+                .mcp_config
+                .lock()
+                .map_err(|_| RouteError::internal("MCP config mutex poisoned"))?
+                .add(params.provider, &params.project_path, params.server)
+                .map_err(|error| mcp_config_error(method_name, error))?;
+            broadcast_provider_project(
+                state,
+                channel::MCP_CHANGED,
+                params.provider,
+                &params.project_path,
+            )?;
+            empty_result()
+        }
+        method::MCP_UPDATE => {
+            let params: McpMutationParams = decode(method_name, params)?;
+            require_non_empty(method_name, "projectPath", &params.project_path)?;
+            state
+                .mcp_config
+                .lock()
+                .map_err(|_| RouteError::internal("MCP config mutex poisoned"))?
+                .update(params.provider, &params.project_path, params.server)
+                .map_err(|error| mcp_config_error(method_name, error))?;
+            broadcast_provider_project(
+                state,
+                channel::MCP_CHANGED,
+                params.provider,
+                &params.project_path,
+            )?;
+            empty_result()
+        }
+        method::MCP_REMOVE => {
+            let params: McpRemoveParams = decode(method_name, params)?;
+            require_non_empty(method_name, "projectPath", &params.project_path)?;
+            require_non_empty(method_name, "serverId", &params.server_id)?;
+            state
+                .mcp_config
+                .lock()
+                .map_err(|_| RouteError::internal("MCP config mutex poisoned"))?
+                .remove(params.provider, &params.project_path, &params.server_id)
+                .map_err(|error| mcp_config_error(method_name, error))?;
+            broadcast_provider_project(
+                state,
+                channel::MCP_CHANGED,
+                params.provider,
+                &params.project_path,
+            )?;
+            empty_result()
         }
         method::SKILLS_LIST => {
             let params: ProviderProjectParams = decode(method_name, params)?;
@@ -901,6 +953,30 @@ fn exact_u64(value: f64) -> Option<u64> {
         .then_some(value as u64)
 }
 
+fn mcp_config_error(method: &str, error: crate::mcp_config::McpConfigError) -> RouteError {
+    match error {
+        crate::mcp_config::McpConfigError::InvalidServer(message) => {
+            RouteError::bad_params(method, message)
+        }
+        error => RouteError::internal(error),
+    }
+}
+
+fn broadcast_provider_project(
+    state: &ServerState,
+    channel_name: &str,
+    provider: ProviderId,
+    project_path: &str,
+) -> Result<(), RouteError> {
+    state
+        .push
+        .broadcast(
+            channel_name,
+            json!({ "provider": provider, "projectPath": project_path }),
+        )
+        .map_err(RouteError::internal)
+}
+
 fn broadcast_lifecycle(
     state: &ServerState,
     thread_id: &str,
@@ -1127,6 +1203,22 @@ struct AuthUseApiKeyParams {
 struct ProviderProjectParams {
     provider: ProviderId,
     project_path: String,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct McpMutationParams {
+    provider: ProviderId,
+    project_path: String,
+    server: harness_protocol::McpServerConfig,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct McpRemoveParams {
+    provider: ProviderId,
+    project_path: String,
+    server_id: String,
 }
 
 #[derive(Deserialize)]
