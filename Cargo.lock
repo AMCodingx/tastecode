@@ -2805,6 +2805,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "harness-adapter-cursor"
+version = "0.1.0"
+dependencies = [
+ "harness-agent",
+ "harness-proc",
+ "harness-protocol",
+ "serde",
+ "serde_json",
+ "uuid",
+]
+
+[[package]]
 name = "harness-agent"
 version = "0.1.0"
 dependencies = [
