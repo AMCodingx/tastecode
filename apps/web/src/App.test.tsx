@@ -1407,6 +1407,7 @@ describe('new chats', () => {
     })
 
     // Claude: the top carries over to 'high'; drop it to the bottom.
+    fireEvent.click(screen.getByRole('button', { name: 'Show Claude Code models' }))
     fireEvent.click(screen.getByRole('button', { name: 'Use Opus 5 through Claude Code' }))
     await waitFor(() => {
       expect(document.querySelector('.model-selector__effort-title')?.textContent).toBe(
@@ -1422,6 +1423,7 @@ describe('new chats', () => {
 
     // Returning to Codex restores the remembered Extra High — the old
     // carry-over translation of 'low' would land on Low here.
+    fireEvent.click(screen.getByRole('button', { name: 'Show Codex models' }))
     fireEvent.click(screen.getByRole('button', { name: 'Use GPT-5.6 Sol through Codex' }))
     await waitFor(() => {
       expect(document.querySelector('.model-selector__effort-title')?.textContent).toBe(
@@ -1430,6 +1432,7 @@ describe('new chats', () => {
     })
 
     // And Claude still remembers Low rather than inheriting the top again.
+    fireEvent.click(screen.getByRole('button', { name: 'Show Claude Code models' }))
     fireEvent.click(screen.getByRole('button', { name: 'Use Opus 5 through Claude Code' }))
     await waitFor(() => {
       expect(document.querySelector('.model-selector__effort-title')?.textContent).toBe(
