@@ -16,6 +16,27 @@
   user-select: text;
 }
 
+:where(svg.lucide, svg[width][height], svg[aria-hidden='true']) {
+  transform-origin: center;
+  transition: rotate var(--dur-fast) var(--ease-out);
+}
+
+@media (hover: hover) and (pointer: fine) and (prefers-reduced-motion: no-preference) {
+  :where(
+      button,
+      a,
+      summary,
+      [role='button'],
+      [role='menuitem'],
+      [role='tab'],
+      [role='switch']
+    ):hover
+    :where(svg.lucide, svg[width][height], svg[aria-hidden='true']),
+  :where(svg.lucide, svg[width][height], svg[aria-hidden='true']):hover {
+    rotate: 3deg;
+  }
+}
+
 .shell {
   display: grid;
   grid-template-rows: var(--titlebar-h) 1fr;
@@ -1317,7 +1338,9 @@
 }
 
 .provider-form__select > svg {
-  transition: transform var(--dur-fast) var(--ease-out);
+  transition:
+    transform var(--dur-fast) var(--ease-out),
+    rotate var(--dur-fast) var(--ease-out);
 }
 
 .provider-form__select > svg.is-open {
@@ -2263,17 +2286,22 @@
 
 .inbox-toolbar {
   display: grid;
-  gap: 7px;
-  padding: 12px 10px 10px;
+  gap: 5px;
+  padding: 10px 10px 9px;
   border-bottom: 1px solid var(--line);
 }
 
-.inbox-toolbar__primary,
+.inbox-toolbar__primary {
+  display: grid;
+  gap: 3px;
+}
+
 .inbox-toolbar__projects {
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;
   align-items: center;
-  gap: 6px;
+  gap: 5px;
+  margin-top: 1px;
 }
 
 .inbox-search {
@@ -2282,13 +2310,19 @@
   gap: 7px;
   min-width: 0;
   height: 32px;
-  padding: 0 8px;
+  padding: 0 9px;
   background: var(--chrome-recessed);
   border: 1px solid var(--chrome-border);
   border-radius: var(--r-md);
-  box-shadow: var(--chrome-inset-shadow);
+  box-shadow: none;
   color: var(--text-3);
-  transition: border-color var(--dur-fast) var(--ease-out);
+  transition:
+    border-color var(--dur-fast) var(--ease-out),
+    color var(--dur-fast) var(--ease-out);
+}
+
+.inbox-search:hover {
+  border-color: color-mix(in srgb, var(--text-3) 35%, var(--chrome-border));
 }
 
 .inbox-search:focus-within {
@@ -2329,36 +2363,61 @@
   color: var(--text);
 }
 
-.inbox-toolbar__new,
+.inbox-toolbar__new {
+  display: inline-flex;
+  align-items: center;
+  justify-content: flex-start;
+  gap: 8px;
+  width: 100%;
+  height: 34px;
+  padding: 0 8px;
+  background: transparent;
+  border: 0;
+  border-radius: var(--r-md);
+  box-shadow: none;
+  color: var(--text);
+  cursor: pointer;
+  font: inherit;
+  font-size: var(--t-md);
+  white-space: nowrap;
+  transition:
+    background var(--dur-fast) var(--ease-out),
+    color var(--dur-fast) var(--ease-out),
+    transform var(--dur-press) var(--ease-out);
+}
+
+.inbox-toolbar__new svg {
+  flex: none;
+  color: var(--text-2);
+}
+
 .inbox-toolbar__add {
   display: inline-flex;
   align-items: center;
   justify-content: center;
   gap: 6px;
-  height: 32px;
-  padding: 0 9px;
-  background: var(--chrome-raised);
+  height: 29px;
+  padding: 0 8px;
+  background: none;
   border: 1px solid var(--chrome-border);
   border-radius: var(--r-md);
-  box-shadow: var(--chrome-shadow);
-  color: var(--text-2);
+  box-shadow: none;
+  color: var(--text-3);
   cursor: pointer;
   font: inherit;
-  font-size: var(--t-sm);
+  font-size: var(--t-xs);
   white-space: nowrap;
 }
 
-.inbox-toolbar__add {
-  height: 29px;
-  padding-inline: 8px;
-  background: none;
-  box-shadow: none;
-  color: var(--text-3);
-  font-size: var(--t-xs);
+.inbox-toolbar__new:is(:hover, :focus-visible) {
+  background: var(--control-hover);
 }
 
-.inbox-toolbar__new:hover,
-.inbox-toolbar__add:hover {
+.inbox-toolbar__new:active {
+  transform: scale(0.985);
+}
+
+.inbox-toolbar__add:is(:hover, :focus-visible) {
   border-color: color-mix(in srgb, var(--text-3) 40%, var(--chrome-border));
   color: var(--text);
 }
@@ -2390,7 +2449,7 @@
   color: var(--text-2);
   font: inherit;
   font-size: var(--t-sm);
-  box-shadow: var(--chrome-inset-shadow);
+  box-shadow: none;
 }
 
 /* Native selects keep the OS dropdown; only the closed control is ours. */
@@ -2689,7 +2748,9 @@
 }
 
 .inbox-shelf__toggle svg {
-  transition: transform var(--dur-fast) var(--ease-out);
+  transition:
+    transform var(--dur-fast) var(--ease-out),
+    rotate var(--dur-fast) var(--ease-out);
 }
 
 .inbox-shelf__toggle[aria-expanded='true'] svg {
@@ -3587,7 +3648,9 @@
 .activity__summary svg {
   width: 15px;
   height: 15px;
-  transition: transform var(--dur-fast) var(--ease-out);
+  transition:
+    transform var(--dur-fast) var(--ease-out),
+    rotate var(--dur-fast) var(--ease-out);
 }
 
 .activity[open] > .activity__summary svg {
@@ -4463,7 +4526,9 @@
 }
 
 .diff__more svg {
-  transition: transform var(--dur-fast) var(--ease-out);
+  transition:
+    transform var(--dur-fast) var(--ease-out),
+    rotate var(--dur-fast) var(--ease-out);
 }
 
 .diff__more svg.is-open {
@@ -5632,17 +5697,34 @@
     transform var(--dur-press) var(--ease-out);
 }
 
+.tools :is(.composer__add, .composer__permission, .composer__design) {
+  background: var(--composer-action-bg);
+  border-color: var(--composer-action-border);
+  box-shadow: var(--composer-action-shadow);
+}
+
 /* Scoped under .tools so these outrank the later generic .menutrigger
    radius/padding, which ties on bare class specificity and would win. */
 .tools .composer__add {
-  width: 32px;
-  height: 32px;
+  width: 34px;
+  height: 34px;
   justify-content: center;
   padding: 0;
   border-radius: 10px;
 }
 
-.tools :is(.composer__permission, .composer__design, .menutrigger--model-selector) {
+.tools :is(.composer__permission, .composer__design) {
+  min-height: 34px;
+  padding: 5px 12px;
+  border-radius: 10px;
+}
+
+.tools .composer__permission .tool,
+.tools .composer__design {
+  font-size: var(--t-md);
+}
+
+.tools .menutrigger--model-selector {
   min-height: 32px;
   padding: 5px 13px;
   border-radius: 10px;
@@ -5670,6 +5752,10 @@
   ):active:not(:disabled) {
   box-shadow: var(--composer-control-shadow-active);
   transform: scale(0.97);
+}
+
+.tools :is(.composer__add, .composer__permission, .composer__design):active:not(:disabled) {
+  box-shadow: var(--composer-action-shadow-active);
 }
 
 .tools .composer__design.is-active {
@@ -6187,7 +6273,9 @@
 
 .model-selector__fast-icon svg {
   fill: transparent;
-  transition: fill var(--dur-fast) var(--ease-out);
+  transition:
+    fill var(--dur-fast) var(--ease-out),
+    rotate var(--dur-fast) var(--ease-out);
 }
 
 .model-selector__fast.is-on .model-selector__fast-icon svg {
@@ -6501,6 +6589,12 @@
     background: var(--composer-control-bg-hover);
     border-color: var(--composer-control-border-hover);
     box-shadow: var(--composer-control-shadow-hover);
+  }
+
+  .tools :is(.composer__add, .composer__permission, .composer__design):hover:not(:disabled) {
+    background: var(--composer-action-bg-hover);
+    border-color: var(--composer-action-border-hover);
+    box-shadow: var(--composer-action-shadow-hover);
   }
 
   .tools .composer__design:hover:not(:disabled) {
