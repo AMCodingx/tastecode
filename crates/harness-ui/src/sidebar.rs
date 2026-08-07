@@ -7,7 +7,7 @@ use chrono::{DateTime, Datelike, Local};
 use gpui::{
     Animation, AnimationExt, AnyElement, App, Background, BoxShadow, Entity, FocusHandle,
     FontWeight, Hsla, KeyDownEvent, Pixels, Point, SharedString, Window, div, linear_color_stop,
-    linear_gradient, point, prelude::*, relative, svg,
+    linear_gradient, point, prelude::*, relative,
 };
 use gpui_component::Sizable as _;
 use gpui_component::input::{Input, InputState};
@@ -1215,10 +1215,6 @@ fn sidebar_body(
         })
 }
 
-fn icon(path: &'static str, size: f32) -> impl IntoElement {
-    svg().path(path).size(px(size))
-}
-
 fn nav_item(
     id: &'static str,
     icon_path: &'static str,
@@ -1364,106 +1360,124 @@ fn classic_project(
     };
     let drawer_height = classic_project_drawer_height(visible.len(), has_more);
     let drawer_open = expanded && !sessions.is_empty();
-    let header = if row_state.renaming_project == Some(project.path.as_str()) {
-        div()
-            .w_full()
-            .flex()
-            .items_center()
-            .child(sidebar_inline_rename(row_state.rename_input, theme, false))
-            .into_any_element()
-    } else {
-        div()
-            .group("classic-project")
-            .w_full()
-            .flex()
-            .items_center()
-            .gap(px(1.0))
-            .child(
-                div()
-                    .id(SharedString::from(format!(
-                        "classic-project:{}",
-                        project.path
-                    )))
-                    .min_w(px(0.0))
-                    .flex_1()
-                    .flex()
-                    .items_center()
-                    .gap(px(8.0))
-                    .px(px(8.0))
-                    .py(px(5.0))
-                    .rounded(px(RADIUS_MD))
-                    .text_size(px(13.5))
-                    .text_color(theme.text.hsla())
-                    .cursor_pointer()
-                    .hover(move |style| {
-                        style.bg(chrome_raised(theme)).shadow(chrome_shadows(theme))
-                    })
-                    .on_click({
-                        let toggle = actions.toggle_project.clone();
-                        let open_menu = actions.open_menu.clone();
-                        move |event, _window, cx| {
-                            if event.is_right_click() {
-                                cx.stop_propagation();
-                                open_menu(
-                                    SidebarMenuRequest::Project(menu_path.clone()),
-                                    event.position(),
-                                    cx,
-                                );
-                            } else if event.standard_click() {
-                                toggle(toggle_path.clone(), cx);
+    let header =
+        if row_state.renaming_project == Some(project.path.as_str()) {
+            div()
+                .w_full()
+                .flex()
+                .items_center()
+                .child(sidebar_inline_rename(row_state.rename_input, theme, false))
+                .into_any_element()
+        } else {
+            div()
+                .group("classic-project")
+                .w_full()
+                .flex()
+                .items_center()
+                .gap(px(1.0))
+                .child(
+                    div()
+                        .id(SharedString::from(format!(
+                            "classic-project:{}",
+                            project.path
+                        )))
+                        .group("classic-project-main-hover")
+                        .min_w(px(0.0))
+                        .flex_1()
+                        .flex()
+                        .items_center()
+                        .gap(px(8.0))
+                        .px(px(8.0))
+                        .py(px(5.0))
+                        .rounded(px(RADIUS_MD))
+                        .text_size(px(13.5))
+                        .text_color(theme.text.hsla())
+                        .cursor_pointer()
+                        .hover(move |style| {
+                            style.bg(chrome_raised(theme)).shadow(chrome_shadows(theme))
+                        })
+                        .on_click({
+                            let toggle = actions.toggle_project.clone();
+                            let open_menu = actions.open_menu.clone();
+                            move |event, _window, cx| {
+                                if event.is_right_click() {
+                                    cx.stop_propagation();
+                                    open_menu(
+                                        SidebarMenuRequest::Project(menu_path.clone()),
+                                        event.position(),
+                                        cx,
+                                    );
+                                } else if event.standard_click() {
+                                    toggle(toggle_path.clone(), cx);
+                                }
                             }
-                        }
-                    })
-                    .child(
-                        div()
-                            .flex_none()
-                            .text_color(theme.text_3.hsla())
-                            .child(icon("icons/folder.svg", 12.0)),
-                    )
-                    .child(
-                        div()
-                            .min_w(px(0.0))
-                            .flex_1()
-                            .truncate()
-                            .child(project.name.clone()),
-                    ),
-            )
-            .child(classic_project_menu_button(
-                format!("project-menu:{}", project.path).into(),
-                SidebarMenuRequest::Project(menu_button_path),
-                theme,
-                actions.open_menu.clone(),
-            ))
-            .child(
-                div()
-                    .id(SharedString::from(format!("new-chat:{}", project.path)))
-                    .size(px(22.0))
-                    .flex_none()
-                    .flex()
-                    .items_center()
-                    .justify_center()
-                    .rounded(px(RADIUS_SM))
-                    .text_color(theme.text_3.hsla())
-                    .opacity(0.0)
-                    .group_hover("classic-project", |button| button.opacity(1.0))
-                    .cursor_pointer()
-                    .hover(move |style| {
-                        style
-                            .bg(theme.surface_2.hsla())
-                            .text_color(theme.text.hsla())
-                    })
-                    .on_click({
-                        let new_chat = actions.new_chat_in_project.clone();
-                        move |_event, _window, cx| {
-                            cx.stop_propagation();
-                            new_chat(new_chat_path.clone(), cx);
-                        }
-                    })
-                    .active(|style| style.inset(px(0.66)))
-                    .child(icon("icons/plus.svg", 13.0)),
-            )
-            .into_any_element()
-    };
+                        })
+                        .child(div().flex_none().text_color(theme.text_3.hsla()).child(
+                            motion_icon(
+                                SharedString::from(format!(
+                                    "classic-project-icon:{}",
+                                    project.path
+                                )),
+                                "icons/folder.svg",
+                                12.0,
+                                "classic-project-main-hover",
+                                theme,
+                            ),
+                        ))
+                        .child(
+                            div()
+                                .min_w(px(0.0))
+                                .flex_1()
+                                .truncate()
+                                .child(project.name.clone()),
+                        ),
+                )
+                .child(classic_project_menu_button(
+                    format!("project-menu:{}", project.path).into(),
+                    SidebarMenuRequest::Project(menu_button_path),
+                    theme,
+                    actions.open_menu.clone(),
+                ))
+                .child(
+                    div()
+                        .id(SharedString::from(format!("new-chat:{}", project.path)))
+                        .group("classic-project-new-chat-hover")
+                        .size(px(22.0))
+                        .flex_none()
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .rounded(px(RADIUS_SM))
+                        .text_color(theme.text_3.hsla())
+                        .opacity(0.0)
+                        .group_hover("classic-project", |button| button.opacity(1.0))
+                        .cursor_pointer()
+                        .hover(move |style| {
+                            style
+                                .bg(theme.surface_2.hsla())
+                                .text_color(theme.text.hsla())
+                        })
+                        .on_click({
+                            let new_chat = actions.new_chat_in_project.clone();
+                            move |_event, _window, cx| {
+                                cx.stop_propagation();
+                                new_chat(new_chat_path.clone(), cx);
+                            }
+                        })
+                        .active(|style| style.inset(px(0.66)))
+                        .child(motion_icon(
+                            SharedString::from(format!(
+                                "classic-project-new-chat-icon:{}",
+                                project.path
+                            )),
+                            "icons/plus.svg",
+                            13.0,
+                            "classic-project-new-chat-hover",
+                            theme,
+                        )),
+                )
+                .into_any_element()
+        };
 
     let mut drawer_rows = visible
         .iter()
