@@ -6,7 +6,7 @@ use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::PathBuf;
 
-const PREFERENCES_VERSION: u8 = 4;
+const PREFERENCES_VERSION: u8 = 5;
 const PREFERENCES_FILE: &str = "gpui-settings.json";
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -39,6 +39,7 @@ pub(crate) struct NativePreferences {
     pub(crate) accent: Accent,
     pub(crate) backdrop: Backdrop,
     pub(crate) sidebar_glass: u8,
+    pub(crate) rail_width: u16,
     pub(crate) hidden_models: HashSet<String>,
     pub(crate) selected_model_key: Option<String>,
     pub(crate) model_by_source: HashMap<String, SourceSelection>,
@@ -56,6 +57,7 @@ impl Default for NativePreferences {
             accent: Accent::Neutral,
             backdrop: Backdrop::Default,
             sidebar_glass: 35,
+            rail_width: 248,
             hidden_models: HashSet::new(),
             selected_model_key: None,
             model_by_source: HashMap::new(),
@@ -95,8 +97,12 @@ impl NativePreferences {
         if preferences.version < 4 {
             preferences.sidebar_glass = 35;
         }
+        if preferences.version < 5 {
+            preferences.rail_width = 248;
+        }
         preferences.version = PREFERENCES_VERSION;
         preferences.sidebar_glass = preferences.sidebar_glass.min(60);
+        preferences.rail_width = preferences.rail_width.clamp(177, 420);
         Ok(preferences)
     }
 
@@ -136,6 +142,7 @@ mod tests {
         assert_eq!(preferences.font, FontPreference::Geist);
         assert_eq!(preferences.accent, Accent::Neutral);
         assert_eq!(preferences.sidebar_glass, 35);
+        assert_eq!(preferences.rail_width, 248);
         assert!(preferences.hidden_models.is_empty());
         assert_eq!(preferences.selected_model_key, None);
         assert!(preferences.model_by_source.is_empty());
@@ -150,6 +157,7 @@ mod tests {
             accent: Accent::Lavender,
             backdrop: Backdrop::Plum,
             sidebar_glass: 35,
+            rail_width: 312,
             ..NativePreferences::default()
         };
         preferences.hidden_models.insert("codex:gpt-5".into());

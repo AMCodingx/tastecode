@@ -1,5 +1,5 @@
 use crate::shortcuts::{NEW_CHAT, NEW_PROJECT, SETTINGS, label as shortcut_label};
-use crate::theme::{RADIUS_MD, RAIL_WIDTH, Theme};
+use crate::theme::{RADIUS_MD, Theme};
 use crate::zoom::px;
 use chrono::{DateTime, Datelike, Local};
 use gpui::{
@@ -92,6 +92,7 @@ pub(crate) struct SidebarProps<'a> {
     pub(crate) usage_limits: &'a [UsageLimit],
     pub(crate) panic_stopping: bool,
     pub(crate) glass: u8,
+    pub(crate) width: f32,
 }
 
 pub fn sidebar(props: SidebarProps<'_>, actions: SidebarActions) -> impl IntoElement {
@@ -121,10 +122,11 @@ pub fn sidebar(props: SidebarProps<'_>, actions: SidebarActions) -> impl IntoEle
         usage_limits,
         panic_stopping,
         glass,
+        width,
     } = props;
     div()
         .relative()
-        .w(px(RAIL_WIDTH))
+        .w(px(width))
         .h_full()
         .flex_none()
         .flex()

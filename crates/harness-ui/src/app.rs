@@ -29,9 +29,9 @@ use anyhow::Result;
 use command_palette::{CommandPaletteState, CommandScope};
 use gpui::{
     Animation, AnimationExt, App, Application, Bounds, Context, Entity, FocusHandle, Focusable,
-    FontWeight, KeyDownEvent, MouseButton, PathPromptOptions, Render, TitlebarOptions, Window,
-    WindowAppearance, WindowBackgroundAppearance, WindowBounds, WindowOptions, div, point,
-    prelude::*, size, svg,
+    FontWeight, KeyDownEvent, MouseButton, MouseDownEvent, MouseMoveEvent, PathPromptOptions,
+    Pixels, Render, TitlebarOptions, Window, WindowAppearance, WindowBackgroundAppearance,
+    WindowBounds, WindowOptions, div, point, prelude::*, size, svg,
 };
 use gpui_component::Root;
 use gpui_component::input::{InputEvent, InputState};
@@ -49,6 +49,15 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 const APP_WIDTH: f32 = 1180.0;
 const APP_HEIGHT: f32 = 820.0;
 const DESIGN_BRIEF_ATTACHMENT: &str = "personal-harness://design-brief-v1";
+const MIN_RAIL_PREVIEW_WIDTH: f32 = 148.0;
+const COLLAPSE_RAIL_WIDTH: f32 = 176.0;
+const MAX_RAIL_WIDTH: f32 = 420.0;
+
+#[derive(Clone, Copy)]
+struct SidebarResizeDrag {
+    start_x: Pixels,
+    start_width: f32,
+}
 
 pub fn run() -> Result<()> {
     Application::new()
@@ -86,6 +95,9 @@ struct HarnessApp {
     theme: Theme,
     sidebar_collapsed: bool,
     sidebar_transition: u64,
+    sidebar_width: f32,
+    sidebar_resize_drag: Option<SidebarResizeDrag>,
+    sidebar_resize_focus: FocusHandle,
     state: ClientState,
     chat: Entity<ChatView>,
     selected_thread_id: Option<String>,
@@ -162,6 +174,7 @@ impl HarnessApp {
                 NativePreferences::default()
             }
         };
+        let sidebar_width = f32::from(preferences.rail_width);
         let system_theme_mode = theme_mode_for_appearance(window.appearance());
         let mode = match preferences.theme {
             ThemePreference::System => system_theme_mode,
@@ -526,6 +539,9 @@ impl HarnessApp {
             theme,
             sidebar_collapsed: false,
             sidebar_transition: 0,
+            sidebar_width,
+            sidebar_resize_drag: None,
+            sidebar_resize_focus: cx.focus_handle(),
             state,
             chat,
             selected_thread_id: None,
@@ -1593,7 +1609,6 @@ impl HarnessApp {
 
     fn titlebar(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = self.theme;
-        let collapsed = self.sidebar_collapsed;
 
         div()
             .h(px(TITLEBAR_HEIGHT))
@@ -1613,11 +1628,11 @@ impl HarnessApp {
             .child(
                 div()
                     .id("toggle-sidebar")
-                    .size(px(30.0))
+                    .size(px(22.0))
                     .flex()
                     .items_center()
                     .justify_center()
-                    .rounded(px(8.0))
+                    .rounded(px(3.0))
                     .text_color(theme.titlebar_symbol.hsla())
                     .opacity(0.78)
                     .cursor_pointer()
@@ -1637,9 +1652,69 @@ impl HarnessApp {
                     .text_size(px(12.5))
                     .font_weight(FontWeight::MEDIUM)
                     .text_color(theme.titlebar_symbol.hsla())
-                    .opacity(if collapsed { 0.62 } else { 0.78 })
+                    .opacity(0.78)
                     .child("Personal Harness"),
             )
+    }
+
+    fn begin_sidebar_resize(&mut self, event: &MouseDownEvent, cx: &mut Context<Self>) {
+        self.sidebar_resize_drag = Some(SidebarResizeDrag {
+            start_x: event.position.x,
+            start_width: self.sidebar_width,
+        });
+        cx.stop_propagation();
+    }
+
+    fn update_sidebar_resize(&mut self, event: &MouseMoveEvent, cx: &mut Context<Self>) {
+        let Some(drag) = self.sidebar_resize_drag else {
+            return;
+        };
+        if !event.dragging() {
+            self.sidebar_resize_drag = None;
+            return;
+        }
+        let delta = f32::from(event.position.x - drag.start_x);
+        let next = clamp_rail_width(drag.start_width + delta);
+        if (self.sidebar_width - next).abs() >= f32::EPSILON {
+            self.sidebar_width = next;
+            cx.notify();
+        }
+    }
+
+    fn finish_sidebar_resize(&mut self, cx: &mut Context<Self>) {
+        let Some(drag) = self.sidebar_resize_drag.take() else {
+            return;
+        };
+        if self.sidebar_width <= COLLAPSE_RAIL_WIDTH {
+            self.sidebar_width = drag.start_width;
+            self.sidebar_collapsed = true;
+            self.sidebar_transition = self.sidebar_transition.wrapping_add(1);
+        } else {
+            self.preferences.rail_width = self.sidebar_width.round() as u16;
+            self.persist_native_preferences();
+        }
+        cx.notify();
+    }
+
+    fn resize_sidebar_with_keyboard(&mut self, event: &KeyDownEvent, cx: &mut Context<Self>) {
+        let direction = if event.keystroke.key.eq_ignore_ascii_case("arrowleft") {
+            -8.0
+        } else if event.keystroke.key.eq_ignore_ascii_case("arrowright") {
+            8.0
+        } else {
+            return;
+        };
+        cx.stop_propagation();
+        let next = clamp_rail_width(self.sidebar_width + direction);
+        if next <= COLLAPSE_RAIL_WIDTH {
+            self.sidebar_collapsed = true;
+            self.sidebar_transition = self.sidebar_transition.wrapping_add(1);
+        } else {
+            self.sidebar_width = next;
+            self.preferences.rail_width = next.round() as u16;
+            self.persist_native_preferences();
+        }
+        cx.notify();
     }
 
     fn settings_titlebar(&self) -> impl IntoElement {
@@ -1737,32 +1812,71 @@ impl Render for HarnessApp {
                 usage_limits,
                 panic_stopping: self.stage_controls.panic_stopping(),
                 glass: self.preferences.sidebar_glass,
+                width: self.sidebar_width,
             },
             sidebar_actions,
         );
         let rail_slot = div()
             .id("rail-slot")
+            .relative()
             .h_full()
             .flex_none()
             .overflow_hidden()
-            .child(rail);
+            .child(rail)
+            .when(!self.sidebar_collapsed, |slot| {
+                let focused = self.sidebar_resize_focus.is_focused(window);
+                slot.child(
+                    div()
+                        .id("rail-resize")
+                        .absolute()
+                        .top_0()
+                        .right_0()
+                        .h_full()
+                        .w(px(6.0))
+                        .group("rail-resize")
+                        .cursor_ew_resize()
+                        .track_focus(&self.sidebar_resize_focus)
+                        .tab_index(0)
+                        .on_key_down(cx.listener(|this, event, _window, cx| {
+                            this.resize_sidebar_with_keyboard(event, cx);
+                        }))
+                        .on_mouse_down(
+                            MouseButton::Left,
+                            cx.listener(|this, event, _window, cx| {
+                                this.begin_sidebar_resize(event, cx);
+                            }),
+                        )
+                        .child(
+                            div()
+                                .absolute()
+                                .top_0()
+                                .right(px(2.0))
+                                .h_full()
+                                .w(px(1.0))
+                                .bg(self.theme.text_3.hsla())
+                                .opacity(if focused { 0.72 } else { 0.0 })
+                                .group_hover("rail-resize", |line| line.opacity(0.72)),
+                        ),
+                )
+            });
         let rail_slot = if self.sidebar_transition == 0 {
             rail_slot
                 .w(px(if self.sidebar_collapsed {
                     0.0
                 } else {
-                    crate::RAIL_WIDTH
+                    self.sidebar_width
                 }))
                 .into_any_element()
         } else {
             let collapsed = self.sidebar_collapsed;
+            let sidebar_width = self.sidebar_width;
             rail_slot
                 .with_animation(
                     ("rail-transition", self.sidebar_transition),
                     Animation::new(self.theme.motion.slow).with_easing(crate::theme::web_ease_out),
                     move |slot, delta| {
                         let visible = if collapsed { 1.0 - delta } else { delta };
-                        slot.w(px(crate::RAIL_WIDTH * visible))
+                        slot.w(px(sidebar_width * visible))
                     },
                 )
                 .into_any_element()
@@ -1805,6 +1919,15 @@ impl Render for HarnessApp {
             .text_size(px(13.5))
             .text_color(self.theme.text.hsla())
             .bg(self.theme.background.hsla())
+            .on_mouse_move(cx.listener(|this, event, _window, cx| {
+                this.update_sidebar_resize(event, cx);
+            }))
+            .on_mouse_up(
+                MouseButton::Left,
+                cx.listener(|this, _event, _window, cx| {
+                    this.finish_sidebar_resize(cx);
+                }),
+            )
             .capture_key_down(cx.listener(|this, event: &KeyDownEvent, window, cx| {
                 this.handle_sidebar_search_key(event, window, cx);
             }))
@@ -1882,6 +2005,10 @@ fn theme_mode_for_appearance(appearance: WindowAppearance) -> ThemeMode {
         WindowAppearance::Dark | WindowAppearance::VibrantDark => ThemeMode::Dark,
         WindowAppearance::Light | WindowAppearance::VibrantLight => ThemeMode::Light,
     }
+}
+
+fn clamp_rail_width(width: f32) -> f32 {
+    width.round().clamp(MIN_RAIL_PREVIEW_WIDTH, MAX_RAIL_WIDTH)
 }
 
 fn icon(path: &'static str, size: f32) -> impl IntoElement {
@@ -2038,5 +2165,13 @@ mod tests {
     fn first_prompt_title_is_whitespace_normalized_and_bounded() {
         assert_eq!(title_from("  build\nthis   please "), "build this please");
         assert_eq!(title_from(&"x".repeat(41)), format!("{}…", "x".repeat(40)));
+    }
+
+    #[test]
+    fn sidebar_resize_uses_the_web_preview_limits() {
+        assert_eq!(clamp_rail_width(100.0), MIN_RAIL_PREVIEW_WIDTH);
+        assert_eq!(clamp_rail_width(248.4), 248.0);
+        assert_eq!(clamp_rail_width(248.6), 249.0);
+        assert_eq!(clamp_rail_width(500.0), MAX_RAIL_WIDTH);
     }
 }

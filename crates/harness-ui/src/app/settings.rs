@@ -2854,6 +2854,7 @@ impl HarnessApp {
 
     fn reset_native_preferences(&mut self, cx: &mut Context<Self>) {
         self.preferences = NativePreferences::default();
+        self.sidebar_width = f32::from(self.preferences.rail_width);
         self.selected_model_key = None;
         self.effort = None;
         self.service_tier = None;
