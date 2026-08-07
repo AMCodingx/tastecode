@@ -614,3 +614,139 @@ fn usage_totals_handle_cumulative_per_turn_and_cross_provider_events() {
     assert_eq!(claude.session.cost_usd, Some(0.07));
     assert_eq!(claude.today.total_tokens, 190.0);
 }
+
+#[test]
+fn checkpoints_and_restore_undo_keep_filesystem_and_history_positions_aligned() {
+    let mut store = Store::memory().unwrap();
+    store.add_project("/repo", None).unwrap();
+    store
+        .add_thread(thread("t1", "/repo", ProviderId::Codex))
+        .unwrap();
+    let keep_seq = store
+        .append("t1", &message("keep", "keep this result", 1.0))
+        .unwrap();
+    let keep = store
+        .add_checkpoint_at(
+            NewCheckpoint {
+                thread_id: "t1".into(),
+                seq: keep_seq,
+                commit: "commit-keep".into(),
+                label: "Keep".into(),
+            },
+            10,
+        )
+        .unwrap();
+    let temporary_seq = store
+        .append("t1", &message("temporary", "temporary marker", 2.0))
+        .unwrap();
+    let temporary = store
+        .add_checkpoint_at(
+            NewCheckpoint {
+                thread_id: "t1".into(),
+                seq: temporary_seq,
+                commit: "commit-temporary".into(),
+                label: "Temporary".into(),
+            },
+            20,
+        )
+        .unwrap();
+
+    assert_eq!(store.checkpoint(keep.id).unwrap(), Some(keep.clone()));
+    assert_eq!(
+        store.checkpoints("t1").unwrap(),
+        [keep.clone(), temporary.clone()]
+    );
+    let token = store
+        .save_restore_undo("t1", keep_seq, "snapshot-before-restore")
+        .unwrap();
+    assert_eq!(store.history("t1", 0).unwrap().len(), 1);
+    assert_eq!(store.checkpoints("t1").unwrap(), [keep,]);
+    assert!(
+        store
+            .search_sessions(&SearchOptions {
+                query: "temporary".into(),
+                ..SearchOptions::default()
+            })
+            .unwrap()
+            .results
+            .is_empty()
+    );
+    assert_eq!(
+        store.restore_undo("t1", &token).unwrap(),
+        Some(RestoreUndo {
+            commit: "snapshot-before-restore".into()
+        })
+    );
+
+    store.apply_restore_undo("t1", &token).unwrap();
+    assert_eq!(store.history("t1", 0).unwrap().len(), 2);
+    assert_eq!(store.checkpoints("t1").unwrap()[1], temporary);
+    assert_eq!(
+        store
+            .search_sessions(&SearchOptions {
+                query: "temporary".into(),
+                ..SearchOptions::default()
+            })
+            .unwrap()
+            .results
+            .len(),
+        1
+    );
+    assert!(store.restore_undo("t1", &token).unwrap().is_none());
+}
+
+#[test]
+fn restore_undo_refuses_to_overwrite_conversation_that_continued() {
+    let mut store = Store::memory().unwrap();
+    store.add_project("/repo", None).unwrap();
+    store
+        .add_thread(thread("t1", "/repo", ProviderId::Codex))
+        .unwrap();
+    let keep_seq = store.append("t1", &message("keep", "keep", 1.0)).unwrap();
+    store
+        .append("t1", &message("removed", "removed", 2.0))
+        .unwrap();
+    let token = store.save_restore_undo("t1", keep_seq, "snapshot").unwrap();
+    store
+        .append("t1", &message("continued", "continued", 3.0))
+        .unwrap();
+
+    assert!(matches!(
+        store.apply_restore_undo("t1", &token),
+        Err(StoreError::RestoreContinued)
+    ));
+    assert!(matches!(
+        store.apply_restore_undo("t1", "missing"),
+        Err(StoreError::RestoreUnavailable)
+    ));
+}
+
+#[test]
+fn a_new_restore_replaces_the_previous_undo_token_for_that_thread() {
+    let mut store = Store::memory().unwrap();
+    store.add_project("/repo", None).unwrap();
+    store
+        .add_thread(thread("t1", "/repo", ProviderId::Codex))
+        .unwrap();
+    let keep_seq = store.append("t1", &message("keep", "keep", 1.0)).unwrap();
+    store
+        .append("t1", &message("first-tail", "first tail", 2.0))
+        .unwrap();
+    let first = store
+        .save_restore_undo("t1", keep_seq, "first-snapshot")
+        .unwrap();
+    store
+        .append("t1", &message("second-tail", "second tail", 3.0))
+        .unwrap();
+    let second = store
+        .save_restore_undo("t1", keep_seq, "second-snapshot")
+        .unwrap();
+
+    assert!(store.restore_undo("t1", &first).unwrap().is_none());
+    assert_eq!(
+        store.restore_undo("t1", &second).unwrap(),
+        Some(RestoreUndo {
+            commit: "second-snapshot".into()
+        })
+    );
+}

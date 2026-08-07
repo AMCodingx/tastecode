@@ -334,7 +334,7 @@ impl Store {
     }
 }
 
-fn index_event(
+pub(crate) fn index_event(
     connection: &rusqlite::Connection,
     seq: i64,
     thread_id: &str,

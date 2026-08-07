@@ -1,6 +1,8 @@
+mod checkpoints;
 mod events;
 mod schema;
 
+pub use checkpoints::{NewCheckpoint, RestoreUndo, StoredCheckpoint};
 pub use events::{SearchOptions, UsageSummary};
 
 use harness_protocol::{
@@ -36,6 +38,10 @@ pub enum StoreError {
     InvalidClock,
     #[error("search query cannot be empty")]
     EmptySearchQuery,
+    #[error("restore can no longer be undone")]
+    RestoreUnavailable,
+    #[error("restore can only be undone before the session continues")]
+    RestoreContinued,
 }
 
 pub type Result<T> = std::result::Result<T, StoreError>;
