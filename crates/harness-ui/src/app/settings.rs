@@ -7,14 +7,16 @@ use crate::client_state::{AuthTarget, ProviderTerminalKind};
 use crate::model_selection::filter_model_choices_by_query;
 use crate::motion_icon::motion_icon;
 use crate::preferences::{FontPreference, NativePreferences, ThemePreference};
-use crate::provider_icon::{ProviderMark, agent_mark, connection_mark, mark_icon, provider_mark};
+use crate::provider_icon::{
+    ProviderMark, agent_mark, connection_mark, provider_mark, provider_mark_path,
+};
 use crate::theme::{Accent, Backdrop, Theme, ThemeMode};
 use crate::zoom::px;
 use gpui::{
     Animation, AnimationExt, AnyElement, App, ClipboardItem, Context, Entity, Focusable,
     FontWeight, Hsla, KeyDownEvent, MouseButton, MouseDownEvent, MouseMoveEvent, PathPromptOptions,
     PromptButton, PromptLevel, Rgba, SharedString, Window, div, linear_color_stop, linear_gradient,
-    prelude::*, relative, svg,
+    prelude::*, relative,
 };
 use gpui_component::Sizable as _;
 use gpui_component::input::{Input, InputEvent, InputState};
@@ -623,6 +625,7 @@ impl HarnessApp {
                         .then(|| account_status(account, signed_in, theme))
                 });
             let trailing = provider_actions(
+                format!("provider:{:?}", provider.id).into(),
                 issue,
                 inline_status,
                 provider_mark(provider.id),
@@ -693,6 +696,7 @@ impl HarnessApp {
                 settings_status("Key missing", true, theme)
             };
             let trailing = provider_actions(
+                format!("connection:{}", connection.id).into(),
                 issue,
                 Some(status),
                 connection_mark(connection.preset),
@@ -735,6 +739,7 @@ impl HarnessApp {
             "Pi",
             "",
             provider_actions(
+                "agent:pi".into(),
                 None,
                 None,
                 ProviderMark::Pi,
@@ -958,8 +963,14 @@ impl HarnessApp {
                         .installed
                         .then(|| account_status(account, signed_in, theme))
                 });
-            let trailing =
-                provider_actions(issue, inline_status, agent_mark(&agent.id), trailing, theme);
+            let trailing = provider_actions(
+                format!("agent:{}", agent.id).into(),
+                issue,
+                inline_status,
+                agent_mark(&agent.id),
+                trailing,
+                theme,
+            );
             agents.push(settings_row(
                 index + 1,
                 agent.name.clone(),
@@ -1884,7 +1895,13 @@ impl HarnessApp {
                         .gap(px(6.0))
                         .text_size(px(11.5))
                         .text_color(theme.error.hsla())
-                        .child(settings_icon("icons/triangle-alert.svg", 13.0))
+                        .child(motion_icon(
+                            ("mcp-failure-icon", index),
+                            "icons/triangle-alert.svg",
+                            13.0,
+                            "mcp-failure-icon-direct-hover",
+                            theme,
+                        ))
                         .child(message.clone()),
                 ),
                 _ => None,
@@ -2076,12 +2093,16 @@ impl HarnessApp {
                             }),
                         )
                         .child(
-                            svg()
-                                .path("icons/resize-corner.svg")
+                            motion_icon(
+                                "mcp-transport-resize-icon",
+                                "icons/resize-corner.svg",
+                                10.0,
+                                "mcp-transport-resize-icon-direct-hover",
+                                theme,
+                            )
                                 .absolute()
                                 .right(px(1.0))
                                 .bottom(px(1.0))
-                                .size(px(10.0))
                                 .text_color(theme.text_3.hsla().opacity(0.72)),
                         )
                         .into_any_element(),
@@ -3202,7 +3223,13 @@ fn model_settings_empty(message: &'static str, theme: Theme) -> AnyElement {
         .child(chrome::top_highlight(theme))
         .text_size(px(12.5))
         .text_color(theme.text_3.hsla())
-        .child(settings_icon("icons/boxes.svg", 18.0))
+        .child(motion_icon(
+            "model-settings-empty-icon",
+            "icons/boxes.svg",
+            18.0,
+            "model-settings-empty-icon-direct-hover",
+            theme,
+        ))
         .child(message)
         .into_any_element()
 }
@@ -3508,25 +3535,36 @@ fn skill_settings_row(
                         .text_color(theme.text_3.hsla())
                         .child(source),
                 )
-                .children(dependency_errors.into_iter().map(|error| {
-                    div()
-                        .mt(px(10.0))
-                        .pt(px(10.0))
-                        .flex()
-                        .items_center()
-                        .gap(px(6.0))
-                        .border_t_1()
-                        .border_color(theme.line.hsla())
-                        .text_size(px(11.5))
-                        .text_color(theme.error.hsla())
-                        .child(settings_icon("icons/triangle-alert.svg", 13.0))
-                        .child(
+                .children(
+                    dependency_errors
+                        .into_iter()
+                        .enumerate()
+                        .map(|(error_index, error)| {
                             div()
-                                .font_weight(FontWeight::SEMIBOLD)
-                                .child(error.dependency),
-                        )
-                        .child(format!("· {}", error.message))
-                })),
+                                .mt(px(10.0))
+                                .pt(px(10.0))
+                                .flex()
+                                .items_center()
+                                .gap(px(6.0))
+                                .border_t_1()
+                                .border_color(theme.line.hsla())
+                                .text_size(px(11.5))
+                                .text_color(theme.error.hsla())
+                                .child(motion_icon(
+                                    ("skill-dependency-alert-icon", error_index),
+                                    "icons/triangle-alert.svg",
+                                    13.0,
+                                    "skill-dependency-alert-icon-direct-hover",
+                                    theme,
+                                ))
+                                .child(
+                                    div()
+                                        .font_weight(FontWeight::SEMIBOLD)
+                                        .child(error.dependency),
+                                )
+                                .child(format!("· {}", error.message))
+                        }),
+                ),
         )
         .child(div().flex_none().child(trailing))
         .into_any_element()
@@ -4041,7 +4079,13 @@ fn provider_action_disabled(label: &'static str, sign_out: bool, theme: Theme) -
         .text_color(theme.text_3.hsla())
         .opacity(0.5)
         .when(sign_out, |button| {
-            button.child(settings_icon("icons/log-out.svg", 13.0))
+            button.child(motion_icon(
+                SharedString::from(format!("provider-action-disabled-icon:{label}")),
+                "icons/log-out.svg",
+                13.0,
+                "provider-action-disabled-icon-direct-hover",
+                theme,
+            ))
         })
         .child(label)
         .into_any_element()
@@ -4375,12 +4419,14 @@ fn status_pill(label: &'static str, _ready: bool, theme: Theme) -> AnyElement {
 }
 
 fn provider_actions(
+    id: SharedString,
     issue: Option<(String, Option<String>)>,
     status: Option<AnyElement>,
     mark: ProviderMark,
     action: AnyElement,
     theme: Theme,
 ) -> AnyElement {
+    let icon_id: SharedString = format!("{id}:mark").into();
     div()
         .flex()
         .items_center()
@@ -4389,7 +4435,16 @@ fn provider_actions(
             actions.child(row_issue(message, tip, theme))
         })
         .when_some(status, |actions, status| actions.child(status))
-        .child(mark_icon(mark, theme, 17.0))
+        .child(
+            motion_icon(
+                icon_id,
+                provider_mark_path(mark),
+                17.0,
+                "provider-mark-icon-direct-hover",
+                theme,
+            )
+            .text_color(theme.text_2.hsla()),
+        )
         .child(action)
         .into_any_element()
 }
@@ -4480,6 +4535,7 @@ fn mask_email(email: &str) -> String {
 
 fn row_issue(message: String, tip: Option<String>, theme: Theme) -> AnyElement {
     let tooltip_message = message.clone();
+    let icon_id: SharedString = format!("row-issue-icon:{message}").into();
     div()
         .id(SharedString::from(format!("row-issue:{message}")))
         .size(px(22.0))
@@ -4516,7 +4572,13 @@ fn row_issue(message: String, tip: Option<String>, theme: Theme) -> AnyElement {
             .font_weight(FontWeight(400.0))
             .build(window, cx)
         })
-        .child(settings_icon("icons/circle-alert.svg", 14.0))
+        .child(motion_icon(
+            icon_id,
+            "icons/circle-alert.svg",
+            14.0,
+            "row-issue-icon-direct-hover",
+            theme,
+        ))
         .into_any_element()
 }
 
@@ -4919,10 +4981,6 @@ fn parked_provider_surfaces_visible() -> bool {
     // Keep the ACP and direct-API implementations compiled while the public beta
     // matches the web surface: Codex, Claude Code and Grok only.
     false
-}
-
-fn settings_icon(path: &'static str, size: f32) -> impl IntoElement {
-    svg().path(path).size(px(size))
 }
 
 #[cfg(test)]
