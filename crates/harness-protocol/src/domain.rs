@@ -746,6 +746,24 @@ pub struct McpServerConfig {
     pub transport: Option<McpTransport>,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct McpOAuthStartResult {
+    pub login_id: String,
+    pub auth_url: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct McpOAuthPush {
+    pub provider: ProviderId,
+    pub project_path: String,
+    pub server_id: String,
+    pub login_id: String,
+    pub success: bool,
+    pub error: Option<String>,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum SkillScope {
@@ -1225,5 +1243,16 @@ mod tests {
             serde_json::to_value(mcp.capabilities).unwrap()["cancelOAuth"],
             true
         );
+
+        let oauth: McpOAuthPush = serde_json::from_value(json!({
+            "provider": "codex",
+            "projectPath": "/tmp/project",
+            "serverId": "docs",
+            "loginId": "login-1",
+            "success": true,
+            "error": null
+        }))
+        .unwrap();
+        assert_eq!(oauth.server_id, "docs");
     }
 }
