@@ -206,11 +206,7 @@ pub fn sidebar(props: SidebarProps<'_>, actions: SidebarActions) -> impl IntoEle
         .flex_col()
         .bg(theme.rail.hsla().opacity(rail_opacity(glass)))
         .border_r_1()
-        .border_color(if glass == 0 {
-            theme.line.hsla()
-        } else {
-            gpui::white().opacity(0.04 + f32::from(glass.min(60)) / 1_000.0)
-        })
+        .border_color(glass_edge_color(theme, glass))
         .child(if mode == SidebarMode::Inbox {
             sidebar_actions(
                 theme,
@@ -272,6 +268,97 @@ pub fn sidebar(props: SidebarProps<'_>, actions: SidebarActions) -> impl IntoEle
 
 fn rail_opacity(glass: u8) -> f32 {
     (1.0 - f32::from(glass.min(60)) * 0.013).max(0.0)
+}
+
+pub(crate) fn glass_edge_color(theme: Theme, glass: u8) -> Hsla {
+    if glass == 0 {
+        theme.line.hsla()
+    } else {
+        gpui::white().opacity(0.04 + f32::from(glass.min(60)) / 1_000.0)
+    }
+}
+
+pub(crate) fn sidebar_bloom(theme: Theme, glass: u8) -> AnyElement {
+    let enabled = glass > 0;
+    let strength = f32::from(glass.min(60)) / 100.0;
+    div()
+        .absolute()
+        .inset_0()
+        .overflow_hidden()
+        .opacity(if enabled { 0.25 + strength * 1.4 } else { 0.0 })
+        .when(enabled, |layer| {
+            layer
+                .child(radial_bloom(
+                    -0.51,
+                    -0.30,
+                    1.30,
+                    0.68,
+                    theme.attention.hsla(),
+                    0.34,
+                ))
+                .child(radial_bloom(
+                    -0.61,
+                    0.14,
+                    1.10,
+                    0.60,
+                    theme.effort.hsla(),
+                    0.22,
+                ))
+                .child(radial_bloom(
+                    -0.30,
+                    0.68,
+                    1.20,
+                    0.64,
+                    theme.file_reference.hsla(),
+                    0.24,
+                ))
+        })
+        .into_any_element()
+}
+
+fn radial_bloom(
+    left: f32,
+    top: f32,
+    width: f32,
+    height: f32,
+    color: Hsla,
+    opacity: f32,
+) -> AnyElement {
+    div()
+        .absolute()
+        .left(relative(left))
+        .top(relative(top))
+        .w(relative(width))
+        .h(relative(height))
+        .flex()
+        .items_center()
+        .justify_center()
+        .rounded_full()
+        .bg(color.opacity(opacity * 0.15))
+        .shadow(vec![BoxShadow {
+            color: color.opacity(opacity * 0.08),
+            offset: point(px(0.0), px(0.0)),
+            blur_radius: px(28.0),
+            spread_radius: px(8.0),
+        }])
+        .child(
+            div()
+                .w(relative(0.68))
+                .h(relative(0.68))
+                .flex()
+                .items_center()
+                .justify_center()
+                .rounded_full()
+                .bg(color.opacity(opacity * 0.25))
+                .child(
+                    div()
+                        .w(relative(0.44))
+                        .h(relative(0.44))
+                        .rounded_full()
+                        .bg(color.opacity(opacity * 0.60)),
+                ),
+        )
+        .into_any_element()
 }
 
 fn sidebar_footer(

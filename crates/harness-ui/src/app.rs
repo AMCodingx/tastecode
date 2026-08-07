@@ -20,7 +20,7 @@ use crate::preferences::{NativePreferences, SourceSelection, ThemePreference};
 use crate::preview_capture::PreviewCaptureRuntime;
 use crate::sidebar::{
     SelectionModifiers, SessionDropPosition, SidebarActions, SidebarMenuRequest, SidebarProps,
-    ordered_inbox_ids, sidebar,
+    glass_edge_color, ordered_inbox_ids, sidebar, sidebar_bloom,
 };
 use crate::theme::{TITLEBAR_HEIGHT, Theme, ThemeMode};
 use crate::zoom::{self, px};
@@ -1801,7 +1801,7 @@ impl HarnessApp {
                         .w(px(rail_width))
                         .bg(theme.rail.hsla())
                         .border_r_1()
-                        .border_color(theme.line.hsla()),
+                        .border_color(glass_edge_color(theme, self.preferences.sidebar_glass)),
                 )
             })
             .child(
@@ -2102,6 +2102,7 @@ impl Render for HarnessApp {
             .h_full()
             .flex_none()
             .overflow_hidden()
+            .child(sidebar_bloom(self.theme, self.preferences.sidebar_glass))
             .child(rail)
             .when(!self.sidebar_collapsed, |slot| {
                 let focused = self.sidebar_resize_focus.is_focused(window);

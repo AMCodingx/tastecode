@@ -127,6 +127,7 @@ pub struct Theme {
     pub titlebar_symbol: ColorToken,
     pub attention: ColorToken,
     pub file_reference: ColorToken,
+    pub effort: ColorToken,
     pub error: ColorToken,
     pub success: ColorToken,
     pub motion: Motion,
@@ -168,6 +169,7 @@ impl Theme {
             titlebar_symbol: ColorToken(0xf4f4f5),
             attention: ColorToken(0x4c9dff),
             file_reference: ColorToken(0x515aad),
+            effort: ColorToken(0xef706e),
             error: ColorToken(0xe5687a),
             success: ColorToken(0x6fbf8e),
             motion: Motion::WEB_PARITY,
@@ -199,6 +201,7 @@ impl Theme {
             titlebar_symbol: ColorToken(0x27272a),
             attention: ColorToken(0x2563eb),
             file_reference: ColorToken(0x4a53a8),
+            effort: ColorToken(0xc2413d),
             error: ColorToken(0xbe123c),
             success: ColorToken(0x16803c),
             motion: Motion::WEB_PARITY,
@@ -306,6 +309,22 @@ impl Theme {
             (ThemeMode::Light, Accent::Rose) => 0x934b6a,
             (ThemeMode::Light, Accent::Lavender) => 0x675896,
         });
+        self.effort = ColorToken(match (self.mode, accent) {
+            (ThemeMode::Dark, Accent::Neutral) => 0xef706e,
+            (ThemeMode::Dark, Accent::Ocean) => 0x74b8cf,
+            (ThemeMode::Dark, Accent::Forest) => 0x8bc47a,
+            (ThemeMode::Dark, Accent::Sunset) => 0xe58c76,
+            (ThemeMode::Dark, Accent::Amber) => 0xdf985d,
+            (ThemeMode::Dark, Accent::Rose) => 0xdf8294,
+            (ThemeMode::Dark, Accent::Lavender) => 0xc49ad8,
+            (ThemeMode::Light, Accent::Neutral) => 0xc2413d,
+            (ThemeMode::Light, Accent::Ocean) => 0x287f99,
+            (ThemeMode::Light, Accent::Forest) => 0x4c7f3d,
+            (ThemeMode::Light, Accent::Sunset) => 0xb15442,
+            (ThemeMode::Light, Accent::Amber) => 0xa55a27,
+            (ThemeMode::Light, Accent::Rose) => 0xad4657,
+            (ThemeMode::Light, Accent::Lavender) => 0x81548f,
+        });
     }
 }
 
@@ -364,6 +383,7 @@ mod tests {
         assert_eq!(dark.queue_line, ColorToken(0x2b2b2b));
         assert_eq!(dark.queue_action, ColorToken(0x8a8a8a));
         assert_eq!(dark.file_reference, ColorToken(0x515aad));
+        assert_eq!(dark.effort, ColorToken(0xef706e));
         assert_eq!(light.background, ColorToken(0xfdfdfd));
         assert_eq!(light.text, ColorToken(0x27272a));
         assert_eq!(light.line, ColorToken(0xebebed));
@@ -371,6 +391,7 @@ mod tests {
         assert_eq!(light.queue_line, ColorToken(0xeeeeef));
         assert_eq!(light.queue_action, ColorToken(0x96969a));
         assert_eq!(light.file_reference, ColorToken(0x4a53a8));
+        assert_eq!(light.effort, ColorToken(0xc2413d));
     }
 
     #[test]
@@ -381,8 +402,10 @@ mod tests {
         assert_eq!(slate.background, ColorToken(0x0e1013));
         assert_eq!(slate.attention, ColorToken(0x65b8ff));
         assert_eq!(slate.file_reference, ColorToken(0x62abc7));
+        assert_eq!(slate.effort, ColorToken(0x74b8cf));
         assert_eq!(plum.background, ColorToken(0xfbf8fc));
         assert_eq!(plum.attention, ColorToken(0x6653aa));
         assert_eq!(plum.file_reference, ColorToken(0x675896));
+        assert_eq!(plum.effort, ColorToken(0x81548f));
     }
 }
