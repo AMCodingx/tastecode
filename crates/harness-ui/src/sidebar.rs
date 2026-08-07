@@ -3,8 +3,9 @@ use crate::theme::{RADIUS_MD, RAIL_WIDTH, Theme};
 use crate::zoom::px;
 use chrono::{DateTime, Datelike, Local};
 use gpui::{
-    AnyElement, App, Background, BoxShadow, Entity, FontWeight, Hsla, Pixels, Point, SharedString,
-    div, linear_color_stop, linear_gradient, point, prelude::*, relative, svg,
+    Animation, AnimationExt, AnyElement, App, Background, BoxShadow, Entity, FocusHandle,
+    FontWeight, Hsla, KeyDownEvent, Pixels, Point, SharedString, Window, div, linear_color_stop,
+    linear_gradient, point, prelude::*, relative, svg,
 };
 use gpui_component::input::{Input, InputState};
 use harness_client::ConnectionState;
@@ -17,6 +18,7 @@ use std::rc::Rc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 pub(crate) type SelectSession = Rc<dyn Fn(String, &mut App)>;
+pub(crate) type ChooseSession = Rc<dyn Fn(String, SelectionModifiers, &mut App)>;
 pub(crate) type SidebarAction = Rc<dyn Fn(&mut App)>;
 pub(crate) type SelectScope = Rc<dyn Fn(Option<String>, &mut App)>;
 pub(crate) type ProjectAction = Rc<dyn Fn(String, &mut App)>;
@@ -26,12 +28,23 @@ pub(crate) type OpenSidebarMenu = Rc<dyn Fn(SidebarMenuRequest, Point<Pixels>, &
 pub(crate) enum SidebarMenuRequest {
     Project(String),
     Thread(String),
+    ThreadSelection {
+        target: String,
+        thread_ids: Vec<String>,
+    },
     Snooze(String),
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) struct SelectionModifiers {
+    pub(crate) shift: bool,
+    pub(crate) additive: bool,
 }
 
 #[derive(Clone)]
 pub(crate) struct SidebarActions {
     pub(crate) select_session: SelectSession,
+    pub(crate) choose_session: ChooseSession,
     pub(crate) new_chat: SidebarAction,
     pub(crate) new_project: SidebarAction,
     pub(crate) open_search: SidebarAction,
@@ -42,6 +55,9 @@ pub(crate) struct SidebarActions {
     pub(crate) toggle_project_sessions: ProjectAction,
     pub(crate) new_chat_in_project: ProjectAction,
     pub(crate) settle_thread: ProjectAction,
+    pub(crate) wake_thread: ProjectAction,
+    pub(crate) unsettle_thread: ProjectAction,
+    pub(crate) rename_thread: ProjectAction,
     pub(crate) open_menu: OpenSidebarMenu,
     pub(crate) toggle_snoozed: SidebarAction,
     pub(crate) toggle_settled: SidebarAction,
@@ -66,6 +82,8 @@ pub(crate) struct SidebarProps<'a> {
     pub(crate) collapsed_projects: &'a std::collections::HashSet<String>,
     pub(crate) expanded_project_sessions: &'a std::collections::HashSet<String>,
     pub(crate) status_clocks: &'a HashMap<String, (ThreadInboxStatus, f64)>,
+    pub(crate) selected_ids: &'a std::collections::HashSet<String>,
+    pub(crate) row_focus: &'a HashMap<String, gpui::FocusHandle>,
     pub(crate) snoozed_expanded: bool,
     pub(crate) settled_expanded: bool,
     pub(crate) settled_limit: usize,
@@ -93,6 +111,8 @@ pub fn sidebar(props: SidebarProps<'_>, actions: SidebarActions) -> impl IntoEle
         collapsed_projects,
         expanded_project_sessions,
         status_clocks,
+        selected_ids,
+        row_focus,
         snoozed_expanded,
         settled_expanded,
         settled_limit,
@@ -154,6 +174,8 @@ pub fn sidebar(props: SidebarProps<'_>, actions: SidebarActions) -> impl IntoEle
                 selected_scope,
                 query,
                 status_clocks,
+                selected_ids,
+                row_focus,
                 snoozed_expanded,
                 settled_expanded,
                 settled_limit,
@@ -744,6 +766,8 @@ fn sidebar_body(
     selected_scope: Option<&str>,
     query: &str,
     status_clocks: &HashMap<String, (ThreadInboxStatus, f64)>,
+    selected_ids: &std::collections::HashSet<String>,
+    row_focus: &HashMap<String, gpui::FocusHandle>,
     snoozed_expanded: bool,
     settled_expanded: bool,
     settled_limit: usize,
@@ -777,6 +801,8 @@ fn sidebar_body(
             .unwrap_or(std::cmp::Ordering::Equal)
     });
     let now = current_time_ms();
+    let ordered_ids = ordered_inbox_ids(projects, selected_scope, query);
+    let selection_count = selected_ids.len();
 
     let query_active = !normalized_query.is_empty();
     let active_count = active.len();
@@ -832,6 +858,17 @@ fn sidebar_body(
         .when_some(status, |body, label| {
             body.child(empty_state(SharedString::from(label), theme))
         })
+        .when(selection_count > 1, |body| {
+            body.child(
+                div()
+                    .mb(px(2.0))
+                    .px(px(8.0))
+                    .py(px(4.0))
+                    .text_size(px(11.5))
+                    .text_color(theme.text_2.hsla())
+                    .child(format!("{selection_count} threads selected")),
+            )
+        })
         .when(!query_active || !active_empty, |body| {
             body.child(section_heading("Active", active_count, theme))
                 .child(
@@ -849,9 +886,10 @@ fn sidebar_body(
                                 now,
                                 theme,
                                 selected_thread_id == Some(session.id.as_str()),
-                                Some(actions.select_session.clone()),
-                                Some(actions.open_menu.clone()),
-                                Some(actions.settle_thread.clone()),
+                                selected_ids.contains(&session.id),
+                                thread_menu_request(&session.id, selected_ids, &ordered_ids),
+                                row_navigation(&session.id, &ordered_ids, row_focus),
+                                &actions,
                             )
                         })),
                 )
@@ -863,61 +901,78 @@ fn sidebar_body(
                 })
         })
         .when(!snoozed.is_empty(), |body| {
-            body.child(collapsed_group(
-                "Snoozed".into(),
-                Some(snoozed.len().to_string().into()),
-                snoozed_open,
-                theme,
-                Some(actions.toggle_snoozed.clone()),
-            ))
-            .when(snoozed_open, |body| {
-                body.children(snoozed.into_iter().map(|(project, session)| {
-                    settled_row(
-                        session.id.clone().into(),
-                        session.title.clone().into(),
-                        format!(
-                            "{} · wakes {}",
-                            project.name,
-                            wake_label(session).unwrap_or_else(|| "later".into())
-                        )
-                        .into(),
+            body.child(
+                div()
+                    .flex()
+                    .flex_col()
+                    .child(collapsed_group(
+                        "Snoozed".into(),
+                        Some(snoozed.len().to_string().into()),
+                        snoozed_open,
                         theme,
-                        selected_thread_id == Some(session.id.as_str()),
-                        Some(actions.select_session.clone()),
-                        Some(actions.open_menu.clone()),
-                    )
-                }))
-            })
+                        Some(actions.toggle_snoozed.clone()),
+                    ))
+                    .when(snoozed_open, |section| {
+                        section.children(snoozed.into_iter().map(|(_project, session)| {
+                            inbox_shelf_row(
+                                session,
+                                format_wake_time(session, now),
+                                "icons/bell.svg",
+                                theme,
+                                selected_thread_id == Some(session.id.as_str()),
+                                selected_ids.contains(&session.id),
+                                thread_menu_request(&session.id, selected_ids, &ordered_ids),
+                                row_navigation(&session.id, &ordered_ids, row_focus),
+                                actions.wake_thread.clone(),
+                                &actions,
+                            )
+                        }))
+                    }),
+            )
         })
         .when(settled_count > 0, |body| {
-            body.child(collapsed_group(
-                "Settled".into(),
-                Some(settled_count.to_string().into()),
-                settled_open,
-                theme,
-                Some(actions.toggle_settled.clone()),
-            ))
-            .when(settled_open, |body| {
-                body.children(visible_settled.into_iter().map(|(project, session)| {
-                    settled_row(
-                        session.id.clone().into(),
-                        session.title.clone().into(),
-                        format!(
-                            "{} · {}",
-                            project.name,
-                            relative_time(settled_at(session).unwrap_or(session.created_at))
-                        )
-                        .into(),
+            body.child(
+                div()
+                    .flex()
+                    .flex_col()
+                    .child(collapsed_group(
+                        "Settled".into(),
+                        Some(settled_count.to_string().into()),
+                        settled_open,
                         theme,
-                        selected_thread_id == Some(session.id.as_str()),
-                        Some(actions.select_session.clone()),
-                        Some(actions.open_menu.clone()),
-                    )
-                }))
-                .when(!query_active && settled_count > settled_limit, |body| {
-                    body.child(show_more_settled(theme, actions.show_more_settled.clone()))
-                })
-            })
+                        Some(actions.toggle_settled.clone()),
+                    ))
+                    .when(settled_open, |section| {
+                        section
+                            .children(visible_settled.into_iter().map(|(project, session)| {
+                                inbox_shelf_row(
+                                    session,
+                                    format!(
+                                        "{} · {}",
+                                        project.name,
+                                        relative_time_at(
+                                            settled_at(session).unwrap_or(session.created_at),
+                                            now,
+                                        )
+                                    ),
+                                    "icons/check-check.svg",
+                                    theme,
+                                    selected_thread_id == Some(session.id.as_str()),
+                                    selected_ids.contains(&session.id),
+                                    thread_menu_request(&session.id, selected_ids, &ordered_ids),
+                                    row_navigation(&session.id, &ordered_ids, row_focus),
+                                    actions.unsettle_thread.clone(),
+                                    &actions,
+                                )
+                            }))
+                            .when(!query_active && settled_count > settled_limit, |section| {
+                                section.child(show_more_settled(
+                                    theme,
+                                    actions.show_more_settled.clone(),
+                                ))
+                            })
+                    }),
+            )
         })
         .when(query_active && !has_matches, |body| {
             body.child(empty_state(
@@ -1477,6 +1532,68 @@ fn section_heading(label: &'static str, count: usize, theme: Theme) -> impl Into
         .child(count.to_string())
 }
 
+#[derive(Clone)]
+struct RowNavigation {
+    current: FocusHandle,
+    previous: FocusHandle,
+    next: FocusHandle,
+}
+
+fn row_navigation(
+    thread_id: &str,
+    ordered_ids: &[String],
+    row_focus: &HashMap<String, FocusHandle>,
+) -> Option<RowNavigation> {
+    let index = ordered_ids.iter().position(|id| id == thread_id)?;
+    let count = ordered_ids.len();
+    if count == 0 {
+        return None;
+    }
+    let previous_id = &ordered_ids[(index + count - 1) % count];
+    let next_id = &ordered_ids[(index + 1) % count];
+    Some(RowNavigation {
+        current: row_focus.get(thread_id)?.clone(),
+        previous: row_focus.get(previous_id)?.clone(),
+        next: row_focus.get(next_id)?.clone(),
+    })
+}
+
+fn thread_menu_request(
+    thread_id: &str,
+    selected_ids: &std::collections::HashSet<String>,
+    ordered_ids: &[String],
+) -> SidebarMenuRequest {
+    let thread_ids = if selected_ids.len() > 1 && selected_ids.contains(thread_id) {
+        ordered_ids
+            .iter()
+            .filter(|id| selected_ids.contains(id.as_str()))
+            .cloned()
+            .collect()
+    } else {
+        vec![thread_id.to_owned()]
+    };
+    SidebarMenuRequest::ThreadSelection {
+        target: thread_id.to_owned(),
+        thread_ids,
+    }
+}
+
+fn navigate_row(
+    event: &KeyDownEvent,
+    window: &mut Window,
+    cx: &mut App,
+    previous: &FocusHandle,
+    next: &FocusHandle,
+) {
+    if event.keystroke.key.eq_ignore_ascii_case("down") {
+        cx.stop_propagation();
+        next.focus(window);
+    } else if event.keystroke.key.eq_ignore_ascii_case("up") {
+        cx.stop_propagation();
+        previous.focus(window);
+    }
+}
+
 #[derive(Clone, Copy)]
 enum Status {
     Starting,
@@ -1514,7 +1631,7 @@ impl Status {
     }
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum StatusTone {
     Quiet,
     Working,
@@ -1537,14 +1654,19 @@ fn active_inbox_row(
     now: f64,
     theme: Theme,
     current: bool,
-    on_select: Option<SelectSession>,
-    open_menu: Option<OpenSidebarMenu>,
-    settle: Option<ProjectAction>,
+    multi_selected: bool,
+    menu_request: SidebarMenuRequest,
+    navigation: Option<RowNavigation>,
+    actions: &SidebarActions,
 ) -> AnyElement {
     let thread_id = session.id.clone();
     let select_id = thread_id.clone();
     let context_id = thread_id.clone();
-    let context_menu = open_menu.clone();
+    let context_request = menu_request.clone();
+    let context_menu = actions.open_menu.clone();
+    let choose = actions.choose_session.clone();
+    let rename = actions.rename_thread.clone();
+    let settle = actions.settle_thread.clone();
     let status = status_presentation(session, status_since, now);
     let eligible = can_hide_session(session);
     let normalized_status = status_for(session);
@@ -1567,16 +1689,23 @@ fn active_inbox_row(
         .min_h(px(76.0))
         .w_full()
         .border_1()
-        .border_color(if current {
+        .border_color(if multi_selected {
+            chrome_border.blend(theme.attention.hsla().opacity(0.35))
+        } else if current {
             chrome_border
         } else {
             gpui::transparent_black()
         })
         .rounded(px(RADIUS_MD))
-        .when(current, |card| {
-            card.bg(chrome_raised(theme)).shadow(chrome_shadows(theme))
+        .when(current || multi_selected, |card| {
+            card.bg(inbox_card_background(theme, multi_selected))
+                .shadow(chrome_shadows(theme))
         })
-        .hover(move |style| style.bg(chrome_raised(theme)).shadow(chrome_shadows(theme)))
+        .hover(move |style| {
+            style
+                .bg(inbox_card_background(theme, multi_selected))
+                .shadow(chrome_shadows(theme))
+        })
         .child(
             div()
                 .absolute()
@@ -1586,7 +1715,7 @@ fn active_inbox_row(
                 .h(px(1.0))
                 .rounded_t(px(RADIUS_MD))
                 .bg(chrome_highlight(theme))
-                .opacity(if current { 1.0 } else { 0.0 })
+                .opacity(if current || multi_selected { 1.0 } else { 0.0 })
                 .group_hover("inbox-card", |line| line.opacity(1.0)),
         )
         .child(
@@ -1603,19 +1732,33 @@ fn active_inbox_row(
                 .cursor_pointer()
                 .on_click(move |event, _window, cx| {
                     if event.is_right_click() {
-                        if let Some(open_menu) = &context_menu {
+                        cx.stop_propagation();
+                        context_menu(context_request.clone(), event.position(), cx);
+                    } else if event.standard_click() {
+                        if event.click_count() == 2 {
                             cx.stop_propagation();
-                            open_menu(
-                                SidebarMenuRequest::Thread(context_id.clone()),
-                                event.position(),
-                                cx,
-                            );
+                            rename(context_id.clone(), cx);
+                            return;
                         }
-                    } else if event.standard_click()
-                        && let Some(handler) = &on_select
-                    {
-                        handler(select_id.clone(), cx);
+                        let modifiers = event.modifiers();
+                        choose(
+                            select_id.clone(),
+                            SelectionModifiers {
+                                shift: modifiers.shift,
+                                additive: modifiers.platform || modifiers.control,
+                            },
+                            cx,
+                        );
                     }
+                })
+                .when_some(navigation, |main, navigation| {
+                    let previous = navigation.previous.clone();
+                    let next = navigation.next.clone();
+                    main.track_focus(&navigation.current)
+                        .tab_index(0)
+                        .on_key_down(move |event, window, cx| {
+                            navigate_row(event, window, cx, &previous, &next);
+                        })
                 })
                 .child(
                     div()
@@ -1703,40 +1846,35 @@ fn active_inbox_row(
                 .items_center()
                 .gap(px(1.0))
                 .pl(px(8.0))
-                .bg(chrome_raised(theme))
+                .bg(inbox_card_background(theme, multi_selected))
                 .opacity(0.0)
                 .group_hover("inbox-card", |quick| quick.opacity(1.0))
                 .when(eligible, |quick| {
                     quick
-                        .when_some(open_menu.clone(), |quick, open_menu| {
-                            let id = thread_id.clone();
-                            quick.child(inbox_quick_menu_button(
-                                format!("snooze-menu:{thread_id}").into(),
-                                "icons/clock-3.svg",
-                                SidebarMenuRequest::Snooze(id),
-                                theme,
-                                open_menu,
-                            ))
-                        })
-                        .when_some(settle, |quick, settle| {
-                            let id = thread_id.clone();
-                            quick.child(inbox_quick_action_button(
-                                format!("settle:{thread_id}").into(),
-                                "icons/check-check.svg",
-                                theme,
-                                Rc::new(move |cx| settle(id.clone(), cx)),
-                            ))
-                        })
+                        .child(inbox_quick_menu_button(
+                            format!("snooze-menu:{thread_id}").into(),
+                            "icons/clock-3.svg",
+                            SidebarMenuRequest::Snooze(thread_id.clone()),
+                            theme,
+                            actions.open_menu.clone(),
+                        ))
+                        .child(inbox_quick_action_button(
+                            format!("settle:{thread_id}").into(),
+                            "icons/check-check.svg",
+                            theme,
+                            Rc::new({
+                                let id = thread_id.clone();
+                                move |cx| settle(id.clone(), cx)
+                            }),
+                        ))
                 })
-                .when_some(open_menu, |quick, open_menu| {
-                    quick.child(inbox_quick_menu_button(
-                        format!("inbox-menu:{thread_id}").into(),
-                        "icons/ellipsis.svg",
-                        SidebarMenuRequest::Thread(thread_id.clone()),
-                        theme,
-                        open_menu,
-                    ))
-                }),
+                .child(inbox_quick_menu_button(
+                    format!("inbox-menu:{thread_id}").into(),
+                    "icons/ellipsis.svg",
+                    menu_request,
+                    theme,
+                    actions.open_menu.clone(),
+                )),
         )
         .into_any_element()
 }
@@ -1911,6 +2049,23 @@ fn chrome_raised(theme: Theme) -> Background {
         180.0,
         linear_color_stop(from, 0.0),
         linear_color_stop(to, 1.0),
+    )
+}
+
+fn inbox_card_background(theme: Theme, multi_selected: bool) -> Background {
+    if !multi_selected {
+        return chrome_raised(theme);
+    }
+    let (from, to): (Hsla, Hsla) = if theme.mode == crate::theme::ThemeMode::Dark {
+        (gpui::rgb(0x242424).into(), gpui::rgb(0x1b1b1b).into())
+    } else {
+        (gpui::white(), gpui::rgb(0xfafafa).into())
+    };
+    let attention = theme.attention.hsla().opacity(0.07);
+    linear_gradient(
+        180.0,
+        linear_color_stop(from.blend(attention), 0.0),
+        linear_color_stop(to.blend(attention), 1.0),
     )
 }
 
@@ -2094,36 +2249,183 @@ fn collapsed_group(
     action: Option<SidebarAction>,
 ) -> impl IntoElement {
     let id = SharedString::from(format!("sidebar-group:{label}"));
+    let animation_id = SharedString::from(format!("sidebar-group-chevron:{label}:{expanded}"));
+    let chevron = svg()
+        .path("icons/chevron-right.svg")
+        .size(px(11.0))
+        .with_animation(
+            animation_id,
+            Animation::new(theme.motion.fast).with_easing(crate::theme::web_ease_out),
+            move |icon, delta| {
+                let rotation = if expanded {
+                    delta * 0.25
+                } else {
+                    (1.0 - delta) * 0.25
+                };
+                icon.with_transformation(gpui::Transformation::rotate(gpui::percentage(rotation)))
+            },
+        );
     div()
-        .id(id)
         .mt(px(5.0))
-        .h(px(39.0))
+        .w_full()
+        .border_t_1()
+        .border_color(theme.line.hsla())
+        .pt(px(3.0))
+        .child(
+            div()
+                .id(id)
+                .w_full()
+                .flex()
+                .items_center()
+                .gap(px(6.0))
+                .px(px(8.0))
+                .py(px(5.0))
+                .rounded(px(RADIUS_MD))
+                .text_color(theme.text_3.hsla())
+                .text_size(px(11.5))
+                .when(action.is_some(), |row| {
+                    row.cursor_pointer().hover(move |style| {
+                        style
+                            .bg(theme.surface.hsla())
+                            .text_color(theme.text_2.hsla())
+                    })
+                })
+                .when_some(action, |row, action| {
+                    row.on_click(move |_event, _window, cx| action(cx))
+                })
+                .child(chevron)
+                .child(div().flex_1().child(label))
+                .when_some(count, |row, count| row.child(count)),
+        )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn inbox_shelf_row(
+    session: &SessionSummary,
+    detail: String,
+    action_icon: &'static str,
+    theme: Theme,
+    current: bool,
+    multi_selected: bool,
+    menu_request: SidebarMenuRequest,
+    navigation: Option<RowNavigation>,
+    direct_action: ProjectAction,
+    actions: &SidebarActions,
+) -> AnyElement {
+    let thread_id = session.id.clone();
+    let choose_id = thread_id.clone();
+    let rename_id = thread_id.clone();
+    let context_request = menu_request.clone();
+    let choose = actions.choose_session.clone();
+    let rename = actions.rename_thread.clone();
+    let open_context_menu = actions.open_menu.clone();
+    let action_id = thread_id.clone();
+    let row_background = if multi_selected {
+        theme
+            .surface
+            .hsla()
+            .blend(theme.attention.hsla().opacity(0.07))
+    } else {
+        theme.surface.hsla()
+    };
+
+    div()
+        .id(SharedString::from(format!("shelf:{thread_id}")))
+        .group("inbox-shelf-row")
+        .min_h(px(30.0))
+        .min_w(px(0.0))
         .w_full()
         .flex()
         .items_center()
-        .border_b_1()
-        .border_color(theme.line.hsla())
-        .text_color(theme.text_3.hsla())
-        .text_size(px(11.5))
-        .when(action.is_some(), |row| {
-            row.cursor_pointer()
-                .hover(move |style| style.text_color(theme.text.hsla()))
+        .gap(px(1.0))
+        .border_1()
+        .border_color(if multi_selected {
+            gpui::transparent_black().blend(theme.attention.hsla().opacity(0.30))
+        } else {
+            gpui::transparent_black()
         })
-        .when_some(action, |row, action| {
-            row.on_click(move |_event, _window, cx| action(cx))
-        })
-        .child(icon(
-            if expanded {
-                "icons/chevron-down.svg"
-            } else {
-                "icons/chevron-right.svg"
-            },
-            10.0,
+        .rounded(px(RADIUS_MD))
+        .when(current || multi_selected, |row| row.bg(row_background))
+        .hover(move |style| style.bg(row_background))
+        .child(
+            div()
+                .id(SharedString::from(format!("shelf-main:{thread_id}")))
+                .min_w(px(0.0))
+                .flex_1()
+                .flex()
+                .items_baseline()
+                .gap(px(7.0))
+                .px(px(8.0))
+                .py(px(6.0))
+                .text_size(px(11.5))
+                .text_color(theme.text_2.hsla())
+                .cursor_pointer()
+                .on_click(move |event, _window, cx| {
+                    if event.is_right_click() {
+                        cx.stop_propagation();
+                        open_context_menu(context_request.clone(), event.position(), cx);
+                    } else if event.standard_click() {
+                        if event.click_count() == 2 {
+                            cx.stop_propagation();
+                            rename(rename_id.clone(), cx);
+                            return;
+                        }
+                        let modifiers = event.modifiers();
+                        choose(
+                            choose_id.clone(),
+                            SelectionModifiers {
+                                shift: modifiers.shift,
+                                additive: modifiers.platform || modifiers.control,
+                            },
+                            cx,
+                        );
+                    }
+                })
+                .when_some(navigation, |main, navigation| {
+                    let previous = navigation.previous.clone();
+                    let next = navigation.next.clone();
+                    main.track_focus(&navigation.current)
+                        .tab_index(0)
+                        .on_key_down(move |event, window, cx| {
+                            navigate_row(event, window, cx, &previous, &next);
+                        })
+                })
+                .child(
+                    div()
+                        .min_w(px(0.0))
+                        .flex_1()
+                        .truncate()
+                        .child(session.title.clone()),
+                )
+                .child(
+                    div()
+                        .max_w(relative(0.45))
+                        .flex_none()
+                        .truncate()
+                        .text_size(px(10.5))
+                        .text_color(theme.text_3.hsla())
+                        .child(detail),
+                ),
+        )
+        .child(inbox_quick_action_button(
+            format!("shelf-action:{thread_id}").into(),
+            action_icon,
+            theme,
+            Rc::new(move |cx| direct_action(action_id.clone(), cx)),
         ))
-        .child(div().ml(px(4.0)).flex_1().child(label))
-        .when_some(count, |row, count| {
-            row.child(div().pr(px(6.0)).child(count))
-        })
+        .child(
+            div()
+                .opacity(0.0)
+                .group_hover("inbox-shelf-row", |menu| menu.opacity(1.0))
+                .child(inbox_quick_menu_button(
+                    format!("shelf-menu:{thread_id}").into(),
+                    "icons/ellipsis.svg",
+                    menu_request,
+                    theme,
+                    actions.open_menu.clone(),
+                )),
+        )
+        .into_any_element()
 }
 
 fn settled_row(
@@ -2252,6 +2554,46 @@ fn newest_first(left: &SessionSummary, right: &SessionSummary) -> std::cmp::Orde
         .unwrap_or(std::cmp::Ordering::Equal)
 }
 
+pub(crate) fn ordered_inbox_ids(
+    projects: &[ProjectSummary],
+    selected_scope: Option<&str>,
+    query: &str,
+) -> Vec<String> {
+    let normalized_query = query.trim().to_lowercase();
+    let mut active = Vec::new();
+    let mut snoozed = Vec::new();
+    let mut settled = Vec::new();
+    for project in projects {
+        if selected_scope.is_some_and(|scope| scope != project.path) {
+            continue;
+        }
+        for session in &project.sessions {
+            if !title_matches_query(&session.title, &normalized_query) {
+                continue;
+            }
+            match session.lifecycle.as_ref() {
+                Some(ThreadLifecycle::Snoozed { .. }) => snoozed.push(session),
+                Some(ThreadLifecycle::Settled { .. }) => settled.push(session),
+                Some(ThreadLifecycle::Active { .. }) | None => active.push(session),
+            }
+        }
+    }
+    active.sort_by(|left, right| newest_first(left, right));
+    snoozed.sort_by_key(|session| wake_at(session).unwrap_or(u64::MAX));
+    settled.sort_by(|left, right| {
+        settled_at(right)
+            .unwrap_or(right.created_at)
+            .partial_cmp(&settled_at(left).unwrap_or(left.created_at))
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
+    active
+        .into_iter()
+        .chain(snoozed)
+        .chain(settled)
+        .map(|session| session.id.clone())
+        .collect()
+}
+
 fn title_matches_query(title: &str, normalized_query: &str) -> bool {
     normalized_query.is_empty() || title.to_lowercase().contains(normalized_query)
 }
@@ -2270,19 +2612,22 @@ fn wake_at(session: &SessionSummary) -> Option<u64> {
     }
 }
 
-fn wake_label(session: &SessionSummary) -> Option<String> {
+fn format_wake_time(session: &SessionSummary, now: f64) -> String {
     let Some(ThreadLifecycle::Snoozed { wake_at, .. }) = session.lifecycle.as_ref() else {
-        return None;
+        return "Later".into();
     };
-    let now = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_or(0, |duration| duration.as_millis() as u64);
-    let minutes = wake_at.saturating_sub(now).div_ceil(60_000);
-    Some(match minutes {
-        0..=59 => format!("in {}m", minutes.max(1)),
-        60..=1_439 => format!("in {}h", minutes.div_ceil(60)),
-        _ => format!("in {}d", minutes.div_ceil(1_440)),
-    })
+    let target = DateTime::<Local>::from(UNIX_EPOCH + std::time::Duration::from_millis(*wake_at));
+    let current =
+        DateTime::<Local>::from(UNIX_EPOCH + std::time::Duration::from_millis(now.max(0.0) as u64));
+    let tomorrow = current.date_naive().succ_opt();
+    let time = target.format("%-I:%M %p");
+    if target.date_naive() == current.date_naive() {
+        format!("Today · {time}")
+    } else if tomorrow == Some(target.date_naive()) {
+        format!("Tomorrow · {time}")
+    } else {
+        target.format("%a, %-I:%M %p").to_string()
+    }
 }
 
 fn current_time_ms() -> f64 {
@@ -2319,18 +2664,153 @@ fn relative_time_at(timestamp: f64, now: f64) -> String {
     format!("{}d ago", (hours as f64 / 24.0).round() as u64)
 }
 
-fn relative_time(timestamp: f64) -> String {
-    relative_time_at(timestamp, current_time_ms())
-}
-
 #[cfg(test)]
 mod tests {
-    use super::title_matches_query;
+    use super::*;
+    use harness_protocol::SettleReason;
 
     #[test]
     fn inbox_query_matches_titles_case_insensitively() {
         assert!(title_matches_query("Ship Native Sidebar", "native"));
         assert!(title_matches_query("Ship Native Sidebar", ""));
         assert!(!title_matches_query("Ship Native Sidebar", "electron"));
+    }
+
+    #[test]
+    fn inbox_status_copy_and_elapsed_time_match_the_web_contract() {
+        let mut session = test_session(
+            "working",
+            1_000.0,
+            ThreadInboxStatus::Working,
+            ThreadLifecycle::Active {
+                keep_active: false,
+                woke_at: None,
+            },
+        );
+        let working = status_presentation(&session, 1_000.0, 66_000.0);
+        assert_eq!(working.label, "Working · 1m");
+        assert_eq!(working.tone, StatusTone::Working);
+
+        session.status = Some(ThreadInboxStatus::Input);
+        assert_eq!(
+            status_presentation(&session, 1_000.0, 66_000.0).label,
+            "Needs input"
+        );
+        session.status = Some(ThreadInboxStatus::Ready);
+        assert_eq!(
+            status_presentation(&session, 1_000.0, 66_000.0).label,
+            "Done"
+        );
+        session.status = Some(ThreadInboxStatus::Idle);
+        session.lifecycle = Some(ThreadLifecycle::Active {
+            keep_active: false,
+            woke_at: Some(60_000),
+        });
+        assert_eq!(
+            status_presentation(&session, 1_000.0, 66_000.0).label,
+            "Woke"
+        );
+    }
+
+    #[test]
+    fn inbox_keyboard_order_spans_active_snoozed_and_settled_rows() {
+        let project = ProjectSummary {
+            path: "/work/harness".into(),
+            name: "Harness".into(),
+            pinned: false,
+            created_at: 0.0,
+            sessions: vec![
+                test_session(
+                    "active-old",
+                    100.0,
+                    ThreadInboxStatus::Idle,
+                    ThreadLifecycle::Active {
+                        keep_active: false,
+                        woke_at: None,
+                    },
+                ),
+                test_session(
+                    "settled-new",
+                    10.0,
+                    ThreadInboxStatus::Idle,
+                    ThreadLifecycle::Settled {
+                        settled_at: 5_000,
+                        reason: SettleReason::Manual,
+                    },
+                ),
+                test_session(
+                    "snoozed-late",
+                    20.0,
+                    ThreadInboxStatus::Idle,
+                    ThreadLifecycle::Snoozed {
+                        snoozed_at: 1,
+                        wake_at: 3_000,
+                    },
+                ),
+                test_session(
+                    "active-new",
+                    200.0,
+                    ThreadInboxStatus::Ready,
+                    ThreadLifecycle::Active {
+                        keep_active: false,
+                        woke_at: None,
+                    },
+                ),
+                test_session(
+                    "snoozed-early",
+                    30.0,
+                    ThreadInboxStatus::Idle,
+                    ThreadLifecycle::Snoozed {
+                        snoozed_at: 1,
+                        wake_at: 2_000,
+                    },
+                ),
+                test_session(
+                    "settled-old",
+                    40.0,
+                    ThreadInboxStatus::Idle,
+                    ThreadLifecycle::Settled {
+                        settled_at: 4_000,
+                        reason: SettleReason::Manual,
+                    },
+                ),
+            ],
+        };
+        assert_eq!(
+            ordered_inbox_ids(&[project], None, ""),
+            [
+                "active-new",
+                "active-old",
+                "snoozed-early",
+                "snoozed-late",
+                "settled-new",
+                "settled-old",
+            ]
+        );
+    }
+
+    fn test_session(
+        id: &str,
+        created_at: f64,
+        status: ThreadInboxStatus,
+        lifecycle: ThreadLifecycle,
+    ) -> SessionSummary {
+        SessionSummary {
+            id: id.into(),
+            title: id.into(),
+            provider: ProviderId::Codex,
+            agent: None,
+            created_at,
+            running: matches!(
+                status,
+                ThreadInboxStatus::Starting | ThreadInboxStatus::Working
+            ),
+            pinned: false,
+            status: Some(status),
+            unread: Some(false),
+            lifecycle: Some(lifecycle),
+            closed_at: None,
+            worktree_branch: None,
+        }
     }
 }

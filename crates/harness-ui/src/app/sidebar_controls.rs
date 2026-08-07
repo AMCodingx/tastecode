@@ -1,14 +1,14 @@
 use super::HarnessApp;
-use crate::sidebar::SidebarMenuRequest;
+use crate::sidebar::{SelectionModifiers, SidebarMenuRequest, ordered_inbox_ids};
 use crate::zoom::px;
 use chrono::{Datelike, Duration as ChronoDuration, Local, Timelike};
 use gpui::{
-    AnyElement, ClipboardItem, Context, Entity, Pixels, Point, SharedString, Window, div,
-    prelude::*,
+    AnyElement, ClipboardItem, Context, Entity, FocusHandle, Pixels, Point, SharedString, Window,
+    div, prelude::*,
 };
 use gpui_component::input::{Input, InputState};
 use harness_protocol::{SessionSummary, ThreadInboxStatus, ThreadLifecycle};
-use std::collections::VecDeque;
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::process::Command;
 
 pub(super) struct SidebarControlsState {
@@ -18,6 +18,9 @@ pub(super) struct SidebarControlsState {
     reset_value: Option<String>,
     focus_pending: bool,
     archive_queue: VecDeque<String>,
+    pub(super) selected_ids: HashSet<String>,
+    pub(super) selection_anchor: Option<String>,
+    pub(super) row_focus: HashMap<String, FocusHandle>,
 }
 
 pub(super) struct SidebarMenuState {
@@ -45,6 +48,14 @@ enum SidebarDialog {
     },
 }
 
+#[derive(Clone, Copy)]
+enum SidebarLifecycleAction {
+    Settle,
+    Snooze(u64),
+    Wake,
+    Unsettle,
+}
+
 impl SidebarControlsState {
     pub(super) fn new(input: Entity<InputState>) -> Self {
         Self {
@@ -54,21 +65,96 @@ impl SidebarControlsState {
             reset_value: None,
             focus_pending: false,
             archive_queue: VecDeque::new(),
+            selected_ids: HashSet::new(),
+            selection_anchor: None,
+            row_focus: HashMap::new(),
         }
     }
 
     pub(super) fn is_open(&self) -> bool {
         self.menu.is_some() || self.dialog.is_some()
     }
+
+    pub(super) fn sync_inbox_rows(&mut self, ordered_ids: &[String], cx: &mut Context<HarnessApp>) {
+        let visible = ordered_ids.iter().cloned().collect::<HashSet<_>>();
+        self.selected_ids
+            .retain(|thread_id| visible.contains(thread_id));
+        if self
+            .selection_anchor
+            .as_ref()
+            .is_some_and(|thread_id| !visible.contains(thread_id))
+        {
+            self.selection_anchor = None;
+        }
+        self.row_focus
+            .retain(|thread_id, _| visible.contains(thread_id));
+        for thread_id in ordered_ids {
+            self.row_focus
+                .entry(thread_id.clone())
+                .or_insert_with(|| cx.focus_handle());
+        }
+    }
+
+    pub(super) fn clear_selection(&mut self) {
+        self.selected_ids.clear();
+    }
 }
 
 impl HarnessApp {
+    pub(super) fn choose_inbox_session(
+        &mut self,
+        thread_id: String,
+        modifiers: SelectionModifiers,
+        cx: &mut Context<Self>,
+    ) {
+        let query = self.sidebar_search.read(cx).value();
+        let ordered = ordered_inbox_ids(
+            &self.state.projects,
+            self.sidebar_scope.as_deref(),
+            query.as_ref(),
+        );
+        if modifiers.shift
+            && let Some(anchor) = self.sidebar_controls.selection_anchor.as_ref()
+            && let (Some(from), Some(to)) = (
+                ordered.iter().position(|id| id == anchor),
+                ordered.iter().position(|id| id == &thread_id),
+            )
+        {
+            let (start, end) = if from < to { (from, to) } else { (to, from) };
+            self.sidebar_controls.selected_ids = ordered[start..=end].iter().cloned().collect();
+            cx.notify();
+            return;
+        }
+        if modifiers.additive {
+            if !self
+                .sidebar_controls
+                .selected_ids
+                .remove(thread_id.as_str())
+            {
+                self.sidebar_controls.selected_ids.insert(thread_id.clone());
+            }
+            self.sidebar_controls.selection_anchor = Some(thread_id);
+            cx.notify();
+            return;
+        }
+        self.sidebar_controls.clear_selection();
+        self.sidebar_controls.selection_anchor = Some(thread_id.clone());
+        self.select_session(thread_id, cx);
+    }
+
     pub(super) fn open_sidebar_menu(
         &mut self,
-        request: SidebarMenuRequest,
+        mut request: SidebarMenuRequest,
         position: Point<Pixels>,
         cx: &mut Context<Self>,
     ) {
+        if let SidebarMenuRequest::ThreadSelection { target, thread_ids } = &request {
+            self.sidebar_controls.selected_ids = thread_ids.iter().cloned().collect();
+            self.sidebar_controls.selection_anchor = Some(target.clone());
+            if thread_ids.len() == 1 {
+                request = SidebarMenuRequest::Thread(target.clone());
+            }
+        }
         self.close_rollback(cx);
         self.account_menu_open = false;
         self.sidebar_controls.dialog = None;
@@ -178,7 +264,7 @@ impl HarnessApp {
         cx.notify();
     }
 
-    fn begin_rename_thread(&mut self, thread_id: String, cx: &mut Context<Self>) {
+    pub(super) fn begin_rename_thread(&mut self, thread_id: String, cx: &mut Context<Self>) {
         let Some(title) = self
             .state
             .projects
@@ -190,6 +276,7 @@ impl HarnessApp {
             return;
         };
         self.sidebar_controls.menu = None;
+        self.sidebar_controls.clear_selection();
         self.sidebar_controls.dialog = Some(SidebarDialog::RenameThread { thread_id });
         self.sidebar_controls.reset_value = Some(title);
         self.sidebar_controls.focus_pending = true;
@@ -227,7 +314,62 @@ impl HarnessApp {
         cx: &mut Context<Self>,
     ) {
         self.sidebar_controls.menu = None;
+        self.sidebar_controls.clear_selection();
         self.apply_client_update(update, cx);
+        cx.notify();
+    }
+
+    fn run_sidebar_lifecycle_many(
+        &mut self,
+        thread_ids: Vec<String>,
+        action: SidebarLifecycleAction,
+        cx: &mut Context<Self>,
+    ) {
+        let mut seen = HashSet::new();
+        let thread_ids = thread_ids
+            .into_iter()
+            .filter(|thread_id| seen.insert(thread_id.clone()))
+            .collect::<Vec<_>>();
+        let hidden = thread_ids.iter().cloned().collect::<HashSet<_>>();
+        if matches!(
+            action,
+            SidebarLifecycleAction::Settle | SidebarLifecycleAction::Snooze(_)
+        ) && self
+            .selected_thread_id
+            .as_ref()
+            .is_some_and(|thread_id| hidden.contains(thread_id))
+        {
+            self.select_next_active_or_draft_excluding(&hidden, cx);
+        }
+        self.sidebar_controls.menu = None;
+        self.sidebar_controls.clear_selection();
+        for thread_id in thread_ids {
+            let update = match action {
+                SidebarLifecycleAction::Settle => self.state.settle_thread(thread_id),
+                SidebarLifecycleAction::Snooze(wake_at) => {
+                    self.state.snooze_thread(thread_id, wake_at)
+                }
+                SidebarLifecycleAction::Wake => self.state.unsnooze_thread(thread_id),
+                SidebarLifecycleAction::Unsettle => self.state.unsettle_thread(thread_id),
+            };
+            self.apply_client_update(update, cx);
+        }
+        cx.notify();
+    }
+
+    fn archive_sidebar_threads(&mut self, thread_ids: Vec<String>, cx: &mut Context<Self>) {
+        let mut seen = HashSet::new();
+        let thread_ids = thread_ids
+            .into_iter()
+            .filter(|thread_id| seen.insert(thread_id.clone()))
+            .collect::<Vec<_>>();
+        if thread_ids.is_empty() {
+            return;
+        }
+        self.sidebar_controls.menu = None;
+        self.sidebar_controls.clear_selection();
+        self.sidebar_controls.archive_queue = thread_ids.into();
+        self.archive_next_queued_thread(cx);
         cx.notify();
     }
 
@@ -487,6 +629,7 @@ impl HarnessApp {
                     theme,
                     cx.listener(move |this, _event, _window, cx| {
                         this.sidebar_controls.menu = None;
+                        this.sidebar_controls.clear_selection();
                         cx.write_to_clipboard(ClipboardItem::new_string(project_path.clone()));
                         cx.notify();
                     }),
@@ -500,6 +643,7 @@ impl HarnessApp {
                         theme,
                         cx.listener(move |this, _event, _window, cx| {
                             this.sidebar_controls.menu = None;
+                            this.sidebar_controls.clear_selection();
                             cx.write_to_clipboard(ClipboardItem::new_string(branch.clone()));
                             cx.notify();
                         }),
@@ -514,6 +658,7 @@ impl HarnessApp {
                     theme,
                     cx.listener(move |this, _event, _window, cx| {
                         this.sidebar_controls.menu = None;
+                        this.sidebar_controls.clear_selection();
                         if let Err(error) = reveal_path(&reveal) {
                             this.state.notice =
                                 Some(format!("Could not open that folder: {error}"));
@@ -535,6 +680,139 @@ impl HarnessApp {
                     cx.listener(move |this, _event, _window, cx| {
                         let update = this.state.archive_thread(thread_id.clone());
                         this.run_sidebar_update(update, cx);
+                    }),
+                ));
+            }
+            SidebarMenuRequest::ThreadSelection {
+                target: _,
+                thread_ids,
+            } => {
+                let sessions = thread_ids
+                    .iter()
+                    .filter_map(|thread_id| {
+                        self.state
+                            .projects
+                            .iter()
+                            .flat_map(|project| project.sessions.iter())
+                            .find(|session| session.id == *thread_id)
+                            .cloned()
+                    })
+                    .collect::<Vec<_>>();
+                if sessions.is_empty() {
+                    return None;
+                }
+                let selected = sessions
+                    .iter()
+                    .map(|session| session.id.clone())
+                    .collect::<Vec<_>>();
+                let active = sessions
+                    .iter()
+                    .filter(|session| {
+                        matches!(
+                            session.lifecycle.as_ref(),
+                            Some(ThreadLifecycle::Active { .. }) | None
+                        ) && can_hide(session)
+                    })
+                    .map(|session| session.id.clone())
+                    .collect::<Vec<_>>();
+                let snoozed = sessions
+                    .iter()
+                    .filter(|session| {
+                        matches!(
+                            session.lifecycle.as_ref(),
+                            Some(ThreadLifecycle::Snoozed { .. })
+                        )
+                    })
+                    .map(|session| session.id.clone())
+                    .collect::<Vec<_>>();
+                let settled = sessions
+                    .iter()
+                    .filter(|session| {
+                        matches!(
+                            session.lifecycle.as_ref(),
+                            Some(ThreadLifecycle::Settled { .. })
+                        )
+                    })
+                    .map(|session| session.id.clone())
+                    .collect::<Vec<_>>();
+                items.push(sidebar_menu_selection(sessions.len(), theme));
+                if !active.is_empty() {
+                    let settle_ids = active.clone();
+                    items.push(sidebar_menu_item(
+                        "sidebar-thread-settle-many",
+                        format!("Settle {}", thread_count(active.len())),
+                        Some("icons/check-check.svg"),
+                        false,
+                        theme,
+                        cx.listener(move |this, _event, _window, cx| {
+                            this.run_sidebar_lifecycle_many(
+                                settle_ids.clone(),
+                                SidebarLifecycleAction::Settle,
+                                cx,
+                            );
+                        }),
+                    ));
+                    for (index, (label, wake_at)) in snooze_presets().into_iter().enumerate() {
+                        let ids = active.clone();
+                        items.push(sidebar_menu_item(
+                            SharedString::from(format!("sidebar-thread-snooze-many-{index}")),
+                            format!("{label} · {}", thread_count(active.len())),
+                            Some("icons/clock-3.svg"),
+                            false,
+                            theme,
+                            cx.listener(move |this, _event, _window, cx| {
+                                this.run_sidebar_lifecycle_many(
+                                    ids.clone(),
+                                    SidebarLifecycleAction::Snooze(wake_at),
+                                    cx,
+                                );
+                            }),
+                        ));
+                    }
+                }
+                if !snoozed.is_empty() {
+                    let ids = snoozed.clone();
+                    items.push(sidebar_menu_item(
+                        "sidebar-thread-wake-many",
+                        format!("Wake {}", thread_count(snoozed.len())),
+                        Some("icons/bell.svg"),
+                        false,
+                        theme,
+                        cx.listener(move |this, _event, _window, cx| {
+                            this.run_sidebar_lifecycle_many(
+                                ids.clone(),
+                                SidebarLifecycleAction::Wake,
+                                cx,
+                            );
+                        }),
+                    ));
+                }
+                if !settled.is_empty() {
+                    let ids = settled.clone();
+                    items.push(sidebar_menu_item(
+                        "sidebar-thread-unsettle-many",
+                        format!("Un-settle {}", thread_count(settled.len())),
+                        Some("icons/check-check.svg"),
+                        false,
+                        theme,
+                        cx.listener(move |this, _event, _window, cx| {
+                            this.run_sidebar_lifecycle_many(
+                                ids.clone(),
+                                SidebarLifecycleAction::Unsettle,
+                                cx,
+                            );
+                        }),
+                    ));
+                }
+                items.push(sidebar_menu_rule(theme));
+                items.push(sidebar_menu_item(
+                    "sidebar-thread-archive-many",
+                    format!("Delete {} threads", selected.len()),
+                    Some("icons/trash-2.svg"),
+                    true,
+                    theme,
+                    cx.listener(move |this, _event, _window, cx| {
+                        this.archive_sidebar_threads(selected.clone(), cx);
                     }),
                 ));
             }
@@ -824,6 +1102,22 @@ fn sidebar_menu_item(
         })
         .child(label.into())
         .into_any_element()
+}
+
+fn sidebar_menu_selection(count: usize, theme: crate::Theme) -> AnyElement {
+    div()
+        .h(px(28.0))
+        .flex()
+        .items_center()
+        .px(px(9.0))
+        .text_size(px(11.5))
+        .text_color(theme.text_3.hsla())
+        .child(format!("{count} selected"))
+        .into_any_element()
+}
+
+fn thread_count(count: usize) -> String {
+    format!("{count} {}", if count == 1 { "thread" } else { "threads" })
 }
 
 fn sidebar_menu_rule(theme: crate::Theme) -> AnyElement {

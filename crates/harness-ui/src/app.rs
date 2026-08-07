@@ -19,14 +19,17 @@ use crate::model_selection::{
 };
 use crate::preferences::{NativePreferences, SourceSelection, ThemePreference};
 use crate::preview_capture::PreviewCaptureRuntime;
-use crate::sidebar::{SidebarActions, SidebarMenuRequest, SidebarProps, sidebar};
+use crate::sidebar::{
+    SelectionModifiers, SidebarActions, SidebarMenuRequest, SidebarProps, ordered_inbox_ids,
+    sidebar,
+};
 use crate::theme::{TITLEBAR_HEIGHT, Theme, ThemeMode};
 use crate::zoom::{self, px};
 use anyhow::Result;
 use command_palette::{CommandPaletteState, CommandScope};
 use gpui::{
-    Animation, AnimationExt, App, Application, Bounds, Context, Entity, FocusHandle, FontWeight,
-    KeyDownEvent, MouseButton, PathPromptOptions, Render, TitlebarOptions, Window,
+    Animation, AnimationExt, App, Application, Bounds, Context, Entity, FocusHandle, Focusable,
+    FontWeight, KeyDownEvent, MouseButton, PathPromptOptions, Render, TitlebarOptions, Window,
     WindowAppearance, WindowBackgroundAppearance, WindowBounds, WindowOptions, div, point,
     prelude::*, size, svg,
 };
@@ -960,6 +963,17 @@ impl HarnessApp {
     }
 
     fn select_next_active_or_draft(&mut self, excluded_thread_id: &str, cx: &mut Context<Self>) {
+        self.select_next_active_or_draft_excluding(
+            &HashSet::from([excluded_thread_id.to_owned()]),
+            cx,
+        );
+    }
+
+    pub(super) fn select_next_active_or_draft_excluding(
+        &mut self,
+        excluded_thread_ids: &HashSet<String>,
+        cx: &mut Context<Self>,
+    ) {
         let project_path = self.active_project_path.clone();
         let next = self
             .state
@@ -967,7 +981,7 @@ impl HarnessApp {
             .iter()
             .flat_map(|project| project.sessions.iter())
             .filter(|session| {
-                session.id != excluded_thread_id
+                !excluded_thread_ids.contains(&session.id)
                     && matches!(
                         session.lifecycle.as_ref(),
                         Some(harness_protocol::ThreadLifecycle::Active { .. }) | None
@@ -1379,8 +1393,57 @@ impl HarnessApp {
             .retain(|thread_id, _| live.contains(thread_id));
     }
 
+    fn handle_sidebar_search_key(
+        &mut self,
+        event: &KeyDownEvent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.state.sidebar_settings.mode != SidebarMode::Inbox
+            || !self
+                .sidebar_search
+                .read(cx)
+                .focus_handle(cx)
+                .is_focused(window)
+        {
+            return;
+        }
+        if event.keystroke.key.eq_ignore_ascii_case("escape") {
+            if !self.sidebar_search.read(cx).value().is_empty() {
+                cx.stop_propagation();
+                self.sidebar_search.update(cx, |input, cx| {
+                    input.set_value(String::new(), window, cx);
+                });
+            }
+            return;
+        }
+        let first = event.keystroke.key.eq_ignore_ascii_case("down");
+        let last = event.keystroke.key.eq_ignore_ascii_case("up");
+        if !first && !last {
+            return;
+        }
+        let query = self.sidebar_search.read(cx).value();
+        let ordered = ordered_inbox_ids(
+            &self.state.projects,
+            self.sidebar_scope.as_deref(),
+            query.as_ref(),
+        );
+        let target = if first {
+            ordered.first()
+        } else {
+            ordered.last()
+        };
+        if let Some(focus) =
+            target.and_then(|thread_id| self.sidebar_controls.row_focus.get(thread_id).cloned())
+        {
+            cx.stop_propagation();
+            focus.focus(window);
+        }
+    }
+
     fn sidebar_actions(&self, cx: &Context<Self>) -> SidebarActions {
         let select_view = cx.weak_entity();
+        let choose_view = select_view.clone();
         let new_chat_view = select_view.clone();
         let new_project_view = select_view.clone();
         let search_view = select_view.clone();
@@ -1391,6 +1454,9 @@ impl HarnessApp {
         let toggle_project_sessions_view = select_view.clone();
         let new_chat_in_project_view = select_view.clone();
         let settle_thread_view = select_view.clone();
+        let wake_thread_view = select_view.clone();
+        let unsettle_thread_view = select_view.clone();
+        let rename_thread_view = select_view.clone();
         let open_menu_view = select_view.clone();
         let toggle_snoozed_view = select_view.clone();
         let toggle_settled_view = select_view.clone();
@@ -1400,6 +1466,11 @@ impl HarnessApp {
         SidebarActions {
             select_session: Rc::new(move |thread_id, cx| {
                 let _ = select_view.update(cx, |this, cx| this.select_session(thread_id, cx));
+            }),
+            choose_session: Rc::new(move |thread_id, modifiers: SelectionModifiers, cx| {
+                let _ = choose_view.update(cx, |this, cx| {
+                    this.choose_inbox_session(thread_id, modifiers, cx);
+                });
             }),
             new_chat: Rc::new(move |cx| {
                 let _ = new_chat_view.update(cx, |this, cx| this.start_new_chat(cx));
@@ -1463,6 +1534,23 @@ impl HarnessApp {
                 let _ = settle_thread_view.update(cx, |this, cx| {
                     let update = this.state.settle_thread(thread_id);
                     this.apply_client_update(update, cx);
+                });
+            }),
+            wake_thread: Rc::new(move |thread_id, cx| {
+                let _ = wake_thread_view.update(cx, |this, cx| {
+                    let update = this.state.unsnooze_thread(thread_id);
+                    this.apply_client_update(update, cx);
+                });
+            }),
+            unsettle_thread: Rc::new(move |thread_id, cx| {
+                let _ = unsettle_thread_view.update(cx, |this, cx| {
+                    let update = this.state.unsettle_thread(thread_id);
+                    this.apply_client_update(update, cx);
+                });
+            }),
+            rename_thread: Rc::new(move |thread_id, cx| {
+                let _ = rename_thread_view.update(cx, |this, cx| {
+                    this.begin_rename_thread(thread_id, cx);
                 });
             }),
             open_menu: Rc::new(move |request: SidebarMenuRequest, position, cx| {
@@ -1590,6 +1678,18 @@ impl Render for HarnessApp {
         self.prepare_session_search_input(window, cx);
         self.prepare_sidebar_controls_input(window, cx);
         self.sync_sidebar_status_clocks();
+        let sidebar_query = self.sidebar_search.read(cx).value().to_string();
+        let ordered_sidebar_ids = if self.state.sidebar_settings.mode == SidebarMode::Inbox {
+            ordered_inbox_ids(
+                &self.state.projects,
+                self.sidebar_scope.as_deref(),
+                &sidebar_query,
+            )
+        } else {
+            Vec::new()
+        };
+        self.sidebar_controls
+            .sync_inbox_rows(&ordered_sidebar_ids, cx);
         if self.focus_composer_pending {
             self.chat
                 .update(cx, |chat, cx| chat.focus_composer(window, cx));
@@ -1610,7 +1710,6 @@ impl Render for HarnessApp {
             .map(|choice| choice.source_name.clone())
             .unwrap_or_else(|| "Personal Harness".into());
         let usage_limits = self.stage_controls.usage_limits();
-        let sidebar_query = self.sidebar_search.read(cx).value();
         let rail = sidebar(
             SidebarProps {
                 theme: self.theme,
@@ -1621,13 +1720,15 @@ impl Render for HarnessApp {
                 mode: self.state.sidebar_settings.mode,
                 selected_thread_id: self.selected_thread_id.as_deref(),
                 selected_scope: self.sidebar_scope.as_deref(),
-                query: sidebar_query.as_ref(),
+                query: &sidebar_query,
                 search_input: self.sidebar_search.clone(),
                 scope_open: self.scope_open,
                 new_thread_picker: self.new_thread_picker,
                 collapsed_projects: &self.collapsed_projects,
                 expanded_project_sessions: &self.expanded_project_sessions,
                 status_clocks: &self.sidebar_status_clocks,
+                selected_ids: &self.sidebar_controls.selected_ids,
+                row_focus: &self.sidebar_controls.row_focus,
                 snoozed_expanded: self.snoozed_expanded,
                 settled_expanded: self.settled_expanded,
                 settled_limit: self.settled_limit,
@@ -1704,6 +1805,9 @@ impl Render for HarnessApp {
             .text_size(px(13.5))
             .text_color(self.theme.text.hsla())
             .bg(self.theme.background.hsla())
+            .capture_key_down(cx.listener(|this, event: &KeyDownEvent, window, cx| {
+                this.handle_sidebar_search_key(event, window, cx);
+            }))
             .on_key_down(cx.listener(|this, event: &KeyDownEvent, window, cx| {
                 this.handle_global_shortcut(event, window, cx);
             }))
