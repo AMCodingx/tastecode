@@ -1,4 +1,5 @@
 use super::*;
+use crate::motion_icon::motion_icon;
 use alacritty_terminal::Term;
 use alacritty_terminal::event::{Event as TerminalEvent, EventListener, WindowSize};
 use alacritty_terminal::grid::Scroll;
@@ -1188,8 +1189,10 @@ fn terminal_action_button(
     theme: Theme,
     action: impl Fn(&gpui::ClickEvent, &mut Window, &mut App) + 'static,
 ) -> AnyElement {
+    let hover_group = SharedString::from(id);
     div()
         .id(id)
+        .group(hover_group.clone())
         .size(px(22.0))
         .flex_none()
         .flex()
@@ -1210,7 +1213,13 @@ fn terminal_action_button(
                 .active(|style| style.top(px(1.0)))
                 .on_click(action)
         })
-        .child(svg().path(icon).size(px(icon_size)))
+        .child(motion_icon(
+            SharedString::from(format!("{id}-icon")),
+            icon,
+            icon_size,
+            hover_group,
+            theme,
+        ))
         .into_any_element()
 }
 

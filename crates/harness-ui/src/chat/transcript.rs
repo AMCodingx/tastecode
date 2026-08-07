@@ -2,6 +2,7 @@ use super::markdown::{StreamRevealBatch, markdown_view};
 use super::presentation::{RowPresentation, TurnPresentation, is_activity};
 use super::thinking_orb::{ThinkingOrbState, thinking_orb};
 use super::{ChatEvent, ChatView, TranscriptScrollMode};
+use crate::motion_icon::{IconTransformation, motion_icon};
 use crate::theme::{CHAT_WIDTH, Theme, ThemeMode};
 use crate::zoom::px;
 use chrono::{DateTime, Local};
@@ -805,7 +806,13 @@ fn completion_rail(
                                 .gap(px(10.0))
                                 .text_size(px(15.0))
                                 .text_color(theme.text_3.hsla())
-                                .child(transcript_svg("icons/file-pen-line.svg", 15.0))
+                                .child(motion_icon(
+                                    SharedString::from(format!("activity-file-icon:{}", item.id)),
+                                    "icons/file-pen-line.svg",
+                                    15.0,
+                                    "activity-file-icon-direct-hover",
+                                    theme,
+                                ))
                                 .child("Edited files")
                                 .into_any_element(),
                         }
@@ -850,8 +857,11 @@ fn completion_summary(
     theme: Theme,
     on_click: Option<ClickHandler>,
 ) -> AnyElement {
+    let id = SharedString::from(id);
+    let icon_id = SharedString::from(format!("{id}-icon"));
     div()
-        .id(SharedString::from(id))
+        .id(id.clone())
+        .group(id.clone())
         .min_h(px(36.0))
         .pt(px(1.0))
         .px(px(2.0))
@@ -869,9 +879,12 @@ fn completion_summary(
         .child(format!("Worked for {}", worked_for(elapsed_ms)))
         .when(on_click.is_some(), |summary| {
             summary.child(
-                transcript_svg("icons/chevron-right.svg", 15.0).when(expanded, |icon| {
-                    icon.with_transformation(Transformation::rotate(percentage(0.25)))
-                }),
+                motion_icon(icon_id, "icons/chevron-right.svg", 15.0, id.clone(), theme)
+                    .with_transformation(IconTransformation::rotate(if expanded {
+                        90.0
+                    } else {
+                        0.0
+                    })),
             )
         })
         .when_some(on_click, |summary, on_click| {
@@ -952,6 +965,8 @@ fn auxiliary_item(snapshot: &TranscriptRowSnapshot, view: Entity<ChatView>) -> A
     let output = item.text.clone().unwrap_or_default();
     let icon = glyph(item);
     let failed = item.item_type == ItemType::Error;
+    let hover_group = SharedString::from(format!("aux-row-hover:{}", item.id));
+    let icon_id = SharedString::from(format!("aux-row-icon:{}", item.id));
     let label_font = if live {
         snapshot.interface_font.clone()
     } else {
@@ -963,6 +978,7 @@ fn auxiliary_item(snapshot: &TranscriptRowSnapshot, view: Entity<ChatView>) -> A
         .child(
             div()
                 .id(SharedString::from(format!("aux-row:{}", item.id)))
+                .group(hover_group.clone())
                 .min_h(px(if live { 30.0 } else { 0.0 }))
                 .py(px(if live { 2.0 } else { 1.0 }))
                 .flex()
@@ -994,7 +1010,13 @@ fn auxiliary_item(snapshot: &TranscriptRowSnapshot, view: Entity<ChatView>) -> A
                         .flex()
                         .items_center()
                         .justify_center()
-                        .child(transcript_svg(icon, if live { 16.0 } else { 13.0 })),
+                        .child(motion_icon(
+                            icon_id,
+                            icon,
+                            if live { 16.0 } else { 13.0 },
+                            hover_group,
+                            theme,
+                        )),
                 )
                 .child(
                     div()
@@ -1077,8 +1099,11 @@ fn transcript_action_button(
     theme: Theme,
     on_click: impl Fn(&gpui::ClickEvent, &mut Window, &mut App) + 'static,
 ) -> AnyElement {
+    let id = SharedString::from(id);
+    let icon_id = SharedString::from(format!("{id}-icon"));
     div()
-        .id(SharedString::from(id))
+        .id(id.clone())
+        .group(id.clone())
         .size(px(28.0))
         .flex()
         .items_center()
@@ -1092,12 +1117,8 @@ fn transcript_action_button(
                 .text_color(theme.text_2.hsla())
         })
         .on_click(on_click)
-        .child(transcript_svg(icon, 15.0))
+        .child(motion_icon(icon_id, icon, 15.0, id, theme))
         .into_any_element()
-}
-
-fn transcript_svg(path: &'static str, size: f32) -> gpui::Svg {
-    svg().path(path).size(px(size))
 }
 
 fn checkpoint_for<'a>(

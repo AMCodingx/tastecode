@@ -1,9 +1,10 @@
 use super::ChatView;
 use crate::chrome;
+use crate::motion_icon::motion_icon;
 use crate::zoom::px;
 use gpui::{
     Animation, AnimationExt, AnyElement, Context, Entity, Focusable, FontWeight, KeyDownEvent,
-    SharedString, Window, div, prelude::*, relative, svg,
+    SharedString, Window, div, prelude::*, relative,
 };
 use gpui_component::Sizable as _;
 use gpui_component::input::{Input, InputEvent, InputState};
@@ -408,6 +409,7 @@ fn search_button(
 ) -> AnyElement {
     div()
         .id(id)
+        .group(id)
         .size(px(28.0))
         .flex_none()
         .flex()
@@ -423,7 +425,13 @@ fn search_button(
         })
         .active(|style| style.opacity(0.72))
         .on_click(listener)
-        .child(svg().path(icon_path).size(px(12.0)))
+        .child(motion_icon(
+            SharedString::from(format!("{id}-icon")),
+            icon_path,
+            12.0,
+            id,
+            theme,
+        ))
         .into_any_element()
 }
 
