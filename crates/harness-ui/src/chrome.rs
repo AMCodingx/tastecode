@@ -1,8 +1,8 @@
 use crate::theme::{Theme, ThemeMode};
 use crate::zoom::px;
 use gpui::{
-    AnyElement, Background, BoxShadow, Hsla, div, linear_color_stop, linear_gradient, point,
-    prelude::*,
+    AnyElement, Background, BoxShadow, Hsla, InteractiveElement, SharedString, div,
+    linear_color_stop, linear_gradient, point, prelude::*,
 };
 
 pub(crate) fn raised(theme: Theme) -> Background {
@@ -162,6 +162,54 @@ pub(crate) fn top_highlight(theme: Theme) -> AnyElement {
             ThemeMode::Dark => gpui::white().opacity(0.05),
             ThemeMode::Light => gpui::white().opacity(0.96),
         })
+        .into_any_element()
+}
+
+pub(crate) fn interactive_top_highlight(
+    theme: Theme,
+    group: impl Into<SharedString>,
+    visible: bool,
+) -> AnyElement {
+    let group = group.into();
+    let id: SharedString = format!("{group}:top-highlight").into();
+    div()
+        .id(id)
+        .absolute()
+        .top_0()
+        .left_0()
+        .right_0()
+        .h(px(1.0))
+        .bg(match theme.mode {
+            ThemeMode::Dark => gpui::white().opacity(0.05),
+            ThemeMode::Light => gpui::white().opacity(0.96),
+        })
+        .opacity(if visible { 1.0 } else { 0.0 })
+        .group_hover(group.clone(), |highlight| highlight.opacity(1.0))
+        .group_active(group, |highlight| highlight.opacity(0.0))
+        .into_any_element()
+}
+
+pub(crate) fn interactive_inset_shade(theme: Theme, group: impl Into<SharedString>) -> AnyElement {
+    let group = group.into();
+    let id: SharedString = format!("{group}:inset-shade").into();
+    let (from, to): (Hsla, Hsla) = match theme.mode {
+        ThemeMode::Dark => (gpui::black().opacity(0.34), gpui::transparent_black()),
+        ThemeMode::Light => (gpui::rgba(0x18181b14).into(), gpui::transparent_black()),
+    };
+    div()
+        .id(id)
+        .absolute()
+        .top_0()
+        .left_0()
+        .right_0()
+        .h(px(3.0))
+        .bg(linear_gradient(
+            180.0,
+            linear_color_stop(from, 0.0),
+            linear_color_stop(to, 1.0),
+        ))
+        .opacity(0.0)
+        .group_active(group, |shade| shade.opacity(1.0))
         .into_any_element()
 }
 

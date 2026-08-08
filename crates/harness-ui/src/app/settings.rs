@@ -234,6 +234,7 @@ impl HarnessApp {
                 div()
                     .id("settings-back")
                     .group("settings-back-hover")
+                    .relative()
                     .h(px(30.0))
                     .w_full()
                     .flex()
@@ -250,13 +251,17 @@ impl HarnessApp {
                             .shadow(chrome::shadows(theme))
                             .text_color(theme.text.hsla())
                     })
-                    .active(move |style| {
-                        style
-                            .top(px(1.0))
-                            .bg(chrome::recessed(theme))
-                            .shadow(Vec::new())
-                    })
+                    .active(move |style| style.top(px(1.0)).shadow(Vec::new()))
                     .on_click(move |_event, _window, cx| back(cx))
+                    .child(chrome::interactive_top_highlight(
+                        theme,
+                        "settings-back-hover",
+                        false,
+                    ))
+                    .child(chrome::interactive_inset_shade(
+                        theme,
+                        "settings-back-hover",
+                    ))
                     .child(motion_icon(
                         "settings-back-icon",
                         "icons/arrow-left.svg",
@@ -3646,7 +3651,6 @@ fn settings_nav_item(
         .when(selected, |item| {
             item.bg(chrome::raised(theme))
                 .shadow(chrome::shadows(theme))
-                .child(chrome::top_highlight(theme))
         })
         .text_size(px(13.5))
         .text_color(if selected {
@@ -3661,13 +3665,14 @@ fn settings_nav_item(
                 .shadow(chrome::shadows(theme))
                 .text_color(theme.text.hsla())
         })
-        .active(move |style| {
-            style
-                .top(px(1.0))
-                .bg(chrome::recessed(theme))
-                .shadow(Vec::new())
-        })
+        .active(move |style| style.top(px(1.0)).shadow(Vec::new()))
         .on_click(move |_event, _window, cx| action(cx))
+        .child(chrome::interactive_top_highlight(
+            theme,
+            hover_group.clone(),
+            selected,
+        ))
+        .child(chrome::interactive_inset_shade(theme, hover_group.clone()))
         .child(
             div()
                 .size(px(15.0))

@@ -619,6 +619,7 @@ fn search_filter(
             div()
                 .id(id)
                 .group(hover_group.clone())
+                .relative()
                 .h(px(27.0))
                 .max_w(px(180.0))
                 .flex()
@@ -634,6 +635,7 @@ fn search_filter(
                 })
                 .bg(chrome::raised(theme))
                 .shadow(chrome::shadows(theme))
+                .overflow_hidden()
                 .text_size(px(11.5))
                 .text_color(theme.text_2.hsla())
                 .cursor_pointer()
@@ -643,6 +645,7 @@ fn search_filter(
                         .text_color(theme.text.hsla())
                 })
                 .on_click(listener)
+                .child(chrome::top_highlight(theme))
                 .child(div().min_w(px(0.0)).flex_1().truncate().child(value))
                 .child(motion_icon(
                     icon_id,
@@ -718,6 +721,7 @@ fn search_result_row(
     theme: crate::Theme,
     listener: impl Fn(&gpui::ClickEvent, &mut Window, &mut gpui::App) + 'static,
 ) -> AnyElement {
+    let interaction_group: SharedString = format!("session-search-result:{index}").into();
     let snippet = result.snippet.into_iter().enumerate().map(|(index, part)| {
         div()
             .id(("search-snippet", index))
@@ -733,6 +737,8 @@ fn search_result_row(
     });
     div()
         .id(("session-search-result", index))
+        .group(interaction_group.clone())
+        .relative()
         .w_full()
         .flex()
         .flex_col()
@@ -747,13 +753,14 @@ fn search_result_row(
                 .bg(chrome::raised(theme))
                 .shadow(chrome::shadows(theme))
         })
-        .active(move |style| {
-            style
-                .top(px(1.0))
-                .bg(chrome::recessed(theme))
-                .shadow(Vec::new())
-        })
+        .active(move |style| style.top(px(1.0)).shadow(Vec::new()))
         .on_click(listener)
+        .child(chrome::interactive_top_highlight(
+            theme,
+            interaction_group.clone(),
+            false,
+        ))
+        .child(chrome::interactive_inset_shade(theme, interaction_group))
         .child(
             div()
                 .truncate()
