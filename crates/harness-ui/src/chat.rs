@@ -5326,7 +5326,11 @@ impl Render for ChatView {
         let terminal_pane = self.terminal_pane(window, cx);
         let thread_search = self.thread_search_overlay(cx);
         let markdown_table_overlay = self.markdown_table_overlay(window, cx);
-        div()
+        let is_new_session = self
+            .session
+            .as_ref()
+            .is_some_and(|session| session.thread_id.is_none());
+        let view = div()
             .size_full()
             .min_w(px(0.0))
             .relative()
@@ -5347,19 +5351,69 @@ impl Render for ChatView {
             }))
             .on_key_down(cx.listener(|this, event, window, cx| {
                 this.handle_thread_navigation_key(event, window, cx);
-            }))
-            .child(
-                div()
-                    .relative()
-                    .flex_1()
-                    .min_h(px(0.0))
-                    .child(self.timeline(cx))
-                    .when_some(thread_search, |thread, search| thread.child(search)),
-            )
-            .when_some(terminal_pane, |view, terminal| view.child(terminal))
-            .child(self.composer(window, cx))
-            .when_some(markdown_table_overlay, |view, overlay| view.child(overlay))
+            }));
+        if is_new_session {
+            return view
+                .justify_center()
+                .pb(px(new_session_optical_padding(f32::from(
+                    window.viewport_size().height,
+                ))))
+                .child(self.new_session_prompt(window))
+                .child(self.composer(window, cx))
+                .when_some(markdown_table_overlay, |view, overlay| view.child(overlay));
+        }
+        view.child(
+            div()
+                .relative()
+                .flex_1()
+                .min_h(px(0.0))
+                .child(self.timeline(cx))
+                .when_some(thread_search, |thread, search| thread.child(search)),
+        )
+        .when_some(terminal_pane, |view, terminal| view.child(terminal))
+        .child(self.composer(window, cx))
+        .when_some(markdown_table_overlay, |view, overlay| view.child(overlay))
     }
+}
+
+impl ChatView {
+    fn new_session_prompt(&self, window: &Window) -> AnyElement {
+        let (label, text_size, text_color) = if let Some(error) = &self.error {
+            (error.clone(), 12.5, self.theme.text_3.hsla())
+        } else {
+            let project_name = self
+                .session
+                .as_ref()
+                .map_or("a project", |session| session.project_name.as_str());
+            (
+                format!("What should we build in {project_name}?"),
+                new_session_prompt_size(f32::from(window.viewport_size().width)),
+                self.theme.text.hsla(),
+            )
+        };
+        div()
+            .w_full()
+            .flex_none()
+            .flex()
+            .items_center()
+            .justify_center()
+            .p(px(24.0))
+            .text_center()
+            .text_size(px(text_size))
+            .line_height(relative(1.12))
+            .font_weight(FontWeight(400.0))
+            .text_color(text_color)
+            .child(label)
+            .into_any_element()
+    }
+}
+
+fn new_session_optical_padding(viewport_height: f32) -> f32 {
+    (viewport_height * 0.16).clamp(0.0, 148.0)
+}
+
+fn new_session_prompt_size(viewport_width: f32) -> f32 {
+    (viewport_width * 0.024).clamp(20.0, 30.0)
 }
 
 fn approval_title(kind: ApprovalKind) -> &'static str {
@@ -7223,6 +7277,15 @@ mod tests {
         assert!((composer_height_for_line_count(10) - 241.0).abs() < 0.001);
         assert_eq!(composer_height_for_line_count(11), COMPOSER_MAX_HEIGHT);
         assert_eq!(composer_height_for_line_count(100), COMPOSER_MAX_HEIGHT);
+    }
+
+    #[test]
+    fn new_session_geometry_matches_the_web_stage() {
+        assert_eq!(new_session_optical_padding(800.0), 128.0);
+        assert_eq!(new_session_optical_padding(1_000.0), 148.0);
+        assert_eq!(new_session_prompt_size(700.0), 20.0);
+        assert_eq!(new_session_prompt_size(1_000.0), 24.0);
+        assert_eq!(new_session_prompt_size(1_400.0), 30.0);
     }
 
     #[test]
