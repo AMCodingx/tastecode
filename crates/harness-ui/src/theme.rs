@@ -5,6 +5,7 @@ use std::time::Duration;
 pub const RAIL_WIDTH: f32 = 248.0;
 pub const CHAT_WIDTH: f32 = 808.0;
 pub const TITLEBAR_HEIGHT: f32 = 34.0;
+pub const BASE_LINE_HEIGHT: f32 = 1.55;
 pub const RADIUS_SM: f32 = 3.0;
 pub const RADIUS_MD: f32 = 5.0;
 pub const RADIUS_LG: f32 = 8.0;
@@ -429,6 +430,7 @@ mod tests {
         assert_eq!(RAIL_WIDTH, 248.0);
         assert_eq!(CHAT_WIDTH, 808.0);
         assert_eq!(TITLEBAR_HEIGHT, 34.0);
+        assert_eq!(BASE_LINE_HEIGHT, 1.55);
         assert_eq!(RADIUS_SM, 3.0);
         assert_eq!(RADIUS_MD, 5.0);
         assert_eq!(RADIUS_LG, 8.0);

@@ -23,7 +23,7 @@ use crate::sidebar::{
     SelectionModifiers, SessionDropPosition, SidebarActions, SidebarMenuRequest, SidebarProps,
     glass_edge_color, ordered_inbox_ids, sidebar, sidebar_bloom,
 };
-use crate::theme::{TITLEBAR_HEIGHT, Theme, ThemeMode};
+use crate::theme::{BASE_LINE_HEIGHT, TITLEBAR_HEIGHT, Theme, ThemeMode};
 use crate::zoom::{self, px};
 use anyhow::Result;
 use command_palette::{CommandPaletteState, CommandScope};
@@ -31,7 +31,8 @@ use gpui::{
     Animation, AnimationExt, App, Application, Bounds, Context, CursorStyle, Entity, FocusHandle,
     Focusable, KeyDownEvent, MouseButton, MouseDownEvent, MouseMoveEvent, PathPromptOptions,
     Pixels, Render, SharedString, TitlebarOptions, Window, WindowAppearance,
-    WindowBackgroundAppearance, WindowBounds, WindowOptions, div, point, prelude::*, size,
+    WindowBackgroundAppearance, WindowBounds, WindowOptions, div, point, prelude::*, relative,
+    size,
 };
 use gpui_component::Root;
 use gpui_component::input::{InputEvent, InputState};
@@ -2315,6 +2316,7 @@ impl Render for HarnessApp {
             .overflow_hidden()
             .font_family(self.interface_font())
             .text_size(px(13.5))
+            .line_height(relative(BASE_LINE_HEIGHT))
             .text_color(self.theme.text.hsla())
             .bg(self.theme.background.hsla())
             .on_mouse_move(cx.listener(|this, event, _window, cx| {
