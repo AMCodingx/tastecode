@@ -61,7 +61,9 @@ const SEND_BEAM_DURATION: Duration = Duration::from_millis(1_960);
 const COMPOSER_DOCK_DURATION: Duration = Duration::from_millis(180);
 const COMPOSER_TOOLS_HEIGHT: f32 = 46.0;
 const COMPOSER_DOCKED_BOTTOM_PADDING: f32 = 12.0;
-const EFFORT_SLIDER_WIDTH: f32 = 314.0;
+const MODEL_PICKER_WIDTH: f32 = 382.0;
+const MODEL_CONTROLS_PADDING: f32 = 8.0;
+const EFFORT_SLIDER_WIDTH: f32 = MODEL_PICKER_WIDTH - MODEL_CONTROLS_PADDING * 2.0;
 const EFFORT_SLIDER_HEIGHT: f32 = 36.0;
 const EFFORT_SLIDER_INSET: f32 = 2.0;
 const EFFORT_SLIDER_MIN_FILL: f32 = 44.0;
@@ -5778,7 +5780,7 @@ impl ChatView {
             .absolute()
             .right(px(38.0))
             .bottom(px(menu_bottom))
-            .w(px(382.0))
+            .w(px(MODEL_PICKER_WIDTH))
             .max_h(px(520.0))
             .rounded(px(RADIUS_XL))
             .border_1()
@@ -5803,8 +5805,8 @@ impl ChatView {
                 Animation::new(theme.motion.fast).with_easing(crate::theme::web_ease_out),
                 move |menu, delta| {
                     let scale = menu_entry_scale(delta);
-                    menu.right(px(38.0 + 191.0 * (1.0 - scale)))
-                        .w(px(382.0 * scale))
+                    menu.right(px(38.0 + MODEL_PICKER_WIDTH / 2.0 * (1.0 - scale)))
+                        .w(px(MODEL_PICKER_WIDTH * scale))
                         .rounded(px(RADIUS_XL * scale))
                         .opacity(delta)
                         .bottom(px(menu_bottom - 2.0 * (1.0 - delta)))
@@ -9148,8 +9150,8 @@ mod tests {
         assert_eq!(effort_index_from_pointer(412.0, left, 314.0, 4), 3);
         assert_eq!(effort_index_from_pointer(500.0, left, 314.0, 4), 3);
         assert!((effort_fill_width(0, 4) - 44.0).abs() < f32::EPSILON);
-        assert!((effort_fill_width(3, 4) - 310.0).abs() < f32::EPSILON);
-        assert!((effort_fill_width(0, 1) - 177.0).abs() < f32::EPSILON);
+        assert!((effort_fill_width(3, 4) - 362.0).abs() < f32::EPSILON);
+        assert!((effort_fill_width(0, 1) - 203.0).abs() < f32::EPSILON);
     }
 
     #[test]
