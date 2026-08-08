@@ -286,7 +286,7 @@ impl ChatView {
                                 .hover(move |style| {
                                     style
                                         .bg(theme.surface_3.hsla())
-                                        .border_color(theme.text_3.hsla())
+                                        .border_color(jump_hover_border(theme))
                                 })
                                 .on_click(cx.listener(|this, _event, _window, cx| {
                                     this.jump_to_latest(cx);
@@ -467,6 +467,10 @@ fn jump_shadow(theme: Theme) -> Vec<BoxShadow> {
             },
         ],
     }
+}
+
+fn jump_hover_border(theme: Theme) -> gpui::Hsla {
+    theme.text_3.mix_srgb(theme.line_strong, 0.35).hsla()
 }
 
 fn render_transcript_row(
@@ -1385,6 +1389,15 @@ mod tests {
         assert_eq!(WORKING_RAIL_ENTRY_DURATION, Duration::from_millis(260));
         assert_eq!(TURN_SETTLE_DURATION, Duration::from_millis(360));
         assert_eq!(TURN_SETTLE_LIFETIME, Duration::from_millis(520));
+    }
+
+    #[test]
+    fn jump_hover_border_matches_the_web_color_mix() {
+        assert_eq!(jump_hover_border(Theme::dark()), gpui::rgb(0x484848).into());
+        assert_eq!(
+            jump_hover_border(Theme::light()),
+            gpui::rgb(0xb8b8be).into()
+        );
     }
 
     #[test]
