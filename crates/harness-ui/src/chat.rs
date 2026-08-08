@@ -8562,7 +8562,11 @@ fn design_shimmer_label(progress: f32) -> StyledText {
 }
 
 fn model_picker_background(theme: Theme) -> Background {
-    chrome::menu_background(theme)
+    if theme.mode == ThemeMode::Dark {
+        theme.surface_2.hsla().into()
+    } else {
+        chrome::menu_background(theme)
+    }
 }
 
 fn model_picker_controls_background(theme: Theme) -> Background {
@@ -9976,7 +9980,7 @@ mod tests {
     }
 
     #[test]
-    fn model_picker_keeps_fixed_menu_chrome_over_custom_backdrops() {
+    fn model_picker_keeps_backdrop_panel_and_transparent_controls_distinct() {
         let dark = Theme::new(
             ThemeMode::Dark,
             crate::theme::Backdrop::Slate,
@@ -9988,7 +9992,7 @@ mod tests {
             crate::theme::Accent::Neutral,
         );
 
-        assert_eq!(model_picker_background(dark), chrome::menu_background(dark));
+        assert_eq!(model_picker_background(dark), dark.surface_2.hsla().into());
         assert_eq!(
             model_picker_controls_background(dark),
             gpui::transparent_black().into()
