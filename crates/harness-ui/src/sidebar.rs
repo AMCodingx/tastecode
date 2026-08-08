@@ -7,9 +7,9 @@ use crate::theme::{ColorToken, RADIUS_MD, RADIUS_SM, Theme, ThemeMode};
 use crate::zoom::px;
 use chrono::{DateTime, Datelike, Local};
 use gpui::{
-    Animation, AnimationExt, AnyElement, App, Background, BoxShadow, Entity, FocusHandle,
-    FontWeight, Hsla, KeyDownEvent, Pixels, Point, SharedString, Window, div, linear_color_stop,
-    linear_gradient, point, prelude::*, relative,
+    Animation, AnimationExt, AnyElement, App, Background, Bounds, BoxShadow, Entity, FocusHandle,
+    FontWeight, Hsla, KeyDownEvent, Pixels, Point, SharedString, Window, canvas, div,
+    linear_color_stop, linear_gradient, point, prelude::*, relative,
 };
 use gpui_component::Sizable as _;
 use gpui_component::input::{Input, InputState};
@@ -18,6 +18,7 @@ use harness_protocol::{
     ProjectSummary, ProviderId, SessionSummary, SidebarMode, ThreadInboxStatus, ThreadLifecycle,
     UsageLimit,
 };
+use std::cell::Cell;
 use std::collections::HashMap;
 use std::rc::Rc;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -29,7 +30,7 @@ pub(crate) type ChooseSession = Rc<dyn Fn(String, SelectionModifiers, &mut App)>
 pub(crate) type SidebarAction = Rc<dyn Fn(&mut App)>;
 pub(crate) type SelectScope = Rc<dyn Fn(Option<String>, &mut App)>;
 pub(crate) type ProjectAction = Rc<dyn Fn(String, &mut App)>;
-pub(crate) type OpenSidebarMenu = Rc<dyn Fn(SidebarMenuRequest, Point<Pixels>, &mut App)>;
+pub(crate) type OpenSidebarMenu = Rc<dyn Fn(SidebarMenuRequest, SidebarMenuAnchor, &mut App)>;
 pub(crate) type BeginSessionDrag = Rc<dyn Fn(String, &mut Window, &mut App)>;
 pub(crate) type ReorderSession = Rc<dyn Fn(String, String, String, SessionDropPosition, &mut App)>;
 
@@ -42,6 +43,12 @@ pub(crate) enum SidebarMenuRequest {
         thread_ids: Vec<String>,
     },
     Snooze(String),
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) enum SidebarMenuAnchor {
+    Context(Point<Pixels>),
+    Trigger(Bounds<Pixels>),
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -1609,7 +1616,7 @@ fn classic_project(
                                     cx.stop_propagation();
                                     open_menu(
                                         SidebarMenuRequest::Project(menu_path.clone()),
-                                        event.position(),
+                                        SidebarMenuAnchor::Context(event.position()),
                                         cx,
                                     );
                                 } else if event.standard_click() {
@@ -1825,9 +1832,11 @@ fn classic_project_menu_button(
 ) -> AnyElement {
     let hover_group: SharedString = format!("{id}:hover").into();
     let icon_id: SharedString = format!("{id}:icon").into();
+    let (trigger_bounds, bounds_probe) = sidebar_menu_trigger_probe();
     div()
         .id(id)
         .group(hover_group.clone())
+        .relative()
         .size(px(26.0))
         .flex_none()
         .flex()
@@ -1841,8 +1850,13 @@ fn classic_project_menu_button(
         .hover(move |style| style.text_color(theme.text.hsla()))
         .on_click(move |event, _window, cx| {
             cx.stop_propagation();
-            open_menu(request.clone(), event.position(), cx);
+            let anchor = trigger_bounds
+                .get()
+                .map(SidebarMenuAnchor::Trigger)
+                .unwrap_or_else(|| SidebarMenuAnchor::Context(event.position()));
+            open_menu(request.clone(), anchor, cx);
         })
+        .child(bounds_probe)
         .child(motion_icon(
             icon_id,
             "icons/ellipsis.svg",
@@ -1851,6 +1865,19 @@ fn classic_project_menu_button(
             theme,
         ))
         .into_any_element()
+}
+
+fn sidebar_menu_trigger_probe() -> (Rc<Cell<Option<Bounds<Pixels>>>>, AnyElement) {
+    let bounds = Rc::new(Cell::new(None));
+    let captured_bounds = bounds.clone();
+    let probe = canvas(
+        move |value, _, _| captured_bounds.set(Some(value)),
+        |_, _, _, _| {},
+    )
+    .absolute()
+    .inset_0()
+    .into_any_element();
+    (bounds, probe)
 }
 
 fn classic_session_row(
@@ -1906,7 +1933,7 @@ fn classic_session_row(
                     cx.stop_propagation();
                     open_menu(
                         SidebarMenuRequest::Thread(menu_id.clone()),
-                        event.position(),
+                        SidebarMenuAnchor::Context(event.position()),
                         cx,
                     );
                 } else if event.standard_click() {
@@ -2264,8 +2291,10 @@ fn sidebar_menu_button(
     theme: Theme,
     open_menu: OpenSidebarMenu,
 ) -> AnyElement {
+    let (trigger_bounds, bounds_probe) = sidebar_menu_trigger_probe();
     div()
         .id(id)
+        .relative()
         .ml(px(4.0))
         .size(px(25.0))
         .flex()
@@ -2285,8 +2314,13 @@ fn sidebar_menu_button(
         })
         .on_click(move |event, _window, cx| {
             cx.stop_propagation();
-            open_menu(request.clone(), event.position(), cx);
+            let anchor = trigger_bounds
+                .get()
+                .map(SidebarMenuAnchor::Trigger)
+                .unwrap_or_else(|| SidebarMenuAnchor::Context(event.position()));
+            open_menu(request.clone(), anchor, cx);
         })
+        .child(bounds_probe)
         .child("•••")
         .into_any_element()
 }
@@ -2688,7 +2722,11 @@ fn active_inbox_row(
                 .on_click(move |event, _window, cx| {
                     if event.is_right_click() {
                         cx.stop_propagation();
-                        context_menu(context_request.clone(), event.position(), cx);
+                        context_menu(
+                            context_request.clone(),
+                            SidebarMenuAnchor::Context(event.position()),
+                            cx,
+                        );
                     } else if event.standard_click() {
                         if event.click_count() == 2 {
                             cx.stop_propagation();
@@ -2977,9 +3015,11 @@ fn inbox_quick_menu_button(
 ) -> AnyElement {
     let hover_group: SharedString = format!("{id}:hover").into();
     let icon_id: SharedString = format!("{id}:icon").into();
+    let (trigger_bounds, bounds_probe) = sidebar_menu_trigger_probe();
     div()
         .id(id)
         .group(hover_group.clone())
+        .relative()
         .size(px(23.0))
         .flex()
         .items_center()
@@ -2994,8 +3034,13 @@ fn inbox_quick_menu_button(
         })
         .on_click(move |event, _window, cx| {
             cx.stop_propagation();
-            open_menu(request.clone(), event.position(), cx);
+            let anchor = trigger_bounds
+                .get()
+                .map(SidebarMenuAnchor::Trigger)
+                .unwrap_or_else(|| SidebarMenuAnchor::Context(event.position()));
+            open_menu(request.clone(), anchor, cx);
         })
+        .child(bounds_probe)
         .child(motion_icon(icon_id, icon_path, 13.0, hover_group, theme))
         .into_any_element()
 }
@@ -3147,7 +3192,7 @@ fn inbox_row(
                     cx.stop_propagation();
                     open_menu(
                         SidebarMenuRequest::Thread(context_thread_id.to_string()),
-                        event.position(),
+                        SidebarMenuAnchor::Context(event.position()),
                         cx,
                     );
                 }
@@ -3379,7 +3424,11 @@ fn inbox_shelf_row(
                 .on_click(move |event, _window, cx| {
                     if event.is_right_click() {
                         cx.stop_propagation();
-                        open_context_menu(context_request.clone(), event.position(), cx);
+                        open_context_menu(
+                            context_request.clone(),
+                            SidebarMenuAnchor::Context(event.position()),
+                            cx,
+                        );
                     } else if event.standard_click() {
                         if event.click_count() == 2 {
                             cx.stop_propagation();
@@ -3479,7 +3528,7 @@ fn settled_row(
                     cx.stop_propagation();
                     open_menu(
                         SidebarMenuRequest::Thread(context_thread_id.to_string()),
-                        event.position(),
+                        SidebarMenuAnchor::Context(event.position()),
                         cx,
                     );
                 }

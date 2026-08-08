@@ -20,8 +20,8 @@ use crate::motion_icon::motion_icon;
 use crate::preferences::{FontPreference, NativePreferences, SourceSelection, ThemePreference};
 use crate::preview_capture::PreviewCaptureRuntime;
 use crate::sidebar::{
-    SelectionModifiers, SessionDropPosition, SidebarActions, SidebarMenuRequest, SidebarProps,
-    glass_edge_color, ordered_inbox_ids, sidebar, sidebar_bloom,
+    SelectionModifiers, SessionDropPosition, SidebarActions, SidebarMenuAnchor, SidebarMenuRequest,
+    SidebarProps, glass_edge_color, ordered_inbox_ids, sidebar, sidebar_bloom,
 };
 use crate::theme::{BASE_LINE_HEIGHT, TITLEBAR_HEIGHT, Theme, ThemeMode};
 use crate::zoom::{self, px};
@@ -1820,11 +1820,13 @@ impl HarnessApp {
                     this.apply_client_update(update, cx);
                 });
             }),
-            open_menu: Rc::new(move |request: SidebarMenuRequest, position, cx| {
-                let _ = open_menu_view.update(cx, |this, cx| {
-                    this.open_sidebar_menu(request, position, cx);
-                });
-            }),
+            open_menu: Rc::new(
+                move |request: SidebarMenuRequest, anchor: SidebarMenuAnchor, cx| {
+                    let _ = open_menu_view.update(cx, |this, cx| {
+                        this.open_sidebar_menu(request, anchor, cx);
+                    });
+                },
+            ),
             toggle_snoozed: Rc::new(move |cx| {
                 let _ = toggle_snoozed_view.update(cx, |this, cx| {
                     this.snoozed_expanded = !this.snoozed_expanded;

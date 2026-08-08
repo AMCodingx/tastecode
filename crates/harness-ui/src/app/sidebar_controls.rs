@@ -1,13 +1,15 @@
 use super::HarnessApp;
 use crate::chrome;
 use crate::motion_icon::motion_icon;
-use crate::sidebar::{SelectionModifiers, SidebarMenuRequest, ordered_inbox_ids};
+use crate::sidebar::{
+    SelectionModifiers, SidebarMenuAnchor, SidebarMenuRequest, ordered_inbox_ids,
+};
 use crate::tracked_text::tracked_text;
 use crate::zoom::px;
 use chrono::{Datelike, Duration as ChronoDuration, Local, Timelike};
 use gpui::{
     Animation, AnimationExt, AnyElement, ClipboardItem, Context, Entity, FocusHandle, FontWeight,
-    Pixels, Point, SharedString, Window, div, prelude::*, relative,
+    SharedString, Window, div, prelude::*, relative,
 };
 use gpui_component::input::{Input, InputState, SelectAll};
 use harness_protocol::{SessionSummary, ThreadInboxStatus, ThreadLifecycle};
@@ -29,7 +31,7 @@ pub(super) struct SidebarControlsState {
 
 pub(super) struct SidebarMenuState {
     request: SidebarMenuRequest,
-    position: Point<Pixels>,
+    anchor: SidebarMenuAnchor,
 }
 
 #[derive(Clone)]
@@ -171,7 +173,7 @@ impl HarnessApp {
     pub(super) fn open_sidebar_menu(
         &mut self,
         mut request: SidebarMenuRequest,
-        position: Point<Pixels>,
+        anchor: SidebarMenuAnchor,
         cx: &mut Context<Self>,
     ) {
         if let SidebarMenuRequest::ThreadSelection { target, thread_ids } = &request {
@@ -184,7 +186,7 @@ impl HarnessApp {
         self.close_rollback(cx);
         self.account_menu_open = false;
         self.sidebar_controls.dialog = None;
-        self.sidebar_controls.menu = Some(SidebarMenuState { request, position });
+        self.sidebar_controls.menu = Some(SidebarMenuState { request, anchor });
         cx.notify();
     }
 
@@ -468,7 +470,7 @@ impl HarnessApp {
         }
         let menu = self.sidebar_controls.menu.as_ref()?;
         let request = menu.request.clone();
-        let position = menu.position;
+        let anchor = menu.anchor;
         let theme = self.theme;
         let mut items = Vec::new();
         let mut rule_count = 0_usize;
@@ -946,16 +948,16 @@ impl HarnessApp {
             row_count as f32 * 33.0 + rule_count as f32 * 9.0 + selection_count as f32 * 29.0;
         let max_panel_height = (f32::from(viewport.height) - 16.0).clamp(0.0, 340.0);
         let panel_height_value = (content_height + 10.0).min(max_panel_height);
-        let left = position
-            .x
-            .max(px(8.0))
-            .min((viewport.width - panel_width - px(8.0)).max(px(8.0)));
-        let (top_value, grows_up) = sidebar_menu_top(
-            f32::from(position.y),
+        let position = sidebar_menu_position(
+            anchor,
+            f32::from(viewport.width),
             f32::from(viewport.height),
+            f32::from(panel_width),
             panel_height_value,
         );
-        let top = px(top_value);
+        let left = px(position.left);
+        let top = px(position.top);
+        let grows_up = position.grows_up;
 
         Some(
             div()
@@ -1465,6 +1467,8 @@ impl HarnessApp {
 }
 
 const SIDEBAR_MENU_ENTRY_SCALE_FROM: f32 = 0.97;
+const SIDEBAR_MENU_GAP: f32 = 6.0;
+const SIDEBAR_MENU_VIEWPORT_GUTTER: f32 = 8.0;
 
 fn sidebar_menu_entry_scale(progress: f32) -> f32 {
     SIDEBAR_MENU_ENTRY_SCALE_FROM + (1.0 - SIDEBAR_MENU_ENTRY_SCALE_FROM) * progress
@@ -1474,18 +1478,51 @@ fn sidebar_menu_entry_animation(theme: crate::Theme) -> Animation {
     Animation::new(theme.motion.fast).with_easing(crate::theme::web_ease_out)
 }
 
-fn sidebar_menu_top(anchor_y: f32, viewport_height: f32, panel_height: f32) -> (f32, bool) {
-    let gutter = 8.0;
-    let space_above = anchor_y - gutter;
-    let space_below = viewport_height - anchor_y - gutter;
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct SidebarMenuPosition {
+    left: f32,
+    top: f32,
+    grows_up: bool,
+}
+
+fn sidebar_menu_position(
+    anchor: SidebarMenuAnchor,
+    viewport_width: f32,
+    viewport_height: f32,
+    panel_width: f32,
+    panel_height: f32,
+) -> SidebarMenuPosition {
+    let (preferred_left, anchor_top, anchor_bottom, gap) = match anchor {
+        SidebarMenuAnchor::Context(point) => (
+            f32::from(point.x),
+            f32::from(point.y),
+            f32::from(point.y),
+            0.0,
+        ),
+        SidebarMenuAnchor::Trigger(bounds) => (
+            f32::from(bounds.origin.x + bounds.size.width) - panel_width,
+            f32::from(bounds.origin.y),
+            f32::from(bounds.origin.y + bounds.size.height),
+            SIDEBAR_MENU_GAP,
+        ),
+    };
+    let space_above = anchor_top - gap - SIDEBAR_MENU_VIEWPORT_GUTTER;
+    let space_below = viewport_height - anchor_bottom - gap - SIDEBAR_MENU_VIEWPORT_GUTTER;
     let grows_up = panel_height > space_below && space_above > space_below;
     let preferred_top = if grows_up {
-        anchor_y - panel_height
+        anchor_top - gap - panel_height
     } else {
-        anchor_y
+        anchor_bottom + gap
     };
-    let max_top = (viewport_height - panel_height - gutter).max(gutter);
-    (preferred_top.clamp(gutter, max_top), grows_up)
+    let max_left = (viewport_width - panel_width - SIDEBAR_MENU_VIEWPORT_GUTTER)
+        .max(SIDEBAR_MENU_VIEWPORT_GUTTER);
+    let max_top = (viewport_height - panel_height - SIDEBAR_MENU_VIEWPORT_GUTTER)
+        .max(SIDEBAR_MENU_VIEWPORT_GUTTER);
+    SidebarMenuPosition {
+        left: preferred_left.clamp(SIDEBAR_MENU_VIEWPORT_GUTTER, max_left),
+        top: preferred_top.clamp(SIDEBAR_MENU_VIEWPORT_GUTTER, max_top),
+        grows_up,
+    }
 }
 
 fn sidebar_project_menu_item(
@@ -1898,12 +1935,78 @@ fn reveal_path(path: &str) -> std::io::Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use super::sidebar_menu_top;
+    use super::{SidebarMenuPosition, sidebar_menu_position};
+    use crate::sidebar::SidebarMenuAnchor;
+    use crate::zoom::px;
+    use gpui::{Bounds, point, size};
 
     #[test]
     fn sidebar_menu_flips_and_clamps_like_the_web_menu() {
-        assert_eq!(sidebar_menu_top(100.0, 800.0, 200.0), (100.0, false));
-        assert_eq!(sidebar_menu_top(750.0, 800.0, 200.0), (550.0, true));
-        assert_eq!(sidebar_menu_top(2.0, 800.0, 200.0), (8.0, false));
+        assert_eq!(
+            sidebar_menu_position(
+                SidebarMenuAnchor::Context(point(px(100.0), px(100.0))),
+                800.0,
+                800.0,
+                210.0,
+                200.0,
+            ),
+            SidebarMenuPosition {
+                left: 100.0,
+                top: 100.0,
+                grows_up: false,
+            }
+        );
+        assert_eq!(
+            sidebar_menu_position(
+                SidebarMenuAnchor::Context(point(px(750.0), px(750.0))),
+                800.0,
+                800.0,
+                210.0,
+                200.0,
+            ),
+            SidebarMenuPosition {
+                left: 582.0,
+                top: 550.0,
+                grows_up: true,
+            }
+        );
+
+        let trigger = Bounds {
+            origin: point(px(250.0), px(100.0)),
+            size: size(px(26.0), px(26.0)),
+        };
+        assert_eq!(
+            sidebar_menu_position(
+                SidebarMenuAnchor::Trigger(trigger),
+                800.0,
+                800.0,
+                210.0,
+                200.0,
+            ),
+            SidebarMenuPosition {
+                left: 66.0,
+                top: 132.0,
+                grows_up: false,
+            }
+        );
+
+        let bottom_trigger = Bounds {
+            origin: point(px(250.0), px(730.0)),
+            size: size(px(26.0), px(26.0)),
+        };
+        assert_eq!(
+            sidebar_menu_position(
+                SidebarMenuAnchor::Trigger(bottom_trigger),
+                800.0,
+                800.0,
+                210.0,
+                200.0,
+            ),
+            SidebarMenuPosition {
+                left: 66.0,
+                top: 524.0,
+                grows_up: true,
+            }
+        );
     }
 }
