@@ -3078,6 +3078,8 @@ dependencies = [
  "qrcode",
  "serde",
  "serde_json",
+ "tree-sitter-javascript",
+ "tree-sitter-typescript",
  "url",
  "uuid",
  "windows-sys 0.61.2",

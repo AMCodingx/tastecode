@@ -13,10 +13,10 @@ use base64::{Engine as _, engine::general_purpose::STANDARD};
 use futures::AsyncReadExt as _;
 use gpui::{
     Animation, AnimationExt, AnyElement, App, BorderStyle, Bounds, ClipboardItem, CursorStyle,
-    Edges, Element, ElementId, Entity, FocusHandle, FontWeight, GlobalElementId, Hitbox,
-    HitboxBehavior, Image, ImageFormat, ImageSource, InspectorElementId, LayoutId, MouseButton,
-    ObjectFit, Pixels, Point, SharedString, StyleRefinement, Styled, StyledImage, StyledText,
-    TextLayout, Window, div, img, point, prelude::*, quad, relative, rems,
+    Edges, Element, ElementId, Entity, FocusHandle, FontWeight, GlobalElementId, HighlightStyle,
+    Hitbox, HitboxBehavior, Image, ImageFormat, ImageSource, InspectorElementId, LayoutId,
+    MouseButton, ObjectFit, Pixels, Point, SharedString, StyleRefinement, Styled, StyledImage,
+    StyledText, TextLayout, Window, div, img, point, prelude::*, quad, relative, rems,
 };
 use gpui_component::Rope;
 use gpui_component::highlighter::SyntaxHighlighter;
@@ -37,6 +37,7 @@ const STREAM_WORD_STAGGER_MS: u64 = 14;
 const STREAM_CLEANUP_PADDING: Duration = Duration::from_millis(80);
 const SPACE_WIDTH: f32 = 3.7;
 const MARKDOWN_MAX_WIDTH_CH: f32 = 72.0;
+const SYNTAX_HIGHLIGHT_CACHE_LIMIT: usize = 128;
 
 thread_local! {
     static MARKDOWN_MAX_WIDTHS: RefCell<HashMap<(SharedString, u32), Pixels>> =
@@ -374,6 +375,7 @@ struct MarkdownSelectionSegment {
 struct MarkdownSelectionState {
     focus: FocusHandle,
     document: MarkdownDocument,
+    syntax_highlights: SyntaxHighlightCache,
     start: Option<Point<Pixels>>,
     end: Option<Point<Pixels>>,
     is_selecting: bool,
@@ -386,6 +388,7 @@ impl MarkdownSelectionState {
         Self {
             focus: cx.focus_handle(),
             document: MarkdownDocument::new(source),
+            syntax_highlights: SyntaxHighlightCache::default(),
             start: None,
             end: None,
             is_selecting: false,
@@ -485,15 +488,94 @@ impl MarkdownSelectionState {
     }
 }
 
+#[derive(Clone)]
+struct SyntaxHighlightCacheEntry {
+    language: SharedString,
+    source_revision: u64,
+    source_ptr: usize,
+    source_hash: u64,
+    source_len: usize,
+    highlights: Vec<(Range<usize>, HighlightStyle)>,
+}
+
+impl SyntaxHighlightCacheEntry {
+    fn new(
+        language: &str,
+        source_revision: u64,
+        source_hash: u64,
+        source: &str,
+        highlights: Vec<(Range<usize>, HighlightStyle)>,
+    ) -> Self {
+        Self {
+            language: language.to_owned().into(),
+            source_revision,
+            source_ptr: source.as_ptr() as usize,
+            source_hash,
+            source_len: source.len(),
+            highlights,
+        }
+    }
+}
+
+#[derive(Default)]
+struct SyntaxHighlightCache {
+    entries: HashMap<(usize, bool), SyntaxHighlightCacheEntry>,
+}
+
+impl SyntaxHighlightCache {
+    fn lookup(
+        &mut self,
+        start: usize,
+        dark: bool,
+        language: &str,
+        source_revision: u64,
+        source: &str,
+    ) -> Result<Vec<(Range<usize>, HighlightStyle)>, u64> {
+        let source_ptr = source.as_ptr() as usize;
+        let Some(entry) = self.entries.get_mut(&(start, dark)) else {
+            return Err(stable_hash(source));
+        };
+        if entry.language.as_ref() != language || entry.source_len != source.len() {
+            return Err(stable_hash(source));
+        }
+        if entry.source_revision == source_revision && entry.source_ptr == source_ptr {
+            return Ok(entry.highlights.clone());
+        }
+        let source_hash = stable_hash(source);
+        if entry.source_hash != source_hash {
+            return Err(source_hash);
+        }
+        entry.source_revision = source_revision;
+        entry.source_ptr = source_ptr;
+        Ok(entry.highlights.clone())
+    }
+
+    fn insert(&mut self, start: usize, dark: bool, entry: SyntaxHighlightCacheEntry) {
+        let key = (start, dark);
+        if self.entries.len() >= SYNTAX_HIGHLIGHT_CACHE_LIMIT
+            && !self.entries.contains_key(&key)
+            && let Some(eviction_key) = self.entries.keys().next().copied()
+        {
+            self.entries.remove(&eviction_key);
+        }
+        self.entries.insert(key, entry);
+    }
+}
+
 struct MarkdownDocument {
     source: String,
     root: Option<Arc<::markdown::mdast::Root>>,
+    revision: u64,
 }
 
 impl MarkdownDocument {
     fn new(source: String) -> Self {
         let root = parse_markdown_root(&source);
-        Self { source, root }
+        Self {
+            source,
+            root,
+            revision: 0,
+        }
     }
 
     fn set_source(&mut self, source: &str) -> bool {
@@ -503,6 +585,7 @@ impl MarkdownDocument {
         self.source.clear();
         self.source.push_str(source);
         self.root = parse_markdown_root(source);
+        self.revision = self.revision.wrapping_add(1);
         true
     }
 }
@@ -1522,11 +1605,39 @@ fn render_code_block(
         let native_language = native_syntax_language(language);
         let highlight_theme =
             github_highlight_theme_for_language(context.theme.mode, native_language.as_ref());
-        let rope = Rope::from(code.value.as_str());
-        let mut highlighter = SyntaxHighlighter::new(native_language.as_ref());
-        highlighter.update(None, &rope);
-        let highlights = highlighter.styles(&(0..code.value.len()), &highlight_theme);
-        if !highlights.is_empty() {
+        let dark = context.theme.mode == ThemeMode::Dark;
+        let cached = context.selection.update(cx, |selection, _| {
+            let source_revision = selection.document.revision;
+            selection.syntax_highlights.lookup(
+                start,
+                dark,
+                native_language.as_ref(),
+                source_revision,
+                &code.value,
+            )
+        });
+        let highlights = cached.unwrap_or_else(|source_hash| {
+            let rope = Rope::from(code.value.as_str());
+            let mut highlighter = SyntaxHighlighter::new(native_language.as_ref());
+            highlighter.update(None, &rope);
+            let highlights = highlighter.styles(&(0..code.value.len()), &highlight_theme);
+            context.selection.update(cx, |selection, _| {
+                let source_revision = selection.document.revision;
+                selection.syntax_highlights.insert(
+                    start,
+                    dark,
+                    SyntaxHighlightCacheEntry::new(
+                        native_language.as_ref(),
+                        source_revision,
+                        source_hash,
+                        &code.value,
+                        highlights.clone(),
+                    ),
+                );
+            });
+            highlights
+        });
+        if highlights.iter().any(|(_, style)| style.color.is_some()) {
             code_foreground = highlight_theme
                 .style
                 .editor_foreground
@@ -4210,6 +4321,7 @@ mod tests {
 
     #[test]
     fn common_web_syntax_languages_are_registered_natively() {
+        crate::theme::register_native_syntax_languages();
         let registered = gpui_component::highlighter::LanguageRegistry::singleton().languages();
         for (language, source) in [
             ("typescript", "const answer: number = 42;"),
@@ -4239,18 +4351,41 @@ mod tests {
             let rope = Rope::from(source);
             let mut highlighter = SyntaxHighlighter::new(native.as_ref());
             highlighter.update(None, &rope);
+            let highlights = highlighter.styles(
+                &(0..source.len()),
+                &github_highlight_theme_for_language(ThemeMode::Dark, language),
+            );
             assert!(
-                !highlighter
-                    .styles(
-                        &(0..source.len()),
-                        &github_highlight_theme_for_language(ThemeMode::Dark, language),
-                    )
-                    .is_empty(),
-                "{language} should produce native highlight spans"
+                highlights.iter().any(|(_, style)| style.color.is_some()),
+                "{language} should produce colored native highlight spans: {highlights:?}"
             );
         }
-        assert_eq!(native_syntax_language("jsx"), "javascript");
+        assert_eq!(native_syntax_language("jsx"), "jsx");
         assert_eq!(native_syntax_language("shell"), "bash");
+    }
+
+    #[test]
+    fn syntax_highlight_cache_reuses_only_matching_content_and_theme() {
+        let mut cache = SyntaxHighlightCache::default();
+        let highlights = vec![(0..4, HighlightStyle::default())];
+        let source = "code".to_owned();
+        let source_hash = stable_hash(&source);
+        cache.insert(
+            12,
+            true,
+            SyntaxHighlightCacheEntry::new("rust", 1, source_hash, &source, highlights.clone()),
+        );
+
+        assert_eq!(
+            cache.lookup(12, true, "rust", 1, &source),
+            Ok(highlights.clone())
+        );
+        let reparsed = source.clone();
+        assert_eq!(cache.lookup(12, true, "rust", 2, &reparsed), Ok(highlights));
+        assert!(cache.lookup(12, false, "rust", 2, &source).is_err());
+        assert!(cache.lookup(12, true, "python", 2, &source).is_err());
+        assert!(cache.lookup(12, true, "rust", 2, "edit").is_err());
+        assert!(cache.lookup(12, true, "rust", 2, "longer").is_err());
     }
 
     #[test]

@@ -1,8 +1,8 @@
 use gpui::{Animation, Hsla, rgb};
-use gpui_component::highlighter::HighlightTheme;
+use gpui_component::highlighter::{HighlightTheme, LanguageConfig, LanguageRegistry};
 use serde::{Deserialize, Serialize};
 use std::borrow::Cow;
-use std::sync::{Arc, OnceLock};
+use std::sync::{Arc, Once, OnceLock};
 use std::time::Duration;
 
 pub const RAIL_WIDTH: f32 = 248.0;
@@ -212,8 +212,9 @@ impl GithubHighlightPalette {
 }
 
 pub(crate) fn native_syntax_language(language: &str) -> Cow<'_, str> {
+    register_native_syntax_languages();
     if language.eq_ignore_ascii_case("jsx") {
-        Cow::Borrowed("javascript")
+        Cow::Borrowed("jsx")
     } else if ["shell", "zsh", "fish"]
         .iter()
         .any(|alias| language.eq_ignore_ascii_case(alias))
@@ -224,6 +225,59 @@ pub(crate) fn native_syntax_language(language: &str) -> Cow<'_, str> {
     } else {
         Cow::Borrowed(language)
     }
+}
+
+pub(crate) fn register_native_syntax_languages() {
+    static REGISTER: Once = Once::new();
+    REGISTER.call_once(|| {
+        let injection_languages: Vec<gpui::SharedString> = [
+            "jsdoc",
+            "json",
+            "css",
+            "html",
+            "sql",
+            "typescript",
+            "javascript",
+            "tsx",
+            "yaml",
+            "graphql",
+        ]
+        .into_iter()
+        .map(Into::into)
+        .collect();
+        let javascript_highlights = format!(
+            "{}\n{}",
+            tree_sitter_javascript::HIGHLIGHT_QUERY,
+            tree_sitter_javascript::JSX_HIGHLIGHT_QUERY,
+        );
+        let typescript_highlights = format!(
+            "{javascript_highlights}\n{}",
+            tree_sitter_typescript::HIGHLIGHTS_QUERY,
+        );
+        let registry = LanguageRegistry::singleton();
+        registry.register(
+            "jsx",
+            &LanguageConfig::new(
+                "jsx",
+                tree_sitter_javascript::LANGUAGE.into(),
+                injection_languages.clone(),
+                &javascript_highlights,
+                tree_sitter_javascript::INJECTIONS_QUERY,
+                tree_sitter_javascript::LOCALS_QUERY,
+            ),
+        );
+        registry.register(
+            "tsx",
+            &LanguageConfig::new(
+                "tsx",
+                tree_sitter_typescript::LANGUAGE_TSX.into(),
+                injection_languages,
+                &typescript_highlights,
+                tree_sitter_javascript::INJECTIONS_QUERY,
+                tree_sitter_typescript::LOCALS_QUERY,
+            ),
+        );
+    });
 }
 
 pub(crate) fn github_highlight_theme(mode: ThemeMode) -> Arc<HighlightTheme> {

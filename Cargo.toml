@@ -59,6 +59,8 @@ sha2 = "0.10.9"
 subtle = "2.6.1"
 tempfile = "3.27.0"
 thiserror = "2.0.17"
+tree-sitter-javascript = "0.23.1"
+tree-sitter-typescript = "0.23.2"
 tokio = { version = "1.53.1", features = ["macros", "rt", "time"] }
 tungstenite = "0.30.0"
 url = "2.5.8"
