@@ -4,6 +4,41 @@ use std::borrow::Cow;
 
 pub struct HarnessAssets;
 
+macro_rules! font_face {
+    ($family:literal, $weight:literal, $path:literal) => {
+        ($family, $weight, include_bytes!($path))
+    };
+}
+
+const FONT_FACES: &[(&str, u16, &[u8])] = &[
+    font_face!("Geist", 400, "../assets/fonts/Geist-400.ttf"),
+    font_face!("Geist", 450, "../assets/fonts/Geist-450.ttf"),
+    font_face!("Geist", 500, "../assets/fonts/Geist-500.ttf"),
+    font_face!("Geist", 520, "../assets/fonts/Geist-520.ttf"),
+    font_face!("Geist", 530, "../assets/fonts/Geist-530.ttf"),
+    font_face!("Geist", 540, "../assets/fonts/Geist-540.ttf"),
+    font_face!("Geist", 550, "../assets/fonts/Geist-550.ttf"),
+    font_face!("Geist", 560, "../assets/fonts/Geist-560.ttf"),
+    font_face!("Geist", 570, "../assets/fonts/Geist-570.ttf"),
+    font_face!("Geist", 580, "../assets/fonts/Geist-580.ttf"),
+    font_face!("Geist", 600, "../assets/fonts/Geist-600.ttf"),
+    font_face!("Geist", 680, "../assets/fonts/Geist-680.ttf"),
+    font_face!("Geist", 700, "../assets/fonts/Geist-700.ttf"),
+    font_face!("Geist Mono", 400, "../assets/fonts/GeistMono-400.ttf"),
+    font_face!("Geist Mono", 450, "../assets/fonts/GeistMono-450.ttf"),
+    font_face!("Geist Mono", 500, "../assets/fonts/GeistMono-500.ttf"),
+    font_face!("Geist Mono", 520, "../assets/fonts/GeistMono-520.ttf"),
+    font_face!("Geist Mono", 530, "../assets/fonts/GeistMono-530.ttf"),
+    font_face!("Geist Mono", 540, "../assets/fonts/GeistMono-540.ttf"),
+    font_face!("Geist Mono", 550, "../assets/fonts/GeistMono-550.ttf"),
+    font_face!("Geist Mono", 560, "../assets/fonts/GeistMono-560.ttf"),
+    font_face!("Geist Mono", 570, "../assets/fonts/GeistMono-570.ttf"),
+    font_face!("Geist Mono", 580, "../assets/fonts/GeistMono-580.ttf"),
+    font_face!("Geist Mono", 600, "../assets/fonts/GeistMono-600.ttf"),
+    font_face!("Geist Mono", 680, "../assets/fonts/GeistMono-680.ttf"),
+    font_face!("Geist Mono", 700, "../assets/fonts/GeistMono-700.ttf"),
+];
+
 impl AssetSource for HarnessAssets {
     fn load(&self, path: &str) -> Result<Option<Cow<'static, [u8]>>> {
         let bytes: Option<&'static [u8]> = match path {
@@ -141,31 +176,57 @@ impl AssetSource for HarnessAssets {
 }
 
 pub fn register_fonts(cx: &mut App) -> Result<()> {
-    cx.text_system().add_fonts(vec![
-        Cow::Borrowed(include_bytes!("../assets/fonts/Geist-400.ttf")),
-        Cow::Borrowed(include_bytes!("../assets/fonts/Geist-500.ttf")),
-        Cow::Borrowed(include_bytes!("../assets/fonts/Geist-520.ttf")),
-        Cow::Borrowed(include_bytes!("../assets/fonts/Geist-530.ttf")),
-        Cow::Borrowed(include_bytes!("../assets/fonts/Geist-540.ttf")),
-        Cow::Borrowed(include_bytes!("../assets/fonts/Geist-550.ttf")),
-        Cow::Borrowed(include_bytes!("../assets/fonts/Geist-560.ttf")),
-        Cow::Borrowed(include_bytes!("../assets/fonts/Geist-570.ttf")),
-        Cow::Borrowed(include_bytes!("../assets/fonts/Geist-580.ttf")),
-        Cow::Borrowed(include_bytes!("../assets/fonts/Geist-600.ttf")),
-        Cow::Borrowed(include_bytes!("../assets/fonts/Geist-680.ttf")),
-        Cow::Borrowed(include_bytes!("../assets/fonts/Geist-700.ttf")),
-        Cow::Borrowed(include_bytes!("../assets/fonts/GeistMono-400.ttf")),
-        Cow::Borrowed(include_bytes!("../assets/fonts/GeistMono-500.ttf")),
-        Cow::Borrowed(include_bytes!("../assets/fonts/GeistMono-520.ttf")),
-        Cow::Borrowed(include_bytes!("../assets/fonts/GeistMono-530.ttf")),
-        Cow::Borrowed(include_bytes!("../assets/fonts/GeistMono-540.ttf")),
-        Cow::Borrowed(include_bytes!("../assets/fonts/GeistMono-550.ttf")),
-        Cow::Borrowed(include_bytes!("../assets/fonts/GeistMono-560.ttf")),
-        Cow::Borrowed(include_bytes!("../assets/fonts/GeistMono-570.ttf")),
-        Cow::Borrowed(include_bytes!("../assets/fonts/GeistMono-580.ttf")),
-        Cow::Borrowed(include_bytes!("../assets/fonts/GeistMono-600.ttf")),
-        Cow::Borrowed(include_bytes!("../assets/fonts/GeistMono-680.ttf")),
-        Cow::Borrowed(include_bytes!("../assets/fonts/GeistMono-700.ttf")),
-    ])?;
+    let fonts = FONT_FACES
+        .iter()
+        .map(|(_, _, bytes)| Cow::Borrowed(*bytes))
+        .collect();
+    cx.text_system().add_fonts(fonts)?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::FONT_FACES;
+
+    const REQUIRED_WEIGHTS: &[u16] = &[
+        400, 450, 500, 520, 530, 540, 550, 560, 570, 580, 600, 680, 700,
+    ];
+
+    fn table<'a>(font: &'a [u8], tag: &[u8; 4]) -> Option<&'a [u8]> {
+        let table_count = u16::from_be_bytes(font.get(4..6)?.try_into().ok()?) as usize;
+        let directory_end = 12usize.checked_add(table_count.checked_mul(16)?)?;
+        for record in font.get(12..directory_end)?.chunks_exact(16) {
+            if record.get(..4)? != tag {
+                continue;
+            }
+            let offset = u32::from_be_bytes(record.get(8..12)?.try_into().ok()?) as usize;
+            let length = u32::from_be_bytes(record.get(12..16)?.try_into().ok()?) as usize;
+            return font.get(offset..offset.checked_add(length)?);
+        }
+        None
+    }
+
+    fn declared_weight(font: &[u8]) -> Option<u16> {
+        let os2 = table(font, b"OS/2")?;
+        Some(u16::from_be_bytes(os2.get(4..6)?.try_into().ok()?))
+    }
+
+    #[test]
+    fn bundled_font_faces_cover_and_match_every_renderer_weight() {
+        for family in ["Geist", "Geist Mono"] {
+            let actual = FONT_FACES
+                .iter()
+                .filter_map(|(font_family, weight, _)| (*font_family == family).then_some(*weight))
+                .collect::<Vec<_>>();
+            assert_eq!(actual, REQUIRED_WEIGHTS, "missing {family} font face");
+        }
+
+        for (family, weight, bytes) in FONT_FACES {
+            assert_eq!(
+                declared_weight(bytes),
+                Some(*weight),
+                "{family} face metadata does not match weight {weight}"
+            );
+        }
+    }
 }
