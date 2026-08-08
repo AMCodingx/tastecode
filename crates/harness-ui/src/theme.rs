@@ -11,6 +11,8 @@ pub const RADIUS_MD: f32 = 5.0;
 pub const RADIUS_LG: f32 = 8.0;
 pub const RADIUS_XL: f32 = 10.0;
 pub const RADIUS_2XL: f32 = 20.0;
+pub const RAIL_FOLD_DURATION: Duration = Duration::from_millis(380);
+pub const RAIL_REVEAL_DURATION: Duration = Duration::from_millis(160);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Motion {
@@ -38,6 +40,12 @@ impl Motion {
 /// coordinate and return its y coordinate.
 pub(crate) fn web_ease_out(progress: f32) -> f32 {
     cubic_bezier_timing(progress, 0.23, 1.0, 0.32, 1.0)
+}
+
+/// The CSS `cubic-bezier(0.32, 0.72, 0, 1)` timing function used for the
+/// sidebar's large layout and flyout motion.
+pub(crate) fn web_ease_rail(progress: f32) -> f32 {
+    cubic_bezier_timing(progress, 0.32, 0.72, 0.0, 1.0)
 }
 
 pub(crate) fn cubic_bezier_timing(progress: f32, x1: f32, y1: f32, x2: f32, y2: f32) -> f32 {
@@ -436,6 +444,8 @@ mod tests {
         assert_eq!(RADIUS_LG, 8.0);
         assert_eq!(RADIUS_XL, 10.0);
         assert_eq!(RADIUS_2XL, 20.0);
+        assert_eq!(RAIL_FOLD_DURATION, Duration::from_millis(380));
+        assert_eq!(RAIL_REVEAL_DURATION, Duration::from_millis(160));
         assert_eq!(Motion::WEB_PARITY.press, Duration::from_millis(140));
         assert_eq!(Motion::WEB_PARITY.fast, Duration::from_millis(180));
         assert_eq!(Motion::WEB_PARITY.slow, Duration::from_millis(260));
@@ -444,6 +454,7 @@ mod tests {
         assert_eq!(Motion::REDUCED.slow, Duration::from_micros(10));
         assert!((web_ease_out(0.157_656_25) - 0.578_125).abs() < 0.000_1);
         assert!((web_ease_out(0.331_25) - 0.875).abs() < 0.000_1);
+        assert!(web_ease_rail(0.5) > 0.8);
         assert!(cubic_bezier_timing(0.48, 0.2, 1.6, 0.4, 1.0) > 1.0);
     }
 

@@ -109,9 +109,11 @@ impl CommandPaletteState {
 
 impl HarnessApp {
     pub(super) fn toggle_sidebar(&mut self, cx: &mut Context<Self>) {
-        self.sidebar_collapsed = !self.sidebar_collapsed;
-        self.sidebar_transition = self.sidebar_transition.wrapping_add(1);
-        cx.notify();
+        if self.sidebar_collapsed {
+            self.expand_sidebar(cx);
+        } else {
+            self.collapse_sidebar(true, cx);
+        }
     }
 
     pub(super) fn handle_global_shortcut(

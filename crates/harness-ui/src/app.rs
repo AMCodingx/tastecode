@@ -23,16 +23,19 @@ use crate::sidebar::{
     SelectionModifiers, SessionDropPosition, SidebarActions, SidebarMenuAnchor, SidebarMenuRequest,
     SidebarProps, ordered_inbox_ids, sidebar, sidebar_bloom,
 };
-use crate::theme::{BASE_LINE_HEIGHT, TITLEBAR_HEIGHT, Theme, ThemeMode};
+use crate::theme::{
+    BASE_LINE_HEIGHT, RAIL_FOLD_DURATION, RAIL_REVEAL_DURATION, TITLEBAR_HEIGHT, Theme, ThemeMode,
+    web_ease_rail,
+};
 use crate::zoom::{self, px};
 use anyhow::Result;
 use command_palette::{CommandPaletteState, CommandScope};
 use gpui::{
-    Animation, AnimationExt, AnyElement, App, Application, Bounds, Context, CursorStyle, Entity,
-    FocusHandle, Focusable, KeyDownEvent, MouseButton, MouseDownEvent, MouseMoveEvent,
-    PathPromptOptions, Pixels, Render, SharedString, TitlebarOptions, Window, WindowAppearance,
-    WindowBackgroundAppearance, WindowBounds, WindowOptions, div, point, prelude::*, relative,
-    size,
+    Animation, AnimationExt, AnyElement, App, Application, Bounds, BoxShadow, Context, CursorStyle,
+    Entity, FocusHandle, Focusable, KeyDownEvent, MouseButton, MouseDownEvent, MouseMoveEvent,
+    MouseUpEvent, PathPromptOptions, Pixels, Render, SharedString, TitlebarOptions, Window,
+    WindowAppearance, WindowBackgroundAppearance, WindowBounds, WindowOptions, div, point,
+    prelude::*, relative, rgba, size,
 };
 use gpui_component::Root;
 use gpui_component::input::{InputEvent, InputState};
@@ -52,15 +55,60 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 const APP_WIDTH: f32 = 1180.0;
 const APP_HEIGHT: f32 = 820.0;
-const MIN_RAIL_PREVIEW_WIDTH: f32 = 148.0;
-const COLLAPSE_RAIL_WIDTH: f32 = 176.0;
+const MIN_RAIL_PREVIEW_WIDTH: f32 = 240.0;
+const COLLAPSE_RAIL_WIDTH: f32 = MIN_RAIL_PREVIEW_WIDTH * 0.5;
 const MAX_RAIL_WIDTH: f32 = 420.0;
+const RAIL_REVEAL_KEEP_BUFFER: f32 = 96.0;
+const RAIL_REVEAL_GRACE: Duration = Duration::from_millis(120);
+const RAIL_REVEAL_COOLDOWN: Duration = Duration::from_millis(1_250);
+const RAIL_REVEAL_EDGE_WIDTH: f32 = 6.0;
 const MCP_TRANSPORT_MIN_HEIGHT: f32 = 130.0;
+
+#[derive(Clone, Copy)]
+enum SidebarTransitionKind {
+    Collapse,
+    Expand,
+    DragFold,
+    DragUnfold,
+}
 
 #[derive(Clone, Copy)]
 struct SidebarResizeDrag {
     start_x: Pixels,
     start_width: f32,
+    folded: bool,
+    revealed: bool,
+    settling: bool,
+}
+
+struct SidebarRevealState {
+    visible: bool,
+    retracting: bool,
+    collapsing: bool,
+    generation: u64,
+    hide_generation: u64,
+    hide_pending: bool,
+    cooldown_generation: u64,
+    cooling: bool,
+    fold_generation: u64,
+    pointer_x: f32,
+}
+
+impl Default for SidebarRevealState {
+    fn default() -> Self {
+        Self {
+            visible: false,
+            retracting: false,
+            collapsing: false,
+            generation: 0,
+            hide_generation: 0,
+            hide_pending: false,
+            cooldown_generation: 0,
+            cooling: false,
+            fold_generation: 0,
+            pointer_x: f32::INFINITY,
+        }
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -109,6 +157,9 @@ struct HarnessApp {
     theme: Theme,
     sidebar_collapsed: bool,
     sidebar_transition: u64,
+    sidebar_transition_kind: SidebarTransitionKind,
+    sidebar_transition_instant: bool,
+    sidebar_reveal: SidebarRevealState,
     sidebar_width: f32,
     sidebar_resize_drag: Option<SidebarResizeDrag>,
     sidebar_session_drag: Option<String>,
@@ -614,6 +665,9 @@ impl HarnessApp {
             theme,
             sidebar_collapsed: false,
             sidebar_transition: 0,
+            sidebar_transition_kind: SidebarTransitionKind::Expand,
+            sidebar_transition_instant: false,
+            sidebar_reveal: SidebarRevealState::default(),
             sidebar_width,
             sidebar_resize_drag: None,
             sidebar_session_drag: None,
@@ -1861,10 +1915,22 @@ impl HarnessApp {
         } else {
             12.0
         };
-        let stage_left = if self.sidebar_collapsed {
-            left_padding + 30.0
+        let resize_folded = self.sidebar_resize_drag.is_some_and(|drag| drag.folded);
+        let layout_animating = self.sidebar_transition != 0 && !self.sidebar_transition_instant;
+        let stage_left_open = self.sidebar_width + 16.0;
+        let stage_left_collapsed = left_padding + 30.0;
+        let (stage_left_from, stage_left_to) = match self.sidebar_transition_kind {
+            SidebarTransitionKind::Collapse => (stage_left_open, stage_left_collapsed),
+            SidebarTransitionKind::Expand => (stage_left_collapsed, stage_left_open),
+            SidebarTransitionKind::DragFold => (stage_left_open, 16.0),
+            SidebarTransitionKind::DragUnfold => (16.0, stage_left_open),
+        };
+        let stage_left_direct = if self.sidebar_collapsed {
+            stage_left_collapsed
+        } else if resize_folded {
+            16.0
         } else {
-            self.sidebar_width
+            stage_left_open
         };
         let session = self.selected_thread_id.as_deref().and_then(|thread_id| {
             self.state
@@ -1939,108 +2005,124 @@ impl HarnessApp {
             )
             .when_some(session, |titlebar, session| {
                 let branch = session.worktree_branch.clone();
-                titlebar.child(
-                    div()
-                        .absolute()
-                        .top_0()
-                        .bottom_0()
-                        .left(px(stage_left))
-                        .right_0()
-                        .min_w(px(0.0))
-                        .flex()
-                        .items_center()
-                        .gap(px(10.0))
-                        .px(px(16.0))
-                        .child(
-                            div()
-                                .min_w(px(0.0))
-                                .truncate()
-                                .text_size(px(12.5))
-                                .text_color(theme.text_3.hsla())
-                                .child(session.title),
-                        )
-                        .child(
-                            div()
-                                .ml_auto()
-                                .flex_none()
-                                .flex()
-                                .items_center()
-                                .gap(px(8.0))
-                                .child(
+                let stage_header = div()
+                    .absolute()
+                    .top_0()
+                    .bottom_0()
+                    .right_0()
+                    .min_w(px(0.0))
+                    .flex()
+                    .items_center()
+                    .gap(px(10.0))
+                    .pr(px(16.0))
+                    .child(
+                        div()
+                            .min_w(px(0.0))
+                            .truncate()
+                            .text_size(px(12.5))
+                            .text_color(theme.text_3.hsla())
+                            .child(session.title),
+                    )
+                    .child(
+                        div()
+                            .ml_auto()
+                            .flex_none()
+                            .flex()
+                            .items_center()
+                            .gap(px(8.0))
+                            .child(
+                                titlebar_tool_button(
+                                    "titlebar-terminal",
+                                    "icons/square-terminal.svg",
+                                    13.0,
+                                    "Terminal",
+                                    terminal_open,
+                                    theme,
+                                )
+                                .on_mouse_down(MouseButton::Left, |_event, _window, cx| {
+                                    cx.stop_propagation()
+                                })
+                                .on_click(cx.listener(
+                                    |this, _event, _window, cx| {
+                                        this.chat.update(cx, |chat, cx| {
+                                            chat.toggle_terminal_from_shell(cx);
+                                        });
+                                    },
+                                )),
+                            )
+                            .when_some(branch, |tools, branch| {
+                                tools.child(
+                                    div()
+                                        .max_w(px(190.0))
+                                        .min_w(px(0.0))
+                                        .flex()
+                                        .items_center()
+                                        .gap(px(5.0))
+                                        .truncate()
+                                        .font_family("Geist Mono")
+                                        .text_size(px(11.5))
+                                        .text_color(theme.text_3.hsla())
+                                        .child(motion_icon(
+                                            "titlebar-branch-icon",
+                                            "icons/git-branch.svg",
+                                            12.0,
+                                            "titlebar-branch-icon-direct-hover",
+                                            theme,
+                                        ))
+                                        .child(div().min_w(px(0.0)).truncate().child(branch)),
+                                )
+                            })
+                            .when(checkpoint_count > 0, |tools| {
+                                let label = format!(
+                                    "{checkpoint_count} checkpoint{}",
+                                    if checkpoint_count == 1 { "" } else { "s" }
+                                );
+                                tools.child(
                                     titlebar_tool_button(
-                                        "titlebar-terminal",
-                                        "icons/square-terminal.svg",
-                                        13.0,
-                                        "Terminal",
-                                        terminal_open,
+                                        "titlebar-checkpoints",
+                                        "icons/history.svg",
+                                        12.0,
+                                        label,
+                                        false,
                                         theme,
                                     )
                                     .on_mouse_down(MouseButton::Left, |_event, _window, cx| {
                                         cx.stop_propagation()
                                     })
                                     .on_click(cx.listener(
-                                        |this, _event, _window, cx| {
-                                            this.chat.update(cx, |chat, cx| {
-                                                chat.toggle_terminal_from_shell(cx);
-                                            });
-                                        },
+                                        |this, _event, _window, cx| this.open_rollback(cx),
                                     )),
                                 )
-                                .when_some(branch, |tools, branch| {
-                                    tools.child(
-                                        div()
-                                            .max_w(px(190.0))
-                                            .min_w(px(0.0))
-                                            .flex()
-                                            .items_center()
-                                            .gap(px(5.0))
-                                            .truncate()
-                                            .font_family("Geist Mono")
-                                            .text_size(px(11.5))
-                                            .text_color(theme.text_3.hsla())
-                                            .child(motion_icon(
-                                                "titlebar-branch-icon",
-                                                "icons/git-branch.svg",
-                                                12.0,
-                                                "titlebar-branch-icon-direct-hover",
-                                                theme,
-                                            ))
-                                            .child(div().min_w(px(0.0)).truncate().child(branch)),
-                                    )
-                                })
-                                .when(checkpoint_count > 0, |tools| {
-                                    let label = format!(
-                                        "{checkpoint_count} checkpoint{}",
-                                        if checkpoint_count == 1 { "" } else { "s" }
-                                    );
-                                    tools.child(
-                                        titlebar_tool_button(
-                                            "titlebar-checkpoints",
-                                            "icons/history.svg",
-                                            12.0,
-                                            label,
-                                            false,
-                                            theme,
-                                        )
-                                        .on_mouse_down(MouseButton::Left, |_event, _window, cx| {
-                                            cx.stop_propagation()
-                                        })
-                                        .on_click(
-                                            cx.listener(|this, _event, _window, cx| {
-                                                this.open_rollback(cx)
-                                            }),
-                                        ),
-                                    )
-                                }),
-                        ),
-                )
+                            }),
+                    );
+                let stage_header = if layout_animating {
+                    stage_header
+                        .with_animation(
+                            ("stage-header-layout", self.sidebar_transition),
+                            Animation::new(self.theme.motion_duration(RAIL_FOLD_DURATION))
+                                .with_easing(web_ease_rail),
+                            move |header, delta| {
+                                header.left(px(
+                                    stage_left_from + (stage_left_to - stage_left_from) * delta
+                                ))
+                            },
+                        )
+                        .into_any_element()
+                } else {
+                    stage_header.left(px(stage_left_direct)).into_any_element()
+                };
+                titlebar.child(stage_header)
             })
     }
 
     fn begin_sidebar_resize(&mut self, event: &MouseDownEvent, cx: &mut Context<Self>) {
+        self.cancel_sidebar_reveal_hide();
         self.sidebar_resize_drag = Some(SidebarResizeDrag {
             start_x: event.position.x,
             start_width: self.sidebar_width,
+            folded: false,
+            revealed: self.sidebar_collapsed && self.sidebar_reveal.visible,
+            settling: false,
         });
         cx.stop_propagation();
     }
@@ -2053,25 +2135,79 @@ impl HarnessApp {
             self.sidebar_resize_drag = None;
             return;
         }
-        let next = resized_rail_width(
+        let raw = raw_resized_rail_width(
             drag.start_width,
             event.position.x - drag.start_x,
             crate::zoom::factor(),
         );
+        if drag.revealed {
+            self.cancel_sidebar_reveal_hide();
+            let next = clamp_rail_width(raw);
+            self.sidebar_transition_instant = true;
+            if (self.sidebar_width - next).abs() >= f32::EPSILON {
+                self.sidebar_width = next;
+                cx.notify();
+            }
+            return;
+        }
+
+        let folded = rail_drag_folds(raw);
+        if folded != drag.folded {
+            if let Some(active_drag) = self.sidebar_resize_drag.as_mut() {
+                active_drag.folded = folded;
+                active_drag.settling = true;
+            }
+            if !folded {
+                self.sidebar_width = clamp_rail_width(raw);
+            }
+            self.sidebar_transition_instant = false;
+            self.sidebar_transition_kind = if folded {
+                SidebarTransitionKind::DragFold
+            } else {
+                SidebarTransitionKind::DragUnfold
+            };
+            self.sidebar_transition = self.sidebar_transition.wrapping_add(1);
+            let generation = self.sidebar_transition;
+            let duration = self.theme.motion_duration(RAIL_FOLD_DURATION);
+            cx.spawn(async move |view, cx| {
+                cx.background_executor().timer(duration).await;
+                let _ = view.update(cx, |this, _cx| {
+                    if this.sidebar_transition != generation {
+                        return;
+                    }
+                    if let Some(active_drag) = this.sidebar_resize_drag.as_mut() {
+                        active_drag.settling = false;
+                    }
+                });
+            })
+            .detach();
+            cx.notify();
+            return;
+        }
+        if folded {
+            return;
+        }
+
+        let next = clamp_rail_width(raw);
+        self.sidebar_transition_instant = !drag.settling;
         if (self.sidebar_width - next).abs() >= f32::EPSILON {
             self.sidebar_width = next;
             cx.notify();
         }
     }
 
-    fn finish_sidebar_resize(&mut self, cx: &mut Context<Self>) {
+    fn finish_sidebar_resize(&mut self, release_x: Pixels, cx: &mut Context<Self>) {
         let Some(drag) = self.sidebar_resize_drag.take() else {
             return;
         };
-        if self.sidebar_width <= COLLAPSE_RAIL_WIDTH {
+        if drag.folded {
             self.sidebar_width = drag.start_width;
             self.sidebar_collapsed = true;
-            self.sidebar_transition = self.sidebar_transition.wrapping_add(1);
+            self.sidebar_transition_instant = true;
+            self.sidebar_reveal.collapsing = false;
+            self.sidebar_reveal.visible = false;
+            self.sidebar_reveal.retracting = false;
+            self.start_sidebar_reveal_cooldown(release_x, cx);
         } else {
             self.preferences.rail_width = self.sidebar_width.round() as u16;
             self.persist_native_preferences();
@@ -2080,7 +2216,8 @@ impl HarnessApp {
     }
 
     fn resize_sidebar_with_keyboard(&mut self, event: &KeyDownEvent, cx: &mut Context<Self>) {
-        let direction = if event.keystroke.key.eq_ignore_ascii_case("arrowleft") {
+        let moving_left = event.keystroke.key.eq_ignore_ascii_case("arrowleft");
+        let direction = if moving_left {
             -8.0
         } else if event.keystroke.key.eq_ignore_ascii_case("arrowright") {
             8.0
@@ -2088,16 +2225,194 @@ impl HarnessApp {
             return;
         };
         cx.stop_propagation();
-        let next = clamp_rail_width(self.sidebar_width + direction);
-        if next <= COLLAPSE_RAIL_WIDTH {
-            self.sidebar_collapsed = true;
-            self.sidebar_transition = self.sidebar_transition.wrapping_add(1);
-        } else {
-            self.sidebar_width = next;
-            self.preferences.rail_width = next.round() as u16;
-            self.persist_native_preferences();
+        if moving_left && !self.sidebar_collapsed && self.sidebar_width <= MIN_RAIL_PREVIEW_WIDTH {
+            self.collapse_sidebar(true, cx);
+            return;
         }
+        let next = clamp_rail_width(self.sidebar_width + direction);
+        self.sidebar_width = next;
+        self.sidebar_transition_instant = true;
+        self.preferences.rail_width = next.round() as u16;
+        self.persist_native_preferences();
         cx.notify();
+    }
+
+    pub(super) fn collapse_sidebar(&mut self, animate: bool, cx: &mut Context<Self>) {
+        if self.sidebar_collapsed {
+            return;
+        }
+        self.cancel_sidebar_reveal_hide();
+        self.end_sidebar_reveal_cooldown();
+        self.sidebar_collapsed = true;
+        self.sidebar_transition_kind = SidebarTransitionKind::Collapse;
+        self.sidebar_transition_instant = !animate;
+        self.sidebar_transition = self.sidebar_transition.wrapping_add(1);
+        self.sidebar_reveal.visible = false;
+        self.sidebar_reveal.retracting = false;
+        self.sidebar_reveal.collapsing = animate;
+        self.sidebar_reveal.generation = self.sidebar_reveal.generation.wrapping_add(1);
+        self.sidebar_reveal.fold_generation = self.sidebar_reveal.fold_generation.wrapping_add(1);
+        let generation = self.sidebar_reveal.fold_generation;
+        let duration = self.theme.motion_duration(RAIL_FOLD_DURATION);
+        cx.spawn(async move |view, cx| {
+            cx.background_executor().timer(duration).await;
+            let _ = view.update(cx, |this, cx| {
+                if this.sidebar_reveal.fold_generation == generation {
+                    this.sidebar_reveal.collapsing = false;
+                    cx.notify();
+                }
+            });
+        })
+        .detach();
+        cx.notify();
+    }
+
+    pub(super) fn expand_sidebar(&mut self, cx: &mut Context<Self>) {
+        if !self.sidebar_collapsed {
+            return;
+        }
+        let docked_reveal = self.sidebar_reveal.visible;
+        self.cancel_sidebar_reveal_hide();
+        self.end_sidebar_reveal_cooldown();
+        self.sidebar_collapsed = false;
+        self.sidebar_transition_kind = SidebarTransitionKind::Expand;
+        self.sidebar_transition_instant = docked_reveal;
+        self.sidebar_transition = self.sidebar_transition.wrapping_add(1);
+        self.sidebar_reveal.visible = false;
+        self.sidebar_reveal.retracting = false;
+        self.sidebar_reveal.collapsing = false;
+        self.sidebar_reveal.generation = self.sidebar_reveal.generation.wrapping_add(1);
+        self.sidebar_reveal.fold_generation = self.sidebar_reveal.fold_generation.wrapping_add(1);
+        cx.notify();
+    }
+
+    fn show_sidebar_reveal(&mut self, cx: &mut Context<Self>) {
+        if !self.sidebar_collapsed || self.sidebar_reveal.cooling || self.sidebar_reveal.visible {
+            return;
+        }
+        self.cancel_sidebar_reveal_hide();
+        self.sidebar_reveal.visible = true;
+        self.sidebar_reveal.retracting = false;
+        self.sidebar_reveal.collapsing = false;
+        self.sidebar_reveal.generation = self.sidebar_reveal.generation.wrapping_add(1);
+        cx.notify();
+    }
+
+    fn hide_sidebar_reveal(&mut self, cx: &mut Context<Self>) {
+        self.cancel_sidebar_reveal_hide();
+        if !self.sidebar_reveal.visible {
+            return;
+        }
+        self.sidebar_reveal.visible = false;
+        self.sidebar_reveal.retracting = true;
+        self.sidebar_reveal.generation = self.sidebar_reveal.generation.wrapping_add(1);
+        let generation = self.sidebar_reveal.generation;
+        let duration = self.theme.motion_duration(RAIL_REVEAL_DURATION);
+        cx.spawn(async move |view, cx| {
+            cx.background_executor().timer(duration).await;
+            let _ = view.update(cx, |this, cx| {
+                if this.sidebar_reveal.generation == generation {
+                    this.sidebar_reveal.retracting = false;
+                    cx.notify();
+                }
+            });
+        })
+        .detach();
+        cx.notify();
+    }
+
+    fn cancel_sidebar_reveal_hide(&mut self) {
+        self.sidebar_reveal.hide_pending = false;
+        self.sidebar_reveal.hide_generation = self.sidebar_reveal.hide_generation.wrapping_add(1);
+    }
+
+    fn schedule_sidebar_reveal_hide(&mut self, cx: &mut Context<Self>) {
+        if self.sidebar_reveal.hide_pending || !self.sidebar_reveal.visible {
+            return;
+        }
+        self.sidebar_reveal.hide_pending = true;
+        self.sidebar_reveal.hide_generation = self.sidebar_reveal.hide_generation.wrapping_add(1);
+        let generation = self.sidebar_reveal.hide_generation;
+        cx.spawn(async move |view, cx| {
+            cx.background_executor().timer(RAIL_REVEAL_GRACE).await;
+            let _ = view.update(cx, |this, cx| {
+                if this.sidebar_reveal.hide_generation != generation {
+                    return;
+                }
+                this.sidebar_reveal.hide_pending = false;
+                if this.sidebar_collapsed
+                    && this.sidebar_reveal.visible
+                    && this.sidebar_resize_drag.is_none()
+                    && !rail_pointer_keeps_reveal(
+                        this.sidebar_reveal.pointer_x,
+                        this.sidebar_width,
+                        false,
+                    )
+                {
+                    this.hide_sidebar_reveal(cx);
+                }
+            });
+        })
+        .detach();
+    }
+
+    fn end_sidebar_reveal_cooldown(&mut self) {
+        self.sidebar_reveal.cooling = false;
+        self.sidebar_reveal.cooldown_generation =
+            self.sidebar_reveal.cooldown_generation.wrapping_add(1);
+    }
+
+    fn start_sidebar_reveal_cooldown(&mut self, release_x: Pixels, cx: &mut Context<Self>) {
+        self.end_sidebar_reveal_cooldown();
+        self.sidebar_reveal.pointer_x = f32::from(release_x) / crate::zoom::factor();
+        self.sidebar_reveal.cooling = true;
+        let generation = self.sidebar_reveal.cooldown_generation;
+        cx.spawn(async move |view, cx| {
+            cx.background_executor().timer(RAIL_REVEAL_COOLDOWN).await;
+            let _ = view.update(cx, |this, cx| {
+                if this.sidebar_reveal.cooldown_generation != generation {
+                    return;
+                }
+                this.sidebar_reveal.cooling = false;
+                if this.sidebar_collapsed && rail_pointer_reveals(this.sidebar_reveal.pointer_x) {
+                    this.show_sidebar_reveal(cx);
+                }
+            });
+        })
+        .detach();
+    }
+
+    fn track_sidebar_reveal(&mut self, pointer_x: Pixels, cx: &mut Context<Self>) {
+        self.sidebar_reveal.pointer_x = f32::from(pointer_x) / crate::zoom::factor();
+        if self.sidebar_reveal.cooling {
+            return;
+        }
+        if !self.sidebar_collapsed {
+            self.cancel_sidebar_reveal_hide();
+            return;
+        }
+        if !self.sidebar_reveal.visible {
+            if rail_pointer_reveals(self.sidebar_reveal.pointer_x) {
+                self.show_sidebar_reveal(cx);
+            }
+            return;
+        }
+        if rail_pointer_keeps_reveal(
+            self.sidebar_reveal.pointer_x,
+            self.sidebar_width,
+            self.sidebar_resize_drag.is_some(),
+        ) {
+            self.cancel_sidebar_reveal_hide();
+        } else {
+            self.schedule_sidebar_reveal_hide(cx);
+        }
+    }
+
+    fn sidebar_pointer_left_window(&mut self, cx: &mut Context<Self>) {
+        self.sidebar_reveal.pointer_x = f32::INFINITY;
+        if self.sidebar_collapsed && self.sidebar_reveal.visible {
+            self.schedule_sidebar_reveal_hide(cx);
+        }
     }
 
     fn sidebar_resize_handle(&self, window: &Window, cx: &mut Context<Self>) -> AnyElement {
@@ -2106,7 +2421,7 @@ impl HarnessApp {
             .id("rail-resize")
             .absolute()
             .top_0()
-            .right_0()
+            .right(px(-3.0))
             .h_full()
             .w(px(6.0))
             .group("rail-resize")
@@ -2118,7 +2433,7 @@ impl HarnessApp {
             }))
             .on_mouse_down(
                 MouseButton::Left,
-                cx.listener(|this, event, _window, cx| {
+                cx.listener(|this, event: &MouseDownEvent, _window, cx| {
                     this.begin_sidebar_resize(event, cx);
                 }),
             )
@@ -2128,7 +2443,7 @@ impl HarnessApp {
                     .top(px(12.0))
                     .bottom(px(12.0))
                     .right(px(2.0))
-                    .w(px(1.0))
+                    .w(px(2.0))
                     .rounded_full()
                     .bg(self.theme.text_3.hsla())
                     .opacity(if focused { 0.72 } else { 0.0 })
@@ -2240,38 +2555,146 @@ impl Render for HarnessApp {
             },
             sidebar_actions,
         );
-        let rail_slot = div()
+        let resize_folded = self.sidebar_resize_drag.is_some_and(|drag| drag.folded);
+        let layout_collapsed = self.sidebar_collapsed || resize_folded;
+        let layout_animating = self.sidebar_transition != 0 && !self.sidebar_transition_instant;
+        let rail_surface = div()
+            .relative()
+            .size_full()
+            .overflow_hidden()
+            .when(self.sidebar_collapsed, |surface| {
+                surface
+                    .border_t_1()
+                    .border_r_1()
+                    .border_b_1()
+                    .border_color(self.theme.line.hsla())
+                    .rounded_tr(px(10.0))
+                    .rounded_br(px(10.0))
+            })
+            .child(sidebar_bloom(self.theme, self.preferences.sidebar_glass))
+            .child(rail);
+        let rail_panel = div()
             .id("rail-slot")
             .relative()
             .h_full()
+            .w(px(self.sidebar_width))
             .flex_none()
-            .overflow_hidden()
-            .child(sidebar_bloom(self.theme, self.preferences.sidebar_glass))
-            .child(rail)
-            .when(!self.sidebar_collapsed, |slot| {
-                slot.child(self.sidebar_resize_handle(window, cx))
-            });
-        let rail_slot = if self.sidebar_transition == 0 {
-            rail_slot
-                .w(px(if self.sidebar_collapsed {
-                    0.0
+            .child(rail_surface)
+            .when(
+                !self.sidebar_collapsed || self.sidebar_reveal.visible,
+                |panel| panel.child(self.sidebar_resize_handle(window, cx)),
+            );
+        let (rail_slot, rail_overlay) = if layout_collapsed {
+            let rail_slot = if layout_animating {
+                let width = self.sidebar_width;
+                div()
+                    .relative()
+                    .h_full()
+                    .flex_none()
+                    .with_animation(
+                        ("rail-layout", self.sidebar_transition),
+                        Animation::new(self.theme.motion_duration(RAIL_FOLD_DURATION))
+                            .with_easing(web_ease_rail),
+                        move |slot, delta| slot.w(px(width * (1.0 - delta))),
+                    )
+                    .into_any_element()
+            } else {
+                div()
+                    .relative()
+                    .h_full()
+                    .w(px(0.0))
+                    .flex_none()
+                    .into_any_element()
+            };
+            let show_overlay = resize_folded
+                || self.sidebar_reveal.visible
+                || self.sidebar_reveal.retracting
+                || self.sidebar_reveal.collapsing;
+            let overlay = show_overlay.then(|| {
+                let width = self.sidebar_width;
+                let panel = rail_panel.absolute().top_0().bottom_0();
+                if self.sidebar_reveal.visible {
+                    let generation = self.sidebar_reveal.generation;
+                    let theme = self.theme;
+                    panel
+                        .with_animation(
+                            ("rail-reveal", generation),
+                            Animation::new(theme.motion_duration(RAIL_REVEAL_DURATION))
+                                .with_easing(web_ease_rail),
+                            move |panel, delta| {
+                                panel
+                                    .left(px(-width * (1.0 - delta)))
+                                    .shadow(sidebar_reveal_shadow(theme, delta))
+                            },
+                        )
+                        .into_any_element()
+                } else if self.sidebar_reveal.retracting {
+                    let generation = self.sidebar_reveal.generation;
+                    let theme = self.theme;
+                    panel
+                        .with_animation(
+                            ("rail-reveal", generation),
+                            Animation::new(theme.motion_duration(RAIL_REVEAL_DURATION))
+                                .with_easing(web_ease_rail),
+                            move |panel, delta| {
+                                panel
+                                    .left(px(-width * delta))
+                                    .shadow(sidebar_reveal_shadow(theme, 1.0 - delta))
+                            },
+                        )
+                        .into_any_element()
+                } else if layout_animating {
+                    panel
+                        .with_animation(
+                            ("rail-panel", self.sidebar_transition),
+                            Animation::new(self.theme.motion_duration(RAIL_FOLD_DURATION))
+                                .with_easing(web_ease_rail),
+                            move |panel, delta| panel.left(px(-width * delta)),
+                        )
+                        .into_any_element()
                 } else {
-                    self.sidebar_width
-                }))
-                .into_any_element()
+                    panel.left(px(-width)).into_any_element()
+                }
+            });
+            (rail_slot, overlay)
         } else {
-            let collapsed = self.sidebar_collapsed;
-            let sidebar_width = self.sidebar_width;
-            rail_slot
-                .with_animation(
-                    ("rail-transition", self.sidebar_transition),
-                    Animation::new(self.theme.motion.slow).with_easing(crate::theme::web_ease_out),
-                    move |slot, delta| {
-                        let visible = if collapsed { 1.0 - delta } else { delta };
-                        slot.w(px(sidebar_width * visible))
-                    },
-                )
-                .into_any_element()
+            let width = self.sidebar_width;
+            let rail_panel = if layout_animating {
+                rail_panel
+                    .with_animation(
+                        ("rail-panel", self.sidebar_transition),
+                        Animation::new(self.theme.motion_duration(RAIL_FOLD_DURATION))
+                            .with_easing(web_ease_rail),
+                        move |panel, delta| panel.left(px(-width * (1.0 - delta))),
+                    )
+                    .into_any_element()
+            } else {
+                rail_panel.into_any_element()
+            };
+            let slot = if layout_animating {
+                div()
+                    .relative()
+                    .h_full()
+                    .flex_none()
+                    .overflow_hidden()
+                    .child(rail_panel)
+                    .with_animation(
+                        ("rail-layout", self.sidebar_transition),
+                        Animation::new(self.theme.motion_duration(RAIL_FOLD_DURATION))
+                            .with_easing(web_ease_rail),
+                        move |slot, delta| slot.w(px(width * delta)),
+                    )
+                    .into_any_element()
+            } else {
+                div()
+                    .relative()
+                    .h_full()
+                    .w(px(width))
+                    .flex_none()
+                    .child(rail_panel)
+                    .into_any_element()
+            };
+            (slot, None)
         };
         let stage = div()
             .flex_1()
@@ -2286,6 +2709,7 @@ impl Render for HarnessApp {
             })
             .child(content);
         let normal_body = div()
+            .relative()
             .flex_1()
             .min_h(px(0.0))
             .w_full()
@@ -2293,6 +2717,7 @@ impl Render for HarnessApp {
             .bg(crate::chrome::rail_background(self.theme))
             .child(rail_slot)
             .child(stage)
+            .when_some(rail_overlay, |body, overlay| body.child(overlay))
             .into_any_element();
         let body = if self.settings_open {
             self.settings_panel(window, cx)
@@ -2313,6 +2738,7 @@ impl Render for HarnessApp {
         let image_viewer_overlay = self.image_viewer_overlay(cx);
         let zoom_hud = self.zoom_hud(cx);
         div()
+            .id("harness-root")
             .size_full()
             .relative()
             .flex()
@@ -2325,12 +2751,18 @@ impl Render for HarnessApp {
             .bg(self.theme.background.hsla())
             .on_mouse_move(cx.listener(|this, event, _window, cx| {
                 this.update_sidebar_resize(event, cx);
+                this.track_sidebar_reveal(event.position.x, cx);
                 this.update_mcp_transport_resize(event, cx);
+            }))
+            .on_hover(cx.listener(|this, hovered: &bool, _window, cx| {
+                if !hovered {
+                    this.sidebar_pointer_left_window(cx);
+                }
             }))
             .on_mouse_up(
                 MouseButton::Left,
-                cx.listener(|this, _event, _window, cx| {
-                    this.finish_sidebar_resize(cx);
+                cx.listener(|this, event: &MouseUpEvent, _window, cx| {
+                    this.finish_sidebar_resize(event.position.x, cx);
                     this.finish_sidebar_session_drag(cx);
                     this.finish_mcp_transport_resize(cx);
                 }),
@@ -2419,8 +2851,43 @@ fn clamp_rail_width(width: f32) -> f32 {
     width.round().clamp(MIN_RAIL_PREVIEW_WIDTH, MAX_RAIL_WIDTH)
 }
 
+fn raw_resized_rail_width(start_width: f32, pointer_delta: Pixels, scale: f32) -> f32 {
+    start_width + f32::from(pointer_delta) / scale
+}
+
+fn rail_drag_folds(raw_width: f32) -> bool {
+    raw_width <= COLLAPSE_RAIL_WIDTH
+}
+
+fn rail_pointer_reveals(pointer_x: f32) -> bool {
+    pointer_x <= RAIL_REVEAL_EDGE_WIDTH
+}
+
+fn rail_pointer_keeps_reveal(pointer_x: f32, rail_width: f32, resizing: bool) -> bool {
+    resizing || pointer_x <= rail_width + RAIL_REVEAL_KEEP_BUFFER
+}
+
+#[cfg(test)]
 fn resized_rail_width(start_width: f32, pointer_delta: Pixels, scale: f32) -> f32 {
-    clamp_rail_width(start_width + f32::from(pointer_delta) / scale)
+    clamp_rail_width(raw_resized_rail_width(start_width, pointer_delta, scale))
+}
+
+fn sidebar_reveal_shadow(theme: Theme, opacity: f32) -> Vec<BoxShadow> {
+    let opacity = opacity.clamp(0.0, 1.0);
+    match theme.mode {
+        ThemeMode::Dark => vec![BoxShadow {
+            color: gpui::black().opacity(0.4 * opacity),
+            offset: point(px(12.0), px(0.0)),
+            blur_radius: px(30.0),
+            spread_radius: px(-18.0),
+        }],
+        ThemeMode::Light => vec![BoxShadow {
+            color: rgba(0x18181b00 | (41.0 * opacity).round() as u32).into(),
+            offset: point(px(12.0), px(0.0)),
+            blur_radius: px(28.0),
+            spread_radius: px(-20.0),
+        }],
+    }
 }
 
 fn reorder_project_sessions(
@@ -2808,6 +3275,32 @@ mod tests {
         assert_eq!(clamp_rail_width(248.6), 249.0);
         assert_eq!(clamp_rail_width(500.0), MAX_RAIL_WIDTH);
         assert_eq!(resized_rail_width(248.0, gpui::px(40.0), 2.0), 268.0);
+        assert_eq!(COLLAPSE_RAIL_WIDTH, 120.0);
+        assert!(rail_drag_folds(raw_resized_rail_width(
+            248.0,
+            gpui::px(-256.0),
+            2.0
+        )));
+        assert!(!rail_drag_folds(COLLAPSE_RAIL_WIDTH + 1.0));
+    }
+
+    #[test]
+    fn sidebar_reveal_uses_the_web_edge_and_keep_buffer() {
+        assert!(rail_pointer_reveals(0.0));
+        assert!(rail_pointer_reveals(RAIL_REVEAL_EDGE_WIDTH));
+        assert!(!rail_pointer_reveals(RAIL_REVEAL_EDGE_WIDTH + 1.0));
+
+        assert!(rail_pointer_keeps_reveal(
+            248.0 + RAIL_REVEAL_KEEP_BUFFER,
+            248.0,
+            false
+        ));
+        assert!(!rail_pointer_keeps_reveal(
+            248.0 + RAIL_REVEAL_KEEP_BUFFER + 1.0,
+            248.0,
+            false
+        ));
+        assert!(rail_pointer_keeps_reveal(f32::INFINITY, 248.0, true));
     }
 
     #[test]
