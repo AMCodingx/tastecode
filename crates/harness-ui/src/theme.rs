@@ -26,9 +26,9 @@ impl Motion {
     };
 
     pub const REDUCED: Self = Self {
-        press: Duration::from_millis(1),
-        fast: Duration::from_millis(1),
-        slow: Duration::from_millis(1),
+        press: Duration::from_micros(10),
+        fast: Duration::from_micros(10),
+        slow: Duration::from_micros(10),
     };
 }
 
@@ -311,7 +311,7 @@ impl Theme {
 
     pub fn motion_duration(self, duration: Duration) -> Duration {
         if self.reduced_motion {
-            Duration::from_millis(1)
+            Motion::REDUCED.fast
         } else {
             duration
         }
@@ -437,9 +437,9 @@ mod tests {
         assert_eq!(Motion::WEB_PARITY.press, Duration::from_millis(140));
         assert_eq!(Motion::WEB_PARITY.fast, Duration::from_millis(180));
         assert_eq!(Motion::WEB_PARITY.slow, Duration::from_millis(260));
-        assert_eq!(Motion::REDUCED.press, Duration::from_millis(1));
-        assert_eq!(Motion::REDUCED.fast, Duration::from_millis(1));
-        assert_eq!(Motion::REDUCED.slow, Duration::from_millis(1));
+        assert_eq!(Motion::REDUCED.press, Duration::from_micros(10));
+        assert_eq!(Motion::REDUCED.fast, Duration::from_micros(10));
+        assert_eq!(Motion::REDUCED.slow, Duration::from_micros(10));
         assert!((web_ease_out(0.157_656_25) - 0.578_125).abs() < 0.000_1);
         assert!((web_ease_out(0.331_25) - 0.875).abs() < 0.000_1);
         assert!(cubic_bezier_timing(0.48, 0.2, 1.6, 0.4, 1.0) > 1.0);
@@ -453,7 +453,7 @@ mod tests {
         assert_eq!(theme.motion, Motion::REDUCED);
         assert_eq!(
             theme.motion_duration(Duration::from_secs(30)),
-            Duration::from_millis(1)
+            Duration::from_micros(10)
         );
         assert!(theme.repeating_animation(Duration::from_secs(1)).oneshot);
         assert!(
