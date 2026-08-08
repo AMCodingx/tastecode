@@ -1190,6 +1190,8 @@ fn terminal_action_button(
     action: impl Fn(&gpui::ClickEvent, &mut Window, &mut App) + 'static,
 ) -> AnyElement {
     let hover_group = SharedString::from(id);
+    let icon_id = SharedString::from(format!("{id}-icon"));
+    let icon_press_id = SharedString::from(format!("{id}-icon-press"));
     div()
         .id(id)
         .group(hover_group.clone())
@@ -1210,16 +1212,20 @@ fn terminal_action_button(
         .when(enabled, |button| {
             button
                 .cursor_pointer()
-                .active(|style| style.top(px(1.0)))
+                .active(|style| style.size(px(20.68)).m(px(0.66)))
                 .on_click(action)
         })
-        .child(motion_icon(
-            SharedString::from(format!("{id}-icon")),
-            icon,
-            icon_size,
-            hover_group,
-            theme,
-        ))
+        .child(
+            div()
+                .id(icon_press_id)
+                .size(px(icon_size))
+                .when(enabled, |icon_wrapper| {
+                    icon_wrapper.group_active(hover_group.clone(), move |style| {
+                        style.size(px(icon_size * 0.94)).m(px(icon_size * 0.03))
+                    })
+                })
+                .child(motion_icon(icon_id, icon, icon_size, hover_group, theme).size_full()),
+        )
         .into_any_element()
 }
 

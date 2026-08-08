@@ -802,17 +802,28 @@ impl HarnessApp {
                                                 .bg(theme.surface_2.hsla())
                                                 .text_color(theme.text.hsla())
                                         })
-                                        .active(|style| style.top(px(1.0)))
+                                        .active(|style| style.size(px(20.68)).m(px(0.66)))
                                         .on_click(cx.listener(|this, _event, _window, cx| {
                                             this.close_rollback(cx);
                                         }))
-                                        .child(motion_icon(
-                                            "rollback-close-icon",
-                                            "icons/x.svg",
-                                            13.0,
-                                            "rollback-close-hover",
-                                            theme,
-                                        )),
+                                        .child(
+                                            div()
+                                                .id("rollback-close-icon-press")
+                                                .size(px(13.0))
+                                                .group_active("rollback-close-hover", |style| {
+                                                    style.size(px(12.22)).m(px(0.39))
+                                                })
+                                                .child(
+                                                    motion_icon(
+                                                        "rollback-close-icon",
+                                                        "icons/x.svg",
+                                                        13.0,
+                                                        "rollback-close-hover",
+                                                        theme,
+                                                    )
+                                                    .size_full(),
+                                                ),
+                                        ),
                                 ),
                         )
                         .child(

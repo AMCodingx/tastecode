@@ -647,7 +647,7 @@ fn classic_sidebar_actions(theme: Theme, actions: &SidebarActions) -> impl IntoE
         .child(
             div()
                 .mt(px(7.0))
-                .h(px(26.0))
+                .h(px(30.0))
                 .flex()
                 .items_center()
                 .justify_end()
@@ -655,29 +655,47 @@ fn classic_sidebar_actions(theme: Theme, actions: &SidebarActions) -> impl IntoE
                     div()
                         .id("classic-search-chats")
                         .group("classic-search-chats-hover")
-                        .size(px(26.0))
+                        .relative()
+                        .size(px(30.0))
                         .flex()
                         .items_center()
                         .justify_center()
-                        .rounded(px(7.0))
+                        .overflow_hidden()
+                        .rounded(px(RADIUS_MD))
+                        .border_1()
+                        .border_color(chrome::border(theme))
+                        .bg(chrome::recessed(theme))
                         .text_color(theme.text_3.hsla())
                         .cursor_pointer()
                         .hover(move |style| {
                             style
-                                .bg(theme.surface_2.hsla())
-                                .text_color(theme.text.hsla())
+                                .border_color(inbox_search_hover_border(theme))
+                                .text_color(theme.text_2.hsla())
                         })
+                        .active(|style| style.size(px(28.2)).m(px(0.9)))
                         .on_click({
                             let open_search = actions.open_search.clone();
                             move |_event, _window, cx| open_search(cx)
                         })
-                        .child(motion_icon(
-                            "classic-search-chats-icon",
-                            "icons/search.svg",
-                            14.0,
-                            "classic-search-chats-hover",
-                            theme,
-                        )),
+                        .child(chrome::inset_top_shade(theme))
+                        .child(
+                            div()
+                                .id("classic-search-chats-icon-press")
+                                .size(px(14.0))
+                                .group_active("classic-search-chats-hover", |style| {
+                                    style.size(px(13.16)).m(px(0.42))
+                                })
+                                .child(
+                                    motion_icon(
+                                        "classic-search-chats-icon",
+                                        "icons/search.svg",
+                                        14.0,
+                                        "classic-search-chats-hover",
+                                        theme,
+                                    )
+                                    .size_full(),
+                                ),
+                        ),
                 ),
         )
 }
@@ -1530,17 +1548,31 @@ fn classic_project(
                                 new_chat(new_chat_path.clone(), cx);
                             }
                         })
-                        .active(|style| style.inset(px(0.66)))
-                        .child(motion_icon(
-                            SharedString::from(format!(
-                                "classic-project-new-chat-icon:{}",
-                                project.path
-                            )),
-                            "icons/plus.svg",
-                            13.0,
-                            "classic-project-new-chat-hover",
-                            theme,
-                        )),
+                        .active(|style| style.size(px(20.68)).m(px(0.66)))
+                        .child(
+                            div()
+                                .id(SharedString::from(format!(
+                                    "classic-project-new-chat-icon-press:{}",
+                                    project.path
+                                )))
+                                .size(px(13.0))
+                                .group_active("classic-project-new-chat-hover", |style| {
+                                    style.size(px(12.22)).m(px(0.39))
+                                })
+                                .child(
+                                    motion_icon(
+                                        SharedString::from(format!(
+                                            "classic-project-new-chat-icon:{}",
+                                            project.path
+                                        )),
+                                        "icons/plus.svg",
+                                        13.0,
+                                        "classic-project-new-chat-hover",
+                                        theme,
+                                    )
+                                    .size_full(),
+                                ),
+                        ),
                 )
                 .into_any_element()
         };
@@ -1686,7 +1718,6 @@ fn classic_project_menu_button(
         .group_hover("classic-project", |button| button.opacity(1.0))
         .cursor_pointer()
         .hover(move |style| style.text_color(theme.text.hsla()))
-        .active(|style| style.inset(px(0.78)))
         .on_click(move |event, _window, cx| {
             cx.stop_propagation();
             open_menu(request.clone(), event.position(), cx);

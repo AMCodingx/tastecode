@@ -1146,16 +1146,28 @@ impl HarnessApp {
                                             .bg(theme.surface_2.hsla())
                                             .text_color(theme.text.hsla())
                                     })
+                                    .active(|style| style.size(px(20.68)).m(px(0.66)))
                                     .on_click(cx.listener(|this, _event, _window, cx| {
                                         this.close_sidebar_controls(cx);
                                     }))
-                                    .child(motion_icon(
-                                        "sidebar-dialog-close-icon",
-                                        "icons/x.svg",
-                                        13.0,
-                                        "sidebar-dialog-close-hover",
-                                        theme,
-                                    )),
+                                    .child(
+                                        div()
+                                            .id("sidebar-dialog-close-icon-press")
+                                            .size(px(13.0))
+                                            .group_active("sidebar-dialog-close-hover", |style| {
+                                                style.size(px(12.22)).m(px(0.39))
+                                            })
+                                            .child(
+                                                motion_icon(
+                                                    "sidebar-dialog-close-icon",
+                                                    "icons/x.svg",
+                                                    13.0,
+                                                    "sidebar-dialog-close-hover",
+                                                    theme,
+                                                )
+                                                .size_full(),
+                                            ),
+                                    ),
                             ),
                     )
                     .child(
@@ -1339,17 +1351,31 @@ impl HarnessApp {
                                             .bg(theme.surface_2.hsla())
                                             .text_color(theme.text.hsla())
                                     })
-                                    .active(|style| style.top(px(1.0)))
+                                    .active(|style| style.size(px(20.68)).m(px(0.66)))
                                     .on_click(cx.listener(|this, _event, _window, cx| {
                                         this.close_sidebar_controls(cx);
                                     }))
-                                    .child(motion_icon(
-                                        "checkout-discard-close-icon",
-                                        "icons/x.svg",
-                                        13.0,
-                                        "checkout-discard-close-hover",
-                                        theme,
-                                    )),
+                                    .child(
+                                        div()
+                                            .id("checkout-discard-close-icon-press")
+                                            .size(px(13.0))
+                                            .group_active(
+                                                "checkout-discard-close-hover",
+                                                |style| {
+                                                    style.size(px(12.22)).m(px(0.39))
+                                                },
+                                            )
+                                            .child(
+                                                motion_icon(
+                                                    "checkout-discard-close-icon",
+                                                    "icons/x.svg",
+                                                    13.0,
+                                                    "checkout-discard-close-hover",
+                                                    theme,
+                                                )
+                                                .size_full(),
+                                            ),
+                                    ),
                             ),
                     )
                     .child(
