@@ -365,7 +365,7 @@ impl HarnessApp {
                 effort,
                 service_tier,
             } => {
-                this.state.send_turn(
+                let update = this.state.send_turn(
                     thread_id,
                     SendTurnRequest {
                         text: text.clone(),
@@ -376,6 +376,7 @@ impl HarnessApp {
                         service_tier: service_tier.clone(),
                     },
                 );
+                this.apply_client_update(update, cx);
             }
             ChatEvent::Interrupt { thread_id } => this.state.interrupt(thread_id),
             ChatEvent::DeleteQueuedTurn {
@@ -886,7 +887,7 @@ impl HarnessApp {
                     )
                 });
                 for pending in pending_turns {
-                    self.state.send_turn(
+                    let update = self.state.send_turn(
                         &thread_id,
                         SendTurnRequest {
                             text: pending.text,
@@ -897,6 +898,7 @@ impl HarnessApp {
                             service_tier: pending.service_tier,
                         },
                     );
+                    self.apply_client_update(update, cx);
                 }
                 self.state.select_thread(&thread_id);
                 self.refresh_stage_context(cx);

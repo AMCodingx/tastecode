@@ -9,6 +9,9 @@ use harness_protocol::{
 };
 use std::collections::HashMap;
 
+const OPTIMISTIC_ITEM_PREFIX: &str = "optimistic:";
+const OPTIMISTIC_TURN_PREFIX: &str = "local-turn:";
+
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct ChangeSet {
     pub transcript: bool,
@@ -198,7 +201,7 @@ impl ThreadState {
                 self.running = true;
                 self.plan = None;
                 self.diff = None;
-                self.upsert_turn(turn);
+                self.upsert_started_turn(turn);
                 ChangeSet::ALL
             }
             DomainEvent::ItemStarted { item } => {
@@ -277,9 +280,27 @@ impl ThreadState {
         Ok(changes)
     }
 
-    fn upsert_turn(&mut self, turn: Turn) {
+    fn upsert_started_turn(&mut self, turn: Turn) {
         if let Some(index) = self.turn_index.get(&turn.id).copied() {
             self.turns[index].turn = turn;
+        } else if !turn.id.starts_with(OPTIMISTIC_TURN_PREFIX)
+            && let Some(index) = self.turns.iter().rposition(|candidate| {
+                candidate.turn.status == TurnStatus::Running
+                    && candidate.turn.id.starts_with(OPTIMISTIC_TURN_PREFIX)
+            })
+        {
+            let optimistic_id = self.turns[index].turn.id.clone();
+            let created_at = self.turns[index].turn.created_at;
+            let canonical_id = turn.id.clone();
+            self.turn_index.remove(&optimistic_id);
+            self.turns[index].turn = Turn { created_at, ..turn };
+            for item in &mut self.turns[index].items {
+                item.turn_id.clone_from(&canonical_id);
+            }
+            self.turn_index.insert(canonical_id.clone(), index);
+            if let Some(rows) = self.item_rows.remove(&optimistic_id) {
+                self.item_rows.insert(canonical_id, rows);
+            }
         } else {
             self.turn_index.insert(turn.id.clone(), self.turns.len());
             self.turns.push(TurnState::new(turn));
@@ -306,6 +327,30 @@ impl ThreadState {
         let turn = &mut self.turns[turn_index];
         if let Some(item_index) = turn.item_index.get(&item.id).copied() {
             turn.items[item_index] = item;
+        } else if item.role == Some(harness_protocol::MessageRole::User)
+            && let Some(item_index) = turn.items.iter().rposition(|candidate| {
+                candidate.id.starts_with(OPTIMISTIC_ITEM_PREFIX)
+                    && (item.text.is_none() || candidate.text == item.text)
+            })
+        {
+            let optimistic_id = turn.items[item_index].id.clone();
+            let optimistic_text = turn.items[item_index].text.clone();
+            let row = self
+                .item_rows
+                .get_mut(&turn_id)
+                .and_then(|rows| rows.remove(&optimistic_id));
+            turn.item_index.remove(&optimistic_id);
+            turn.items[item_index] = Item {
+                text: item.text.or(optimistic_text),
+                ..item
+            };
+            turn.item_index.insert(item_id.clone(), item_index);
+            if let Some(row) = row {
+                self.item_rows
+                    .entry(turn_id)
+                    .or_default()
+                    .insert(item_id, row);
+            }
         } else {
             let item_index = turn.items.len();
             turn.item_index.insert(item.id.clone(), item_index);
@@ -317,6 +362,44 @@ impl ThreadState {
             self.timeline.push((turn_index, item_index));
         }
         Ok(())
+    }
+
+    pub fn discard_optimistic_turn(&mut self, turn_id: &str) -> bool {
+        let Some(index) = self.turn_index.get(turn_id).copied() else {
+            return false;
+        };
+        if !self.turns[index]
+            .turn
+            .id
+            .starts_with(OPTIMISTIC_TURN_PREFIX)
+        {
+            return false;
+        }
+        self.turns.remove(index);
+        self.rebuild_lookup_tables();
+        self.running = self
+            .turns
+            .iter()
+            .any(|turn| turn.turn.status == TurnStatus::Running);
+        true
+    }
+
+    fn rebuild_lookup_tables(&mut self) {
+        self.turn_index.clear();
+        self.timeline.clear();
+        self.item_rows.clear();
+        for (turn_index, turn) in self.turns.iter_mut().enumerate() {
+            self.turn_index.insert(turn.turn.id.clone(), turn_index);
+            turn.item_index.clear();
+            for (item_index, item) in turn.items.iter().enumerate() {
+                turn.item_index.insert(item.id.clone(), item_index);
+                self.item_rows
+                    .entry(turn.turn.id.clone())
+                    .or_default()
+                    .insert(item.id.clone(), self.timeline.len());
+                self.timeline.push((turn_index, item_index));
+            }
+        }
     }
 
     fn upsert_review(&mut self, review: ApprovalReview) {
@@ -418,6 +501,138 @@ mod tests {
         assert_eq!(state.turns[0].items[0].text.as_deref(), Some("Hello"));
         assert_eq!(state.turns[0].items[0].item_type, ItemType::Message);
         assert_eq!(state.turns[0].items[0].role, Some(MessageRole::Assistant));
+    }
+
+    #[test]
+    fn canonical_events_replace_the_optimistic_turn_and_user_message() {
+        let mut state = ThreadState::default();
+        state.apply_live(
+            None,
+            event(json!({
+                "type": "turn.started",
+                "turn": {
+                    "id": "local-turn:1",
+                    "threadId": "thread-1",
+                    "status": "running",
+                    "createdAt": 10
+                }
+            })),
+        );
+        state.apply_live(
+            None,
+            event(json!({
+                "type": "item.completed",
+                "item": {
+                    "id": "optimistic:1",
+                    "turnId": "local-turn:1",
+                    "type": "message",
+                    "status": "completed",
+                    "role": "user",
+                    "text": "Resume this chat",
+                    "createdAt": 10
+                }
+            })),
+        );
+
+        state.apply_live(
+            Some(1),
+            event(json!({
+                "type": "turn.started",
+                "turn": {
+                    "id": "server-turn",
+                    "threadId": "thread-1",
+                    "status": "running",
+                    "createdAt": 20
+                }
+            })),
+        );
+        state.apply_live(
+            Some(2),
+            event(json!({
+                "type": "item.started",
+                "item": {
+                    "id": "server-item",
+                    "turnId": "server-turn",
+                    "type": "message",
+                    "status": "started",
+                    "role": "user",
+                    "text": "Resume this chat",
+                    "createdAt": 20
+                }
+            })),
+        );
+
+        assert_eq!(state.turns.len(), 1);
+        assert_eq!(state.turns[0].turn.id, "server-turn");
+        assert_eq!(state.turns[0].turn.created_at, 10.0);
+        assert_eq!(state.timeline_len(), 1);
+        assert_eq!(state.item_at_row(0).unwrap().id, "server-item");
+        assert_eq!(state.item_at_row(0).unwrap().turn_id, "server-turn");
+    }
+
+    #[test]
+    fn failed_optimistic_turn_is_removed_without_disturbing_history() {
+        let mut state = ThreadState::default();
+        for domain_event in [
+            event(json!({
+                "type": "turn.started",
+                "turn": {
+                    "id": "turn-1",
+                    "threadId": "thread-1",
+                    "status": "running",
+                    "createdAt": 1
+                }
+            })),
+            event(json!({
+                "type": "item.completed",
+                "item": {
+                    "id": "item-1",
+                    "turnId": "turn-1",
+                    "type": "message",
+                    "status": "completed",
+                    "role": "assistant",
+                    "text": "Earlier answer",
+                    "createdAt": 2
+                }
+            })),
+            event(json!({
+                "type": "turn.completed",
+                "turnId": "turn-1",
+                "status": "completed"
+            })),
+            event(json!({
+                "type": "turn.started",
+                "turn": {
+                    "id": "local-turn:2",
+                    "threadId": "thread-1",
+                    "status": "running",
+                    "createdAt": 3
+                }
+            })),
+            event(json!({
+                "type": "item.completed",
+                "item": {
+                    "id": "optimistic:2",
+                    "turnId": "local-turn:2",
+                    "type": "message",
+                    "status": "completed",
+                    "role": "user",
+                    "text": "Try this",
+                    "createdAt": 3
+                }
+            })),
+        ] {
+            state.apply_live(None, domain_event);
+        }
+
+        assert!(state.discard_optimistic_turn("local-turn:2"));
+        assert!(!state.running);
+        assert_eq!(state.turns.len(), 1);
+        assert_eq!(state.timeline_len(), 1);
+        assert_eq!(
+            state.item_at_row(0).unwrap().text.as_deref(),
+            Some("Earlier answer")
+        );
     }
 
     #[test]

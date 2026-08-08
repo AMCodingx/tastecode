@@ -1635,20 +1635,31 @@ impl ClientState {
         self.notice.clone().unwrap_or_else(|| fallback.into())
     }
 
-    pub(crate) fn send_turn(&mut self, thread_id: &str, request: SendTurnRequest) {
+    pub(crate) fn send_turn(&mut self, thread_id: &str, request: SendTurnRequest) -> ClientUpdate {
         let steer = request.steer;
         let restore_text = request.text.clone();
         let restore_attachments = request.attachments.clone();
-        self.send_request(
+        if self.send_request(
             method::THREAD_SEND_TURN,
             send_turn_params(thread_id, request),
             PendingRequest::SendTurn {
                 thread_id: thread_id.into(),
                 steer,
+                restore_text: restore_text.clone(),
+                restore_attachments: restore_attachments.clone(),
+            },
+        ) {
+            ClientUpdate::default()
+        } else {
+            ClientUpdate::chat(ChatUpdate::TurnError {
+                thread_id: thread_id.into(),
+                message: self.request_start_error(
+                    "This request could not be sent because the server is unavailable.",
+                ),
                 restore_text,
                 restore_attachments,
-            },
-        );
+            })
+        }
     }
 
     pub(crate) fn delete_queued_turn(
@@ -3411,7 +3422,7 @@ impl ClientState {
             json!({ "threadId": thread_id, "title": request.title }),
             PendingRequest::RenameThread,
         );
-        self.send_turn(
+        let _ = self.send_turn(
             &thread_id,
             SendTurnRequest {
                 text: request.text,
@@ -5425,6 +5436,35 @@ mod tests {
                 "serviceTier": "priority"
             })
         );
+    }
+
+    #[test]
+    fn unavailable_server_restores_an_existing_chat_submission() {
+        let mut state = ClientState::new(true);
+
+        let update = state.send_turn(
+            "thread-1",
+            SendTurnRequest {
+                text: "Try again".into(),
+                steer: false,
+                attachments: vec!["reference.png".into()],
+                model: Some("gpt-test".into()),
+                effort: Some("high".into()),
+                service_tier: None,
+            },
+        );
+
+        assert!(matches!(
+            update.chat.as_slice(),
+            [ChatUpdate::TurnError {
+                thread_id,
+                restore_text,
+                restore_attachments,
+                ..
+            }] if thread_id == "thread-1"
+                && restore_text == "Try again"
+                && restore_attachments == &["reference.png"]
+        ));
     }
 
     #[test]

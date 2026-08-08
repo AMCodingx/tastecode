@@ -287,6 +287,15 @@ pub(crate) struct PendingDraftTurn {
     pub(crate) service_tier: Option<String>,
 }
 
+#[derive(Clone)]
+struct OptimisticActiveTurn {
+    turn_id: String,
+    item_id: String,
+    text: String,
+    created_at: f64,
+    after_seq: u64,
+}
+
 #[derive(Clone, Copy)]
 struct ComposerDockPending {
     box_bounds: Bounds<Pixels>,
@@ -365,6 +374,7 @@ pub(crate) struct ChatView {
     creating: bool,
     pending_draft_turns: Vec<PendingDraftTurn>,
     optimistic_draft_turn_id: Option<String>,
+    optimistic_active_turn: Option<OptimisticActiveTurn>,
     sending: bool,
     send_motion_generation: u64,
     interrupt_pending: bool,
@@ -518,6 +528,7 @@ impl ChatView {
             creating: false,
             pending_draft_turns: Vec::new(),
             optimistic_draft_turn_id: None,
+            optimistic_active_turn: None,
             sending: false,
             send_motion_generation: 0,
             interrupt_pending: false,
@@ -625,6 +636,7 @@ impl ChatView {
         self.creating = false;
         self.pending_draft_turns.clear();
         self.optimistic_draft_turn_id = None;
+        self.optimistic_active_turn = None;
         self.sending = false;
         self.send_motion_generation = self.send_motion_generation.wrapping_add(1);
         self.interrupt_pending = false;
@@ -828,9 +840,39 @@ impl ChatView {
         match update {
             ChatUpdate::History {
                 thread_id,
-                history,
+                mut history,
                 replace,
             } if self.is_selected(&thread_id) => {
+                let optimistic_confirmation = self.optimistic_active_turn.as_ref().map(|pending| {
+                    let mut canonical_turn_id = None;
+                    let mut canonical_user_arrived = false;
+                    for entry in history
+                        .events
+                        .iter_mut()
+                        .filter(|entry| entry.seq > pending.after_seq)
+                    {
+                        match &mut entry.event {
+                            DomainEvent::TurnStarted { turn }
+                                if !turn.id.starts_with("local-turn:") =>
+                            {
+                                turn.created_at = pending.created_at;
+                                canonical_turn_id = Some(turn.id.clone());
+                            }
+                            DomainEvent::ItemStarted { item }
+                            | DomainEvent::ItemCompleted { item }
+                                if item.role == Some(MessageRole::User)
+                                    && item
+                                        .text
+                                        .as_deref()
+                                        .is_none_or(|text| text == pending.text) =>
+                            {
+                                canonical_user_arrived = true;
+                            }
+                            _ => {}
+                        }
+                    }
+                    (canonical_turn_id, canonical_user_arrived)
+                });
                 let old_len = self.state.timeline_len();
                 let was_footer_visible = self.transcript_footer_visible();
                 let was_running = self.state.running;
@@ -843,6 +885,15 @@ impl ChatView {
                 };
                 match result {
                     Ok(()) => {
+                        if let Some((canonical_turn_id, canonical_user_arrived)) =
+                            optimistic_confirmation
+                        {
+                            self.reconcile_optimistic_active_turn_after_history(
+                                &thread_id,
+                                canonical_turn_id,
+                                canonical_user_arrived,
+                            );
+                        }
                         if !self.state.running {
                             self.interrupt_pending = false;
                         }
@@ -965,6 +1016,7 @@ impl ChatView {
                 restore_text,
                 restore_attachments,
             } if self.is_selected(&thread_id) => {
+                self.rollback_optimistic_active_turn();
                 self.loading = false;
                 self.interrupt_pending = false;
                 self.error = Some(message);
@@ -1105,6 +1157,10 @@ impl ChatView {
                 DomainEvent::TurnStarted { turn } => Some(turn.id.clone()),
                 _ => None,
             };
+            let confirms_optimistic_turn = started_turn
+                .as_deref()
+                .is_some_and(|turn_id| !turn_id.starts_with("local-turn:"))
+                && self.optimistic_active_turn.is_some();
             let finishing_turn = if self.state.running {
                 match &push.event {
                     DomainEvent::TurnCompleted { turn_id, .. } => Some(turn_id.clone()),
@@ -1172,7 +1228,12 @@ impl ChatView {
                 ApplyOutcome::Applied(changes) => {
                     applied = true;
                     transcript_changed |= changes.transcript;
-                    if let Some(turn_id) = started_turn {
+                    if confirms_optimistic_turn {
+                        self.optimistic_active_turn = None;
+                    }
+                    if let Some(turn_id) = started_turn
+                        && !confirms_optimistic_turn
+                    {
                         self.start_working_rail_entry(turn_id.clone(), cx);
                         if self.transcript_scroll_mode.get() != TranscriptScrollMode::Free {
                             self.pending_anchor_turn = Some(turn_id);
@@ -1718,6 +1779,9 @@ impl ChatView {
             });
             self.append_optimistic_draft_prompt(text, cx);
         } else if let Some(thread_id) = thread_id {
+            if !self.state.running {
+                self.append_optimistic_active_prompt(&thread_id, text.clone(), cx);
+            }
             cx.emit(ChatEvent::Submit {
                 thread_id,
                 text,
@@ -1751,7 +1815,8 @@ impl ChatView {
             |turn_id| (turn_id, false),
         );
         self.apply_live_events(
-            optimistic_draft_events(
+            optimistic_prompt_events(
+                "",
                 &turn_id,
                 format!("optimistic:{}", uuid::Uuid::new_v4()),
                 text,
@@ -1760,6 +1825,85 @@ impl ChatView {
             ),
             cx,
         );
+    }
+
+    fn append_optimistic_active_prompt(
+        &mut self,
+        thread_id: &str,
+        text: String,
+        cx: &mut Context<Self>,
+    ) {
+        let pending = OptimisticActiveTurn {
+            turn_id: format!("local-turn:{}", uuid::Uuid::new_v4()),
+            item_id: format!("optimistic:{}", uuid::Uuid::new_v4()),
+            text,
+            created_at: unix_time_ms(),
+            after_seq: self.state.last_seq(),
+        };
+        self.apply_live_events(
+            optimistic_prompt_events(
+                thread_id,
+                &pending.turn_id,
+                pending.item_id.clone(),
+                pending.text.clone(),
+                pending.created_at,
+                true,
+            ),
+            cx,
+        );
+        self.optimistic_active_turn = Some(pending);
+    }
+
+    fn reconcile_optimistic_active_turn_after_history(
+        &mut self,
+        thread_id: &str,
+        canonical_turn_id: Option<String>,
+        canonical_user_arrived: bool,
+    ) {
+        let Some(pending) = self.optimistic_active_turn.clone() else {
+            return;
+        };
+        if canonical_user_arrived {
+            self.optimistic_active_turn = None;
+            return;
+        }
+        if self.state.turn(&pending.turn_id).is_some() {
+            return;
+        }
+        let canonical_turn_id =
+            canonical_turn_id.filter(|turn_id| self.state.turn(turn_id).is_some());
+        let (turn_id, start_turn) = canonical_turn_id.as_ref().map_or_else(
+            || (pending.turn_id.as_str(), true),
+            |turn_id| (turn_id.as_str(), false),
+        );
+        for push in optimistic_prompt_events(
+            thread_id,
+            turn_id,
+            pending.item_id.clone(),
+            pending.text,
+            pending.created_at,
+            start_turn,
+        ) {
+            let _ = self.state.apply_live(push.seq, push.event);
+        }
+        if canonical_turn_id.is_some() {
+            self.optimistic_active_turn = None;
+        }
+    }
+
+    fn rollback_optimistic_active_turn(&mut self) {
+        let Some(pending) = self.optimistic_active_turn.take() else {
+            return;
+        };
+        if !self.state.discard_optimistic_turn(&pending.turn_id) {
+            return;
+        }
+        self.presentation.rebuild(&self.state);
+        self.reset_transcript_item_entries();
+        self.list_state.reset(self.transcript_list_len());
+        self.sync_structured_requests();
+        self.sync_diff_summary();
+        self.refresh_work_label();
     }
 
     fn primary_action(&mut self, cx: &mut Context<Self>) {
@@ -5631,7 +5775,8 @@ fn new_session_prompt_label(
     }
 }
 
-fn optimistic_draft_events(
+fn optimistic_prompt_events(
+    thread_id: &str,
     turn_id: &str,
     item_id: String,
     text: String,
@@ -5641,12 +5786,12 @@ fn optimistic_draft_events(
     let mut events = Vec::with_capacity(usize::from(start_turn) + 1);
     if start_turn {
         events.push(ThreadEventPush {
-            thread_id: String::new(),
+            thread_id: thread_id.into(),
             seq: None,
             event: DomainEvent::TurnStarted {
                 turn: Turn {
                     id: turn_id.into(),
-                    thread_id: String::new(),
+                    thread_id: thread_id.into(),
                     status: TurnStatus::Running,
                     created_at,
                 },
@@ -5654,7 +5799,7 @@ fn optimistic_draft_events(
         });
     }
     events.push(ThreadEventPush {
-        thread_id: String::new(),
+        thread_id: thread_id.into(),
         seq: None,
         event: DomainEvent::ItemCompleted {
             item: Item {
@@ -7624,7 +7769,8 @@ mod tests {
     #[test]
     fn provisional_session_keeps_consecutive_prompts_visible_and_ordered() {
         let mut state = ThreadState::default();
-        let events = optimistic_draft_events(
+        let events = optimistic_prompt_events(
+            "",
             "local-turn:1",
             "optimistic:1".into(),
             "Start immediately".into(),
@@ -7632,7 +7778,8 @@ mod tests {
             true,
         )
         .into_iter()
-        .chain(optimistic_draft_events(
+        .chain(optimistic_prompt_events(
+            "",
             "local-turn:1",
             "optimistic:2".into(),
             "Then do this too".into(),
