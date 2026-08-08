@@ -2125,23 +2125,6 @@ impl ClientState {
         );
     }
 
-    pub(crate) fn stage_message(&self, fixture: bool) -> String {
-        self.notice
-            .clone()
-            .unwrap_or_else(|| match self.connection {
-                ConnectionState::Connecting => "Connecting to the Harness server…".into(),
-                ConnectionState::Reconnecting => "Reconnecting to the Harness server…".into(),
-                ConnectionState::Closed => "The Harness server is unavailable.".into(),
-                ConnectionState::Open if !self.projects_loaded => "Loading projects…".into(),
-                ConnectionState::Open if self.projects.is_empty() && !fixture => {
-                    "Add a project to start a native session.".into()
-                }
-                ConnectionState::Open => {
-                    "Parallel work stays visible without owning the whole workspace.".into()
-                }
-            })
-    }
-
     fn request_initial_state(&mut self) {
         self.voice_statuses.clear();
         self.voice_status_pending.clear();

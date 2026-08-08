@@ -29,9 +29,10 @@ use anyhow::Result;
 use command_palette::{CommandPaletteState, CommandScope};
 use gpui::{
     Animation, AnimationExt, App, Application, Bounds, Context, CursorStyle, Entity, FocusHandle,
-    Focusable, KeyDownEvent, MouseButton, MouseDownEvent, MouseMoveEvent, PathPromptOptions,
-    Pixels, Render, SharedString, TitlebarOptions, Window, WindowAppearance,
-    WindowBackgroundAppearance, WindowBounds, WindowOptions, div, point, prelude::*, size,
+    Focusable, FontWeight, KeyDownEvent, MouseButton, MouseDownEvent, MouseMoveEvent,
+    PathPromptOptions, Pixels, Render, SharedString, TitlebarOptions, Window, WindowAppearance,
+    WindowBackgroundAppearance, WindowBounds, WindowOptions, div, point, prelude::*, relative,
+    size,
 };
 use gpui_component::Root;
 use gpui_component::input::{InputEvent, InputState};
@@ -118,6 +119,7 @@ struct HarnessApp {
     selected_thread_id: Option<String>,
     active_project_path: Option<String>,
     chat_visible: bool,
+    initial_project_selection_done: bool,
     selected_model_key: Option<String>,
     effort: Option<String>,
     service_tier: Option<String>,
@@ -612,6 +614,7 @@ impl HarnessApp {
             selected_thread_id: None,
             active_project_path: None,
             chat_visible: false,
+            initial_project_selection_done: false,
             selected_model_key: preferences.selected_model_key.clone(),
             effort: None,
             service_tier: None,
@@ -679,6 +682,7 @@ impl HarnessApp {
             app.sync_model_selection(cx);
             app.sync_composer_settings(cx);
         }
+        app.select_initial_project_if_ready(cx);
         app
     }
 
@@ -735,6 +739,7 @@ impl HarnessApp {
         for event in update.shell_events {
             self.apply_shell_event(event, cx);
         }
+        self.select_initial_project_if_ready(cx);
         if refresh_stage {
             self.refresh_stage_context(cx);
         }
@@ -1150,7 +1155,38 @@ impl HarnessApp {
         }
     }
 
+    fn select_initial_project_if_ready(&mut self, cx: &mut Context<Self>) {
+        if self.initial_project_selection_done || !self.state.projects_loaded {
+            return;
+        }
+        self.initial_project_selection_done = true;
+        if let Some(path) = self
+            .state
+            .projects
+            .first()
+            .map(|project| project.path.clone())
+        {
+            self.begin_new_chat(path, cx);
+        } else {
+            cx.notify();
+        }
+    }
+
     fn begin_new_chat(&mut self, project_path: String, cx: &mut Context<Self>) {
+        let Some(project) = self
+            .state
+            .projects
+            .iter()
+            .find(|project| project.path == project_path)
+            .cloned()
+        else {
+            self.state.notice = Some("That project is no longer available.".into());
+            cx.notify();
+            return;
+        };
+        self.initial_project_selection_done = true;
+        self.selected_thread_id = None;
+        self.active_project_path = Some(project.path.clone());
         self.sync_model_selection(cx);
         let Some(choice) = self.selected_model_choice().cloned() else {
             self.chat_visible = false;
@@ -1167,16 +1203,6 @@ impl HarnessApp {
             cx.notify();
             return;
         };
-        let Some(project) = self
-            .state
-            .projects
-            .iter()
-            .find(|project| project.path == project_path)
-        else {
-            self.state.notice = Some("That project is no longer available.".into());
-            cx.notify();
-            return;
-        };
         let context = SessionContext {
             thread_id: None,
             title: "New chat".into(),
@@ -1184,8 +1210,6 @@ impl HarnessApp {
             project_name: project.name.clone(),
             provider: choice.provider,
         };
-        self.selected_thread_id = None;
-        self.active_project_path = Some(project.path.clone());
         self.pending_new_chat_path = None;
         self.chat_visible = true;
         self.settings_open = false;
@@ -2073,7 +2097,25 @@ impl HarnessApp {
             })
     }
 
-    fn stage(&self) -> impl IntoElement {
+    fn stage(&self, window: &Window) -> impl IntoElement {
+        let label = if !self.state.projects_loaded {
+            None
+        } else if self.state.projects.is_empty() {
+            Some("Add a project to start building.".to_owned())
+        } else {
+            let project_name = self
+                .active_project_path
+                .as_deref()
+                .and_then(|path| {
+                    self.state
+                        .projects
+                        .iter()
+                        .find(|project| project.path == path)
+                })
+                .or_else(|| self.state.projects.first())
+                .map_or("a project", |project| project.name.as_str());
+            Some(format!("What should we build in {project_name}?"))
+        };
         div()
             .flex_1()
             .h_full()
@@ -2081,10 +2123,16 @@ impl HarnessApp {
             .flex()
             .items_center()
             .justify_center()
+            .p(px(24.0))
             .bg(self.theme.background.hsla())
-            .text_color(self.theme.text_3.hsla())
-            .text_size(px(12.5))
-            .child(self.state.stage_message(self.fixture))
+            .text_center()
+            .text_color(self.theme.text.hsla())
+            .text_size(px(stage_prompt_size(f32::from(
+                window.viewport_size().width,
+            ))))
+            .line_height(relative(1.12))
+            .font_weight(FontWeight(400.0))
+            .when_some(label, |stage, label| stage.child(label))
     }
 }
 
@@ -2124,7 +2172,7 @@ impl Render for HarnessApp {
         let content = if self.chat_visible {
             self.chat.clone().into_any_element()
         } else {
-            self.stage().into_any_element()
+            self.stage(window).into_any_element()
         };
         let sidebar_actions = self.sidebar_actions(cx);
         let account_target = self.selected_model_choice().map(|choice| AuthTarget {
@@ -2367,6 +2415,10 @@ fn theme_mode_for_appearance(appearance: WindowAppearance) -> ThemeMode {
         WindowAppearance::Dark | WindowAppearance::VibrantDark => ThemeMode::Dark,
         WindowAppearance::Light | WindowAppearance::VibrantLight => ThemeMode::Light,
     }
+}
+
+fn stage_prompt_size(viewport_width: f32) -> f32 {
+    (viewport_width * 0.024).clamp(20.0, 30.0)
 }
 
 fn clamp_rail_width(width: f32) -> f32 {
@@ -2866,5 +2918,12 @@ mod tests {
             resolve_interface_font(FontPreference::Serif, &fonts),
             ".SystemUIFont"
         );
+    }
+
+    #[test]
+    fn empty_stage_heading_matches_web_responsive_type() {
+        assert_eq!(stage_prompt_size(700.0), 20.0);
+        assert_eq!(stage_prompt_size(1_000.0), 24.0);
+        assert_eq!(stage_prompt_size(1_400.0), 30.0);
     }
 }
