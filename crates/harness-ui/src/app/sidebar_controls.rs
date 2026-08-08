@@ -9,7 +9,7 @@ use crate::zoom::px;
 use chrono::{Datelike, Duration as ChronoDuration, Local, Timelike};
 use gpui::{
     Animation, AnimationExt, AnyElement, ClipboardItem, Context, Entity, FocusHandle, FontWeight,
-    SharedString, Window, div, prelude::*, relative,
+    Pixels, SharedString, Window, div, prelude::*, relative,
 };
 use gpui_component::input::{Input, InputState, SelectAll};
 use harness_protocol::{SessionSummary, ThreadInboxStatus, ThreadLifecycle};
@@ -946,17 +946,18 @@ impl HarnessApp {
         let row_count = items.len().saturating_sub(rule_count + selection_count);
         let content_height =
             row_count as f32 * 33.0 + rule_count as f32 * 9.0 + selection_count as f32 * 29.0;
-        let max_panel_height = (f32::from(viewport.height) - 16.0).clamp(0.0, 340.0);
+        let viewport_height = f32::from(viewport.height) / crate::zoom::factor();
+        let max_panel_height = (viewport_height - 16.0).clamp(0.0, 340.0);
         let panel_height_value = (content_height + 10.0).min(max_panel_height);
         let position = sidebar_menu_position(
             anchor,
-            f32::from(viewport.width),
-            f32::from(viewport.height),
-            f32::from(panel_width),
-            panel_height_value,
+            viewport.width,
+            viewport.height,
+            panel_width,
+            px(panel_height_value),
         );
-        let left = px(position.left);
-        let top = px(position.top);
+        let left = position.left;
+        let top = position.top;
         let grows_up = position.grows_up;
 
         Some(
@@ -1480,47 +1481,41 @@ fn sidebar_menu_entry_animation(theme: crate::Theme) -> Animation {
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 struct SidebarMenuPosition {
-    left: f32,
-    top: f32,
+    left: Pixels,
+    top: Pixels,
     grows_up: bool,
 }
 
 fn sidebar_menu_position(
     anchor: SidebarMenuAnchor,
-    viewport_width: f32,
-    viewport_height: f32,
-    panel_width: f32,
-    panel_height: f32,
+    viewport_width: Pixels,
+    viewport_height: Pixels,
+    panel_width: Pixels,
+    panel_height: Pixels,
 ) -> SidebarMenuPosition {
     let (preferred_left, anchor_top, anchor_bottom, gap) = match anchor {
-        SidebarMenuAnchor::Context(point) => (
-            f32::from(point.x),
-            f32::from(point.y),
-            f32::from(point.y),
-            0.0,
-        ),
+        SidebarMenuAnchor::Context(point) => (point.x, point.y, point.y, px(0.0)),
         SidebarMenuAnchor::Trigger(bounds) => (
-            f32::from(bounds.origin.x + bounds.size.width) - panel_width,
-            f32::from(bounds.origin.y),
-            f32::from(bounds.origin.y + bounds.size.height),
-            SIDEBAR_MENU_GAP,
+            bounds.origin.x + bounds.size.width - panel_width,
+            bounds.origin.y,
+            bounds.origin.y + bounds.size.height,
+            px(SIDEBAR_MENU_GAP),
         ),
     };
-    let space_above = anchor_top - gap - SIDEBAR_MENU_VIEWPORT_GUTTER;
-    let space_below = viewport_height - anchor_bottom - gap - SIDEBAR_MENU_VIEWPORT_GUTTER;
+    let gutter = px(SIDEBAR_MENU_VIEWPORT_GUTTER);
+    let space_above = anchor_top - gap - gutter;
+    let space_below = viewport_height - anchor_bottom - gap - gutter;
     let grows_up = panel_height > space_below && space_above > space_below;
     let preferred_top = if grows_up {
         anchor_top - gap - panel_height
     } else {
         anchor_bottom + gap
     };
-    let max_left = (viewport_width - panel_width - SIDEBAR_MENU_VIEWPORT_GUTTER)
-        .max(SIDEBAR_MENU_VIEWPORT_GUTTER);
-    let max_top = (viewport_height - panel_height - SIDEBAR_MENU_VIEWPORT_GUTTER)
-        .max(SIDEBAR_MENU_VIEWPORT_GUTTER);
+    let max_left = (viewport_width - panel_width - gutter).max(gutter);
+    let max_top = (viewport_height - panel_height - gutter).max(gutter);
     SidebarMenuPosition {
-        left: preferred_left.clamp(SIDEBAR_MENU_VIEWPORT_GUTTER, max_left),
-        top: preferred_top.clamp(SIDEBAR_MENU_VIEWPORT_GUTTER, max_top),
+        left: preferred_left.clamp(gutter, max_left),
+        top: preferred_top.clamp(gutter, max_top),
         grows_up,
     }
 }
@@ -1945,28 +1940,28 @@ mod tests {
         assert_eq!(
             sidebar_menu_position(
                 SidebarMenuAnchor::Context(point(px(100.0), px(100.0))),
-                800.0,
-                800.0,
-                210.0,
-                200.0,
+                px(800.0),
+                px(800.0),
+                px(210.0),
+                px(200.0),
             ),
             SidebarMenuPosition {
-                left: 100.0,
-                top: 100.0,
+                left: px(100.0),
+                top: px(100.0),
                 grows_up: false,
             }
         );
         assert_eq!(
             sidebar_menu_position(
                 SidebarMenuAnchor::Context(point(px(750.0), px(750.0))),
-                800.0,
-                800.0,
-                210.0,
-                200.0,
+                px(800.0),
+                px(800.0),
+                px(210.0),
+                px(200.0),
             ),
             SidebarMenuPosition {
-                left: 582.0,
-                top: 550.0,
+                left: px(582.0),
+                top: px(550.0),
                 grows_up: true,
             }
         );
@@ -1978,14 +1973,14 @@ mod tests {
         assert_eq!(
             sidebar_menu_position(
                 SidebarMenuAnchor::Trigger(trigger),
-                800.0,
-                800.0,
-                210.0,
-                200.0,
+                px(800.0),
+                px(800.0),
+                px(210.0),
+                px(200.0),
             ),
             SidebarMenuPosition {
-                left: 66.0,
-                top: 132.0,
+                left: px(66.0),
+                top: px(132.0),
                 grows_up: false,
             }
         );
@@ -1997,14 +1992,14 @@ mod tests {
         assert_eq!(
             sidebar_menu_position(
                 SidebarMenuAnchor::Trigger(bottom_trigger),
-                800.0,
-                800.0,
-                210.0,
-                200.0,
+                px(800.0),
+                px(800.0),
+                px(210.0),
+                px(200.0),
             ),
             SidebarMenuPosition {
-                left: 66.0,
-                top: 524.0,
+                left: px(66.0),
+                top: px(524.0),
                 grows_up: true,
             }
         );
