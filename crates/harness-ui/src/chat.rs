@@ -22,17 +22,18 @@ use diff::DiffUiState;
 use gpui::{
     Animation, AnimationExt, AnyElement, App, Background, Bounds, BoxShadow, ClipboardEntry,
     Context, Entity, EventEmitter, ExternalPaths, FocusHandle, Focusable, FontWeight,
-    HighlightStyle, Image, ImageFormat, KeyDownEvent, ListAlignment, ListOffset, ListState,
-    ObjectFit, Pixels, Point, Render, Rgba, ScrollWheelEvent, SharedString, StyledImage,
-    StyledText, Window, canvas, div, fill, img, linear_color_stop, linear_gradient, point,
-    prelude::*, relative, size, svg,
+    HighlightStyle, Image, ImageFormat, IntoElement, KeyDownEvent, ListAlignment, ListOffset,
+    ListState, ObjectFit, PathBuilder, Pixels, Point, Render, RenderOnce, Rgba, ScrollWheelEvent,
+    SharedString, StyledImage, StyledText, Window, canvas, deferred, div, fill, img,
+    linear_color_stop, linear_gradient, point, prelude::*, relative, size, svg,
 };
 use gpui_component::input::{Input, InputEvent, InputState};
 use gpui_component::{RopeExt, Sizable as _};
 use harness_protocol::{
     ApprovalDecision, ApprovalKind, ApprovalMode, ApprovalReview, ApprovalReviewStatus,
     CheckpointSummary, DiffDecision, DomainEvent, Item, ProviderId, QueueDirection, RiskLevel,
-    ThreadEventPush, ThreadQueueResult, UserInputQuestion, VoiceMimeType, VoiceTranscribeParams,
+    ThreadEventPush, ThreadQueueResult, Usage, UserInputQuestion, VoiceMimeType,
+    VoiceTranscribeParams,
 };
 use harness_state::{ApplyOutcome, HistoryError, ThreadState};
 use markdown::StreamRevealBatch;
@@ -3428,6 +3429,16 @@ impl ChatView {
                                                 tools
                                                     .child(div().flex_1())
                                                     .when_some(
+                                                        self.state.usage.as_ref().filter(|usage| {
+                                                            usage
+                                                                .context_window
+                                                                .is_some_and(|window| window > 0.0)
+                                                        }),
+                                                        |tools, usage| {
+                                                            tools.child(context_usage(usage, theme))
+                                                        },
+                                                    )
+                                                    .when_some(
                                                         self.model_trigger(running, cx),
                                                         |tools, trigger| tools.child(trigger),
                                                     )
@@ -5422,6 +5433,441 @@ fn radio_mark(active: bool, theme: Theme) -> impl IntoElement {
         })
 }
 
+fn context_usage(usage: &Usage, theme: Theme) -> AnyElement {
+    let context_window = usage.context_window.unwrap_or_default();
+    let progress = context_usage_progress(usage.total_tokens, context_window);
+    ContextUsage {
+        total_tokens: usage.total_tokens,
+        context_window,
+        progress,
+        theme,
+    }
+    .into_any_element()
+}
+
+fn context_usage_progress(total_tokens: f64, context_window: f64) -> f32 {
+    if !total_tokens.is_finite() || !context_window.is_finite() || context_window <= 0.0 {
+        return 0.0;
+    }
+    (total_tokens / context_window).clamp(0.0, 1.0) as f32
+}
+
+fn format_token_count(value: f64) -> String {
+    if !value.is_finite() {
+        return "0".into();
+    }
+    let value = value.max(0.0).round() as u64;
+    let digits = value.to_string();
+    let mut grouped = String::with_capacity(digits.len() + digits.len() / 3);
+    let first_group = digits.len() % 3;
+    for (index, digit) in digits.chars().enumerate() {
+        if index > 0 && index % 3 == first_group {
+            grouped.push(',');
+        }
+        grouped.push(digit);
+    }
+    grouped
+}
+
+#[derive(IntoElement)]
+struct ContextUsage {
+    total_tokens: f64,
+    context_window: f64,
+    progress: f32,
+    theme: Theme,
+}
+
+impl RenderOnce for ContextUsage {
+    fn render(self, window: &mut Window, cx: &mut App) -> impl IntoElement {
+        let state = window.use_keyed_state("composer-context-usage", cx, |_window, cx| {
+            ContextUsageState::new(
+                self.total_tokens,
+                self.context_window,
+                self.progress,
+                self.theme,
+                cx,
+            )
+        });
+        state.update(cx, |state, cx| {
+            state.update_content(
+                self.total_tokens,
+                self.context_window,
+                self.progress,
+                self.theme,
+                cx,
+            );
+        });
+        state
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
+struct ContextUsageMotion {
+    from: f32,
+    target: f32,
+    started: Instant,
+    duration: Duration,
+    generation: u64,
+}
+
+impl ContextUsageMotion {
+    fn stationary(value: f32, now: Instant) -> Self {
+        Self {
+            from: value,
+            target: value,
+            started: now,
+            duration: Duration::ZERO,
+            generation: 0,
+        }
+    }
+
+    fn sample(self, now: Instant) -> (f32, bool) {
+        if self.duration.is_zero() {
+            return (self.target, false);
+        }
+        let progress =
+            now.saturating_duration_since(self.started).as_secs_f32() / self.duration.as_secs_f32();
+        if progress >= 1.0 {
+            return (self.target, false);
+        }
+        let eased = crate::theme::web_ease_out(progress.clamp(0.0, 1.0));
+        (self.from + (self.target - self.from) * eased, true)
+    }
+
+    fn retarget(
+        &mut self,
+        target: f32,
+        duration: Duration,
+        shorten_to_distance: bool,
+        now: Instant,
+    ) -> bool {
+        if (self.target - target).abs() < f32::EPSILON {
+            return false;
+        }
+        let (current, _) = self.sample(now);
+        self.from = current;
+        self.target = target;
+        self.started = now;
+        self.duration = if shorten_to_distance {
+            duration.mul_f32((target - current).abs())
+        } else {
+            duration
+        };
+        self.generation = self.generation.wrapping_add(1);
+        true
+    }
+}
+
+struct ContextUsageState {
+    total_tokens: f64,
+    context_window: f64,
+    theme: Theme,
+    focus: FocusHandle,
+    hovered: bool,
+    focused: bool,
+    ring_motion: ContextUsageMotion,
+    tooltip_motion: ContextUsageMotion,
+}
+
+impl ContextUsageState {
+    fn new(
+        total_tokens: f64,
+        context_window: f64,
+        progress: f32,
+        theme: Theme,
+        cx: &mut Context<Self>,
+    ) -> Self {
+        let now = Instant::now();
+        Self {
+            total_tokens,
+            context_window,
+            theme,
+            focus: cx.focus_handle(),
+            hovered: false,
+            focused: false,
+            ring_motion: ContextUsageMotion::stationary(progress, now),
+            tooltip_motion: ContextUsageMotion::stationary(0.0, now),
+        }
+    }
+
+    fn update_content(
+        &mut self,
+        total_tokens: f64,
+        context_window: f64,
+        progress: f32,
+        theme: Theme,
+        cx: &mut Context<Self>,
+    ) {
+        let mut changed = false;
+        if self.total_tokens != total_tokens || self.context_window != context_window {
+            self.total_tokens = total_tokens;
+            self.context_window = context_window;
+            changed = true;
+        }
+        if self.theme != theme {
+            self.theme = theme;
+            changed = true;
+        }
+        changed |= self.ring_motion.retarget(
+            progress,
+            theme.motion_duration(Duration::from_millis(170)),
+            false,
+            Instant::now(),
+        );
+        if changed {
+            cx.notify();
+        }
+    }
+
+    fn hover_changed(&mut self, hovered: bool, cx: &mut Context<Self>) {
+        if self.hovered != hovered {
+            self.hovered = hovered;
+            self.sync_tooltip(cx);
+        }
+    }
+
+    fn focus_changed(&mut self, focused: bool, cx: &mut Context<Self>) {
+        if self.focused != focused {
+            self.focused = focused;
+            self.sync_tooltip(cx);
+        }
+    }
+
+    fn sync_tooltip(&mut self, cx: &mut Context<Self>) {
+        if self.tooltip_motion.retarget(
+            f32::from(self.hovered || self.focused),
+            self.theme.motion.fast,
+            true,
+            Instant::now(),
+        ) {
+            cx.notify();
+        }
+    }
+}
+
+impl Focusable for ContextUsageState {
+    fn focus_handle(&self, _cx: &App) -> FocusHandle {
+        self.focus.clone()
+    }
+}
+
+impl Render for ContextUsageState {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        if self.focus.is_focused(window) != self.focused {
+            self.focus_changed(self.focus.is_focused(window), cx);
+        }
+        let theme = self.theme;
+        let (ring_progress, ring_animating) = self.ring_motion.sample(Instant::now());
+        let ring_from = self.ring_motion.from;
+        let ring_target = self.ring_motion.target;
+        let ring_duration = self.ring_motion.duration;
+        let ring_generation = self.ring_motion.generation;
+        let ring = ContextUsageRing {
+            progress: ring_progress,
+            theme,
+        };
+        let ring = if ring_animating {
+            ring.with_animation(
+                ("context-usage-ring", ring_generation),
+                Animation::new(ring_duration).with_easing(crate::theme::web_ease_out),
+                move |mut ring, delta| {
+                    ring.progress = ring_from + (ring_target - ring_from) * delta;
+                    ring
+                },
+            )
+            .into_any_element()
+        } else {
+            ring.into_any_element()
+        };
+
+        let (tooltip_progress, tooltip_animating) = self.tooltip_motion.sample(Instant::now());
+        let tooltip_from = self.tooltip_motion.from;
+        let tooltip_target = self.tooltip_motion.target;
+        let tooltip_duration = self.tooltip_motion.duration;
+        let tooltip_generation = self.tooltip_motion.generation;
+        let percent = (self.ring_motion.target * 100.0).round() as u8;
+        let bubble = div()
+            .id("context-usage-tooltip")
+            .absolute()
+            .right_0()
+            .bottom(px(34.0 - 3.0 * (1.0 - tooltip_progress)))
+            .grid()
+            .gap(px(2.0))
+            .max_w(px(230.0))
+            .px(px(10.0))
+            .py(px(8.0))
+            .rounded(px(5.0))
+            .border_1()
+            .border_color(theme.line_strong.hsla())
+            .bg(theme.surface_3.hsla())
+            .shadow(chrome::flyout_shadows(theme))
+            .text_size(px(11.5))
+            .text_color(theme.text_3.hsla())
+            .opacity(tooltip_progress)
+            .child(
+                div()
+                    .text_size(px(12.5))
+                    .font_weight(FontWeight(550.0))
+                    .text_color(theme.text.hsla())
+                    .child(format!("{percent}% context used")),
+            )
+            .child(format!(
+                "{} / {} tokens",
+                format_token_count(self.total_tokens),
+                format_token_count(self.context_window)
+            ))
+            .when(tooltip_animating || tooltip_target > 0.0, |bubble| {
+                bubble.on_hover(cx.listener(|this, hovered, _window, cx| {
+                    this.hover_changed(*hovered, cx);
+                }))
+            });
+        let bubble = if tooltip_animating {
+            bubble
+                .with_animation(
+                    ("context-usage-tooltip-in", tooltip_generation),
+                    Animation::new(tooltip_duration).with_easing(crate::theme::web_ease_out),
+                    move |bubble, delta| {
+                        let progress = tooltip_from + (tooltip_target - tooltip_from) * delta;
+                        bubble
+                            .bottom(px(34.0 - 3.0 * (1.0 - progress)))
+                            .opacity(progress)
+                    },
+                )
+                .into_any_element()
+        } else {
+            bubble.into_any_element()
+        };
+
+        div()
+            .id("context-usage")
+            .relative()
+            .size(px(26.0))
+            .flex_none()
+            .flex()
+            .items_center()
+            .justify_center()
+            .rounded_full()
+            .track_focus(&self.focus)
+            .tab_index(0)
+            .on_hover(cx.listener(|this, hovered, _window, cx| {
+                this.hover_changed(*hovered, cx);
+            }))
+            .when(self.focus.is_focused(window), |usage| {
+                usage.child(
+                    div()
+                        .absolute()
+                        .inset(px(-3.0))
+                        .rounded_full()
+                        .border_2()
+                        .border_color(theme.text_2.hsla()),
+                )
+            })
+            .child(ring)
+            .child(deferred(bubble).with_priority(40))
+    }
+}
+
+#[derive(IntoElement)]
+struct ContextUsageRing {
+    progress: f32,
+    theme: Theme,
+}
+
+impl RenderOnce for ContextUsageRing {
+    fn render(self, _window: &mut Window, _cx: &mut App) -> impl IntoElement {
+        canvas(
+            |_, _, _| {},
+            move |bounds, _, window, _| {
+                paint_context_usage_ring(bounds, self.progress, self.theme, window);
+            },
+        )
+        .size(px(22.0))
+    }
+}
+
+fn paint_context_usage_ring(
+    bounds: Bounds<Pixels>,
+    progress: f32,
+    theme: Theme,
+    window: &mut Window,
+) {
+    const RADIUS: f32 = 9.0;
+    const STROKE: f32 = 2.25;
+    let center = bounds.center();
+    if let Some(track) = context_ring_path(center, RADIUS, 1.0, STROKE) {
+        window.paint_path(track, theme.line_strong.hsla());
+    }
+    let progress = progress.clamp(0.0, 1.0);
+    if progress <= 0.0001 {
+        return;
+    }
+    if let Some(fill_path) = context_ring_path(center, RADIUS, progress, STROKE) {
+        window.paint_path(fill_path, theme.text_2.hsla());
+    }
+    if progress < 0.9999 {
+        let start = point(center.x, center.y - px(RADIUS));
+        let angle = -std::f32::consts::FRAC_PI_2 + std::f32::consts::TAU * progress;
+        let end = point(
+            center.x + px(RADIUS * angle.cos()),
+            center.y + px(RADIUS * angle.sin()),
+        );
+        paint_context_ring_cap(start, STROKE, theme.text_2.hsla(), window);
+        paint_context_ring_cap(end, STROKE, theme.text_2.hsla(), window);
+    }
+}
+
+fn context_ring_path(
+    center: Point<Pixels>,
+    radius: f32,
+    progress: f32,
+    stroke: f32,
+) -> Option<gpui::Path<Pixels>> {
+    let progress = progress.clamp(0.0, 1.0);
+    if progress <= 0.0001 {
+        return None;
+    }
+    let radii = point(px(radius), px(radius));
+    let start = point(center.x, center.y - px(radius));
+    let mut builder = PathBuilder::stroke(px(stroke));
+    builder.move_to(start);
+    if progress >= 0.9999 {
+        let bottom = point(center.x, center.y + px(radius));
+        builder.arc_to(radii, px(0.0), false, true, bottom);
+        builder.arc_to(radii, px(0.0), false, true, start);
+    } else {
+        let angle = -std::f32::consts::FRAC_PI_2 + std::f32::consts::TAU * progress;
+        builder.arc_to(
+            radii,
+            px(0.0),
+            progress > 0.5,
+            true,
+            point(
+                center.x + px(radius * angle.cos()),
+                center.y + px(radius * angle.sin()),
+            ),
+        );
+    }
+    builder.build().ok()
+}
+
+fn paint_context_ring_cap(
+    center: Point<Pixels>,
+    diameter: f32,
+    color: gpui::Hsla,
+    window: &mut Window,
+) {
+    window.paint_quad(
+        fill(
+            Bounds {
+                origin: point(center.x - px(diameter / 2.0), center.y - px(diameter / 2.0)),
+                size: size(px(diameter), px(diameter)),
+            },
+            color,
+        )
+        .corner_radii(px(diameter / 2.0)),
+    );
+}
+
 fn approval_action_button(
     id: usize,
     label: &'static str,
@@ -6563,6 +7009,32 @@ mod tests {
     fn voice_duration_uses_the_web_minutes_and_seconds_format() {
         assert_eq!(format_voice_duration(Duration::from_millis(999)), "0:00");
         assert_eq!(format_voice_duration(Duration::from_secs(65)), "1:05");
+    }
+
+    #[test]
+    fn context_usage_matches_the_web_percentage_and_number_copy() {
+        assert!((context_usage_progress(15_000.0, 100_000.0) - 0.15).abs() < 0.001);
+        assert_eq!(context_usage_progress(120_000.0, 100_000.0), 1.0);
+        assert_eq!(context_usage_progress(10.0, 0.0), 0.0);
+        assert_eq!(format_token_count(15_000.0), "15,000");
+        assert_eq!(format_token_count(1_234_567.4), "1,234,567");
+    }
+
+    #[test]
+    fn context_usage_motion_animates_updates_without_animating_mounts() {
+        let start = Instant::now();
+        let duration = Duration::from_millis(170);
+        let mut motion = ContextUsageMotion::stationary(0.15, start);
+
+        assert_eq!(motion.sample(start), (0.15, false));
+        assert!(motion.retarget(0.42, duration, false, start));
+        let (midpoint, animating) = motion.sample(start + Duration::from_millis(85));
+        assert!(animating);
+        assert!((0.15..0.42).contains(&midpoint));
+        assert_eq!(
+            motion.sample(start + duration + Duration::from_millis(1)),
+            (0.42, false)
+        );
     }
 
     #[test]
