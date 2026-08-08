@@ -2495,19 +2495,23 @@ impl ChatView {
         let weak = cx.weak_entity();
         let option_rows = options.iter().enumerate().map(|(index, option)| {
             let active = selected.is_some_and(|answer| answer == &option.label);
+            let press_group: SharedString = format!("brief-option-{index}-press").into();
             let question_id = question.id.clone();
             let answer = option.label.clone();
             let weak = weak.clone();
             div()
                 .id(("brief-option", index))
+                .group(press_group.clone())
                 .min_h(px(38.0))
                 .w_full()
+                .mx_auto()
                 .flex()
                 .items_center()
                 .gap(px(9.0))
                 .px(px(10.0))
                 .py(px(7.0))
                 .rounded(px(5.0))
+                .overflow_hidden()
                 .border_1()
                 .border_color(if active {
                     theme.text_2.hsla().opacity(0.74)
@@ -2515,12 +2519,7 @@ impl ChatView {
                     theme.line_strong.hsla().opacity(0.68)
                 })
                 .bg(brief_option_background(theme, active, false))
-                .shadow(vec![BoxShadow {
-                    color: gpui::black().opacity(0.16),
-                    offset: point(px(0.0), px(1.0)),
-                    blur_radius: px(1.0),
-                    spread_radius: px(0.0),
-                }])
+                .shadow(brief_option_outer_shadows(active))
                 .cursor_pointer()
                 .hover(move |style| {
                     style
@@ -2532,7 +2531,13 @@ impl ChatView {
                         .bg(brief_option_background(theme, active, true))
                         .text_color(theme.text.hsla())
                 })
-                .active(|style| style.opacity(0.985))
+                .active(|style| {
+                    style
+                        .w(relative(0.985))
+                        .min_h(px(37.43))
+                        .my(px(0.285))
+                        .shadow(Vec::new())
+                })
                 .on_click(move |_event, _window, cx| {
                     let question_id = question_id.clone();
                     let answer = answer.clone();
@@ -2540,6 +2545,7 @@ impl ChatView {
                         this.select_user_input_option(question_id, answer, cx);
                     });
                 })
+                .child(brief_option_inset(active, press_group))
                 .child(radio_mark(active, theme))
                 .child(
                     div()
@@ -2558,18 +2564,22 @@ impl ChatView {
         });
 
         let custom_row = custom_available.then(|| {
+            let press_group: SharedString = "brief-custom-option-press".into();
             let question_id = question.id.clone();
             let weak = cx.weak_entity();
             div()
                 .id("brief-custom-option")
+                .group(press_group.clone())
                 .min_h(px(38.0))
                 .w_full()
+                .mx_auto()
                 .flex()
                 .items_center()
                 .gap(px(9.0))
                 .px(px(10.0))
                 .py(px(7.0))
                 .rounded(px(5.0))
+                .overflow_hidden()
                 .border_1()
                 .border_color(if custom_focused {
                     theme.text_2.hsla()
@@ -2579,12 +2589,7 @@ impl ChatView {
                     theme.line_strong.hsla().opacity(0.68)
                 })
                 .bg(brief_option_background(theme, custom_selected, false))
-                .shadow(vec![BoxShadow {
-                    color: gpui::black().opacity(0.16),
-                    offset: point(px(0.0), px(1.0)),
-                    blur_radius: px(1.0),
-                    spread_radius: px(0.0),
-                }])
+                .shadow(brief_option_outer_shadows(custom_selected))
                 .cursor_text()
                 .hover(move |style| {
                     style
@@ -2598,13 +2603,20 @@ impl ChatView {
                         .bg(brief_option_background(theme, custom_selected, true))
                         .text_color(theme.text.hsla())
                 })
-                .active(|style| style.opacity(0.985))
+                .active(|style| {
+                    style
+                        .w(relative(0.985))
+                        .min_h(px(37.43))
+                        .my(px(0.285))
+                        .shadow(Vec::new())
+                })
                 .on_click(move |_event, _window, cx| {
                     let question_id = question_id.clone();
                     let _ = weak.update(cx, |this, cx| {
                         this.select_user_input_custom(question_id, cx);
                     });
                 })
+                .child(brief_option_inset(custom_selected, press_group))
                 .child(radio_mark(custom_selected, theme))
                 .when(custom_selected, |row| {
                     row.child(
@@ -2634,8 +2646,10 @@ impl ChatView {
                 .when(!custom_selected, |row| {
                     row.child(
                         div()
+                            .relative()
                             .flex_1()
                             .min_h(px(28.0))
+                            .overflow_hidden()
                             .rounded(px(3.0))
                             .border_1()
                             .border_color(theme.line.hsla())
@@ -2646,6 +2660,7 @@ impl ChatView {
                             .text_size(px(12.5))
                             .font_weight(FontWeight(450.0))
                             .text_color(theme.text_3.hsla())
+                            .child(brief_inset_top_shadow(0.18))
                             .child("Write your own answer…"),
                     )
                 })
@@ -5535,6 +5550,77 @@ fn brief_option_background(theme: Theme, selected: bool, hovered: bool) -> Backg
         linear_color_stop(theme.surface_3.hsla().opacity(top), 0.0),
         linear_color_stop(theme.surface_2.hsla().opacity(bottom), 1.0),
     )
+}
+
+fn brief_option_outer_shadows(selected: bool) -> Vec<BoxShadow> {
+    if selected {
+        Vec::new()
+    } else {
+        vec![BoxShadow {
+            color: gpui::black().opacity(0.16),
+            offset: point(px(0.0), px(1.0)),
+            blur_radius: px(1.0),
+            spread_radius: px(0.0),
+        }]
+    }
+}
+
+fn brief_option_inset(selected: bool, press_group: SharedString) -> AnyElement {
+    let resting = if selected {
+        brief_inset_top_shadow(0.18)
+    } else {
+        div()
+            .absolute()
+            .top_0()
+            .left_0()
+            .right_0()
+            .h(px(1.0))
+            .bg(gpui::white().opacity(0.08))
+    };
+    div()
+        .absolute()
+        .inset_0()
+        .child(
+            div()
+                .id("resting-inset")
+                .absolute()
+                .inset_0()
+                .group_active(press_group.clone(), |style| style.opacity(0.0))
+                .child(resting),
+        )
+        .when(selected, |inset| {
+            inset.child(
+                div()
+                    .id("selected-inset-stroke")
+                    .absolute()
+                    .inset_0()
+                    .rounded(px(4.0))
+                    .border_1()
+                    .border_color(gpui::white().opacity(0.04))
+                    .group_active(press_group.clone(), |style| style.opacity(0.0)),
+            )
+        })
+        .child(
+            brief_inset_top_shadow(0.25)
+                .id("pressed-inset")
+                .opacity(0.0)
+                .group_active(press_group.clone(), |style| style.opacity(1.0)),
+        )
+        .into_any_element()
+}
+
+fn brief_inset_top_shadow(opacity: f32) -> gpui::Div {
+    div()
+        .absolute()
+        .top_0()
+        .left_0()
+        .right_0()
+        .h(px(4.0))
+        .bg(linear_gradient(
+            180.0,
+            linear_color_stop(gpui::black().opacity(opacity), 0.0),
+            linear_color_stop(gpui::transparent_black(), 1.0),
+        ))
 }
 
 fn brief_action_background(theme: Theme, primary: bool) -> Background {
