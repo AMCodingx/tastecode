@@ -36,6 +36,12 @@ const STREAM_WORD_DURATION_MS: u64 = 160;
 const STREAM_WORD_STAGGER_MS: u64 = 14;
 const STREAM_CLEANUP_PADDING: Duration = Duration::from_millis(80);
 const SPACE_WIDTH: f32 = 3.7;
+const MARKDOWN_MAX_WIDTH_CH: f32 = 72.0;
+
+thread_local! {
+    static MARKDOWN_MAX_WIDTHS: RefCell<HashMap<(SharedString, u32), Pixels>> =
+        RefCell::new(HashMap::new());
+}
 
 #[derive(Clone, Copy)]
 struct InlineTracking {
@@ -261,6 +267,7 @@ pub(super) fn markdown_view(
     let view_state = view.read(cx);
     let theme = view_state.theme;
     let interface_font = view_state.interface_font.clone();
+    let max_width = markdown_max_width(&interface_font, window);
     let selection = window.use_keyed_state(
         SharedString::from(format!("{id}/selection")),
         cx,
@@ -318,7 +325,7 @@ pub(super) fn markdown_view(
         div()
             .id(SharedString::from(id))
             .w_full()
-            .max_w(px(690.0))
+            .max_w(max_width)
             .font_family(interface_font)
             .text_size(px(15.0))
             .line_height(relative(1.52))
@@ -328,6 +335,31 @@ pub(super) fn markdown_view(
         cx,
     )
     .into_any_element()
+}
+
+fn markdown_max_width(interface_font: &SharedString, window: &mut Window) -> Pixels {
+    let zoom = crate::zoom::factor();
+    let key = (interface_font.clone(), zoom.to_bits());
+    if let Some(width) = MARKDOWN_MAX_WIDTHS.with(|widths| widths.borrow().get(&key).copied()) {
+        return width;
+    }
+
+    let zero = SharedString::from("0");
+    let run = gpui::TextRun {
+        len: zero.len(),
+        font: gpui::font(interface_font.clone()),
+        color: gpui::black(),
+        background_color: None,
+        underline: None,
+        strikethrough: None,
+    };
+    let zero_width = window
+        .text_system()
+        .shape_line(zero, px(15.0), std::slice::from_ref(&run), None)
+        .width;
+    let width = gpui::px(f32::from(zero_width) * MARKDOWN_MAX_WIDTH_CH);
+    MARKDOWN_MAX_WIDTHS.with(|widths| widths.borrow_mut().insert(key, width));
+    width
 }
 
 #[derive(Clone)]
@@ -1136,7 +1168,7 @@ fn render_markdown_image(
     let image = img(source)
         .id(SharedString::from(format!("{id}:content")))
         .max_w(relative(1.0))
-        .rounded(px(8.0))
+        .rounded(px(RADIUS_MD))
         .object_fit(ObjectFit::Contain)
         .with_fallback(move || image_fallback(fallback_theme));
     let source_url = url.to_owned();
@@ -1152,7 +1184,7 @@ fn render_markdown_image(
         .max_w(relative(1.0))
         .flex()
         .overflow_hidden()
-        .rounded(px(8.0))
+        .rounded(px(RADIUS_MD))
         .when_some(safe_markdown_image_link_url(link), |wrapper, link| {
             wrapper
                 .cursor_pointer()
@@ -1163,7 +1195,7 @@ fn render_markdown_image(
             div()
                 .absolute()
                 .inset(px(0.0))
-                .rounded(px(8.0))
+                .rounded(px(RADIUS_MD))
                 .bg(gpui::black().opacity(0.1))
                 .opacity(0.0)
                 .group_hover(group.clone(), |overlay| overlay.opacity(1.0)),
@@ -2362,7 +2394,7 @@ fn fallback_text_style(theme: Theme) -> TextViewStyle {
         .bg(theme.surface.hsla())
         .border_1()
         .border_color(theme.line.hsla())
-        .rounded(px(8.0))
+        .rounded(px(RADIUS_MD))
         .px(px(13.0))
         .py(px(11.0))
         .font_family("Geist Mono")
@@ -2389,7 +2421,7 @@ fn fallback_code_copy_button(code: String, theme: Theme) -> AnyElement {
         .flex()
         .items_center()
         .justify_center()
-        .rounded(px(5.0))
+        .rounded(px(RADIUS_SM))
         .border_1()
         .border_color(theme.line.hsla())
         .bg(theme.surface_2.hsla())
@@ -3630,7 +3662,7 @@ fn render_inline_unit(
         InlineUnitKind::Text(text) => div().flex_none().child(selectable(text, "text")),
         InlineUnitKind::Code(code) => div()
             .flex_none()
-            .rounded(px(5.0))
+            .rounded(px(RADIUS_SM))
             .bg(context.theme.surface_2.hsla())
             .px(px(5.0))
             .py(px(1.0))
@@ -3697,7 +3729,7 @@ fn render_inline_unit(
     }
     if style.inline_code {
         element = element
-            .rounded(px(5.0))
+            .rounded(px(RADIUS_SM))
             .bg(context.theme.surface_2.hsla())
             .px(px(5.0))
             .py(px(1.0))
