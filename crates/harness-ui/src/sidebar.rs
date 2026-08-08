@@ -778,7 +778,7 @@ fn classic_sidebar_actions(theme: Theme, actions: &SidebarActions) -> impl IntoE
                         .cursor_pointer()
                         .hover(move |style| {
                             style
-                                .bg(theme.surface_2.hsla())
+                                .bg(chrome::control_hover_background(theme))
                                 .text_color(theme.text.hsla())
                         })
                         .on_click({
@@ -944,7 +944,7 @@ fn sidebar_actions(
                         .text_size(px(13.5))
                         .text_color(theme.text.hsla())
                         .cursor_pointer()
-                        .hover(move |style| style.bg(theme.surface_2.hsla()))
+                        .hover(move |style| style.bg(chrome::control_hover_background(theme)))
                         .active(|style| {
                             style
                                 .w(relative(0.985))
@@ -1408,7 +1408,7 @@ fn nav_item(
         .cursor_pointer()
         .hover(move |style| {
             style
-                .bg(theme.surface_2.hsla())
+                .bg(chrome::control_hover_background(theme))
                 .text_color(theme.text.hsla())
         })
         .active(|style| {

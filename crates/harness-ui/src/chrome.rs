@@ -13,6 +13,15 @@ pub(crate) fn raised_hover(theme: Theme) -> Background {
     gradient(theme, 0x2c2c2c, 0x222222, 0xffffff, 0xf5f5f6)
 }
 
+/// `--control-hover` is chrome rather than part of the selectable backdrop
+/// palette, so navigation controls retain the neutral hover treatment.
+pub(crate) fn control_hover_background(theme: Theme) -> Background {
+    match theme.mode {
+        ThemeMode::Dark => gpui::rgb(0x222222).into(),
+        ThemeMode::Light => raised_hover(theme),
+    }
+}
+
 /// The web `--bg-rail` token stays flat in dark mode and aliases the raised
 /// chrome gradient in light mode.
 pub(crate) fn rail_background(theme: Theme) -> Background {
@@ -368,8 +377,10 @@ mod tests {
 
             assert_eq!(menu_background(dark), gpui::rgb(0x222222).into());
             assert_eq!(menu_hover_background(dark), gpui::rgb(0x2b2b2b).into());
+            assert_eq!(control_hover_background(dark), gpui::rgb(0x222222).into());
             assert_eq!(menu_background(light), raised(light));
             assert_eq!(menu_hover_background(light), raised_hover(light));
+            assert_eq!(control_hover_background(light), raised_hover(light));
         }
     }
 
