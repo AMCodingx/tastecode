@@ -138,7 +138,6 @@ impl HarnessApp {
         }
         self.close_rollback(cx);
         self.account_menu_open = false;
-        self.settings_return_to_chat = self.chat_visible;
         self.settings_open = true;
         self.settings_section = SettingsSection::Providers;
         self.settings_focus_pending = true;
@@ -152,7 +151,6 @@ impl HarnessApp {
 
     pub(super) fn close_settings(&mut self, cx: &mut Context<Self>) {
         self.settings_open = false;
-        self.chat_visible = self.settings_return_to_chat;
         self.settings_focus_pending = false;
         self.model_settings_searches.clear();
         self.mcp_editor = None;

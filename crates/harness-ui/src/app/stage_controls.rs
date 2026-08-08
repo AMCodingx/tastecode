@@ -161,6 +161,7 @@ impl HarnessApp {
 
     pub(super) fn sync_stage_settings(&mut self, cx: &mut Context<Self>) {
         let settings = StageSettings {
+            projects_loaded: self.state.projects_loaded,
             projects: self
                 .state
                 .projects

@@ -73,10 +73,11 @@ pub(crate) struct SessionContext {
     pub(crate) title: String,
     pub(crate) project_path: String,
     pub(crate) project_name: String,
-    pub(crate) provider: ProviderId,
+    pub(crate) provider: Option<ProviderId>,
 }
 
 pub(crate) enum ChatEvent {
+    ProjectRequired,
     NeedHistory {
         thread_id: String,
         after_seq: Option<u64>,
@@ -219,6 +220,7 @@ pub(crate) struct StageProject {
 
 #[derive(Clone, Default)]
 pub(crate) struct StageSettings {
+    pub(crate) projects_loaded: bool,
     pub(crate) projects: Vec<StageProject>,
     pub(crate) workspace_branch: Option<String>,
     pub(crate) branches: Vec<String>,
@@ -567,9 +569,18 @@ impl ChatView {
     }
 
     pub(crate) fn begin_session(&mut self, session: SessionContext, cx: &mut Context<Self>) {
+        self.reset_session(Some(session), false, cx);
+    }
+
+    fn reset_session(
+        &mut self,
+        session: Option<SessionContext>,
+        preserve_draft: bool,
+        cx: &mut Context<Self>,
+    ) {
         self.cancel_voice(cx);
         self.release_terminal_for_session_change(cx);
-        self.session = Some(session);
+        self.session = session;
         self.state = ThreadState::default();
         self.queue.items.clear();
         self.queue.can_steer = false;
@@ -590,8 +601,10 @@ impl ChatView {
         self.last_work_turn_id = None;
         self.last_specific_work_label = None;
         self.thread_search.close();
-        self.clear_composer = true;
-        self.restore_composer = None;
+        self.clear_composer = !preserve_draft;
+        if !preserve_draft {
+            self.restore_composer = None;
+        }
         self.composer_box_bounds = None;
         self.composer_field_bounds = None;
         self.composer_dock_pending = None;
@@ -607,8 +620,10 @@ impl ChatView {
             .is_some_and(|session| session.thread_id.is_some());
         self.pending_live.clear();
         self.delta_flush_scheduled = false;
-        self.attachments.clear();
-        self.attachment_error = None;
+        if !preserve_draft {
+            self.attachments.clear();
+            self.attachment_error = None;
+        }
         self.composer_menu = None;
         self.model_search_reset = false;
         self.model_search_focus_pending = false;
@@ -633,7 +648,13 @@ impl ChatView {
 
     pub(crate) fn begin_draft(&mut self, session: SessionContext, cx: &mut Context<Self>) {
         debug_assert!(session.thread_id.is_none());
-        self.begin_session(session, cx);
+        let preserve_draft = is_new_session(self.session.as_ref());
+        self.reset_session(Some(session), preserve_draft, cx);
+        self.loading = false;
+    }
+
+    pub(crate) fn begin_empty_draft(&mut self, cx: &mut Context<Self>) {
+        self.reset_session(None, true, cx);
         self.loading = false;
     }
 
@@ -713,7 +734,7 @@ impl ChatView {
         if let Some(session) = &mut self.session
             && session.thread_id.is_none()
         {
-            session.provider = provider;
+            session.provider = Some(provider);
             cx.notify();
         }
     }
@@ -1608,9 +1629,6 @@ impl ChatView {
     }
 
     fn submit(&mut self, steer: bool, cx: &mut Context<Self>) {
-        let Some(session) = &self.session else {
-            return;
-        };
         let text = self.composer.read(cx).value().trim().to_owned();
         if text.is_empty() {
             return;
@@ -1623,6 +1641,13 @@ impl ChatView {
             .iter()
             .any(|attachment| attachment.path.is_none())
         {
+            return;
+        }
+        let Some(session) = &self.session else {
+            cx.emit(ChatEvent::ProjectRequired);
+            return;
+        };
+        if session.thread_id.is_none() && self.selected_model().is_none() {
             return;
         }
         if session.thread_id.is_none()
@@ -3207,9 +3232,7 @@ impl ChatView {
                 .any(|attachment| attachment.path.is_none())
             || self.creating;
         let running = self.state.running;
-        let is_new_session = session
-            .as_ref()
-            .is_some_and(|session| session.thread_id.is_none());
+        let is_new_session = is_new_session(session.as_ref());
         let composer_focused = self.composer.read(cx).focus_handle(cx).is_focused(window);
         let prompt_shadow = if theme.mode == ThemeMode::Dark {
             BoxShadow {
@@ -5432,10 +5455,7 @@ impl Render for ChatView {
         let terminal_pane = self.terminal_pane(window, cx);
         let thread_search = self.thread_search_overlay(cx);
         let markdown_table_overlay = self.markdown_table_overlay(window, cx);
-        let is_new_session = self
-            .session
-            .as_ref()
-            .is_some_and(|session| session.thread_id.is_none());
+        let is_new_session = is_new_session(self.session.as_ref());
         if !is_new_session {
             self.prepare_composer_dock_motion(window);
         }
@@ -5488,14 +5508,16 @@ impl Render for ChatView {
 impl ChatView {
     fn new_session_prompt(&self, window: &Window) -> AnyElement {
         let (label, text_size, text_color) = if let Some(error) = &self.error {
-            (error.clone(), 12.5, self.theme.text_3.hsla())
+            (Some(error.clone()), 12.5, self.theme.text_3.hsla())
         } else {
-            let project_name = self
-                .session
-                .as_ref()
-                .map_or("a project", |session| session.project_name.as_str());
             (
-                format!("What should we build in {project_name}?"),
+                new_session_prompt_label(
+                    self.stage_settings.projects_loaded,
+                    self.stage_settings.projects.is_empty(),
+                    self.session
+                        .as_ref()
+                        .map(|session| session.project_name.as_str()),
+                ),
                 new_session_prompt_size(f32::from(window.viewport_size().width)),
                 self.theme.text.hsla(),
             )
@@ -5512,7 +5534,7 @@ impl ChatView {
             .line_height(relative(1.12))
             .font_weight(FontWeight(400.0))
             .text_color(text_color)
-            .child(label)
+            .when_some(label, |prompt, label| prompt.child(label))
             .into_any_element()
     }
 }
@@ -5521,8 +5543,29 @@ fn new_session_optical_padding(viewport_height: f32) -> f32 {
     (viewport_height * 0.16).clamp(0.0, 148.0)
 }
 
+fn is_new_session(session: Option<&SessionContext>) -> bool {
+    session.is_none_or(|session| session.thread_id.is_none())
+}
+
 fn new_session_prompt_size(viewport_width: f32) -> f32 {
     (viewport_width * 0.024).clamp(20.0, 30.0)
+}
+
+fn new_session_prompt_label(
+    projects_loaded: bool,
+    projects_empty: bool,
+    project_name: Option<&str>,
+) -> Option<String> {
+    if !projects_loaded {
+        None
+    } else if projects_empty {
+        Some("Add a project to start building.".into())
+    } else {
+        Some(format!(
+            "What should we build in {}?",
+            project_name.unwrap_or("a project")
+        ))
+    }
 }
 
 fn composer_dock_offset(pending: ComposerDockPending, viewport_height: f32, now: Instant) -> f32 {
@@ -7410,6 +7453,34 @@ mod tests {
         assert_eq!(new_session_prompt_size(700.0), 20.0);
         assert_eq!(new_session_prompt_size(1_000.0), 24.0);
         assert_eq!(new_session_prompt_size(1_400.0), 30.0);
+    }
+
+    #[test]
+    fn missing_project_context_stays_a_new_session_with_the_web_prompt_copy() {
+        assert!(is_new_session(None));
+        let mut session = SessionContext {
+            thread_id: None,
+            title: "New chat".into(),
+            project_path: "/work/harness".into(),
+            project_name: "Harness".into(),
+            provider: None,
+        };
+        assert!(is_new_session(Some(&session)));
+        session.thread_id = Some("thread-1".into());
+        assert!(!is_new_session(Some(&session)));
+        assert_eq!(new_session_prompt_label(false, true, None), None);
+        assert_eq!(
+            new_session_prompt_label(true, true, None).as_deref(),
+            Some("Add a project to start building.")
+        );
+        assert_eq!(
+            new_session_prompt_label(true, false, None).as_deref(),
+            Some("What should we build in a project?")
+        );
+        assert_eq!(
+            new_session_prompt_label(true, false, Some("Harness")).as_deref(),
+            Some("What should we build in Harness?")
+        );
     }
 
     #[test]

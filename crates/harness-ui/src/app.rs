@@ -29,10 +29,9 @@ use anyhow::Result;
 use command_palette::{CommandPaletteState, CommandScope};
 use gpui::{
     Animation, AnimationExt, App, Application, Bounds, Context, CursorStyle, Entity, FocusHandle,
-    Focusable, FontWeight, KeyDownEvent, MouseButton, MouseDownEvent, MouseMoveEvent,
-    PathPromptOptions, Pixels, Render, SharedString, TitlebarOptions, Window, WindowAppearance,
-    WindowBackgroundAppearance, WindowBounds, WindowOptions, div, point, prelude::*, relative,
-    size,
+    Focusable, KeyDownEvent, MouseButton, MouseDownEvent, MouseMoveEvent, PathPromptOptions,
+    Pixels, Render, SharedString, TitlebarOptions, Window, WindowAppearance,
+    WindowBackgroundAppearance, WindowBounds, WindowOptions, div, point, prelude::*, size,
 };
 use gpui_component::Root;
 use gpui_component::input::{InputEvent, InputState};
@@ -118,7 +117,6 @@ struct HarnessApp {
     chat: Entity<ChatView>,
     selected_thread_id: Option<String>,
     active_project_path: Option<String>,
-    chat_visible: bool,
     initial_project_selection_done: bool,
     selected_model_key: Option<String>,
     effort: Option<String>,
@@ -129,9 +127,7 @@ struct HarnessApp {
     sidebar_scope: Option<String>,
     scope_open: bool,
     new_thread_picker: bool,
-    pending_new_chat_path: Option<String>,
     settings_open: bool,
-    settings_return_to_chat: bool,
     settings_section: settings::SettingsSection,
     settings_transition: u64,
     settings_open_transition: u64,
@@ -350,6 +346,10 @@ impl HarnessApp {
         .detach();
 
         cx.subscribe(&chat, |this, _chat, event, cx| match event {
+            ChatEvent::ProjectRequired => {
+                this.state.notice = Some("Choose a project before sending.".into());
+                cx.notify();
+            }
             ChatEvent::NeedHistory {
                 thread_id,
                 after_seq,
@@ -613,7 +613,6 @@ impl HarnessApp {
             chat,
             selected_thread_id: None,
             active_project_path: None,
-            chat_visible: false,
             initial_project_selection_done: false,
             selected_model_key: preferences.selected_model_key.clone(),
             effort: None,
@@ -624,9 +623,7 @@ impl HarnessApp {
             sidebar_scope: None,
             scope_open: false,
             new_thread_picker: false,
-            pending_new_chat_path: None,
             settings_open: false,
-            settings_return_to_chat: false,
             settings_section: settings::SettingsSection::default(),
             settings_transition: 0,
             settings_open_transition: 0,
@@ -730,12 +727,6 @@ impl HarnessApp {
             self.reconcile_session_order();
             self.sync_model_selection(cx);
         }
-        if self.state.model_catalog_loaded
-            && self.selected_model_key.is_some()
-            && let Some(path) = self.pending_new_chat_path.take()
-        {
-            self.begin_new_chat(path, cx);
-        }
         for event in update.shell_events {
             self.apply_shell_event(event, cx);
         }
@@ -837,9 +828,19 @@ impl HarnessApp {
                     self.selected_thread_id = None;
                     self.active_project_path = None;
                     self.pending_reveal_turn = None;
-                    self.chat_visible = false;
                     self.stage_controls.clear_restore_undo();
-                    self.refresh_stage_context(cx);
+                    if let Some(next_path) = self
+                        .state
+                        .projects
+                        .first()
+                        .map(|project| project.path.clone())
+                    {
+                        self.begin_new_chat(next_path, cx);
+                    } else {
+                        self.chat.update(cx, |chat, cx| chat.begin_empty_draft(cx));
+                        self.state.notice = None;
+                        self.refresh_stage_context(cx);
+                    }
                 }
                 cx.notify();
             }
@@ -873,7 +874,6 @@ impl HarnessApp {
                 self.active_project_path = Some(project_path.clone());
                 self.stage_controls.clear_restore_undo();
                 self.account_menu_open = false;
-                self.chat_visible = true;
                 self.settings_open = false;
                 self.chat.update(cx, |chat, cx| {
                     chat.promote_draft(
@@ -882,7 +882,7 @@ impl HarnessApp {
                             title,
                             project_path,
                             project_name,
-                            provider,
+                            provider: Some(provider),
                         },
                         cx,
                     );
@@ -1040,13 +1040,14 @@ impl HarnessApp {
                             title: session.title.clone(),
                             project_path: project.path.clone(),
                             project_name: project.name.clone(),
-                            provider: session.provider,
+                            provider: Some(session.provider),
                         },
+                        session.provider,
                         session.agent.clone(),
                     )
                 })
         });
-        let Some((context, agent)) = selection else {
+        let Some((context, provider, agent)) = selection else {
             return;
         };
         let matching_model = self
@@ -1054,9 +1055,8 @@ impl HarnessApp {
             .model_catalog
             .iter()
             .find(|choice| {
-                choice.provider == context.provider
-                    && (context.provider != harness_protocol::ProviderId::Acp
-                        || choice.agent_id == agent)
+                choice.provider == provider
+                    && (provider != harness_protocol::ProviderId::Acp || choice.agent_id == agent)
             })
             .map(|choice| choice.key.clone());
         if let Some(key) = matching_model {
@@ -1069,7 +1069,6 @@ impl HarnessApp {
         self.active_project_path = Some(context.project_path.clone());
         self.stage_controls.clear_restore_undo();
         self.account_menu_open = false;
-        self.chat_visible = true;
         self.settings_open = false;
         self.chat.update(cx, |chat, cx| {
             chat.begin_session(context, cx);
@@ -1123,7 +1122,8 @@ impl HarnessApp {
         } else {
             self.selected_thread_id = None;
             self.active_project_path = None;
-            self.chat_visible = false;
+            self.chat.update(cx, |chat, cx| chat.begin_empty_draft(cx));
+            self.refresh_stage_context(cx);
             cx.notify();
         }
     }
@@ -1168,6 +1168,7 @@ impl HarnessApp {
         {
             self.begin_new_chat(path, cx);
         } else {
+            self.sync_stage_settings(cx);
             cx.notify();
         }
     }
@@ -1188,30 +1189,13 @@ impl HarnessApp {
         self.selected_thread_id = None;
         self.active_project_path = Some(project.path.clone());
         self.sync_model_selection(cx);
-        let Some(choice) = self.selected_model_choice().cloned() else {
-            self.chat_visible = false;
-            self.settings_open = false;
-            if self.state.model_catalog_loaded {
-                self.pending_new_chat_path = None;
-                self.state.notice = Some(
-                    "No signed-in provider or configured model connection is available.".into(),
-                );
-            } else {
-                self.pending_new_chat_path = Some(project_path);
-                self.state.notice = Some("Loading available models…".into());
-            }
-            cx.notify();
-            return;
-        };
         let context = SessionContext {
             thread_id: None,
             title: "New chat".into(),
             project_path: project.path.clone(),
             project_name: project.name.clone(),
-            provider: choice.provider,
+            provider: self.selected_model_choice().map(|choice| choice.provider),
         };
-        self.pending_new_chat_path = None;
-        self.chat_visible = true;
         self.settings_open = false;
         self.account_menu_open = false;
         self.scope_open = false;
@@ -2096,44 +2080,6 @@ impl HarnessApp {
                 }
             })
     }
-
-    fn stage(&self, window: &Window) -> impl IntoElement {
-        let label = if !self.state.projects_loaded {
-            None
-        } else if self.state.projects.is_empty() {
-            Some("Add a project to start building.".to_owned())
-        } else {
-            let project_name = self
-                .active_project_path
-                .as_deref()
-                .and_then(|path| {
-                    self.state
-                        .projects
-                        .iter()
-                        .find(|project| project.path == path)
-                })
-                .or_else(|| self.state.projects.first())
-                .map_or("a project", |project| project.name.as_str());
-            Some(format!("What should we build in {project_name}?"))
-        };
-        div()
-            .flex_1()
-            .h_full()
-            .min_w(px(0.0))
-            .flex()
-            .items_center()
-            .justify_center()
-            .p(px(24.0))
-            .bg(self.theme.background.hsla())
-            .text_center()
-            .text_color(self.theme.text.hsla())
-            .text_size(px(stage_prompt_size(f32::from(
-                window.viewport_size().width,
-            ))))
-            .line_height(relative(1.12))
-            .font_weight(FontWeight(400.0))
-            .when_some(label, |stage, label| stage.child(label))
-    }
 }
 
 impl Render for HarnessApp {
@@ -2169,11 +2115,7 @@ impl Render for HarnessApp {
             self.settings_focus.focus(window);
             self.settings_focus_pending = false;
         }
-        let content = if self.chat_visible {
-            self.chat.clone().into_any_element()
-        } else {
-            self.stage(window).into_any_element()
-        };
+        let content = self.chat.clone().into_any_element();
         let sidebar_actions = self.sidebar_actions(cx);
         let account_target = self.selected_model_choice().map(|choice| AuthTarget {
             provider: choice.provider,
@@ -2415,10 +2357,6 @@ fn theme_mode_for_appearance(appearance: WindowAppearance) -> ThemeMode {
         WindowAppearance::Dark | WindowAppearance::VibrantDark => ThemeMode::Dark,
         WindowAppearance::Light | WindowAppearance::VibrantLight => ThemeMode::Light,
     }
-}
-
-fn stage_prompt_size(viewport_width: f32) -> f32 {
-    (viewport_width * 0.024).clamp(20.0, 30.0)
 }
 
 fn clamp_rail_width(width: f32) -> f32 {
@@ -2918,12 +2856,5 @@ mod tests {
             resolve_interface_font(FontPreference::Serif, &fonts),
             ".SystemUIFont"
         );
-    }
-
-    #[test]
-    fn empty_stage_heading_matches_web_responsive_type() {
-        assert_eq!(stage_prompt_size(700.0), 20.0);
-        assert_eq!(stage_prompt_size(1_000.0), 24.0);
-        assert_eq!(stage_prompt_size(1_400.0), 30.0);
     }
 }
