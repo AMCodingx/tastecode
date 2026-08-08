@@ -360,13 +360,13 @@ struct OptimisticActiveTurn {
 #[derive(Clone, Copy)]
 struct ComposerDockPending {
     box_bounds: Bounds<Pixels>,
-    field_height: f32,
+    field_height: Pixels,
     started: Instant,
 }
 
 #[derive(Clone, Copy)]
 struct ComposerDockMotion {
-    offset_y: f32,
+    offset_y: Pixels,
     generation: u64,
 }
 
@@ -1769,7 +1769,7 @@ impl ChatView {
             return;
         }
         let delta_y = f32::from(event.delta.pixel_delta(px(40.0)).y);
-        if delta_y.abs() < 28.0 {
+        if delta_y.abs() < f32::from(px(28.0)) {
             return;
         }
         let now = Instant::now();
@@ -1861,7 +1861,7 @@ impl ChatView {
         {
             self.composer_dock_pending = Some(ComposerDockPending {
                 box_bounds,
-                field_height: f32::from(field_bounds.size.height),
+                field_height: field_bounds.size.height,
                 started: Instant::now(),
             });
         }
@@ -4041,7 +4041,7 @@ impl ChatView {
                 ("composer-dock", motion.generation),
                 Animation::new(self.theme.motion_duration(COMPOSER_DOCK_DURATION))
                     .with_easing(composer_dock_easing),
-                move |composer, delta| composer.relative().top(px(motion.offset_y * (1.0 - delta))),
+                move |composer, delta| composer.relative().top(motion.offset_y * (1.0 - delta)),
             )
             .into_any_element()
     }
@@ -4056,10 +4056,11 @@ impl ChatView {
         }
         let offset_y = composer_dock_offset(
             pending,
-            f32::from(window.viewport_size().height),
+            window.viewport_size().height,
+            crate::zoom::factor(),
             Instant::now(),
         );
-        if offset_y.abs() < 0.5 {
+        if f32::from(offset_y).abs() < f32::from(px(0.5)) {
             return;
         }
         self.composer_dock_generation = self.composer_dock_generation.wrapping_add(1);
@@ -6828,8 +6829,9 @@ impl Render for ChatView {
         if is_new_session {
             return view
                 .justify_center()
-                .pb(px(new_session_optical_padding(f32::from(
+                .pb(px(new_session_optical_padding(design_dimension(
                     window.viewport_size().height,
+                    crate::zoom::factor(),
                 ))))
                 .child(self.new_session_prompt(window))
                 .child(self.composer(window, cx))
@@ -6862,7 +6864,10 @@ impl ChatView {
                         .as_ref()
                         .map(|session| session.project_name.as_str()),
                 ),
-                new_session_prompt_size(f32::from(window.viewport_size().width)),
+                new_session_prompt_size(design_dimension(
+                    window.viewport_size().width,
+                    crate::zoom::factor(),
+                )),
                 self.theme.text.hsla(),
                 Some(-0.035),
             )
@@ -6892,6 +6897,10 @@ impl ChatView {
 
 fn new_session_optical_padding(viewport_height: f32) -> f32 {
     (viewport_height * 0.16).clamp(0.0, 148.0)
+}
+
+fn design_dimension(dimension: Pixels, scale: f32) -> f32 {
+    f32::from(dimension) / scale
 }
 
 fn is_new_session(session: Option<&SessionContext>) -> bool {
@@ -7089,15 +7098,21 @@ fn unix_time_ms() -> f64 {
         * 1_000.0
 }
 
-fn composer_dock_offset(pending: ComposerDockPending, viewport_height: f32, now: Instant) -> f32 {
+fn composer_dock_offset(
+    pending: ComposerDockPending,
+    viewport_height: Pixels,
+    scale: f32,
+    now: Instant,
+) -> Pixels {
     let progress = now.saturating_duration_since(pending.started).as_secs_f32()
         / COMPOSER_DOCK_DURATION.as_secs_f32();
     let collapse = crate::theme::web_ease_out(progress.clamp(0.0, 1.0));
-    let field_height =
-        pending.field_height + (COMPOSER_MIN_HEIGHT - pending.field_height) * collapse;
-    let docked_box_height = field_height + COMPOSER_TOOLS_HEIGHT;
-    let docked_origin_y = viewport_height - COMPOSER_DOCKED_BOTTOM_PADDING - docked_box_height;
-    f32::from(pending.box_bounds.origin.y) - docked_origin_y
+    let minimum_height = gpui::px(COMPOSER_MIN_HEIGHT * scale);
+    let field_height = pending.field_height + (minimum_height - pending.field_height) * collapse;
+    let docked_box_height = field_height + gpui::px(COMPOSER_TOOLS_HEIGHT * scale);
+    let docked_origin_y =
+        viewport_height - gpui::px(COMPOSER_DOCKED_BOTTOM_PADDING * scale) - docked_box_height;
+    pending.box_bounds.origin.y - docked_origin_y
 }
 
 fn composer_dock_easing(progress: f32) -> f32 {
@@ -7362,10 +7377,7 @@ fn composer_height_for_text(
     interface_font: &SharedString,
     cx: &App,
 ) -> f32 {
-    let wrap_width = px((f32::from(outer_width)
-        - COMPOSER_HORIZONTAL_PADDING
-        - COMPOSER_INPUT_RIGHT_MARGIN)
-        .max(1.0));
+    let wrap_width = composer_wrap_width(outer_width, crate::zoom::factor());
     let mut line_wrapper = cx
         .text_system()
         .line_wrapper(gpui::font(interface_font.clone()), px(COMPOSER_TEXT_SIZE));
@@ -7380,6 +7392,11 @@ fn composer_height_for_text(
         })
         .sum::<usize>();
     composer_height_for_line_count(lines)
+}
+
+fn composer_wrap_width(outer_width: Pixels, scale: f32) -> Pixels {
+    let horizontal_chrome = (COMPOSER_HORIZONTAL_PADDING + COMPOSER_INPUT_RIGHT_MARGIN) * scale;
+    gpui::px((f32::from(outer_width) - horizontal_chrome).max(scale))
 }
 
 fn composer_height_for_line_count(lines: usize) -> f32 {
@@ -9530,6 +9547,11 @@ mod tests {
         assert!((composer_height_for_line_count(10) - 241.0).abs() < 0.001);
         assert_eq!(composer_height_for_line_count(11), COMPOSER_MAX_HEIGHT);
         assert_eq!(composer_height_for_line_count(100), COMPOSER_MAX_HEIGHT);
+        assert_eq!(composer_wrap_width(gpui::px(808.0), 1.0), gpui::px(762.0));
+        assert_eq!(
+            composer_wrap_width(gpui::px(1_616.0), 2.0),
+            gpui::px(1_524.0)
+        );
     }
 
     #[test]
@@ -9547,6 +9569,7 @@ mod tests {
         assert_eq!(new_session_prompt_size(700.0), 20.0);
         assert_eq!(new_session_prompt_size(1_000.0), 24.0);
         assert_eq!(new_session_prompt_size(1_400.0), 30.0);
+        assert_eq!(design_dimension(gpui::px(1_400.0), 2.0), 700.0);
     }
 
     #[test]
@@ -9751,16 +9774,44 @@ mod tests {
         let start = Instant::now();
         let pending = ComposerDockPending {
             box_bounds: Bounds {
-                origin: point(px(0.0), px(300.0)),
-                size: size(px(808.0), px(200.0)),
+                origin: point(gpui::px(0.0), gpui::px(300.0)),
+                size: size(gpui::px(808.0), gpui::px(200.0)),
             },
-            field_height: 100.0,
+            field_height: gpui::px(100.0),
             started: start,
         };
 
-        assert!((composer_dock_offset(pending, 800.0, start) + 342.0).abs() < 0.001);
         assert!(
-            (composer_dock_offset(pending, 800.0, start + COMPOSER_DOCK_DURATION) + 374.0).abs()
+            (f32::from(composer_dock_offset(pending, gpui::px(800.0), 1.0, start,)) + 342.0).abs()
+                < 0.001
+        );
+        assert!(
+            (f32::from(composer_dock_offset(
+                pending,
+                gpui::px(800.0),
+                1.0,
+                start + COMPOSER_DOCK_DURATION,
+            )) + 374.0)
+                .abs()
+                < 0.001
+        );
+
+        let zoomed_pending = ComposerDockPending {
+            box_bounds: Bounds {
+                origin: point(gpui::px(0.0), gpui::px(600.0)),
+                size: size(gpui::px(1_616.0), gpui::px(400.0)),
+            },
+            field_height: gpui::px(200.0),
+            started: start,
+        };
+        assert!(
+            (f32::from(composer_dock_offset(
+                zoomed_pending,
+                gpui::px(1_600.0),
+                2.0,
+                start,
+            )) + 684.0)
+                .abs()
                 < 0.001
         );
         assert_eq!(composer_dock_easing(0.0), 0.0);
