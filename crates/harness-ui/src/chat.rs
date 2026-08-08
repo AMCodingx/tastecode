@@ -6322,15 +6322,6 @@ impl ChatView {
             .get(display_index)
             .map(|effort| friendly_effort_label(Some(effort)))
             .unwrap_or_else(|| "Default".into());
-        let controls_background = if theme.mode == ThemeMode::Dark {
-            theme.surface_2.hsla().into()
-        } else {
-            linear_gradient(
-                180.0,
-                linear_color_stop(gpui::rgb(0xfafafa), 0.0),
-                linear_color_stop(gpui::rgb(0xf6f6f7), 1.0),
-            )
-        };
         div()
             .h(px(89.0))
             .flex()
@@ -6338,7 +6329,7 @@ impl ChatView {
             .gap(px(6.0))
             .border_t_1()
             .border_color(chrome::menu_border(theme))
-            .bg(controls_background)
+            .bg(model_picker_controls_background(theme))
             .p(px(MODEL_CONTROLS_PADDING))
             .child(
                 div()
@@ -8571,14 +8562,18 @@ fn design_shimmer_label(progress: f32) -> StyledText {
 }
 
 fn model_picker_background(theme: Theme) -> Background {
-    if theme.mode == ThemeMode::Dark {
-        theme.surface_2.hsla().into()
-    } else {
+    chrome::menu_background(theme)
+}
+
+fn model_picker_controls_background(theme: Theme) -> Background {
+    if theme.mode == ThemeMode::Light {
         linear_gradient(
             180.0,
-            linear_color_stop(gpui::white(), 0.0),
-            linear_color_stop(gpui::rgb(0xfafafa), 1.0),
+            linear_color_stop(gpui::rgb(0xfafafa), 0.0),
+            linear_color_stop(gpui::rgb(0xf6f6f7), 1.0),
         )
+    } else {
+        gpui::transparent_black().into()
     }
 }
 
@@ -9978,5 +9973,37 @@ mod tests {
         let off_end = fast_bolt_off_state(1.0);
         assert!((off_end.0 - 1.0).abs() < 0.000_1);
         assert!((off_end.1 - 1.0).abs() < 0.000_1);
+    }
+
+    #[test]
+    fn model_picker_keeps_fixed_menu_chrome_over_custom_backdrops() {
+        let dark = Theme::new(
+            ThemeMode::Dark,
+            crate::theme::Backdrop::Slate,
+            crate::theme::Accent::Neutral,
+        );
+        let light = Theme::new(
+            ThemeMode::Light,
+            crate::theme::Backdrop::Mocha,
+            crate::theme::Accent::Neutral,
+        );
+
+        assert_eq!(model_picker_background(dark), chrome::menu_background(dark));
+        assert_eq!(
+            model_picker_controls_background(dark),
+            gpui::transparent_black().into()
+        );
+        assert_eq!(
+            model_picker_background(light),
+            chrome::menu_background(light)
+        );
+        assert_eq!(
+            model_picker_controls_background(light),
+            linear_gradient(
+                180.0,
+                linear_color_stop(gpui::rgb(0xfafafa), 0.0),
+                linear_color_stop(gpui::rgb(0xf6f6f7), 1.0),
+            )
+        );
     }
 }
