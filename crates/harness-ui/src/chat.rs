@@ -64,9 +64,12 @@ const BRIEF_CARD_GAP: f32 = 8.0;
 const BRIEF_STATUS_GAP: f32 = 6.0;
 const BRIEF_ENTRY_OFFSET: f32 = 8.0;
 const COMPOSER_MENU_GAP: f32 = 6.0;
+const COMPOSER_MENU_VIEWPORT_GUTTER: f32 = 8.0;
+const COMPOSER_MENU_MAX_HEIGHT: f32 = 340.0;
 const MODEL_MENU_TRANSLATE_X: f32 = 28.0;
 const COMPOSER_DOCKED_BOTTOM_PADDING: f32 = 12.0;
 const MODEL_PICKER_WIDTH: f32 = 382.0;
+const MODEL_PICKER_PANEL_HEIGHT: f32 = 337.0;
 const MODEL_CONTROLS_PADDING: f32 = 8.0;
 const EFFORT_SLIDER_WIDTH: f32 = MODEL_PICKER_WIDTH - MODEL_CONTROLS_PADDING * 2.0;
 const EFFORT_SLIDER_HEIGHT: f32 = 36.0;
@@ -286,16 +289,17 @@ enum ComposerMenuAlignment {
     RightShiftedLeft(f32),
 }
 
-#[derive(Clone, Copy)]
-struct ComposerMenuAnchor {
-    edge: Pixels,
-    bottom: Pixels,
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ComposerMenuDrop {
+    Up,
+    Down,
 }
 
 #[derive(Clone, Copy)]
-struct ComposerDropDownAnchor {
+struct ComposerMenuPlacement {
     left: Pixels,
-    top: Pixels,
+    vertical: Pixels,
+    drop: ComposerMenuDrop,
 }
 
 struct InputFieldSync {
@@ -3778,7 +3782,9 @@ impl ChatView {
                     .when_some(user_input, |composer, user_input| {
                         composer.child(user_input)
                     })
-                    .when_some(popover, |composer, popover| composer.child(popover))
+                    .when_some(popover, |composer, popover| {
+                        composer.child(deferred(popover).with_priority(80))
+                    })
                     .when_some(queue_panel, |composer, queue| composer.child(queue))
                     .child(
                         div()
@@ -5259,34 +5265,55 @@ impl ChatView {
 
     fn composer_popover(&self, window: &Window, cx: &Context<Self>) -> Option<AnyElement> {
         match self.composer_menu {
-            Some(ComposerMenu::Permissions) => Some(self.permission_popover(cx)),
+            Some(ComposerMenu::Permissions) => Some(self.permission_popover(window, cx)),
             Some(ComposerMenu::Model) => Some(self.model_popover(window, cx)),
-            Some(ComposerMenu::Project) => Some(self.project_popover(cx)),
-            Some(ComposerMenu::Branch) => Some(self.branch_popover(cx)),
+            Some(ComposerMenu::Project) => Some(self.project_popover(window, cx)),
+            Some(ComposerMenu::Branch) => Some(self.branch_popover(window, cx)),
             None => None,
         }
     }
 
-    fn project_popover(&self, cx: &Context<Self>) -> AnyElement {
+    fn project_popover(&self, window: &Window, cx: &Context<Self>) -> AnyElement {
         let theme = self.theme;
         let active_path = self
             .session
             .as_ref()
             .map(|session| session.project_path.clone());
-        let anchor =
-            composer_drop_down_anchor(self.composer_box_bounds, self.project_trigger_bounds)
-                .unwrap_or(ComposerDropDownAnchor {
-                    left: px(8.0),
-                    top: px(38.0),
-                });
+        let viewport = window.viewport_size();
+        let panel_width = composer_menu_width(350.0, viewport.width);
+        let panel_height = composer_stacked_menu_height(
+            self.stage_settings.projects.len(),
+            (13.5 + 11.5) * crate::theme::BASE_LINE_HEIGHT + 14.0,
+            viewport.height,
+        );
+        let placement = composer_menu_placement(
+            self.composer_box_bounds,
+            self.project_trigger_bounds,
+            viewport.width,
+            viewport.height,
+            panel_width,
+            panel_height,
+            ComposerMenuAlignment::Left,
+            ComposerMenuDrop::Down,
+        )
+        .unwrap_or(ComposerMenuPlacement {
+            left: px(8.0),
+            vertical: px(38.0),
+            drop: ComposerMenuDrop::Down,
+        });
         div()
             .id("composer-project-menu")
             .occlude()
             .absolute()
-            .left(anchor.left)
-            .top(anchor.top)
-            .w(px(350.0))
-            .max_h(px(290.0))
+            .left(placement.left)
+            .when(placement.drop == ComposerMenuDrop::Up, |menu| {
+                menu.bottom(placement.vertical)
+            })
+            .when(placement.drop == ComposerMenuDrop::Down, |menu| {
+                menu.top(placement.vertical)
+            })
+            .w(panel_width)
+            .max_h(composer_menu_max_height(viewport.height))
             .overflow_y_scroll()
             .rounded(px(8.0))
             .border_1()
@@ -5394,34 +5421,63 @@ impl ChatView {
                 Animation::new(theme.motion.fast).with_easing(crate::theme::web_ease_out),
                 move |menu, delta| {
                     let scale = menu_entry_scale(delta);
-                    menu.left(anchor.left + px(175.0 * (1.0 - scale)))
-                        .top(anchor.top + px(2.0 * (1.0 - delta)))
-                        .w(px(350.0 * scale))
+                    let menu = menu
+                        .left(placement.left + panel_width * ((1.0 - scale) / 2.0))
+                        .w(panel_width * scale)
                         .rounded(px(8.0 * scale))
                         .p(px(4.0 * scale))
-                        .opacity(delta)
+                        .opacity(delta);
+                    match placement.drop {
+                        ComposerMenuDrop::Up => {
+                            menu.bottom(placement.vertical - px(2.0 * (1.0 - delta)))
+                        }
+                        ComposerMenuDrop::Down => {
+                            menu.top(placement.vertical + px(2.0 * (1.0 - delta)))
+                        }
+                    }
                 },
             )
             .into_any_element()
     }
 
-    fn branch_popover(&self, cx: &Context<Self>) -> AnyElement {
+    fn branch_popover(&self, window: &Window, cx: &Context<Self>) -> AnyElement {
         let theme = self.theme;
         let selected = self.stage_settings.workspace_branch.clone();
-        let anchor =
-            composer_drop_down_anchor(self.composer_box_bounds, self.branch_trigger_bounds)
-                .unwrap_or(ComposerDropDownAnchor {
-                    left: px(175.0),
-                    top: px(38.0),
-                });
+        let viewport = window.viewport_size();
+        let panel_width = composer_menu_width(280.0, viewport.width);
+        let panel_height = composer_stacked_menu_height(
+            self.stage_settings.branches.len(),
+            13.5 * crate::theme::BASE_LINE_HEIGHT + 14.0,
+            viewport.height,
+        );
+        let placement = composer_menu_placement(
+            self.composer_box_bounds,
+            self.branch_trigger_bounds,
+            viewport.width,
+            viewport.height,
+            panel_width,
+            panel_height,
+            ComposerMenuAlignment::Left,
+            ComposerMenuDrop::Down,
+        )
+        .unwrap_or(ComposerMenuPlacement {
+            left: px(175.0),
+            vertical: px(38.0),
+            drop: ComposerMenuDrop::Down,
+        });
         div()
             .id("composer-branch-menu")
             .occlude()
             .absolute()
-            .left(anchor.left)
-            .top(anchor.top)
-            .w(px(280.0))
-            .max_h(px(290.0))
+            .left(placement.left)
+            .when(placement.drop == ComposerMenuDrop::Up, |menu| {
+                menu.bottom(placement.vertical)
+            })
+            .when(placement.drop == ComposerMenuDrop::Down, |menu| {
+                menu.top(placement.vertical)
+            })
+            .w(panel_width)
+            .max_h(composer_menu_max_height(viewport.height))
             .overflow_y_scroll()
             .rounded(px(8.0))
             .border_1()
@@ -5492,30 +5548,29 @@ impl ChatView {
                 Animation::new(theme.motion.fast).with_easing(crate::theme::web_ease_out),
                 move |menu, delta| {
                     let scale = menu_entry_scale(delta);
-                    menu.left(anchor.left + px(140.0 * (1.0 - scale)))
-                        .top(anchor.top + px(2.0 * (1.0 - delta)))
-                        .w(px(280.0 * scale))
+                    let menu = menu
+                        .left(placement.left + panel_width * ((1.0 - scale) / 2.0))
+                        .w(panel_width * scale)
                         .rounded(px(8.0 * scale))
                         .p(px(4.0 * scale))
-                        .opacity(delta)
+                        .opacity(delta);
+                    match placement.drop {
+                        ComposerMenuDrop::Up => {
+                            menu.bottom(placement.vertical - px(2.0 * (1.0 - delta)))
+                        }
+                        ComposerMenuDrop::Down => {
+                            menu.top(placement.vertical + px(2.0 * (1.0 - delta)))
+                        }
+                    }
                 },
             )
             .into_any_element()
     }
 
-    fn permission_popover(&self, cx: &Context<Self>) -> AnyElement {
+    fn permission_popover(&self, window: &Window, cx: &Context<Self>) -> AnyElement {
         let theme = self.theme;
         let selected = self.composer_settings.approval;
         let auto_review = self.composer_settings.auto_review_supported;
-        let anchor = composer_menu_anchor(
-            self.composer_box_bounds,
-            self.permission_trigger_bounds,
-            ComposerMenuAlignment::Left,
-        )
-        .unwrap_or(ComposerMenuAnchor {
-            edge: px(48.0),
-            bottom: px(49.0),
-        });
         let options = [
             (
                 ApprovalMode::Ask,
@@ -5538,12 +5593,40 @@ impl ChatView {
                 "No sandbox, no prompts, no undo. Use with care.",
             ),
         ];
+        let viewport = window.viewport_size();
+        let panel_width = composer_menu_width(315.0, viewport.width);
+        let panel_height = composer_stacked_menu_height(
+            if auto_review { 4 } else { 3 },
+            (13.5 + 11.5) * crate::theme::BASE_LINE_HEIGHT + 14.0,
+            viewport.height,
+        );
+        let placement = composer_menu_placement(
+            self.composer_box_bounds,
+            self.permission_trigger_bounds,
+            viewport.width,
+            viewport.height,
+            panel_width,
+            panel_height,
+            ComposerMenuAlignment::Left,
+            ComposerMenuDrop::Up,
+        )
+        .unwrap_or(ComposerMenuPlacement {
+            left: px(48.0),
+            vertical: px(49.0),
+            drop: ComposerMenuDrop::Up,
+        });
         div()
             .occlude()
             .absolute()
-            .left(anchor.edge)
-            .bottom(anchor.bottom)
-            .w(px(315.0))
+            .left(placement.left)
+            .when(placement.drop == ComposerMenuDrop::Up, |menu| {
+                menu.bottom(placement.vertical)
+            })
+            .when(placement.drop == ComposerMenuDrop::Down, |menu| {
+                menu.top(placement.vertical)
+            })
+            .w(panel_width)
+            .max_h(composer_menu_max_height(viewport.height))
             .rounded(px(8.0))
             .border_1()
             .border_color(chrome::menu_border(theme))
@@ -5674,12 +5757,20 @@ impl ChatView {
                 Animation::new(theme.motion.fast).with_easing(crate::theme::web_ease_out),
                 move |menu, delta| {
                     let scale = menu_entry_scale(delta);
-                    menu.left(anchor.edge + px(157.5 * (1.0 - scale)))
-                        .w(px(315.0 * scale))
+                    let menu = menu
+                        .left(placement.left + panel_width * ((1.0 - scale) / 2.0))
+                        .w(panel_width * scale)
                         .rounded(px(8.0 * scale))
                         .p(px(4.0 * scale))
-                        .opacity(delta)
-                        .bottom(anchor.bottom - px(2.0 * (1.0 - delta)))
+                        .opacity(delta);
+                    match placement.drop {
+                        ComposerMenuDrop::Up => {
+                            menu.bottom(placement.vertical - px(2.0 * (1.0 - delta)))
+                        }
+                        ComposerMenuDrop::Down => {
+                            menu.top(placement.vertical + px(2.0 * (1.0 - delta)))
+                        }
+                    }
                 },
             )
             .into_any_element()
@@ -5704,14 +5795,29 @@ impl ChatView {
             .cloned();
         let active_group_key = active_group.as_ref().map(|group| group.key.clone());
         let query = self.model_search.read(cx).value().to_string();
-        let anchor = composer_menu_anchor(
+        let viewport = window.viewport_size();
+        let panel_width = composer_menu_width(MODEL_PICKER_WIDTH, viewport.width);
+        let panel_height =
+            px(MODEL_PICKER_PANEL_HEIGHT).min(composer_menu_max_height(viewport.height));
+        let fallback_left = self
+            .composer_box_bounds
+            .map_or(px(CHAT_WIDTH - MODEL_PICKER_WIDTH - 72.0), |bounds| {
+                bounds.size.width - panel_width - px(72.0)
+            });
+        let placement = composer_menu_placement(
             self.composer_box_bounds,
             self.model_trigger_bounds,
+            viewport.width,
+            viewport.height,
+            panel_width,
+            panel_height,
             ComposerMenuAlignment::RightShiftedLeft(MODEL_MENU_TRANSLATE_X),
+            ComposerMenuDrop::Up,
         )
-        .unwrap_or(ComposerMenuAnchor {
-            edge: px(72.0),
-            bottom: px(48.0),
+        .unwrap_or(ComposerMenuPlacement {
+            left: fallback_left,
+            vertical: px(48.0),
+            drop: ComposerMenuDrop::Up,
         });
         let provider_rail = div()
             .id("model-provider-rail")
@@ -5993,10 +6099,15 @@ impl ChatView {
         div()
             .occlude()
             .absolute()
-            .right(anchor.edge)
-            .bottom(anchor.bottom)
-            .w(px(MODEL_PICKER_WIDTH))
-            .max_h(px(520.0))
+            .left(placement.left)
+            .when(placement.drop == ComposerMenuDrop::Up, |menu| {
+                menu.bottom(placement.vertical)
+            })
+            .when(placement.drop == ComposerMenuDrop::Down, |menu| {
+                menu.top(placement.vertical)
+            })
+            .w(panel_width)
+            .max_h(composer_menu_max_height(viewport.height))
             .rounded(px(RADIUS_XL))
             .border_1()
             .border_color(model_picker_border(theme))
@@ -6025,11 +6136,19 @@ impl ChatView {
                 Animation::new(theme.motion.fast).with_easing(crate::theme::web_ease_out),
                 move |menu, delta| {
                     let scale = menu_entry_scale(delta);
-                    menu.right(anchor.edge + px(MODEL_PICKER_WIDTH / 2.0 * (1.0 - scale)))
-                        .w(px(MODEL_PICKER_WIDTH * scale))
+                    let menu = menu
+                        .left(placement.left + panel_width * ((1.0 - scale) / 2.0))
+                        .w(panel_width * scale)
                         .rounded(px(RADIUS_XL * scale))
-                        .opacity(delta)
-                        .bottom(anchor.bottom - px(2.0 * (1.0 - delta)))
+                        .opacity(delta);
+                    match placement.drop {
+                        ComposerMenuDrop::Up => {
+                            menu.bottom(placement.vertical - px(2.0 * (1.0 - delta)))
+                        }
+                        ComposerMenuDrop::Down => {
+                            menu.top(placement.vertical + px(2.0 * (1.0 - delta)))
+                        }
+                    }
                 },
             )
             .into_any_element()
@@ -7897,38 +8016,72 @@ fn brief_entry_margin(gap: f32, delta: f32) -> f32 {
     gap - BRIEF_ENTRY_OFFSET * (1.0 - delta)
 }
 
-fn composer_menu_anchor(
+#[allow(clippy::too_many_arguments)]
+fn composer_menu_placement(
     composer: Option<Bounds<Pixels>>,
     trigger: Option<Bounds<Pixels>>,
+    viewport_width: Pixels,
+    viewport_height: Pixels,
+    panel_width: Pixels,
+    panel_height: Pixels,
     alignment: ComposerMenuAlignment,
-) -> Option<ComposerMenuAnchor> {
+    preferred_drop: ComposerMenuDrop,
+) -> Option<ComposerMenuPlacement> {
     let composer = composer?;
     let trigger = trigger?;
-    let composer_right = composer.origin.x + composer.size.width;
     let trigger_right = trigger.origin.x + trigger.size.width;
-    let edge = match alignment {
-        ComposerMenuAlignment::Left => trigger.origin.x - composer.origin.x,
-        ComposerMenuAlignment::RightShiftedLeft(shift) => {
-            composer_right - trigger_right + px(shift)
-        }
+    let (preferred_left, translate_x) = match alignment {
+        ComposerMenuAlignment::Left => (trigger.origin.x, px(0.0)),
+        ComposerMenuAlignment::RightShiftedLeft(shift) => (trigger_right - panel_width, -px(shift)),
     };
+    let gutter = px(COMPOSER_MENU_VIEWPORT_GUTTER);
+    let gap = px(COMPOSER_MENU_GAP);
+    let max_left = (viewport_width - panel_width - gutter).max(gutter);
+    let left = preferred_left.clamp(gutter, max_left) + translate_x;
+    let trigger_bottom = trigger.origin.y + trigger.size.height;
+    let space_above = trigger.origin.y - gap - gutter;
+    let space_below = viewport_height - trigger_bottom - gap - gutter;
+    let drop = match preferred_drop {
+        ComposerMenuDrop::Down if panel_height > space_below && space_above > space_below => {
+            ComposerMenuDrop::Up
+        }
+        ComposerMenuDrop::Up if panel_height > space_above && space_below > space_above => {
+            ComposerMenuDrop::Down
+        }
+        drop => drop,
+    };
+    let preferred_top = match drop {
+        ComposerMenuDrop::Up => trigger.origin.y - gap - panel_height,
+        ComposerMenuDrop::Down => trigger_bottom + gap,
+    };
+    let max_top = (viewport_height - panel_height - gutter).max(gutter);
+    let top = preferred_top.clamp(gutter, max_top);
     let composer_bottom = composer.origin.y + composer.size.height;
-    Some(ComposerMenuAnchor {
-        edge,
-        bottom: composer_bottom - trigger.origin.y + px(COMPOSER_MENU_GAP),
+    Some(ComposerMenuPlacement {
+        left: left - composer.origin.x,
+        vertical: match drop {
+            ComposerMenuDrop::Up => composer_bottom - top - panel_height,
+            ComposerMenuDrop::Down => top - composer.origin.y,
+        },
+        drop,
     })
 }
 
-fn composer_drop_down_anchor(
-    composer: Option<Bounds<Pixels>>,
-    trigger: Option<Bounds<Pixels>>,
-) -> Option<ComposerDropDownAnchor> {
-    let composer = composer?;
-    let trigger = trigger?;
-    Some(ComposerDropDownAnchor {
-        left: trigger.origin.x - composer.origin.x,
-        top: trigger.origin.y + trigger.size.height - composer.origin.y + px(COMPOSER_MENU_GAP),
-    })
+fn composer_menu_width(design_width: f32, viewport_width: Pixels) -> Pixels {
+    px(design_width).min((viewport_width - px(COMPOSER_MENU_VIEWPORT_GUTTER * 2.0)).max(px(0.0)))
+}
+
+fn composer_menu_max_height(viewport_height: Pixels) -> Pixels {
+    px(COMPOSER_MENU_MAX_HEIGHT)
+        .min((viewport_height - px(COMPOSER_MENU_VIEWPORT_GUTTER * 2.0)).max(px(0.0)))
+}
+
+fn composer_stacked_menu_height(
+    row_count: usize,
+    row_height: f32,
+    viewport_height: Pixels,
+) -> Pixels {
+    px(row_count as f32 * row_height + 10.0).min(composer_menu_max_height(viewport_height))
 }
 
 fn brief_option_background(theme: Theme, selected: bool, hovered: bool) -> Background {
@@ -9394,7 +9547,7 @@ mod tests {
     }
 
     #[test]
-    fn composer_menus_follow_their_measured_triggers() {
+    fn composer_menus_follow_their_triggers_and_flip_like_the_web_menu() {
         let composer = Bounds {
             origin: point(px(100.0), px(200.0)),
             size: size(px(500.0), px(114.0)),
@@ -9403,43 +9556,100 @@ mod tests {
             origin: point(px(148.0), px(271.0)),
             size: size(px(90.0), px(34.0)),
         };
-        let permission_anchor = composer_menu_anchor(
+        let permission_placement = composer_menu_placement(
             Some(composer),
             Some(permission),
+            px(800.0),
+            px(800.0),
+            px(315.0),
+            px(221.0),
             ComposerMenuAlignment::Left,
+            ComposerMenuDrop::Up,
         )
         .unwrap();
-        assert_eq!(permission_anchor.edge, px(48.0));
-        assert_eq!(permission_anchor.bottom, px(49.0));
+        assert_eq!(permission_placement.left, px(48.0));
+        assert_eq!(permission_placement.vertical, px(49.0));
+        assert_eq!(permission_placement.drop, ComposerMenuDrop::Up);
 
         let model = Bounds {
             origin: point(px(430.0), px(272.0)),
             size: size(px(126.0), px(32.0)),
         };
-        let model_anchor = composer_menu_anchor(
+        let model_placement = composer_menu_placement(
             Some(composer),
             Some(model),
+            px(800.0),
+            px(800.0),
+            px(MODEL_PICKER_WIDTH),
+            px(MODEL_PICKER_PANEL_HEIGHT),
             ComposerMenuAlignment::RightShiftedLeft(MODEL_MENU_TRANSLATE_X),
+            ComposerMenuDrop::Up,
         )
         .unwrap();
-        assert_eq!(model_anchor.edge, px(72.0));
-        assert_eq!(model_anchor.bottom, px(48.0));
+        assert_eq!(model_placement.left, px(46.0));
+        assert_eq!(model_placement.vertical, px(110.0));
+        assert_eq!(model_placement.drop, ComposerMenuDrop::Down);
+
+        let lower_composer = Bounds {
+            origin: point(px(100.0), px(500.0)),
+            size: size(px(500.0), px(114.0)),
+        };
+        let lower_model = Bounds {
+            origin: point(px(430.0), px(572.0)),
+            size: size(px(126.0), px(32.0)),
+        };
+        let lower_model_placement = composer_menu_placement(
+            Some(lower_composer),
+            Some(lower_model),
+            px(800.0),
+            px(800.0),
+            px(MODEL_PICKER_WIDTH),
+            px(MODEL_PICKER_PANEL_HEIGHT),
+            ComposerMenuAlignment::RightShiftedLeft(MODEL_MENU_TRANSLATE_X),
+            ComposerMenuDrop::Up,
+        )
+        .unwrap();
+        assert_eq!(lower_model_placement.left, px(46.0));
+        assert_eq!(lower_model_placement.vertical, px(48.0));
+        assert_eq!(lower_model_placement.drop, ComposerMenuDrop::Up);
 
         let project = Bounds {
             origin: point(px(113.0), px(203.0)),
             size: size(px(130.0), px(31.0)),
         };
-        let project_anchor = composer_drop_down_anchor(Some(composer), Some(project)).unwrap();
-        assert_eq!(project_anchor.left, px(13.0));
-        assert_eq!(project_anchor.top, px(40.0));
+        let project_placement = composer_menu_placement(
+            Some(composer),
+            Some(project),
+            px(800.0),
+            px(800.0),
+            px(350.0),
+            px(200.0),
+            ComposerMenuAlignment::Left,
+            ComposerMenuDrop::Down,
+        )
+        .unwrap();
+        assert_eq!(project_placement.left, px(13.0));
+        assert_eq!(project_placement.vertical, px(40.0));
+        assert_eq!(project_placement.drop, ComposerMenuDrop::Down);
 
         let branch = Bounds {
             origin: point(px(300.0), px(203.0)),
             size: size(px(120.0), px(31.0)),
         };
-        let branch_anchor = composer_drop_down_anchor(Some(composer), Some(branch)).unwrap();
-        assert_eq!(branch_anchor.left, px(200.0));
-        assert_eq!(branch_anchor.top, px(40.0));
+        let branch_placement = composer_menu_placement(
+            Some(composer),
+            Some(branch),
+            px(800.0),
+            px(800.0),
+            px(280.0),
+            px(200.0),
+            ComposerMenuAlignment::Left,
+            ComposerMenuDrop::Down,
+        )
+        .unwrap();
+        assert_eq!(branch_placement.left, px(200.0));
+        assert_eq!(branch_placement.vertical, px(40.0));
+        assert_eq!(branch_placement.drop, ComposerMenuDrop::Down);
     }
 
     #[test]
