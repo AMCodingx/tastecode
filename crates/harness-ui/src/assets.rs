@@ -109,6 +109,9 @@ impl AssetSource for HarnessAssets {
             "icons/attachment-loader.svg" => {
                 Some(include_bytes!("../assets/icons/attachment-loader.svg"))
             }
+            "icons/brief-loader-quarter.svg" => {
+                Some(include_bytes!("../assets/icons/brief-loader-quarter.svg"))
+            }
             "icons/brain.svg" => Some(include_bytes!("../assets/icons/brain.svg")),
             "icons/file-pen-line.svg" => Some(include_bytes!("../assets/icons/file-pen-line.svg")),
             "icons/wrench.svg" => Some(include_bytes!("../assets/icons/wrench.svg")),

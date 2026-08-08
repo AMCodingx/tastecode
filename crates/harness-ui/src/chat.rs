@@ -2881,6 +2881,7 @@ impl ChatView {
                     .left(px(0.0))
                     .bottom(px(status_bottom))
                     .h(px(36.0))
+                    .overflow_hidden()
                     .flex()
                     .items_center()
                     .gap(px(9.0))
@@ -2893,17 +2894,45 @@ impl ChatView {
                     .text_size(px(12.5))
                     .text_color(theme.text_2.hsla())
                     .child(
-                        svg()
-                            .path("icons/loader-circle.svg")
+                        div()
+                            .absolute()
+                            .top_0()
+                            .left_0()
+                            .right_0()
+                            .h(px(1.0))
+                            .bg(gpui::white().opacity(0.07)),
+                    )
+                    .child(
+                        div()
+                            .relative()
                             .size(px(14.0))
-                            .with_animation(
-                                ("brief-submit-spinner", request_animation_id),
-                                theme.repeating_animation(Duration::from_millis(700)),
-                                |spinner, delta| {
-                                    spinner.with_transformation(gpui::Transformation::rotate(
-                                        gpui::percentage(delta),
-                                    ))
-                                },
+                            .flex_none()
+                            .child(
+                                div()
+                                    .absolute()
+                                    .inset_0()
+                                    .rounded_full()
+                                    .border_2()
+                                    .border_color(theme.line_strong.hsla()),
+                            )
+                            .child(
+                                svg()
+                                    .absolute()
+                                    .inset_0()
+                                    .path("icons/brief-loader-quarter.svg")
+                                    .size(px(14.0))
+                                    .text_color(theme.text.hsla())
+                                    .with_animation(
+                                        ("brief-submit-spinner", request_animation_id),
+                                        theme.repeating_animation(Duration::from_millis(700)),
+                                        |spinner, delta| {
+                                            spinner.with_transformation(
+                                                gpui::Transformation::rotate(gpui::percentage(
+                                                    delta,
+                                                )),
+                                            )
+                                        },
+                                    ),
                             ),
                     )
                     .child("Submitting answers…")
