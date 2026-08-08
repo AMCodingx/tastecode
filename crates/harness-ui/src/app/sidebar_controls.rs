@@ -980,7 +980,14 @@ impl HarnessApp {
                             Animation::new(theme.motion.fast)
                                 .with_easing(crate::theme::web_ease_out),
                             move |panel, delta| {
-                                panel.top(top + px(2.0 * (1.0 - delta))).opacity(delta)
+                                let scale = 0.97 + 0.03 * delta;
+                                panel
+                                    .left(left + px(105.0 * (1.0 - scale)))
+                                    .top(top + px(2.0 * (1.0 - delta)))
+                                    .w(px(210.0 * scale))
+                                    .rounded(px(8.0 * scale))
+                                    .p(px(4.0 * scale))
+                                    .opacity(delta)
                             },
                         ),
                 )

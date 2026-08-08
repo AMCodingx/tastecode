@@ -5219,7 +5219,15 @@ impl ChatView {
             .with_animation(
                 "composer-project-menu",
                 Animation::new(theme.motion.fast).with_easing(crate::theme::web_ease_out),
-                |menu, delta| menu.opacity(delta).top(px(40.0 - 2.0 * delta)),
+                |menu, delta| {
+                    let scale = 0.97 + 0.03 * delta;
+                    menu.left(px(8.0 + 175.0 * (1.0 - scale)))
+                        .top(px(38.0 + 2.0 * (1.0 - delta)))
+                        .w(px(350.0 * scale))
+                        .rounded(px(8.0 * scale))
+                        .p(px(4.0 * scale))
+                        .opacity(delta)
+                },
             )
             .into_any_element()
     }
@@ -5289,7 +5297,15 @@ impl ChatView {
             .with_animation(
                 "composer-branch-menu",
                 Animation::new(theme.motion.fast).with_easing(crate::theme::web_ease_out),
-                |menu, delta| menu.opacity(delta).top(px(40.0 - 2.0 * delta)),
+                |menu, delta| {
+                    let scale = 0.97 + 0.03 * delta;
+                    menu.left(px(175.0 + 140.0 * (1.0 - scale)))
+                        .top(px(38.0 + 2.0 * (1.0 - delta)))
+                        .w(px(280.0 * scale))
+                        .rounded(px(8.0 * scale))
+                        .p(px(4.0 * scale))
+                        .opacity(delta)
+                },
             )
             .into_any_element()
     }
@@ -5416,7 +5432,12 @@ impl ChatView {
                 "composer-permission-menu",
                 Animation::new(theme.motion.fast).with_easing(crate::theme::web_ease_out),
                 move |menu, delta| {
-                    menu.opacity(delta)
+                    let scale = 0.97 + 0.03 * delta;
+                    menu.left(px(40.0 + 157.5 * (1.0 - scale)))
+                        .w(px(315.0 * scale))
+                        .rounded(px(8.0 * scale))
+                        .p(px(4.0 * scale))
+                        .opacity(delta)
                         .bottom(px(menu_bottom - 2.0 * (1.0 - delta)))
                 },
             )
@@ -5664,7 +5685,11 @@ impl ChatView {
                 "composer-model-menu",
                 Animation::new(theme.motion.fast).with_easing(crate::theme::web_ease_out),
                 move |menu, delta| {
-                    menu.opacity(delta)
+                    let scale = 0.97 + 0.03 * delta;
+                    menu.right(px(38.0 + 191.0 * (1.0 - scale)))
+                        .w(px(382.0 * scale))
+                        .rounded(px(RADIUS_XL * scale))
+                        .opacity(delta)
                         .bottom(px(menu_bottom - 2.0 * (1.0 - delta)))
                 },
             )

@@ -322,9 +322,11 @@ impl ChatView {
                 self.thread_search.hits.len()
             ))
         };
+        let transition = self.thread_search.open_transition;
         let previous = search_button(
             "thread-find-previous",
             "icons/chevron-up.svg",
+            transition,
             theme,
             cx.listener(|this, _event, _window, cx| {
                 this.advance_thread_search(true, cx);
@@ -333,6 +335,7 @@ impl ChatView {
         let next = search_button(
             "thread-find-next",
             "icons/chevron-down.svg",
+            transition,
             theme,
             cx.listener(|this, _event, _window, cx| {
                 this.advance_thread_search(false, cx);
@@ -341,6 +344,7 @@ impl ChatView {
         let close = search_button(
             "thread-find-close",
             "icons/x.svg",
+            transition,
             theme,
             cx.listener(|this, _event, _window, cx| {
                 this.close_thread_search(cx);
@@ -375,7 +379,20 @@ impl ChatView {
                         .px(px(2.0))
                         .py(px(1.0))
                         .line_height(relative(1.55))
-                        .text_size(px(12.5)),
+                        .text_size(px(12.5))
+                        .with_animation(
+                            ("thread-find-input-in", transition),
+                            Animation::new(theme.motion.fast)
+                                .with_easing(crate::theme::web_ease_out),
+                            |input, delta| {
+                                let scale = 0.97 + 0.03 * delta;
+                                input
+                                    .w(px(170.0 * scale))
+                                    .px(px(2.0 * scale))
+                                    .py(px(scale))
+                                    .text_size(px(12.5 * scale))
+                            },
+                        ),
                 )
                 .child(
                     div()
@@ -386,15 +403,35 @@ impl ChatView {
                         .text_size(px(11.5))
                         .font_weight(FontWeight::NORMAL)
                         .text_color(theme.text_3.hsla())
-                        .child(count),
+                        .child(count)
+                        .with_animation(
+                            ("thread-find-count-in", transition),
+                            Animation::new(theme.motion.fast)
+                                .with_easing(crate::theme::web_ease_out),
+                            |count, delta| {
+                                let scale = 0.97 + 0.03 * delta;
+                                count.min_w(px(34.0 * scale)).text_size(px(11.5 * scale))
+                            },
+                        ),
                 )
                 .child(previous)
                 .child(next)
                 .child(close)
                 .with_animation(
-                    ("thread-find-in", self.thread_search.open_transition),
+                    ("thread-find-in", transition),
                     Animation::new(theme.motion.fast).with_easing(crate::theme::web_ease_out),
-                    |find, delta| find.top(px(12.0 - 2.0 * delta)).opacity(delta),
+                    |find, delta| {
+                        let scale = 0.97 + 0.03 * delta;
+                        find.top(px(10.0 + (32.0 - 32.0 * scale) / 2.0 + 2.0 * (1.0 - delta)))
+                            .right(px(22.0 + 151.0 * (1.0 - scale)))
+                            .h(px(32.0 * scale))
+                            .gap(px(4.0 * scale))
+                            .pl(px(10.0 * scale))
+                            .pr(px(6.0 * scale))
+                            .py(px(4.0 * scale))
+                            .rounded(px(5.0 * scale))
+                            .opacity(delta)
+                    },
                 )
                 .into_any_element(),
         )
@@ -404,17 +441,37 @@ impl ChatView {
 fn search_button(
     id: &'static str,
     icon_path: &'static str,
+    transition: u64,
     theme: crate::Theme,
     listener: impl Fn(&gpui::ClickEvent, &mut Window, &mut gpui::App) + 'static,
 ) -> AnyElement {
     let group: SharedString = format!("{id}:hover").into();
     let icon_id: SharedString = format!("{id}:icon").into();
     let icon_press_id: SharedString = format!("{id}:icon-press").into();
-    div()
+    let icon = div()
+        .size(px(12.0))
+        .flex()
+        .items_center()
+        .justify_center()
+        .child(
+            div()
+                .id(icon_press_id)
+                .size_full()
+                .group_active(group.clone(), |style| style.size(px(11.28)).m(px(0.36)))
+                .child(motion_icon(icon_id, icon_path, 12.0, group.clone(), theme).size_full()),
+        )
+        .with_animation(
+            SharedString::from(format!("{id}:icon-in:{transition}")),
+            Animation::new(theme.motion.fast).with_easing(crate::theme::web_ease_out),
+            |icon, delta| {
+                let scale = 0.97 + 0.03 * delta;
+                icon.size(px(12.0 * scale))
+            },
+        );
+    let button = div()
         .id(id)
         .group(group.clone())
-        .size(px(22.0))
-        .flex_none()
+        .size_full()
         .flex()
         .items_center()
         .justify_center()
@@ -428,12 +485,21 @@ fn search_button(
         })
         .active(|style| style.size(px(20.68)).m(px(0.66)))
         .on_click(listener)
-        .child(
-            div()
-                .id(icon_press_id)
-                .size(px(12.0))
-                .group_active(group.clone(), |style| style.size(px(11.28)).m(px(0.36)))
-                .child(motion_icon(icon_id, icon_path, 12.0, group, theme).size_full()),
+        .child(icon);
+    div()
+        .size(px(22.0))
+        .flex_none()
+        .flex()
+        .items_center()
+        .justify_center()
+        .child(button)
+        .with_animation(
+            SharedString::from(format!("{id}:button-in:{transition}")),
+            Animation::new(theme.motion.fast).with_easing(crate::theme::web_ease_out),
+            |button, delta| {
+                let scale = 0.97 + 0.03 * delta;
+                button.size(px(22.0 * scale)).rounded(px(3.0 * scale))
+            },
         )
         .into_any_element()
 }

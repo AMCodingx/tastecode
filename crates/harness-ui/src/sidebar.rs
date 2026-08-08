@@ -400,30 +400,45 @@ fn sidebar_footer(
         .when(account_menu_open, |footer| {
             footer.child(
                 div()
-                    .id("account-menu")
-                    .occlude()
                     .absolute()
                     .left(px(10.0))
                     .right(px(10.0))
                     .bottom(px(54.0))
-                    .rounded(px(8.0))
-                    .border_1()
-                    .border_color(chrome::menu_border(theme))
-                    .bg(chrome::menu_background(theme))
-                    .shadow(chrome::flyout_shadows(theme))
-                    .p(px(4.0))
-                    .child(account_limits(provider_name, usage_limits, theme))
-                    .child(footer_menu_action(
-                        "account-settings",
-                        "Settings",
-                        shortcut_label(SETTINGS),
-                        theme,
-                        actions.open_settings.clone(),
-                    ))
-                    .with_animation(
-                        "account-menu",
-                        Animation::new(theme.motion.fast).with_easing(crate::theme::web_ease_out),
-                        |menu, delta| menu.bottom(px(52.0 + 2.0 * delta)).opacity(delta),
+                    .flex()
+                    .justify_center()
+                    .child(
+                        div()
+                            .id("account-menu")
+                            .occlude()
+                            .relative()
+                            .w_full()
+                            .rounded(px(8.0))
+                            .border_1()
+                            .border_color(chrome::menu_border(theme))
+                            .bg(chrome::menu_background(theme))
+                            .shadow(chrome::flyout_shadows(theme))
+                            .p(px(4.0))
+                            .child(account_limits(provider_name, usage_limits, theme))
+                            .child(footer_menu_action(
+                                "account-settings",
+                                "Settings",
+                                shortcut_label(SETTINGS),
+                                theme,
+                                actions.open_settings.clone(),
+                            ))
+                            .with_animation(
+                                "account-menu",
+                                Animation::new(theme.motion.fast)
+                                    .with_easing(crate::theme::web_ease_out),
+                                |menu, delta| {
+                                    let scale = 0.97 + 0.03 * delta;
+                                    menu.w(relative(scale))
+                                        .top(px(2.0 * (1.0 - delta)))
+                                        .rounded(px(8.0 * scale))
+                                        .p(px(4.0 * scale))
+                                        .opacity(delta)
+                                },
+                            ),
                     ),
             )
         })
