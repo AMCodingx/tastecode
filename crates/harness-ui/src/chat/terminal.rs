@@ -503,6 +503,18 @@ impl ChatView {
         self.terminal_ui.visible
     }
 
+    pub(crate) fn restore_terminal_preferences(
+        &mut self,
+        visible: bool,
+        height: u16,
+        window: &Window,
+    ) {
+        let maximum = (window.viewport_size().height * 0.72).max(px(MIN_HEIGHT));
+        self.terminal_ui.visible = visible;
+        self.terminal_ui.height =
+            px(f32::from(height) * crate::zoom::factor()).clamp(px(MIN_HEIGHT), maximum);
+    }
+
     pub(crate) fn toggle_terminal_from_shell(&mut self, cx: &mut Context<Self>) {
         self.toggle_terminal(cx);
     }
@@ -541,6 +553,7 @@ impl ChatView {
             self.terminal_ui.open_generation += 1;
             self.terminal_ui.reset_engine();
             self.request_terminal_open(cx);
+            self.emit_terminal_preferences(cx);
         }
         cx.notify();
     }
@@ -554,6 +567,17 @@ impl ChatView {
         }
         self.terminal_ui.early_output.clear();
         self.terminal_ui.pending_output.clear();
+        self.emit_terminal_preferences(cx);
+    }
+
+    fn emit_terminal_preferences(&self, cx: &mut Context<Self>) {
+        let height = (f32::from(self.terminal_ui.height) / crate::zoom::factor())
+            .round()
+            .clamp(MIN_HEIGHT, f32::from(u16::MAX)) as u16;
+        cx.emit(ChatEvent::TerminalPreferencesChanged {
+            visible: self.terminal_ui.visible,
+            height,
+        });
     }
 
     fn request_terminal_open(&mut self, cx: &mut Context<Self>) {
@@ -951,6 +975,7 @@ impl ChatView {
 
     pub(super) fn finish_terminal_resize(&mut self, cx: &mut Context<Self>) {
         if self.terminal_ui.resize_drag.take().is_some() {
+            self.emit_terminal_preferences(cx);
             cx.notify();
         }
     }

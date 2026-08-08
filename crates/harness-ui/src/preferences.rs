@@ -2,13 +2,13 @@ use crate::client_state::ModelChoice;
 use crate::model_selection::source_key;
 use crate::theme::{Accent, Backdrop};
 use anyhow::{Context as _, Result};
-use harness_protocol::{Model, ProviderId};
+use harness_protocol::{ApprovalMode, Model, ProviderId};
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::PathBuf;
 
-const PREFERENCES_VERSION: u8 = 6;
+const PREFERENCES_VERSION: u8 = 7;
 const PREFERENCES_FILE: &str = "gpui-settings.json";
 const MODEL_CATALOG_CACHE_VERSION: u8 = 1;
 const MODEL_CATALOG_CACHE_FILE: &str = "gpui-model-catalog-cache.json";
@@ -50,6 +50,9 @@ pub(crate) struct NativePreferences {
     pub(crate) hidden_models: HashSet<String>,
     pub(crate) selected_model_key: Option<String>,
     pub(crate) model_by_source: HashMap<String, SourceSelection>,
+    pub(crate) approval: ApprovalMode,
+    pub(crate) terminal_open: bool,
+    pub(crate) terminal_height: u16,
 }
 
 impl Default for NativePreferences {
@@ -66,6 +69,9 @@ impl Default for NativePreferences {
             hidden_models: HashSet::new(),
             selected_model_key: None,
             model_by_source: HashMap::new(),
+            approval: ApprovalMode::Ask,
+            terminal_open: false,
+            terminal_height: 260,
         }
     }
 }
@@ -127,6 +133,7 @@ impl NativePreferences {
         preferences.version = PREFERENCES_VERSION;
         preferences.sidebar_glass = preferences.sidebar_glass.min(60);
         preferences.rail_width = preferences.rail_width.clamp(177, 420);
+        preferences.terminal_height = preferences.terminal_height.clamp(160, 4_096);
         Ok(preferences)
     }
 
@@ -445,6 +452,9 @@ mod tests {
         assert!(preferences.hidden_models.is_empty());
         assert_eq!(preferences.selected_model_key, None);
         assert!(preferences.model_by_source.is_empty());
+        assert_eq!(preferences.approval, ApprovalMode::Ask);
+        assert!(!preferences.terminal_open);
+        assert_eq!(preferences.terminal_height, 260);
     }
 
     #[test]
@@ -456,6 +466,9 @@ mod tests {
             backdrop: Backdrop::Plum,
             sidebar_glass: 35,
             rail_width: 312,
+            approval: ApprovalMode::Full,
+            terminal_open: true,
+            terminal_height: 420,
             ..NativePreferences::default()
         };
         preferences.session_order.insert(

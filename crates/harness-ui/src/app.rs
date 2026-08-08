@@ -270,7 +270,15 @@ impl HarnessApp {
             .with_reduced_motion(reduced_motion);
         let interface_font = resolve_interface_font(preferences.font, &available_fonts);
         sync_component_theme(theme, interface_font, cx);
-        let chat = cx.new(|cx| ChatView::new(theme, interface_font.into(), window, cx));
+        let chat = cx.new(|cx| {
+            let mut chat = ChatView::new(theme, interface_font.into(), window, cx);
+            chat.restore_terminal_preferences(
+                preferences.terminal_open,
+                preferences.terminal_height,
+                window,
+            );
+            chat
+        });
         let connection_name = cx.new(|cx| {
             InputState::new(window, cx)
                 .default_value("OpenAI API")
@@ -481,6 +489,8 @@ impl HarnessApp {
             ChatEvent::ToggleFast => this.toggle_fast(cx),
             ChatEvent::SelectApproval { approval } => {
                 this.approval = *approval;
+                this.preferences.approval = *approval;
+                this.persist_native_preferences();
                 this.sync_composer_settings(cx);
             }
             ChatEvent::ToggleIsolation => {
@@ -578,6 +588,15 @@ impl HarnessApp {
             ChatEvent::TerminalClose { terminal_id } => {
                 let update = this.state.close_terminal(terminal_id);
                 this.apply_client_update(update, cx);
+            }
+            ChatEvent::TerminalPreferencesChanged { visible, height } => {
+                if this.preferences.terminal_open != *visible
+                    || this.preferences.terminal_height != *height
+                {
+                    this.preferences.terminal_open = *visible;
+                    this.preferences.terminal_height = *height;
+                    this.persist_native_preferences();
+                }
             }
         })
         .detach();
@@ -682,7 +701,7 @@ impl HarnessApp {
             selected_model_key: preferences.selected_model_key.clone(),
             effort: None,
             service_tier: None,
-            approval: ApprovalMode::Ask,
+            approval: preferences.approval,
             isolate_session: false,
             design_mode: false,
             sidebar_scope: None,
@@ -1341,7 +1360,7 @@ impl HarnessApp {
             choice,
             effort: self.effort.clone(),
             service_tier: self.service_tier.clone(),
-            approval: self.approval,
+            approval: self.effective_approval(),
             isolate: self.isolate_session,
         });
         self.apply_client_update(update, cx);
@@ -1353,6 +1372,22 @@ impl HarnessApp {
             .model_catalog
             .iter()
             .find(|choice| choice.key == *key)
+    }
+
+    fn auto_review_supported(&self) -> bool {
+        self.selected_model_choice().is_some_and(|choice| {
+            self.state
+                .provider_statuses
+                .iter()
+                .find(|provider| provider.id == choice.provider)
+                .and_then(|provider| provider.capabilities.as_ref())
+                .and_then(|capabilities| capabilities.auto_review)
+                .unwrap_or(false)
+        })
+    }
+
+    fn effective_approval(&self) -> ApprovalMode {
+        effective_approval_mode(self.approval, self.auto_review_supported())
     }
 
     fn select_model(&mut self, key: &str, cx: &mut Context<Self>) {
@@ -1477,18 +1512,8 @@ impl HarnessApp {
                     .get(&provider)
                     .is_some_and(|status| status.available)
         });
-        let auto_review_supported = self.selected_model_choice().is_some_and(|choice| {
-            self.state
-                .provider_statuses
-                .iter()
-                .find(|provider| provider.id == choice.provider)
-                .and_then(|provider| provider.capabilities.as_ref())
-                .and_then(|capabilities| capabilities.auto_review)
-                .unwrap_or(false)
-        });
-        if self.approval == ApprovalMode::AutoReview && !auto_review_supported {
-            self.approval = ApprovalMode::Ask;
-        }
+        let auto_review_supported = self.auto_review_supported();
+        let approval = self.effective_approval();
         self.chat.update(cx, |chat, cx| {
             chat.update_composer_settings(
                 ComposerSettings {
@@ -1502,7 +1527,7 @@ impl HarnessApp {
                     selected_model_key: self.selected_model_key.clone(),
                     effort: self.effort.clone(),
                     service_tier: self.service_tier.clone(),
-                    approval: self.approval,
+                    approval,
                     auto_review_supported,
                     isolate: self.isolate_session,
                     design_mode: self.design_mode,
@@ -3097,6 +3122,14 @@ fn title_from(text: &str) -> String {
     }
 }
 
+fn effective_approval_mode(approval: ApprovalMode, auto_review_supported: bool) -> ApprovalMode {
+    if approval == ApprovalMode::AutoReview && !auto_review_supported {
+        ApprovalMode::Ask
+    } else {
+        approval
+    }
+}
+
 fn resolve_interface_font(
     preference: FontPreference,
     available_fonts: &HashSet<String>,
@@ -3270,6 +3303,22 @@ mod tests {
     fn first_prompt_title_is_whitespace_normalized_and_bounded() {
         assert_eq!(title_from("  build\nthis   please "), "build this please");
         assert_eq!(title_from(&"x".repeat(41)), format!("{}…", "x".repeat(40)));
+    }
+
+    #[test]
+    fn auto_review_preference_only_degrades_for_an_unsupported_source() {
+        assert_eq!(
+            effective_approval_mode(ApprovalMode::AutoReview, false),
+            ApprovalMode::Ask
+        );
+        assert_eq!(
+            effective_approval_mode(ApprovalMode::AutoReview, true),
+            ApprovalMode::AutoReview
+        );
+        assert_eq!(
+            effective_approval_mode(ApprovalMode::Full, false),
+            ApprovalMode::Full
+        );
     }
 
     #[test]

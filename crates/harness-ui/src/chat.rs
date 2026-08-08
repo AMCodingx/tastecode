@@ -225,6 +225,10 @@ pub(crate) enum ChatEvent {
     TerminalClose {
         terminal_id: String,
     },
+    TerminalPreferencesChanged {
+        visible: bool,
+        height: u16,
+    },
 }
 
 impl EventEmitter<ChatEvent> for ChatView {}
