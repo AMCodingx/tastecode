@@ -3976,6 +3976,7 @@ impl ChatView {
     fn design_tool_button(&self, action: UiAction, cx: &Context<Self>) -> AnyElement {
         let theme = self.theme;
         let active = self.composer_settings.design_mode;
+        let group: SharedString = "composer-design-hover".into();
         let background = if theme.mode == ThemeMode::Dark {
             theme.surface_3.hsla()
         } else {
@@ -3997,16 +3998,28 @@ impl ChatView {
             div().child("Design").into_any_element()
         };
 
-        div()
-            .id("composer-design")
-            .group("composer-design-hover")
-            .min_h(px(34.0))
+        let sizing = div()
+            .h(px(34.0))
             .px(px(12.0))
             .py(px(5.0))
             .flex()
             .items_center()
             .justify_center()
             .gap(px(6.0))
+            .text_size(px(13.5))
+            .invisible()
+            .child(div().size(px(13.0)).flex_none())
+            .child("Design");
+        let visual = div()
+            .id("composer-design-visual")
+            .absolute()
+            .inset_0()
+            .flex()
+            .items_center()
+            .justify_center()
+            .gap(px(6.0))
+            .px(px(12.0))
+            .py(px(5.0))
             .rounded(px(RADIUS_XL))
             .border_1()
             .border_color(if active {
@@ -4022,8 +4035,7 @@ impl ChatView {
             } else {
                 theme.text_2.hsla()
             })
-            .cursor_pointer()
-            .hover(move |style| {
+            .group_hover(group.clone(), move |style| {
                 style
                     .bg(if theme.mode == ThemeMode::Dark {
                         theme.surface_3.hsla()
@@ -4033,7 +4045,43 @@ impl ChatView {
                     .border_color(theme.text_3.hsla().opacity(0.72))
                     .text_color(theme.text.hsla())
             })
-            .active(|style| style.opacity(0.78).top(px(1.0)))
+            .group_active(group.clone(), |style| {
+                style
+                    .top(px(0.51))
+                    .right(relative(0.015))
+                    .bottom(px(0.51))
+                    .left(relative(0.015))
+                    .gap(px(5.82))
+                    .px(px(11.64))
+                    .py(px(4.85))
+                    .rounded(px(RADIUS_XL * 0.97))
+                    .text_size(px(13.095))
+                    .shadow(Vec::new())
+            })
+            .child(
+                div()
+                    .id("composer-design-icon-press")
+                    .size(px(13.0))
+                    .group_active(group.clone(), |style| style.size(px(12.61)).m(px(0.195)))
+                    .child(
+                        motion_icon(
+                            "composer-design-icon",
+                            "icons/palette.svg",
+                            13.0,
+                            group.clone(),
+                            theme,
+                        )
+                        .size_full(),
+                    ),
+            )
+            .child(label);
+        div()
+            .id("composer-design")
+            .group(group)
+            .relative()
+            .h(px(34.0))
+            .flex_none()
+            .cursor_pointer()
             .on_hover(cx.listener(|this, hovered: &bool, _window, cx| {
                 if this.design_hovered != *hovered {
                     this.design_hovered = *hovered;
@@ -4041,14 +4089,8 @@ impl ChatView {
                 }
             }))
             .on_click(move |_event, _window, cx| action(cx))
-            .child(motion_icon(
-                "composer-design-icon",
-                "icons/palette.svg",
-                13.0,
-                "composer-design-hover",
-                theme,
-            ))
-            .child(label)
+            .child(sizing)
+            .child(visual)
             .into_any_element()
     }
 
@@ -4742,15 +4784,26 @@ impl ChatView {
         } else {
             theme.prompt.hsla()
         };
-        div()
-            .id("composer-permissions")
-            .min_h(px(34.0))
+        let sizing = div()
+            .h(px(34.0))
             .px(px(12.0))
             .py(px(5.0))
             .flex()
             .items_center()
             .gap(px(6.0))
-            .group(group.clone())
+            .text_size(px(13.5))
+            .invisible()
+            .child(div().size(px(13.0)).flex_none())
+            .child(label);
+        let visual = div()
+            .id("composer-permissions-visual")
+            .absolute()
+            .inset_0()
+            .px(px(12.0))
+            .py(px(5.0))
+            .flex()
+            .items_center()
+            .gap(px(6.0))
             .rounded(px(RADIUS_XL))
             .border_1()
             .border_color(if open {
@@ -4762,11 +4815,9 @@ impl ChatView {
             .shadow_sm()
             .text_size(px(13.5))
             .text_color(label_color)
-            .opacity(if running { 0.42 } else { 1.0 })
-            .when(!running, |button| {
-                button
-                    .cursor_pointer()
-                    .hover(move |style| {
+            .when(!running, |visual| {
+                visual
+                    .group_hover(group.clone(), move |style| {
                         style
                             .bg(if theme.mode == ThemeMode::Dark {
                                 theme.surface_3.hsla()
@@ -4776,26 +4827,60 @@ impl ChatView {
                             .border_color(theme.text_3.hsla().opacity(0.72))
                             .text_color(semantic_color.unwrap_or_else(|| theme.text.hsla()))
                     })
-                    .active(|style| style.opacity(0.78).top(px(1.0)))
-                    .on_click(cx.listener(|this, _event, _window, cx| {
-                        this.toggle_composer_menu(ComposerMenu::Permissions, cx);
-                    }))
+                    .group_active(group.clone(), |style| {
+                        style
+                            .top(px(0.51))
+                            .right(relative(0.015))
+                            .bottom(px(0.51))
+                            .left(relative(0.015))
+                            .gap(px(5.82))
+                            .px(px(11.64))
+                            .py(px(4.85))
+                            .rounded(px(RADIUS_XL * 0.97))
+                            .text_size(px(13.095))
+                            .shadow(Vec::new())
+                    })
             })
             .child(
                 div()
+                    .id("composer-permissions-icon-press")
+                    .size(px(13.0))
+                    .flex_none()
                     .text_color(icon_color)
                     .when(semantic_color.is_none(), |icon| {
                         icon.group_hover(group.clone(), |style| style.text_color(theme.text.hsla()))
                     })
-                    .child(motion_icon(
-                        "composer-permissions-icon",
-                        icon_path,
-                        13.0,
-                        group,
-                        theme,
-                    )),
+                    .when(!running, |icon| {
+                        icon.group_active(group.clone(), |style| style.size(px(12.61)).m(px(0.195)))
+                    })
+                    .child(
+                        motion_icon(
+                            "composer-permissions-icon",
+                            icon_path,
+                            13.0,
+                            group.clone(),
+                            theme,
+                        )
+                        .size_full(),
+                    ),
             )
-            .child(label)
+            .child(label);
+        div()
+            .id("composer-permissions")
+            .group(group)
+            .relative()
+            .h(px(34.0))
+            .flex_none()
+            .opacity(if running { 0.42 } else { 1.0 })
+            .when(!running, |button| {
+                button
+                    .cursor_pointer()
+                    .on_click(cx.listener(|this, _event, _window, cx| {
+                        this.toggle_composer_menu(ComposerMenu::Permissions, cx);
+                    }))
+            })
+            .child(sizing)
+            .child(visual)
             .into_any_element()
     }
 
@@ -4817,13 +4902,16 @@ impl ChatView {
         } else {
             theme.prompt.hsla()
         };
+        let group: SharedString = "composer-model-hover".into();
+        let provider_icon = provider_mark_path(provider_mark(selected.provider));
         let chevron = motion_icon(
             "composer-model-chevron-icon",
             "icons/chevron-down.svg",
             16.0,
-            "composer-model-hover",
+            group.clone(),
             theme,
         )
+        .size_full()
         .with_animation(
             ("composer-model-chevron", usize::from(open)),
             Animation::new(theme.motion.fast).with_easing(crate::theme::web_ease_out),
@@ -4836,98 +4924,196 @@ impl ChatView {
                 icon.with_transformation(IconTransformation::rotate(rotation_degrees))
             },
         );
+        let sizing = div()
+            .h(px(32.0))
+            .max_w(px(270.0))
+            .pl(px(8.0))
+            .pr(px(9.0))
+            .py(px(5.0))
+            .flex()
+            .items_center()
+            .gap(px(7.0))
+            .text_size(px(12.5))
+            .invisible()
+            .when(fast, |button| {
+                button.child(div().size(px(13.0)).flex_none())
+            })
+            .child(
+                div()
+                    .min_w(px(0.0))
+                    .flex()
+                    .items_center()
+                    .gap(px(5.0))
+                    .child(
+                        div()
+                            .min_w(px(0.0))
+                            .max_w(px(165.0))
+                            .flex()
+                            .items_center()
+                            .gap(px(6.0))
+                            .truncate()
+                            .child(div().size(px(13.0)).flex_none())
+                            .child(model_name.clone()),
+                    )
+                    .child(div().min_w(px(0.0)).truncate().child(effort.clone())),
+            )
+            .child(div().size(px(16.0)).flex_none());
+        let visual = div()
+            .id("composer-model-visual")
+            .absolute()
+            .inset_0()
+            .pl(px(8.0))
+            .pr(px(9.0))
+            .py(px(5.0))
+            .flex()
+            .items_center()
+            .gap(px(7.0))
+            .rounded(px(RADIUS_XL))
+            .border_1()
+            .border_color(if open {
+                theme.text_3.hsla()
+            } else {
+                theme.line_strong.hsla()
+            })
+            .bg(background)
+            .shadow_sm()
+            .text_size(px(12.5))
+            .text_color(theme.text.hsla())
+            .when(!running, |visual| {
+                visual
+                    .group_hover(group.clone(), move |style| {
+                        style
+                            .bg(if theme.mode == ThemeMode::Dark {
+                                theme.surface_3.hsla()
+                            } else {
+                                theme.surface.hsla()
+                            })
+                            .border_color(theme.text_3.hsla().opacity(0.72))
+                    })
+                    .group_active(group.clone(), |style| {
+                        style
+                            .top(px(0.48))
+                            .right(relative(0.015))
+                            .bottom(px(0.48))
+                            .left(relative(0.015))
+                            .pl(px(7.76))
+                            .pr(px(8.73))
+                            .py(px(4.85))
+                            .gap(px(6.79))
+                            .rounded(px(RADIUS_XL * 0.97))
+                            .text_size(px(12.125))
+                            .shadow(Vec::new())
+                    })
+            })
+            .when(fast, |button| {
+                button.child(
+                    div()
+                        .id("composer-model-fast-icon-press")
+                        .size(px(13.0))
+                        .flex_none()
+                        .text_color(theme.text.hsla())
+                        .when(!running, |icon| {
+                            icon.group_active(group.clone(), |style| {
+                                style.size(px(12.61)).m(px(0.195))
+                            })
+                        })
+                        .child(
+                            motion_icon(
+                                "composer-model-fast-icon",
+                                "icons/zap-filled.svg",
+                                13.0,
+                                group.clone(),
+                                theme,
+                            )
+                            .size_full(),
+                        ),
+                )
+            })
+            .child(
+                div()
+                    .id("composer-model-copy-press")
+                    .min_w(px(0.0))
+                    .flex()
+                    .items_center()
+                    .gap(px(5.0))
+                    .when(!running, |copy| {
+                        copy.group_active(group.clone(), |style| style.gap(px(4.85)))
+                    })
+                    .child(
+                        div()
+                            .id("composer-model-name-press")
+                            .min_w(px(0.0))
+                            .max_w(px(165.0))
+                            .flex()
+                            .items_center()
+                            .gap(px(6.0))
+                            .truncate()
+                            .when(!running, |name| {
+                                name.group_active(group.clone(), |style| {
+                                    style.max_w(px(160.05)).gap(px(5.82))
+                                })
+                            })
+                            .child(
+                                div()
+                                    .id("composer-model-provider-icon-press")
+                                    .size(px(13.0))
+                                    .flex_none()
+                                    .when(!running, |icon| {
+                                        icon.group_active(group.clone(), |style| {
+                                            style.size(px(12.61)).m(px(0.195))
+                                        })
+                                    })
+                                    .child(
+                                        motion_icon(
+                                            "composer-model-provider-icon",
+                                            provider_icon,
+                                            13.0,
+                                            group.clone(),
+                                            theme,
+                                        )
+                                        .size_full()
+                                        .text_color(theme.text_2.hsla()),
+                                    ),
+                            )
+                            .child(model_name),
+                    )
+                    .child(
+                        div()
+                            .min_w(px(0.0))
+                            .truncate()
+                            .text_color(theme.text_3.hsla())
+                            .child(effort),
+                    ),
+            )
+            .child(
+                div()
+                    .id("composer-model-chevron-press")
+                    .size(px(16.0))
+                    .flex_none()
+                    .text_color(theme.text_3.hsla())
+                    .when(!running, |icon| {
+                        icon.group_active(group.clone(), |style| style.size(px(15.52)).m(px(0.24)))
+                    })
+                    .child(chevron),
+            );
         Some(
             div()
                 .id("composer-model")
-                .group("composer-model-hover")
-                .min_h(px(32.0))
+                .group(group)
+                .relative()
+                .h(px(32.0))
                 .max_w(px(270.0))
-                .pl(px(8.0))
-                .pr(px(9.0))
-                .py(px(5.0))
-                .flex()
-                .items_center()
-                .gap(px(7.0))
-                .rounded(px(RADIUS_XL))
-                .border_1()
-                .border_color(if open {
-                    theme.text_3.hsla()
-                } else {
-                    theme.line_strong.hsla()
-                })
-                .bg(background)
-                .shadow_sm()
-                .text_size(px(12.5))
-                .text_color(theme.text.hsla())
+                .flex_none()
                 .opacity(if running { 0.42 } else { 1.0 })
                 .when(!running, |button| {
                     button
                         .cursor_pointer()
-                        .hover(move |style| {
-                            style
-                                .bg(if theme.mode == ThemeMode::Dark {
-                                    theme.surface_3.hsla()
-                                } else {
-                                    theme.surface.hsla()
-                                })
-                                .border_color(theme.text_3.hsla().opacity(0.72))
-                        })
-                        .active(|style| style.opacity(0.78).top(px(1.0)))
                         .on_click(cx.listener(|this, _event, _window, cx| {
                             this.toggle_composer_menu(ComposerMenu::Model, cx);
                         }))
                 })
-                .when(fast, |button| {
-                    button.child(div().flex_none().text_color(theme.text.hsla()).child(
-                        motion_icon(
-                            "composer-model-fast-icon",
-                            "icons/zap-filled.svg",
-                            13.0,
-                            "composer-model-hover",
-                            theme,
-                        ),
-                    ))
-                })
-                .child(
-                    div()
-                        .min_w(px(0.0))
-                        .flex()
-                        .items_center()
-                        .gap(px(5.0))
-                        .child(
-                            div()
-                                .min_w(px(0.0))
-                                .max_w(px(165.0))
-                                .flex()
-                                .items_center()
-                                .gap(px(6.0))
-                                .truncate()
-                                .child(
-                                    motion_icon(
-                                        "composer-model-provider-icon",
-                                        provider_mark_path(provider_mark(selected.provider)),
-                                        13.0,
-                                        "composer-model-hover",
-                                        theme,
-                                    )
-                                    .text_color(theme.text_2.hsla()),
-                                )
-                                .child(model_name),
-                        )
-                        .child(
-                            div()
-                                .min_w(px(0.0))
-                                .truncate()
-                                .text_color(theme.text_3.hsla())
-                                .child(effort),
-                        ),
-                )
-                .child(
-                    div()
-                        .flex_none()
-                        .text_color(theme.text_3.hsla())
-                        .child(chevron),
-                )
+                .child(sizing)
+                .child(visual)
                 .into_any_element(),
         )
     }
