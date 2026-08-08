@@ -1522,6 +1522,7 @@ fn dialog_button(
     theme: crate::Theme,
     listener: impl Fn(&gpui::ClickEvent, &mut Window, &mut gpui::App) + 'static,
 ) -> AnyElement {
+    let label = label.into();
     let foreground = if destructive {
         gpui::rgb(0xfefefe).into()
     } else if primary {
@@ -1532,14 +1533,36 @@ fn dialog_button(
     } else {
         theme.text_2.hsla()
     };
-    div()
-        .id(id)
+    let padding_x = if primary { 15.0 } else { 8.0 };
+    let padding_y = if primary { 7.0 } else { 4.0 };
+    let radius = if primary { 5.0 } else { 3.0 };
+    let font_size = if primary { 13.5 } else { 12.5 };
+    let group: SharedString = format!("{id}:press").into();
+    let sizing = div()
+        .px(px(padding_x))
+        .py(px(padding_y))
         .flex()
         .items_center()
         .justify_center()
-        .px(px(if primary { 15.0 } else { 8.0 }))
-        .py(px(if primary { 7.0 } else { 4.0 }))
-        .rounded(px(if primary { 5.0 } else { 3.0 }))
+        .text_size(px(font_size))
+        .line_height(relative(1.55))
+        .font_weight(if primary {
+            FontWeight(540.0)
+        } else {
+            FontWeight::NORMAL
+        })
+        .invisible()
+        .child(label.clone());
+    let visual = div()
+        .id(SharedString::from(format!("{id}:visual")))
+        .absolute()
+        .inset_0()
+        .px(px(padding_x))
+        .py(px(padding_y))
+        .flex()
+        .items_center()
+        .justify_center()
+        .rounded(px(radius))
         .bg(if destructive {
             theme.error.hsla()
         } else if primary {
@@ -1547,7 +1570,7 @@ fn dialog_button(
         } else {
             gpui::transparent_black()
         })
-        .text_size(px(if primary { 13.5 } else { 12.5 }))
+        .text_size(px(font_size))
         .line_height(relative(1.55))
         .font_weight(if primary {
             FontWeight(540.0)
@@ -1555,16 +1578,36 @@ fn dialog_button(
             FontWeight::NORMAL
         })
         .text_color(foreground)
-        .cursor_pointer()
         .when(!primary, |button| {
-            button.hover(move |style| {
+            button.group_hover(group.clone(), move |style| {
                 style
                     .bg(theme.surface_3.hsla())
                     .text_color(theme.text.hsla())
             })
         })
+        .when(primary, |button| {
+            button.group_active(group.clone(), move |style| {
+                style
+                    .top(relative(0.015))
+                    .right(relative(0.015))
+                    .bottom(relative(0.015))
+                    .left(relative(0.015))
+                    .px(px(padding_x * 0.97))
+                    .py(px(padding_y * 0.97))
+                    .rounded(px(radius * 0.97))
+                    .text_size(px(font_size * 0.97))
+            })
+        })
+        .child(label);
+    div()
+        .id(id)
+        .group(group)
+        .relative()
+        .flex_none()
+        .cursor_pointer()
         .on_click(listener)
-        .child(label.into())
+        .child(sizing)
+        .child(visual)
         .into_any_element()
 }
 
@@ -1576,20 +1619,42 @@ fn checkout_dialog_button(
     theme: crate::Theme,
     listener: impl Fn(&gpui::ClickEvent, &mut Window, &mut gpui::App) + 'static,
 ) -> AnyElement {
-    div()
-        .id(id)
+    let padding_x = if destructive { 15.0 } else { 8.0 };
+    let padding_y = if destructive { 7.0 } else { 4.0 };
+    let radius = if destructive { 5.0 } else { 3.0 };
+    let font_size = if destructive { 13.5 } else { 12.5 };
+    let group: SharedString = format!("{id}:press").into();
+    let sizing = div()
+        .px(px(padding_x))
+        .py(px(padding_y))
         .flex()
         .items_center()
         .justify_center()
-        .px(px(if destructive { 15.0 } else { 8.0 }))
-        .py(px(if destructive { 7.0 } else { 4.0 }))
-        .rounded(px(if destructive { 5.0 } else { 3.0 }))
+        .text_size(px(font_size))
+        .line_height(relative(1.55))
+        .font_weight(if destructive {
+            FontWeight(540.0)
+        } else {
+            FontWeight::NORMAL
+        })
+        .invisible()
+        .child(label);
+    let visual = div()
+        .id(SharedString::from(format!("{id}:visual")))
+        .absolute()
+        .inset_0()
+        .px(px(padding_x))
+        .py(px(padding_y))
+        .flex()
+        .items_center()
+        .justify_center()
+        .rounded(px(radius))
         .bg(if destructive {
             theme.error.hsla()
         } else {
             gpui::transparent_black()
         })
-        .text_size(px(if destructive { 13.5 } else { 12.5 }))
+        .text_size(px(font_size))
         .line_height(relative(1.55))
         .font_weight(if destructive {
             FontWeight(540.0)
@@ -1601,21 +1666,41 @@ fn checkout_dialog_button(
         } else {
             theme.text_2.hsla()
         })
-        .opacity(if disabled && destructive { 0.28 } else { 1.0 })
         .when(!disabled, |button| {
             button
-                .cursor_pointer()
                 .when(!destructive, |button| {
-                    button.hover(move |style| {
+                    button.group_hover(group.clone(), move |style| {
                         style
                             .bg(theme.surface_3.hsla())
                             .text_color(theme.text.hsla())
                     })
                 })
-                .active(|style| style.top(px(1.0)))
-                .on_click(listener)
+                .when(destructive, |button| {
+                    button.group_active(group.clone(), move |style| {
+                        style
+                            .top(relative(0.015))
+                            .right(relative(0.015))
+                            .bottom(relative(0.015))
+                            .left(relative(0.015))
+                            .px(px(padding_x * 0.97))
+                            .py(px(padding_y * 0.97))
+                            .rounded(px(radius * 0.97))
+                            .text_size(px(font_size * 0.97))
+                    })
+                })
         })
-        .child(label)
+        .child(label);
+    div()
+        .id(id)
+        .group(group)
+        .relative()
+        .flex_none()
+        .opacity(if disabled && destructive { 0.28 } else { 1.0 })
+        .when(!disabled, |button| {
+            button.cursor_pointer().on_click(listener)
+        })
+        .child(sizing)
+        .child(visual)
         .into_any_element()
 }
 

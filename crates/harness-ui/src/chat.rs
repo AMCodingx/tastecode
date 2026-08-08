@@ -7235,21 +7235,40 @@ fn approval_action_button(
     action: Option<UiAction>,
 ) -> impl IntoElement {
     let enabled = action.is_some();
-    div()
-        .id(("approval-action", id))
-        .h(px(if filled { 33.0 } else { 27.0 }))
-        .px(px(if filled { 15.0 } else { 8.0 }))
+    let height = if filled { 33.0 } else { 27.0 };
+    let padding = if filled { 15.0 } else { 8.0 };
+    let radius = if filled { 5.0 } else { 3.0 };
+    let font_size = if filled { 13.5 } else { 12.5 };
+    let group: SharedString = format!("approval-action-{id}:press").into();
+    let sizing = div()
+        .h(px(height))
+        .px(px(padding))
         .flex()
         .items_center()
         .justify_center()
-        .rounded(px(if filled { 5.0 } else { 3.0 }))
-        .when(push_right, |button| button.ml_auto())
+        .text_size(px(font_size))
+        .font_weight(if filled {
+            FontWeight(540.0)
+        } else {
+            FontWeight::NORMAL
+        })
+        .invisible()
+        .child(label);
+    let visual = div()
+        .id(("approval-action-visual", id))
+        .absolute()
+        .inset_0()
+        .px(px(padding))
+        .flex()
+        .items_center()
+        .justify_center()
+        .rounded(px(radius))
         .bg(if filled {
             theme.text.hsla()
         } else {
             gpui::transparent_black()
         })
-        .text_size(px(if filled { 13.5 } else { 12.5 }))
+        .text_size(px(font_size))
         .font_weight(if filled {
             FontWeight(540.0)
         } else {
@@ -7260,17 +7279,9 @@ fn approval_action_button(
         } else {
             theme.text_2.hsla()
         })
-        .opacity(if enabled {
-            1.0
-        } else if filled {
-            0.28
-        } else {
-            0.46
-        })
         .when(enabled, |button| {
             button
-                .cursor_pointer()
-                .hover(move |style| {
+                .group_hover(group.clone(), move |style| {
                     style
                         .bg(if filled {
                             theme.text.hsla()
@@ -7283,18 +7294,39 @@ fn approval_action_button(
                             theme.text.hsla()
                         })
                 })
-                .active(move |style| {
-                    if filled {
-                        style.inset(px(0.5))
-                    } else {
-                        style.opacity(0.72)
-                    }
+                .when(filled, |button| {
+                    button.group_active(group.clone(), move |style| {
+                        style
+                            .top(px(height * 0.015))
+                            .right(relative(0.015))
+                            .bottom(px(height * 0.015))
+                            .left(relative(0.015))
+                            .px(px(padding * 0.97))
+                            .rounded(px(radius * 0.97))
+                            .text_size(px(font_size * 0.97))
+                    })
                 })
+        });
+    div()
+        .id(("approval-action", id))
+        .group(group)
+        .relative()
+        .h(px(height))
+        .flex_none()
+        .when(push_right, |button| button.ml_auto())
+        .opacity(if enabled {
+            1.0
+        } else if filled {
+            0.28
+        } else {
+            0.46
         })
+        .when(enabled, |button| button.cursor_pointer())
         .when_some(action, |button, action| {
             button.on_click(move |_event, _window, cx| action(cx))
         })
-        .child(label)
+        .child(sizing)
+        .child(visual)
 }
 
 fn input_nav_button(
