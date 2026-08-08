@@ -34,9 +34,11 @@ use gpui::{
     Animation, AnimationExt, AnyElement, App, Application, Bounds, BoxShadow, Context, CursorStyle,
     Entity, FocusHandle, Focusable, KeyDownEvent, MouseButton, MouseDownEvent, MouseMoveEvent,
     MouseUpEvent, PathPromptOptions, Pixels, Render, SharedString, TitlebarOptions, Window,
-    WindowAppearance, WindowBackgroundAppearance, WindowBounds, WindowOptions, div, point,
-    prelude::*, relative, rgba, size,
+    WindowAppearance, WindowBackgroundAppearance, WindowBounds, WindowHandle, WindowOptions, div,
+    point, prelude::*, relative, rgba, size,
 };
+#[cfg(target_os = "macos")]
+use gpui::{KeyBinding, Menu, MenuItem};
 use gpui_component::Root;
 use gpui_component::input::{InputEvent, InputState};
 use harness_client::{ConnectionState, Endpoint};
@@ -53,6 +55,9 @@ use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
+#[cfg(target_os = "macos")]
+gpui::actions!(native_shell, [QuitApp]);
+
 const APP_WIDTH: f32 = 1180.0;
 const APP_HEIGHT: f32 = 820.0;
 const APP_BACKGROUND_APPEARANCE: WindowBackgroundAppearance = WindowBackgroundAppearance::Blurred;
@@ -64,6 +69,12 @@ const RAIL_REVEAL_GRACE: Duration = Duration::from_millis(120);
 const RAIL_REVEAL_COOLDOWN: Duration = Duration::from_millis(1_250);
 const RAIL_REVEAL_EDGE_WIDTH: f32 = 6.0;
 const MCP_TRANSPORT_MIN_HEIGHT: f32 = 130.0;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ShellCommand {
+    Show,
+    Quit,
+}
 
 #[derive(Clone, Copy)]
 enum SidebarTransitionKind {
@@ -119,39 +130,287 @@ struct McpTransportResizeDrag {
 }
 
 pub fn run() -> Result<()> {
-    run_with_endpoint(Endpoint::from_environment()?)
+    let (shell_sender, shell_receiver) = async_channel::unbounded();
+    run_with_endpoint_and_shell(Endpoint::from_environment()?, shell_sender, shell_receiver)
 }
 
 pub fn run_with_endpoint(endpoint: Endpoint) -> Result<()> {
-    Application::new()
-        .with_assets(HarnessAssets)
-        .run(move |cx: &mut App| {
-            zoom::set_factor(1.0);
-            gpui_component::init(cx);
-            register_fonts(cx).expect("failed to register bundled Geist fonts");
+    let (shell_sender, shell_receiver) = async_channel::unbounded();
+    run_with_endpoint_and_shell(endpoint, shell_sender, shell_receiver)
+}
 
-            let bounds = Bounds::centered(None, size(px(APP_WIDTH), px(APP_HEIGHT)), cx);
-            let options = WindowOptions {
-                window_bounds: Some(WindowBounds::Windowed(bounds)),
-                window_min_size: Some(size(px(720.0), px(520.0))),
-                titlebar: Some(TitlebarOptions {
-                    title: Some("Personal Harness".into()),
-                    appears_transparent: true,
-                    traffic_light_position: Some(point(px(12.0), px(11.0))),
-                }),
-                window_background: APP_BACKGROUND_APPEARANCE,
-                ..Default::default()
-            };
+pub fn run_with_shell(
+    shell_sender: async_channel::Sender<ShellCommand>,
+    shell_receiver: async_channel::Receiver<ShellCommand>,
+) -> Result<()> {
+    run_with_endpoint_and_shell(Endpoint::from_environment()?, shell_sender, shell_receiver)
+}
 
-            cx.open_window(options, move |window, cx| {
+pub fn run_with_endpoint_and_shell(
+    endpoint: Endpoint,
+    shell_sender: async_channel::Sender<ShellCommand>,
+    shell_receiver: async_channel::Receiver<ShellCommand>,
+) -> Result<()> {
+    let main_window = Rc::new(RefCell::new(None::<WindowHandle<Root>>));
+    let reopen_window = Rc::clone(&main_window);
+    let application = Application::new().with_assets(HarnessAssets);
+    application.on_reopen(move |cx| {
+        if let Some(window) = *reopen_window.borrow() {
+            show_main_window(window, cx);
+        }
+    });
+
+    application.run(move |cx: &mut App| {
+        zoom::set_factor(1.0);
+        gpui_component::init(cx);
+        register_fonts(cx).expect("failed to register bundled Geist fonts");
+
+        #[cfg(target_os = "macos")]
+        {
+            cx.bind_keys([KeyBinding::new("cmd-q", QuitApp, None)]);
+            cx.on_action(|_: &QuitApp, cx| cx.quit());
+            cx.set_menus(vec![Menu {
+                name: "Personal Harness".into(),
+                items: vec![MenuItem::action("Quit Personal Harness", QuitApp)],
+            }]);
+        }
+
+        let bounds = Bounds::centered(None, size(px(APP_WIDTH), px(APP_HEIGHT)), cx);
+        let options = WindowOptions {
+            window_bounds: Some(WindowBounds::Windowed(bounds)),
+            window_min_size: Some(size(px(720.0), px(520.0))),
+            titlebar: Some(TitlebarOptions {
+                title: Some("Personal Harness".into()),
+                appears_transparent: true,
+                traffic_light_position: Some(point(px(12.0), px(11.0))),
+            }),
+            window_background: APP_BACKGROUND_APPEARANCE,
+            ..Default::default()
+        };
+
+        let window_handle = cx
+            .open_window(options, move |window, cx| {
                 window.set_window_title("Personal Harness");
+                #[cfg(any(target_os = "macos", target_os = "windows"))]
+                window.on_window_should_close(cx, |window, cx| {
+                    hide_main_window(window, cx);
+                    false
+                });
                 let app = cx.new(|cx| HarnessApp::new(endpoint, window, cx));
                 cx.new(|cx| Root::new(app, window, cx))
             })
             .expect("failed to open the Harness window");
-            cx.activate(true);
-        });
+        *main_window.borrow_mut() = Some(window_handle);
+
+        #[cfg(target_os = "windows")]
+        install_windows_tray(shell_sender.clone(), cx)
+            .expect("failed to create the Harness background tray");
+        #[cfg(not(target_os = "windows"))]
+        drop(shell_sender);
+
+        cx.spawn(async move |cx| {
+            while let Ok(command) = shell_receiver.recv().await {
+                let should_quit = command == ShellCommand::Quit;
+                let result = cx.update(|cx| match command {
+                    ShellCommand::Show => show_main_window(window_handle, cx),
+                    ShellCommand::Quit => cx.quit(),
+                });
+                if result.is_err() || should_quit {
+                    break;
+                }
+            }
+        })
+        .detach();
+
+        cx.activate(true);
+    });
     Ok(())
+}
+
+fn show_main_window(window_handle: WindowHandle<Root>, cx: &mut App) {
+    cx.activate(true);
+    let _ = window_handle.update(cx, |_root, window, _cx| {
+        #[cfg(target_os = "macos")]
+        set_macos_window_visible(window, true);
+        #[cfg(target_os = "windows")]
+        set_windows_window_visible(window, true);
+        window.activate_window();
+    });
+}
+
+#[cfg(target_os = "macos")]
+fn hide_main_window(window: &Window, _cx: &mut App) {
+    set_macos_window_visible(window, false);
+}
+
+#[cfg(target_os = "macos")]
+fn set_macos_window_visible(window: &Window, visible: bool) {
+    use objc2_app_kit::NSView;
+    use raw_window_handle::{HasWindowHandle, RawWindowHandle};
+
+    let Ok(handle) = HasWindowHandle::window_handle(window) else {
+        return;
+    };
+    let RawWindowHandle::AppKit(handle) = handle.as_raw() else {
+        return;
+    };
+    let view = unsafe { &*handle.ns_view.as_ptr().cast::<NSView>() };
+    let Some(window) = view.window() else {
+        return;
+    };
+    if visible {
+        window.makeKeyAndOrderFront(None);
+    } else {
+        window.orderOut(None);
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn hide_main_window(window: &Window, _cx: &mut App) {
+    set_windows_window_visible(window, false);
+}
+
+#[cfg(target_os = "windows")]
+fn set_windows_window_visible(window: &Window, visible: bool) {
+    use raw_window_handle::{HasWindowHandle, RawWindowHandle};
+    use windows_sys::Win32::UI::WindowsAndMessaging::{
+        SW_HIDE, SW_RESTORE, SetForegroundWindow, ShowWindow,
+    };
+
+    let Ok(handle) = HasWindowHandle::window_handle(window) else {
+        return;
+    };
+    let RawWindowHandle::Win32(handle) = handle.as_raw() else {
+        return;
+    };
+    let hwnd = handle.hwnd.get() as *mut core::ffi::c_void;
+    unsafe {
+        ShowWindow(hwnd, if visible { SW_RESTORE } else { SW_HIDE });
+        if visible {
+            SetForegroundWindow(hwnd);
+        }
+    }
+}
+
+#[cfg(target_os = "windows")]
+struct WindowsTray {
+    _icon: tray_icon::TrayIcon,
+}
+
+#[cfg(target_os = "windows")]
+impl gpui::Global for WindowsTray {}
+
+#[cfg(target_os = "windows")]
+fn install_windows_tray(
+    shell_sender: async_channel::Sender<ShellCommand>,
+    cx: &mut App,
+) -> Result<()> {
+    use tray_icon::menu::{Menu as TrayMenu, MenuEvent, MenuItem as TrayMenuItem};
+    use tray_icon::{Icon, MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
+
+    const OPEN_ID: &str = "harness.open";
+    const QUIT_ID: &str = "harness.quit";
+
+    let open = TrayMenuItem::with_id(OPEN_ID, "Open Harness", true, None);
+    let separator = tray_icon::menu::PredefinedMenuItem::separator();
+    let quit = TrayMenuItem::with_id(QUIT_ID, "Quit Harness", true, None);
+    let menu = TrayMenu::with_items(&[&open, &separator, &quit])?;
+    let icon = Icon::from_rgba(tray_icon_rgba(), 20, 20)?;
+    let tray = TrayIconBuilder::new()
+        .with_menu(Box::new(menu))
+        .with_menu_on_left_click(false)
+        .with_menu_on_right_click(true)
+        .with_tooltip("Harness")
+        .with_icon(icon)
+        .build()?;
+    let tray_id = tray.id().clone();
+
+    let menu_sender = shell_sender.clone();
+    MenuEvent::set_event_handler(Some(move |event: MenuEvent| {
+        let command = if event.id == OPEN_ID {
+            Some(ShellCommand::Show)
+        } else if event.id == QUIT_ID {
+            Some(ShellCommand::Quit)
+        } else {
+            None
+        };
+        if let Some(command) = command {
+            let _ = menu_sender.try_send(command);
+        }
+    }));
+    TrayIconEvent::set_event_handler(Some(move |event: TrayIconEvent| {
+        if event.id() == &tray_id
+            && matches!(
+                event,
+                TrayIconEvent::Click {
+                    button: MouseButton::Left,
+                    button_state: MouseButtonState::Up,
+                    ..
+                }
+            )
+        {
+            let _ = shell_sender.try_send(ShellCommand::Show);
+        }
+    }));
+
+    cx.set_global(WindowsTray { _icon: tray });
+    Ok(())
+}
+
+#[cfg(any(test, target_os = "windows"))]
+fn tray_icon_rgba() -> Vec<u8> {
+    const OUTPUT_SIZE: usize = 20;
+    const SUPERSAMPLING: usize = 8;
+    const VIEWBOX_SIZE: f32 = 32.0;
+    const DARK: [u8; 3] = [0x11, 0x11, 0x13];
+
+    let mut rgba = Vec::with_capacity(OUTPUT_SIZE * OUTPUT_SIZE * 4);
+    let samples_per_pixel = (SUPERSAMPLING * SUPERSAMPLING) as f32;
+    for pixel_y in 0..OUTPUT_SIZE {
+        for pixel_x in 0..OUTPUT_SIZE {
+            let mut alpha = 0.0_f32;
+            let mut premultiplied = [0.0_f32; 3];
+            for sample_y in 0..SUPERSAMPLING {
+                for sample_x in 0..SUPERSAMPLING {
+                    let x = (pixel_x as f32 + (sample_x as f32 + 0.5) / SUPERSAMPLING as f32)
+                        * VIEWBOX_SIZE
+                        / OUTPUT_SIZE as f32;
+                    let y = (pixel_y as f32 + (sample_y as f32 + 0.5) / SUPERSAMPLING as f32)
+                        * VIEWBOX_SIZE
+                        / OUTPUT_SIZE as f32;
+                    let rounded_x = x.clamp(8.0, 24.0);
+                    let rounded_y = y.clamp(8.0, 24.0);
+                    let in_background = (x - rounded_x).powi(2) + (y - rounded_y).powi(2) <= 64.0;
+                    let in_mark = (8.0..12.0).contains(&x) && (8.0..24.0).contains(&y)
+                        || (20.0..24.0).contains(&x) && (8.0..24.0).contains(&y)
+                        || (12.0..20.0).contains(&x) && (14.0..18.0).contains(&y);
+                    let color = if in_mark {
+                        Some([0xff, 0xff, 0xff])
+                    } else if in_background {
+                        Some(DARK)
+                    } else {
+                        None
+                    };
+                    if let Some(color) = color {
+                        alpha += 1.0;
+                        for channel in 0..3 {
+                            premultiplied[channel] += color[channel] as f32;
+                        }
+                    }
+                }
+            }
+            let alpha_fraction = alpha / samples_per_pixel;
+            for channel in premultiplied {
+                rgba.push(if alpha == 0.0 {
+                    0
+                } else {
+                    (channel / alpha).round() as u8
+                });
+            }
+            rgba.push((alpha_fraction * 255.0).round() as u8);
+        }
+    }
+    rgba
 }
 
 struct HarnessApp {
@@ -3486,5 +3745,16 @@ mod tests {
             resolve_interface_font(FontPreference::Serif, &fonts),
             ".SystemUIFont"
         );
+    }
+
+    #[test]
+    fn windows_tray_icon_matches_the_electron_mark() {
+        let icon = tray_icon_rgba();
+        let pixel = |x: usize, y: usize| &icon[(y * 20 + x) * 4..(y * 20 + x + 1) * 4];
+
+        assert_eq!(icon.len(), 20 * 20 * 4);
+        assert_eq!(pixel(0, 0), [0, 0, 0, 0]);
+        assert_eq!(pixel(10, 2), [0x11, 0x11, 0x13, 0xff]);
+        assert_eq!(pixel(10, 10), [0xff, 0xff, 0xff, 0xff]);
     }
 }

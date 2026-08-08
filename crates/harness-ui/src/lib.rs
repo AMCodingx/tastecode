@@ -16,7 +16,7 @@ mod theme;
 mod tracked_text;
 mod zoom;
 
-pub use app::{run, run_with_endpoint};
+pub use app::{ShellCommand, run, run_with_endpoint, run_with_endpoint_and_shell, run_with_shell};
 pub use harness_client::Endpoint;
 pub use theme::{
     Accent, Backdrop, CHAT_WIDTH, ColorToken, Motion, RADIUS_2XL, RADIUS_LG, RADIUS_MD, RADIUS_SM,
