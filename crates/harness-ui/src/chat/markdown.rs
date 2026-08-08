@@ -1150,7 +1150,7 @@ fn render_markdown_image(
         .flex()
         .overflow_hidden()
         .rounded(px(8.0))
-        .when_some(link, |wrapper, link| {
+        .when_some(safe_markdown_image_link_url(link), |wrapper, link| {
             wrapper
                 .cursor_pointer()
                 .on_click(move |_event, _window, cx| cx.open_url(&link))
@@ -3963,6 +3963,10 @@ fn safe_markdown_link_url(value: &str) -> Option<String> {
     Some(value.to_owned())
 }
 
+fn safe_markdown_image_link_url(link: Option<String>) -> Option<String> {
+    link.and_then(|link| safe_markdown_link_url(&link))
+}
+
 fn is_windows_absolute_path(value: &str) -> bool {
     let bytes = value.as_bytes();
     bytes.len() >= 3
@@ -4228,6 +4232,22 @@ mod tests {
         assert_eq!(safe_markdown_link_url("javascript:alert(1)"), None);
         assert_eq!(safe_markdown_link_url("file:///tmp/private.txt"), None);
         assert_eq!(safe_markdown_link_url("java&#x73;cript:alert(1)"), None);
+    }
+
+    #[test]
+    fn linked_markdown_images_use_the_same_url_safety_boundary() {
+        assert_eq!(
+            safe_markdown_image_link_url(Some("//example.com/full.png".into())),
+            Some("https://example.com/full.png".into())
+        );
+        assert_eq!(
+            safe_markdown_image_link_url(Some("javascript:alert(1)".into())),
+            None
+        );
+        assert_eq!(
+            safe_markdown_image_link_url(Some("file:///tmp/private.png".into())),
+            None
+        );
     }
 
     #[test]
