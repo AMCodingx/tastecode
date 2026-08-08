@@ -249,6 +249,7 @@ pub(crate) struct SendTurnRequest {
     pub(crate) model: Option<String>,
     pub(crate) effort: Option<String>,
     pub(crate) service_tier: Option<String>,
+    pub(crate) steer_echo_after_row: Option<usize>,
 }
 
 pub(crate) struct ReviewHunkRequest {
@@ -455,9 +456,11 @@ enum PendingRequest {
         restore_text: String,
         restore_attachments: Vec<String>,
         optimistic_queue_id: Option<String>,
+        steer_echo_after_row: Option<usize>,
     },
     Steer {
         thread_id: String,
+        echo: Option<SteerEcho>,
     },
     Interrupt {
         thread_id: String,
@@ -488,6 +491,12 @@ enum PendingRequest {
     TerminalClose {
         terminal_id: String,
     },
+}
+
+struct SteerEcho {
+    text: String,
+    created_at: f64,
+    after_row: usize,
 }
 
 #[derive(Default)]
@@ -628,6 +637,12 @@ pub(crate) enum ChatUpdate {
         thread_id: String,
         optimistic_queue_id: Option<String>,
         queued_turn: Option<harness_protocol::QueuedTurn>,
+    },
+    SteerAccepted {
+        thread_id: String,
+        text: String,
+        created_at: f64,
+        echo_after_row: usize,
     },
     Event(ThreadEventPush),
     Refresh,
@@ -1649,6 +1664,7 @@ impl ClientState {
         optimistic_queue_id: Option<String>,
     ) -> ClientUpdate {
         let steer = request.steer;
+        let steer_echo_after_row = request.steer_echo_after_row;
         let restore_text = request.text.clone();
         let restore_attachments = request.attachments.clone();
         if self.send_request(
@@ -1660,6 +1676,7 @@ impl ClientState {
                 restore_text: restore_text.clone(),
                 restore_attachments: restore_attachments.clone(),
                 optimistic_queue_id: optimistic_queue_id.clone(),
+                steer_echo_after_row,
             },
         ) {
             ClientUpdate::default()
@@ -1711,6 +1728,7 @@ impl ClientState {
             queue_mutation_params(thread_id, queued_turn_id, None),
             PendingRequest::Steer {
                 thread_id: thread_id.into(),
+                echo: None,
             },
         );
         if sent {
@@ -2955,6 +2973,7 @@ impl ClientState {
                     restore_text,
                     restore_attachments,
                     optimistic_queue_id,
+                    steer_echo_after_row,
                 }) => match serde_json::from_value::<SendTurnResult>(result) {
                     Ok(SendTurnResult::Started { queued: false, .. }) => optimistic_queue_id
                         .map_or_else(ClientUpdate::default, |queue_id| {
@@ -2969,15 +2988,31 @@ impl ClientState {
                         queued_turn,
                     }) => {
                         if steer {
-                            self.send_request(
+                            let sent = self.send_request(
                                 method::THREAD_STEER_QUEUED_TURN,
                                 json!({
                                     "threadId": thread_id,
                                     "queuedTurnId": queued_turn.id.clone()
                                 }),
-                                PendingRequest::Steer { thread_id },
+                                PendingRequest::Steer {
+                                    thread_id: thread_id.clone(),
+                                    echo: steer_echo_after_row.map(|after_row| SteerEcho {
+                                        text: queued_turn.text.clone(),
+                                        created_at: queued_turn.created_at,
+                                        after_row,
+                                    }),
+                                },
                             );
-                            ClientUpdate::default()
+                            if sent {
+                                ClientUpdate::default()
+                            } else {
+                                ClientUpdate::chat(ChatUpdate::Error {
+                                    thread_id,
+                                    message: self.request_start_error(
+                                        "The queued prompt could not be steered because the server is unavailable.",
+                                    ),
+                                })
+                            }
                         } else {
                             ClientUpdate::chat(ChatUpdate::QueueSubmissionResolved {
                                 thread_id,
@@ -3053,6 +3088,15 @@ impl ClientState {
                         ClientUpdate::default()
                     }
                 }
+                Some(PendingRequest::Steer {
+                    thread_id,
+                    echo: Some(echo),
+                }) => ClientUpdate::chat(ChatUpdate::SteerAccepted {
+                    thread_id,
+                    text: echo.text,
+                    created_at: echo.created_at,
+                    echo_after_row: echo.after_row,
+                }),
                 Some(PendingRequest::Interrupt { .. })
                 | Some(PendingRequest::QueueMutation { .. })
                 | Some(PendingRequest::Steer { .. })
@@ -3465,6 +3509,7 @@ impl ClientState {
                 model: (!request.choice.model.id.is_empty()).then_some(request.choice.model.id),
                 effort: request.effort,
                 service_tier: request.service_tier,
+                steer_echo_after_row: None,
             },
             None,
         );
@@ -4480,7 +4525,7 @@ impl PendingRequest {
             | Self::Queue { thread_id }
             | Self::QueueMutation { thread_id }
             | Self::SendTurn { thread_id, .. }
-            | Self::Steer { thread_id }
+            | Self::Steer { thread_id, .. }
             | Self::Interrupt { thread_id }
             | Self::RespondApproval { thread_id, .. }
             | Self::RespondUserInput { thread_id, .. }
@@ -5457,6 +5502,7 @@ mod tests {
                 model: Some("gpt-test".into()),
                 effort: Some("high".into()),
                 service_tier: Some("priority".into()),
+                steer_echo_after_row: None,
             },
         );
 
@@ -5486,6 +5532,7 @@ mod tests {
                 model: Some("gpt-test".into()),
                 effort: Some("high".into()),
                 service_tier: None,
+                steer_echo_after_row: None,
             },
             None,
         );
@@ -5514,6 +5561,7 @@ mod tests {
                 restore_text: "Queue this next".into(),
                 restore_attachments: Vec::new(),
                 optimistic_queue_id: Some("pending:1".into()),
+                steer_echo_after_row: None,
             },
         );
 
@@ -5539,6 +5587,40 @@ mod tests {
             }] if thread_id == "thread-1"
                 && optimistic_queue_id == "pending:1"
                 && queued_turn.id == "queued-1"
+        ));
+    }
+
+    #[test]
+    fn steer_acknowledgement_carries_the_missing_local_echo() {
+        let mut state = ClientState::new(true);
+        state.pending.insert(
+            "native-steer".into(),
+            PendingRequest::Steer {
+                thread_id: "thread-1".into(),
+                echo: Some(SteerEcho {
+                    text: "Use this direction now".into(),
+                    created_at: 42.0,
+                    after_row: 3,
+                }),
+            },
+        );
+
+        let update = state.handle_response(Response::Success {
+            id: "native-steer".into(),
+            result: json!({}),
+        });
+
+        assert!(matches!(
+            update.chat.as_slice(),
+            [ChatUpdate::SteerAccepted {
+                thread_id,
+                text,
+                created_at,
+                echo_after_row,
+            }] if thread_id == "thread-1"
+                && text == "Use this direction now"
+                && *created_at == 42.0
+                && *echo_after_row == 3
         ));
     }
 

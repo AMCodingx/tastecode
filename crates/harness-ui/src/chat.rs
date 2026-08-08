@@ -92,6 +92,7 @@ pub(crate) enum ChatEvent {
         effort: Option<String>,
         service_tier: Option<String>,
         optimistic_queue_id: Option<String>,
+        steer_echo_after_row: Option<usize>,
     },
     Interrupt {
         thread_id: String,
@@ -971,6 +972,20 @@ impl ChatView {
                 );
                 cx.notify();
             }
+            ChatUpdate::SteerAccepted {
+                thread_id,
+                text,
+                created_at,
+                echo_after_row,
+            } if self.is_selected(&thread_id) => {
+                self.append_steered_prompt_if_missing(
+                    &thread_id,
+                    text,
+                    created_at,
+                    echo_after_row,
+                    cx,
+                );
+            }
             ChatUpdate::Event(push) if self.is_selected(&push.thread_id) => {
                 if self.history_in_flight {
                     self.pending_live.push(push);
@@ -1122,6 +1137,7 @@ impl ChatView {
             ChatUpdate::History { .. }
             | ChatUpdate::Queue { .. }
             | ChatUpdate::QueueSubmissionResolved { .. }
+            | ChatUpdate::SteerAccepted { .. }
             | ChatUpdate::Event(_)
             | ChatUpdate::Error { .. }
             | ChatUpdate::DraftError { .. }
@@ -1798,6 +1814,8 @@ impl ChatView {
             });
             self.append_optimistic_draft_prompt(text, cx);
         } else if let Some(thread_id) = thread_id {
+            let steer_echo_after_row =
+                (self.state.running && steer).then_some(self.state.timeline_len());
             let optimistic_queue_id = if self.state.running && !steer {
                 Some(self.append_optimistic_queue_prompt(text.clone(), attachments.clone()))
             } else {
@@ -1815,6 +1833,7 @@ impl ChatView {
                 effort,
                 service_tier,
                 optimistic_queue_id,
+                steer_echo_after_row,
             });
         } else {
             self.creating = true;
@@ -1888,6 +1907,38 @@ impl ChatView {
             created_at: unix_time_ms(),
         });
         id
+    }
+
+    fn append_steered_prompt_if_missing(
+        &mut self,
+        thread_id: &str,
+        text: String,
+        created_at: f64,
+        echo_after_row: usize,
+        cx: &mut Context<Self>,
+    ) {
+        if steered_prompt_already_visible(&self.state, &text, created_at, echo_after_row) {
+            return;
+        }
+        let Some(turn_id) = self
+            .state
+            .active_turn()
+            .or_else(|| self.state.turns.last())
+            .map(|turn| turn.turn.id.clone())
+        else {
+            return;
+        };
+        self.apply_live_events(
+            optimistic_prompt_events(
+                thread_id,
+                &turn_id,
+                format!("optimistic:{}", uuid::Uuid::new_v4()),
+                text,
+                created_at,
+                false,
+            ),
+            cx,
+        );
     }
 
     fn reconcile_optimistic_active_turn_after_history(
@@ -5926,6 +5977,30 @@ fn resolve_queue_submission(
     queue.items.insert(index, queued_turn);
 }
 
+fn steered_prompt_already_visible(
+    state: &ThreadState,
+    text: &str,
+    created_at: f64,
+    echo_after_row: usize,
+) -> bool {
+    let timeline_len = state.timeline_len();
+    if echo_after_row <= timeline_len {
+        (echo_after_row..timeline_len).any(|row| {
+            state.item_at_row(row).is_some_and(|item| {
+                item.role == Some(MessageRole::User) && item.text.as_deref() == Some(text)
+            })
+        })
+    } else {
+        state.active_turn().is_some_and(|turn| {
+            turn.items.iter().any(|item| {
+                item.role == Some(MessageRole::User)
+                    && item.text.as_deref() == Some(text)
+                    && item.created_at >= created_at - 5_000.0
+            })
+        })
+    }
+}
+
 fn design_attachments(mut attachments: Vec<String>, design_mode: bool) -> Vec<String> {
     if design_mode
         && !attachments
@@ -7897,6 +7972,51 @@ mod tests {
             Some(queued_turn("queued-next", "Next", &[], 2.0)),
         );
         assert_eq!(queue.items.len(), 3);
+    }
+
+    #[test]
+    fn steer_acknowledgement_only_echoes_when_no_canonical_prompt_arrived() {
+        let mut state = ThreadState::default();
+        for push in optimistic_prompt_events(
+            "thread-1",
+            "turn-1",
+            "canonical-prior".into(),
+            "Use this direction now".into(),
+            1.0,
+            true,
+        ) {
+            state.apply_live(push.seq, push.event);
+        }
+        let echo_after_row = state.timeline_len();
+        assert!(!steered_prompt_already_visible(
+            &state,
+            "Use this direction now",
+            10_000.0,
+            echo_after_row,
+        ));
+
+        for push in optimistic_prompt_events(
+            "thread-1",
+            "turn-1",
+            "canonical-new".into(),
+            "Use this direction now".into(),
+            10_000.0,
+            false,
+        ) {
+            state.apply_live(push.seq, push.event);
+        }
+        assert!(steered_prompt_already_visible(
+            &state,
+            "Use this direction now",
+            10_000.0,
+            echo_after_row,
+        ));
+        assert!(steered_prompt_already_visible(
+            &state,
+            "Use this direction now",
+            10_000.0,
+            99,
+        ));
     }
 
     #[test]

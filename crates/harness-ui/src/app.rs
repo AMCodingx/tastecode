@@ -365,6 +365,7 @@ impl HarnessApp {
                 effort,
                 service_tier,
                 optimistic_queue_id,
+                steer_echo_after_row,
             } => {
                 let update = this.state.send_turn(
                     thread_id,
@@ -375,6 +376,7 @@ impl HarnessApp {
                         model: model.clone(),
                         effort: effort.clone(),
                         service_tier: service_tier.clone(),
+                        steer_echo_after_row: *steer_echo_after_row,
                     },
                     optimistic_queue_id.clone(),
                 );
@@ -898,6 +900,7 @@ impl HarnessApp {
                             model: pending.model,
                             effort: pending.effort,
                             service_tier: pending.service_tier,
+                            steer_echo_after_row: None,
                         },
                         None,
                     );
