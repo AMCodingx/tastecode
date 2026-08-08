@@ -19,6 +19,26 @@ pub(crate) fn rail_background(theme: Theme) -> Background {
     rail_background_with_opacity(theme, 1.0)
 }
 
+/// The desktop shell row is transparent while glass is enabled so the
+/// platform acrylic or vibrancy material remains visible behind the rail.
+pub(crate) fn shell_body_background(theme: Theme, glass: u8) -> Background {
+    if glass == 0 {
+        rail_background(theme)
+    } else {
+        gpui::transparent_black().into()
+    }
+}
+
+/// The root must also stay transparent while glass is enabled. The stage and
+/// settings panel paint their own opaque surfaces over every non-rail region.
+pub(crate) fn root_background(theme: Theme, glass: u8) -> Background {
+    if glass == 0 {
+        theme.background.hsla().into()
+    } else {
+        gpui::transparent_black().into()
+    }
+}
+
 pub(crate) fn rail_background_with_opacity(theme: Theme, opacity: f32) -> Background {
     let opacity = opacity.clamp(0.0, 1.0);
     match theme.mode {
@@ -310,6 +330,17 @@ mod tests {
                 linear_color_stop(light_to.opacity(opacity), 1.0),
             )
         );
+    }
+
+    #[test]
+    fn glass_exposes_the_native_backdrop_only_behind_independently_painted_surfaces() {
+        let theme = Theme::dark();
+        let transparent: Background = gpui::transparent_black().into();
+
+        assert_eq!(shell_body_background(theme, 0), rail_background(theme));
+        assert_eq!(root_background(theme, 0), theme.background.hsla().into());
+        assert_eq!(shell_body_background(theme, 1), transparent);
+        assert_eq!(root_background(theme, 60), transparent);
     }
 
     #[test]

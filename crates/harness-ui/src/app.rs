@@ -2751,7 +2751,10 @@ impl Render for HarnessApp {
             .min_h(px(0.0))
             .w_full()
             .flex()
-            .bg(crate::chrome::rail_background(self.theme))
+            .bg(crate::chrome::shell_body_background(
+                self.theme,
+                self.preferences.sidebar_glass,
+            ))
             .child(rail_slot)
             .child(stage)
             .when_some(rail_overlay, |body, overlay| body.child(overlay))
@@ -2785,7 +2788,10 @@ impl Render for HarnessApp {
             .text_size(px(13.5))
             .line_height(relative(BASE_LINE_HEIGHT))
             .text_color(self.theme.text.hsla())
-            .bg(self.theme.background.hsla())
+            .bg(crate::chrome::root_background(
+                self.theme,
+                self.preferences.sidebar_glass,
+            ))
             .on_mouse_move(cx.listener(|this, event, _window, cx| {
                 this.update_sidebar_resize(event, cx);
                 this.track_sidebar_reveal(event.position.x, cx);
