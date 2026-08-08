@@ -3335,6 +3335,11 @@ impl HarnessApp {
         self.approval = self.preferences.approval;
         self.isolate_session = false;
         self.design_mode = false;
+        for project in &mut self.state.projects {
+            project
+                .sessions
+                .sort_by(|left, right| right.created_at.total_cmp(&left.created_at));
+        }
         self.chat
             .update(cx, |chat, cx| chat.reset_terminal_preferences(cx));
         match NativePreferences::reset_file() {
