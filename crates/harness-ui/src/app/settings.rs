@@ -226,10 +226,7 @@ impl HarnessApp {
             .px(px(8.0))
             .pt(px(14.0))
             .pb(px(16.0))
-            .bg(theme
-                .rail
-                .hsla()
-                .opacity((1.0 - f32::from(self.preferences.sidebar_glass) * 0.013).max(0.0)))
+            .bg(chrome::rail_background(theme))
             .border_r_1()
             .border_color(theme.line.hsla())
             .child(chrome::right_highlight(theme))
