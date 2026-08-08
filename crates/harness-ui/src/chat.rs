@@ -57,6 +57,9 @@ const MAX_PASTED_IMAGE_BYTES: usize = 25 * 1024 * 1024;
 const TRANSCRIPT_BOTTOM_SLACK: f32 = 80.0;
 const DESIGN_BEAM_DURATION: Duration = Duration::from_millis(2_400);
 const SEND_BEAM_DURATION: Duration = Duration::from_millis(1_960);
+const COMPOSER_DOCK_DURATION: Duration = Duration::from_millis(180);
+const COMPOSER_TOOLS_HEIGHT: f32 = 46.0;
+const COMPOSER_DOCKED_BOTTOM_PADDING: f32 = 12.0;
 const EFFORT_SLIDER_WIDTH: f32 = 314.0;
 const EFFORT_SLIDER_HEIGHT: f32 = 36.0;
 const EFFORT_SLIDER_INSET: f32 = 2.0;
@@ -268,6 +271,19 @@ struct PendingTranscript {
     send_after: bool,
 }
 
+#[derive(Clone, Copy)]
+struct ComposerDockPending {
+    box_bounds: Bounds<Pixels>,
+    field_height: f32,
+    started: Instant,
+}
+
+#[derive(Clone, Copy)]
+struct ComposerDockMotion {
+    offset_y: f32,
+    generation: u64,
+}
+
 #[derive(Clone)]
 struct ComposerAttachment {
     id: String,
@@ -318,6 +334,11 @@ pub(crate) struct ChatView {
     last_specific_work_label: Option<String>,
     thread_search: ThreadSearchState,
     composer: Entity<InputState>,
+    composer_box_bounds: Option<Bounds<Pixels>>,
+    composer_field_bounds: Option<Bounds<Pixels>>,
+    composer_dock_pending: Option<ComposerDockPending>,
+    composer_dock_motion: Option<ComposerDockMotion>,
+    composer_dock_generation: u64,
     model_search: Entity<InputState>,
     model_search_reset: bool,
     model_search_focus_pending: bool,
@@ -464,6 +485,11 @@ impl ChatView {
             last_specific_work_label: None,
             thread_search,
             composer,
+            composer_box_bounds: None,
+            composer_field_bounds: None,
+            composer_dock_pending: None,
+            composer_dock_motion: None,
+            composer_dock_generation: 0,
             model_search,
             model_search_reset: false,
             model_search_focus_pending: false,
@@ -566,6 +592,11 @@ impl ChatView {
         self.thread_search.close();
         self.clear_composer = true;
         self.restore_composer = None;
+        self.composer_box_bounds = None;
+        self.composer_field_bounds = None;
+        self.composer_dock_pending = None;
+        self.composer_dock_motion = None;
+        self.composer_dock_generation = self.composer_dock_generation.wrapping_add(1);
         self.creating = false;
         self.sending = false;
         self.send_motion_generation = self.send_motion_generation.wrapping_add(1);
@@ -1593,6 +1624,16 @@ impl ChatView {
             .any(|attachment| attachment.path.is_none())
         {
             return;
+        }
+        if session.thread_id.is_none()
+            && let (Some(box_bounds), Some(field_bounds)) =
+                (self.composer_box_bounds, self.composer_field_bounds)
+        {
+            self.composer_dock_pending = Some(ComposerDockPending {
+                box_bounds,
+                field_height: f32::from(field_bounds.size.height),
+                started: Instant::now(),
+            });
         }
         self.clear_composer = true;
         self.composer_menu = None;
@@ -3152,7 +3193,7 @@ impl ChatView {
             .into_any_element()
     }
 
-    fn composer(&self, window: &Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn composer(&self, window: &Window, cx: &mut Context<Self>) -> gpui::Div {
         let theme = self.theme;
         let session = self.session.clone();
         let composer_empty = self.composer.read(cx).value().is_empty();
@@ -3196,6 +3237,28 @@ impl ChatView {
         let design_action: UiAction = Rc::new(move |cx| {
             let _ = design_view.update(cx, |_this, cx| cx.emit(ChatEvent::ToggleDesign));
         });
+        let box_bounds_view = cx.entity();
+        let box_bounds_probe = canvas(
+            move |bounds, _, cx| {
+                box_bounds_view.update(cx, |this, _| {
+                    this.composer_box_bounds = Some(bounds);
+                });
+            },
+            |_, _, _, _| {},
+        )
+        .absolute()
+        .inset_0();
+        let field_bounds_view = cx.entity();
+        let field_bounds_probe = canvas(
+            move |bounds, _, cx| {
+                field_bounds_view.update(cx, |this, _| {
+                    this.composer_field_bounds = Some(bounds);
+                });
+            },
+            |_, _, _, _| {},
+        )
+        .absolute()
+        .inset_0();
         div()
             .flex_none()
             .px(px(24.0))
@@ -3216,6 +3279,7 @@ impl ChatView {
                         div()
                             .relative()
                             .rounded(px(crate::RADIUS_2XL))
+                            .child(box_bounds_probe)
                             .when(self.composer_settings.design_mode, |box_| {
                                 box_.child(composer_beam(
                                     "composer-design-beam",
@@ -3356,12 +3420,16 @@ impl ChatView {
                                     .when_some(self.attachment_chips(cx), |prompt, chips| {
                                         prompt.child(chips)
                                     })
-                                    .child(ComposerField {
-                                        input: self.composer.clone(),
-                                        empty: composer_empty,
-                                        interface_font: self.interface_font.clone(),
-                                        theme,
-                                    })
+                                    .child(
+                                        div().relative().w_full().child(field_bounds_probe).child(
+                                            ComposerField {
+                                                input: self.composer.clone(),
+                                                empty: composer_empty,
+                                                interface_font: self.interface_font.clone(),
+                                                theme,
+                                            },
+                                        ),
+                                    )
                                     .child(
                                         div()
                                             .flex()
@@ -3449,6 +3517,44 @@ impl ChatView {
                         .child(error),
                 )
             })
+    }
+
+    fn docked_composer(&self, window: &Window, cx: &mut Context<Self>) -> AnyElement {
+        let composer = self.composer(window, cx);
+        let Some(motion) = self.composer_dock_motion else {
+            return composer.into_any_element();
+        };
+        composer
+            .with_animation(
+                ("composer-dock", motion.generation),
+                Animation::new(self.theme.motion_duration(COMPOSER_DOCK_DURATION))
+                    .with_easing(composer_dock_easing),
+                move |composer, delta| composer.relative().top(px(motion.offset_y * (1.0 - delta))),
+            )
+            .into_any_element()
+    }
+
+    fn prepare_composer_dock_motion(&mut self, window: &Window) {
+        let Some(pending) = self.composer_dock_pending.take() else {
+            return;
+        };
+        self.composer_dock_motion = None;
+        if self.theme.reduced_motion {
+            return;
+        }
+        let offset_y = composer_dock_offset(
+            pending,
+            f32::from(window.viewport_size().height),
+            Instant::now(),
+        );
+        if offset_y.abs() < 0.5 {
+            return;
+        }
+        self.composer_dock_generation = self.composer_dock_generation.wrapping_add(1);
+        self.composer_dock_motion = Some(ComposerDockMotion {
+            offset_y,
+            generation: self.composer_dock_generation,
+        });
     }
 
     fn design_tool_button(&self, action: UiAction, cx: &Context<Self>) -> AnyElement {
@@ -5330,6 +5436,9 @@ impl Render for ChatView {
             .session
             .as_ref()
             .is_some_and(|session| session.thread_id.is_none());
+        if !is_new_session {
+            self.prepare_composer_dock_motion(window);
+        }
         let view = div()
             .size_full()
             .min_w(px(0.0))
@@ -5371,7 +5480,7 @@ impl Render for ChatView {
                 .when_some(thread_search, |thread, search| thread.child(search)),
         )
         .when_some(terminal_pane, |view, terminal| view.child(terminal))
-        .child(self.composer(window, cx))
+        .child(self.docked_composer(window, cx))
         .when_some(markdown_table_overlay, |view, overlay| view.child(overlay))
     }
 }
@@ -5414,6 +5523,21 @@ fn new_session_optical_padding(viewport_height: f32) -> f32 {
 
 fn new_session_prompt_size(viewport_width: f32) -> f32 {
     (viewport_width * 0.024).clamp(20.0, 30.0)
+}
+
+fn composer_dock_offset(pending: ComposerDockPending, viewport_height: f32, now: Instant) -> f32 {
+    let progress = now.saturating_duration_since(pending.started).as_secs_f32()
+        / COMPOSER_DOCK_DURATION.as_secs_f32();
+    let collapse = crate::theme::web_ease_out(progress.clamp(0.0, 1.0));
+    let field_height =
+        pending.field_height + (COMPOSER_MIN_HEIGHT - pending.field_height) * collapse;
+    let docked_box_height = field_height + COMPOSER_TOOLS_HEIGHT;
+    let docked_origin_y = viewport_height - COMPOSER_DOCKED_BOTTOM_PADDING - docked_box_height;
+    f32::from(pending.box_bounds.origin.y) - docked_origin_y
+}
+
+fn composer_dock_easing(progress: f32) -> f32 {
+    cubic_bezier_timing(progress, 0.4, 0.0, 0.2, 1.0)
 }
 
 fn approval_title(kind: ApprovalKind) -> &'static str {
@@ -7286,6 +7410,27 @@ mod tests {
         assert_eq!(new_session_prompt_size(700.0), 20.0);
         assert_eq!(new_session_prompt_size(1_000.0), 24.0);
         assert_eq!(new_session_prompt_size(1_400.0), 30.0);
+    }
+
+    #[test]
+    fn composer_dock_motion_uses_the_web_flip_geometry() {
+        let start = Instant::now();
+        let pending = ComposerDockPending {
+            box_bounds: Bounds {
+                origin: point(px(0.0), px(300.0)),
+                size: size(px(808.0), px(200.0)),
+            },
+            field_height: 100.0,
+            started: start,
+        };
+
+        assert!((composer_dock_offset(pending, 800.0, start) + 342.0).abs() < 0.001);
+        assert!(
+            (composer_dock_offset(pending, 800.0, start + COMPOSER_DOCK_DURATION) + 374.0).abs()
+                < 0.001
+        );
+        assert_eq!(composer_dock_easing(0.0), 0.0);
+        assert_eq!(composer_dock_easing(1.0), 1.0);
     }
 
     #[test]
