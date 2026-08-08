@@ -374,6 +374,16 @@ fn radial_bloom(
         .into_any_element()
 }
 
+const ACCOUNT_MENU_ENTRY_SCALE_FROM: f32 = 0.97;
+
+fn account_menu_entry_scale(progress: f32) -> f32 {
+    ACCOUNT_MENU_ENTRY_SCALE_FROM + (1.0 - ACCOUNT_MENU_ENTRY_SCALE_FROM) * progress
+}
+
+fn account_menu_entry_animation(theme: Theme) -> Animation {
+    Animation::new(theme.motion.fast).with_easing(crate::theme::web_ease_out)
+}
+
 fn sidebar_footer(
     theme: Theme,
     provider_name: &str,
@@ -431,7 +441,7 @@ fn sidebar_footer(
                                 Animation::new(theme.motion.fast)
                                     .with_easing(crate::theme::web_ease_out),
                                 |menu, delta| {
-                                    let scale = 0.97 + 0.03 * delta;
+                                    let scale = account_menu_entry_scale(delta);
                                     menu.w(relative(scale))
                                         .top(px(2.0 * (1.0 - delta)))
                                         .rounded(px(8.0 * scale))
@@ -523,14 +533,36 @@ fn account_limits(provider_name: &str, limits: &[UsageLimit], theme: Theme) -> A
                 .items_center()
                 .gap(px(8.0))
                 .text_size(px(13.5))
-                .child(div().text_color(theme.text_3.hsla()).child(motion_icon(
-                    "account-limits-icon",
-                    "icons/gauge.svg",
-                    14.0,
-                    "account-limits-icon-direct-hover",
-                    theme,
-                )))
-                .child("Limits"),
+                .child(
+                    div()
+                        .size(px(14.0))
+                        .flex_none()
+                        .text_color(theme.text_3.hsla())
+                        .child(
+                            motion_icon(
+                                "account-limits-icon",
+                                "icons/gauge.svg",
+                                14.0,
+                                "account-limits-icon-direct-hover",
+                                theme,
+                            )
+                            .size_full(),
+                        )
+                        .with_animation(
+                            "account-limits-icon-in",
+                            account_menu_entry_animation(theme),
+                            |icon, delta| icon.size(px(14.0 * account_menu_entry_scale(delta))),
+                        ),
+                )
+                .child("Limits")
+                .with_animation(
+                    "account-limits-head-in",
+                    account_menu_entry_animation(theme),
+                    |head, delta| {
+                        let scale = account_menu_entry_scale(delta);
+                        head.gap(px(8.0 * scale)).text_size(px(13.5 * scale))
+                    },
+                ),
         )
         .when(limits.is_empty(), |usage| {
             usage.child(
@@ -539,13 +571,31 @@ fn account_limits(provider_name: &str, limits: &[UsageLimit], theme: Theme) -> A
                     .child(format!("{provider_name} reports no limits")),
             )
         })
-        .children(limits.iter().map(|limit| usage_limit(limit, now_ms, theme)))
+        .children(
+            limits
+                .iter()
+                .enumerate()
+                .map(|(index, limit)| usage_limit(limit, index, now_ms, theme)),
+        )
+        .with_animation(
+            "account-limits-in",
+            account_menu_entry_animation(theme),
+            |limits, delta| {
+                let scale = account_menu_entry_scale(delta);
+                limits
+                    .gap(px(7.0 * scale))
+                    .px(px(9.0 * scale))
+                    .pt(px(7.0 * scale))
+                    .pb(px(9.0 * scale))
+                    .mb(px(4.0 * scale))
+                    .text_size(px(12.5 * scale))
+            },
+        )
         .into_any_element()
 }
 
-fn usage_limit(limit: &UsageLimit, now_ms: f64, theme: Theme) -> AnyElement {
-    let used = limit.used_percent.clamp(0.0, 100.0) as f32;
-    let left = (100.0 - limit.used_percent).round().clamp(0.0, 100.0) as u8;
+fn usage_limit(limit: &UsageLimit, index: usize, now_ms: f64, theme: Theme) -> AnyElement {
+    let (left_percent, left) = usage_left(limit.used_percent);
     div()
         .flex()
         .flex_col()
@@ -561,7 +611,12 @@ fn usage_limit(limit: &UsageLimit, now_ms: f64, theme: Theme) -> AnyElement {
                         .text_color(theme.text.hsla())
                         .child(limit.label.clone()),
                 )
-                .child(format!("{left}% left")),
+                .child(format!("{left}% left"))
+                .with_animation(
+                    ("account-limit-row-in", index),
+                    account_menu_entry_animation(theme),
+                    |row, delta| row.gap(px(8.0 * account_menu_entry_scale(delta))),
+                ),
         )
         .child(
             div()
@@ -573,20 +628,43 @@ fn usage_limit(limit: &UsageLimit, now_ms: f64, theme: Theme) -> AnyElement {
                 .child(
                     div()
                         .h_full()
-                        .w(relative(used / 100.0))
+                        .w(relative(left_percent / 100.0))
                         .rounded(px(2.0))
                         .bg(theme.running.hsla()),
+                )
+                .with_animation(
+                    ("account-limit-bar-in", index),
+                    account_menu_entry_animation(theme),
+                    |bar, delta| {
+                        let scale = account_menu_entry_scale(delta);
+                        bar.h(px(4.0 * scale)).rounded(px(2.0 * scale))
+                    },
                 ),
         )
         .when_some(limit.resets_at, |window, resets_at| {
             window.child(
                 div()
-                    .text_size(px(10.0))
+                    .text_size(px(11.5))
                     .text_color(theme.text_3.hsla())
-                    .child(format!("Resets {}", reset_label(resets_at, now_ms))),
+                    .child(format!("Resets {}", reset_label(resets_at, now_ms)))
+                    .with_animation(
+                        ("account-limit-reset-in", index),
+                        account_menu_entry_animation(theme),
+                        |reset, delta| reset.text_size(px(11.5 * account_menu_entry_scale(delta))),
+                    ),
             )
         })
+        .with_animation(
+            ("account-limit-in", index),
+            account_menu_entry_animation(theme),
+            |limit, delta| limit.gap(px(4.0 * account_menu_entry_scale(delta))),
+        )
         .into_any_element()
+}
+
+fn usage_left(used_percent: f64) -> (f32, u8) {
+    let left = (100.0 - used_percent).clamp(0.0, 100.0);
+    (left as f32, left.round() as u8)
 }
 
 fn reset_label(timestamp_ms: f64, now_ms: f64) -> String {
@@ -637,7 +715,25 @@ fn footer_menu_action(
                 .font_weight(FontWeight(450.0))
                 .text_color(theme.text_3.hsla())
                 .group_hover("account-menu-action", |hint| hint.opacity(1.0))
-                .child(shortcut),
+                .child(shortcut)
+                .with_animation(
+                    "account-settings-shortcut-in",
+                    account_menu_entry_animation(theme),
+                    |hint, delta| hint.text_size(px(10.5 * account_menu_entry_scale(delta))),
+                ),
+        )
+        .with_animation(
+            "account-settings-in",
+            account_menu_entry_animation(theme),
+            |action, delta| {
+                let scale = account_menu_entry_scale(delta);
+                action
+                    .gap(px(6.0 * scale))
+                    .px(px(9.0 * scale))
+                    .py(px(7.0 * scale))
+                    .rounded(px(5.0 * scale))
+                    .text_size(px(13.5 * scale))
+            },
         )
         .into_any_element()
 }
@@ -3649,6 +3745,13 @@ mod tests {
         assert!(title_matches_query("Ship Native Sidebar", "native"));
         assert!(title_matches_query("Ship Native Sidebar", ""));
         assert!(!title_matches_query("Ship Native Sidebar", "electron"));
+    }
+
+    #[test]
+    fn account_limit_bar_displays_the_remaining_percentage() {
+        assert_eq!(usage_left(28.4), (71.6, 72));
+        assert_eq!(usage_left(-5.0), (100.0, 100));
+        assert_eq!(usage_left(120.0), (0.0, 0));
     }
 
     #[test]
