@@ -8943,13 +8943,45 @@ fn for_each_voice_dither_dot(
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct DitherPaintSpace {
+    origin_x: f32,
+    origin_y: f32,
+    design_width: f32,
+    design_height: f32,
+    scale: f32,
+}
+
+impl DitherPaintSpace {
+    fn new(bounds: Bounds<Pixels>, scale: f32) -> Self {
+        Self {
+            origin_x: f32::from(bounds.origin.x),
+            origin_y: f32::from(bounds.origin.y),
+            design_width: f32::from(bounds.size.width) / scale,
+            design_height: f32::from(bounds.size.height) / scale,
+            scale,
+        }
+    }
+
+    fn x(self, design_x: f32) -> f32 {
+        self.origin_x + design_x * self.scale
+    }
+
+    fn y(self, design_y: f32) -> f32 {
+        self.origin_y + design_y * self.scale
+    }
+
+    fn length(self, design_length: f32) -> f32 {
+        design_length * self.scale
+    }
+}
+
 fn paint_voice_dither(bounds: Bounds<Pixels>, levels: &[f32], theme: Theme, window: &mut Window) {
     const CELL_SIZE: f32 = 4.0;
     const DOT_SIZE: f32 = 2.0;
     const DOT_INSET: f32 = 1.0;
 
-    let width = f32::from(bounds.size.width);
-    let height = f32::from(bounds.size.height);
+    let space = DitherPaintSpace::new(bounds, crate::zoom::factor());
     let dark = theme.mode == ThemeMode::Dark;
     let texture_color: gpui::Hsla = if dark {
         gpui::rgb(0xededed).into()
@@ -8958,37 +8990,48 @@ fn paint_voice_dither(bounds: Bounds<Pixels>, levels: &[f32], theme: Theme, wind
     };
     let texture_opacity = if dark { 1.0 } else { 0.26 };
     let bloom_opacity = if dark { 0.44 } else { 0.05 };
-    let fade_width = width * 0.08;
+    let fade_width = space.design_width * 0.08;
 
-    for_each_voice_dither_dot(width, height, levels, |x, y, alpha| {
-        let origin_x = f32::from(bounds.origin.x) + x as f32 * CELL_SIZE + DOT_INSET;
-        let origin_y = f32::from(bounds.origin.y) + y as f32 * CELL_SIZE + DOT_INSET;
-        let mask = if fade_width > 0.0 {
-            ((origin_x - f32::from(bounds.origin.x)) / fade_width).clamp(0.0, 1.0)
-        } else {
-            1.0
-        };
-        let alpha = alpha * mask;
-        let bloom_size = DOT_SIZE + if dark { 3.5 } else { 2.5 };
-        let bloom_inset = (bloom_size - DOT_SIZE) / 2.0;
-        window.paint_quad(
-            fill(
+    for_each_voice_dither_dot(
+        space.design_width,
+        space.design_height,
+        levels,
+        |x, y, alpha| {
+            let design_x = x as f32 * CELL_SIZE + DOT_INSET;
+            let design_y = y as f32 * CELL_SIZE + DOT_INSET;
+            let origin_x = space.x(design_x);
+            let origin_y = space.y(design_y);
+            let mask = if fade_width > 0.0 {
+                (design_x / fade_width).clamp(0.0, 1.0)
+            } else {
+                1.0
+            };
+            let alpha = alpha * mask;
+            let dot_size = space.length(DOT_SIZE);
+            let bloom_size = space.length(DOT_SIZE + if dark { 3.5 } else { 2.5 });
+            let bloom_inset = (bloom_size - dot_size) / 2.0;
+            window.paint_quad(
+                fill(
+                    Bounds {
+                        origin: point(
+                            gpui::px(origin_x - bloom_inset),
+                            gpui::px(origin_y - bloom_inset),
+                        ),
+                        size: size(gpui::px(bloom_size), gpui::px(bloom_size)),
+                    },
+                    texture_color.opacity(alpha * bloom_opacity),
+                )
+                .corner_radii(gpui::px(bloom_size / 2.0)),
+            );
+            window.paint_quad(fill(
                 Bounds {
-                    origin: point(px(origin_x - bloom_inset), px(origin_y - bloom_inset)),
-                    size: size(px(bloom_size), px(bloom_size)),
+                    origin: point(gpui::px(origin_x), gpui::px(origin_y)),
+                    size: size(gpui::px(dot_size), gpui::px(dot_size)),
                 },
-                texture_color.opacity(alpha * bloom_opacity),
-            )
-            .corner_radii(px(bloom_size / 2.0)),
-        );
-        window.paint_quad(fill(
-            Bounds {
-                origin: point(px(origin_x), px(origin_y)),
-                size: size(px(DOT_SIZE), px(DOT_SIZE)),
-            },
-            texture_color.opacity(alpha * texture_opacity),
-        ));
-    });
+                texture_color.opacity(alpha * texture_opacity),
+            ));
+        },
+    );
 }
 
 fn smoothstep(progress: f32) -> f32 {
@@ -9008,15 +9051,15 @@ fn paint_effort_dither(
     const INNER_RADIUS: f32 = 20.0;
     const OUTER_RADIUS: f32 = 60.0;
 
-    let width = f32::from(bounds.size.width);
-    let height = f32::from(bounds.size.height);
-    if width <= 0.0 || height <= 0.0 {
+    let space = DitherPaintSpace::new(bounds, crate::zoom::factor());
+    if space.design_width <= 0.0 || space.design_height <= 0.0 {
         return;
     }
-    let columns = (width / CELL_SIZE).ceil().max(4.0) as u32;
-    let rows = (height / CELL_SIZE).ceil().max(4.0) as u32;
-    let dot_size = CELL_SIZE * DOT_FILL;
-    let dot_inset = (CELL_SIZE - dot_size) / 2.0;
+    let columns = (space.design_width / CELL_SIZE).ceil().max(4.0) as u32;
+    let rows = (space.design_height / CELL_SIZE).ceil().max(4.0) as u32;
+    let design_dot_size = CELL_SIZE * DOT_FILL;
+    let design_dot_inset = (CELL_SIZE - design_dot_size) / 2.0;
+    let dot_size = space.length(design_dot_size);
     let dark = theme.mode == ThemeMode::Dark;
     let texture_color: gpui::Hsla = if dark {
         gpui::rgb(0xededed).into()
@@ -9030,12 +9073,14 @@ fn paint_effort_dither(
     for y in 0..rows {
         for x in 0..columns {
             let threshold = dither_noise_threshold(x, y);
-            let center_x = f32::from(bounds.origin.x) + x as f32 * CELL_SIZE + CELL_SIZE / 2.0;
-            let center_y = f32::from(bounds.origin.y) + y as f32 * CELL_SIZE + CELL_SIZE / 2.0;
+            let center_x = space.x(x as f32 * CELL_SIZE + CELL_SIZE / 2.0);
+            let center_y = space.y(y as f32 * CELL_SIZE + CELL_SIZE / 2.0);
             let bright = pointer.is_some_and(|(pointer_x, pointer_y)| {
                 let distance = (center_x - pointer_x).hypot(center_y - pointer_y);
+                let inner_radius = space.length(INNER_RADIUS);
+                let outer_radius = space.length(OUTER_RADIUS);
                 let radial = smoothstep(
-                    ((OUTER_RADIUS - distance) / (OUTER_RADIUS - INNER_RADIUS)).clamp(0.0, 1.0),
+                    ((outer_radius - distance) / (outer_radius - inner_radius)).clamp(0.0, 1.0),
                 );
                 threshold <= radial * 0.5
             });
@@ -9048,22 +9093,25 @@ fn paint_effort_dither(
             }
 
             let alpha = if active_only { 0.88 } else { 0.025 };
-            let origin_x = f32::from(bounds.origin.x) + x as f32 * CELL_SIZE + dot_inset;
-            let origin_y = f32::from(bounds.origin.y) + y as f32 * CELL_SIZE + dot_inset;
-            let bloom_size = dot_size + if dark { 3.5 } else { 2.5 };
+            let origin_x = space.x(x as f32 * CELL_SIZE + design_dot_inset);
+            let origin_y = space.y(y as f32 * CELL_SIZE + design_dot_inset);
+            let bloom_size = dot_size + space.length(if dark { 3.5 } else { 2.5 });
             let bloom_inset = (bloom_size - dot_size) / 2.0;
             let bloom_bounds = Bounds {
-                origin: point(px(origin_x - bloom_inset), px(origin_y - bloom_inset)),
-                size: size(px(bloom_size), px(bloom_size)),
+                origin: point(
+                    gpui::px(origin_x - bloom_inset),
+                    gpui::px(origin_y - bloom_inset),
+                ),
+                size: size(gpui::px(bloom_size), gpui::px(bloom_size)),
             };
             window.paint_quad(
                 fill(bloom_bounds, texture_color.opacity(alpha * bloom_opacity))
-                    .corner_radii(px(bloom_size / 2.0)),
+                    .corner_radii(gpui::px(bloom_size / 2.0)),
             );
             window.paint_quad(fill(
                 Bounds {
-                    origin: point(px(origin_x), px(origin_y)),
-                    size: size(px(dot_size), px(dot_size)),
+                    origin: point(gpui::px(origin_x), gpui::px(origin_y)),
+                    size: size(gpui::px(dot_size), gpui::px(dot_size)),
                 },
                 texture_color.opacity(alpha * texture_opacity),
             ));
@@ -9446,6 +9494,23 @@ mod tests {
         assert!(quiet_dots > 0);
         assert!(loud_dots > quiet_dots * 2);
         assert!((smoothed_voice_level(&[0.0, 1.0, 0.0], 1) - 0.6).abs() < 0.001);
+    }
+
+    #[test]
+    fn dither_paint_space_scales_local_geometry_without_rescaling_its_origin() {
+        let space = DitherPaintSpace::new(
+            Bounds {
+                origin: point(gpui::px(120.0), gpui::px(80.0)),
+                size: size(gpui::px(640.0), gpui::px(56.0)),
+            },
+            2.0,
+        );
+
+        assert_eq!(space.design_width, 320.0);
+        assert_eq!(space.design_height, 28.0);
+        assert_eq!(space.x(3.0), 126.0);
+        assert_eq!(space.y(2.0), 84.0);
+        assert_eq!(space.length(4.0), 8.0);
     }
 
     #[test]
