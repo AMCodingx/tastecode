@@ -14,11 +14,13 @@ mod inbox;
 mod mcp_config;
 mod model_connections;
 mod preview_capture;
+mod project_directory_browser;
 mod push;
 mod router;
 mod safe_command_environment;
 mod skill_install;
 mod update_check;
+mod uploaded_attachment;
 
 pub use access::{allowed_origin, assert_safe_bind, has_access};
 pub use router::SERVER_VERSION;
@@ -57,10 +59,12 @@ const MAX_CONNECTION_REQUESTS: usize = 32;
 #[derive(Clone, Debug)]
 pub struct ServerConfig {
     pub address: SocketAddr,
+    pub mobile_port: Option<u16>,
     pub access_token: Option<String>,
     pub store_path: PathBuf,
     pub mcp_config_path: PathBuf,
     pub providers_config_path: PathBuf,
+    pub project_browser_home: Option<PathBuf>,
 }
 
 impl ServerConfig {
@@ -68,10 +72,12 @@ impl ServerConfig {
         let store_path = store_path.into();
         Self {
             address: SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), DEFAULT_PORT),
+            mobile_port: None,
             access_token: None,
             mcp_config_path: store_path.with_file_name("mcp.json"),
             providers_config_path: store_path.with_file_name("providers.json"),
             store_path,
+            project_browser_home: None,
         }
     }
 
@@ -84,10 +90,12 @@ impl ServerConfig {
         let config_root = environment_config_root()?;
         Ok(Self {
             address: SocketAddr::new(host, port),
+            mobile_port: environment_mobile_port()?,
             access_token: std::env::var("HARNESS_ACCESS_TOKEN").ok(),
             store_path: store_location()?,
             mcp_config_path: config_root.join("mcp.json"),
             providers_config_path: config_root.join("providers.json"),
+            project_browser_home: None,
         })
     }
 
@@ -96,10 +104,12 @@ impl ServerConfig {
         let config_root = environment_config_root()?;
         Ok(Self {
             address: SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), port),
+            mobile_port: environment_mobile_port()?,
             access_token: None,
             store_path: store_location()?,
             mcp_config_path: config_root.join("mcp.json"),
             providers_config_path: config_root.join("providers.json"),
+            project_browser_home: None,
         })
     }
 }
@@ -114,6 +124,17 @@ fn environment_port() -> Result<u16, ServerError> {
         })
         .transpose()
         .map(|port| port.unwrap_or(DEFAULT_PORT))
+}
+
+fn environment_mobile_port() -> Result<Option<u16>, ServerError> {
+    std::env::var("HARNESS_MOBILE_PORT")
+        .ok()
+        .map(|value| {
+            value
+                .parse::<u16>()
+                .map_err(|_| ServerError::InvalidMobilePort(value))
+        })
+        .transpose()
 }
 
 fn environment_config_root() -> Result<PathBuf, ServerError> {
@@ -135,6 +156,8 @@ pub enum ServerError {
     InvalidHost(String),
     #[error("HARNESS_PORT must be between 0 and 65535: {0}")]
     InvalidPort(String),
+    #[error("HARNESS_MOBILE_PORT must be between 0 and 65535: {0}")]
+    InvalidMobilePort(String),
     #[error("the operating system did not provide a per-user data directory")]
     MissingDataDirectory,
     #[error("the operating system did not provide a home directory for MCP configuration")]
@@ -257,6 +280,7 @@ fn start_with_prepared_services(
         voice_requests: Mutex::new(HashMap::new()),
         shutdown: AtomicBool::new(false),
         access_token: config.access_token,
+        project_browser_home: config.project_browser_home,
     });
     let listener_state = Arc::clone(&state);
     let join = thread::Builder::new()
@@ -310,6 +334,7 @@ pub(crate) struct ServerState {
     voice_requests: Mutex<HashMap<String, ActiveVoiceRequest>>,
     shutdown: AtomicBool,
     access_token: Option<String>,
+    project_browser_home: Option<PathBuf>,
 }
 
 struct ActiveVoiceRequest {

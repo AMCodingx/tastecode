@@ -538,6 +538,19 @@ pub(crate) fn route(
                 .collect::<Result<Vec<_>, RouteError>>()?;
             encoded(ProjectsListResult { projects })
         }
+        method::PROJECTS_BROWSE => {
+            let params: ProjectBrowseParams = decode(method_name, params)?;
+            if params.path.as_deref().is_some_and(str::is_empty) {
+                return Err(RouteError::bad_params(method_name, "path cannot be empty"));
+            }
+            encoded(
+                crate::project_directory_browser::browse_project_directory(
+                    params.path.as_deref().map(std::path::Path::new),
+                    state.project_browser_home.as_deref(),
+                )
+                .map_err(RouteError::internal)?,
+            )
+        }
         method::PROJECTS_ADD => {
             let params: ProjectAddParams = decode(method_name, params)?;
             let project = lock_store(state)?.add_project(&params.path, params.name.as_deref())?;
@@ -627,6 +640,35 @@ pub(crate) fn route(
             require_non_empty(method_name, "terminalId", &params.terminal_id)?;
             state.terminals.close(&params.terminal_id);
             empty_result()
+        }
+        method::ATTACHMENTS_SAVE_IMAGE => {
+            let params: AttachmentImageParams = decode(method_name, params)?;
+            let name = crate::uploaded_attachment::image_file_name(&params.mime_type);
+            let path = crate::uploaded_attachment::materialize_attachment(name, &params.data, None)
+                .map_err(RouteError::internal)?;
+            encoded(harness_protocol::AttachmentSavedResult {
+                path: path.to_string_lossy().into_owned(),
+            })
+        }
+        method::ATTACHMENTS_SAVE_FILE => {
+            let params: AttachmentFileParams = decode(method_name, params)?;
+            let name = params.name.trim();
+            let mime_type = params.mime_type.trim();
+            if name.is_empty()
+                || name.encode_utf16().count() > 255
+                || mime_type.is_empty()
+                || mime_type.encode_utf16().count() > 255
+            {
+                return Err(RouteError::bad_params(
+                    method_name,
+                    "name and mimeType must contain between 1 and 255 UTF-16 code units",
+                ));
+            }
+            let path = crate::uploaded_attachment::materialize_attachment(name, &params.data, None)
+                .map_err(RouteError::internal)?;
+            encoded(harness_protocol::AttachmentSavedResult {
+                path: path.to_string_lossy().into_owned(),
+            })
         }
         method::THREAD_START => {
             let params: ThreadStartParams = decode(method_name, params)?;
@@ -1449,6 +1491,27 @@ struct ProjectAddParams {
     path: String,
     #[serde(default, deserialize_with = "deserialize_present")]
     name: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct ProjectBrowseParams {
+    #[serde(default, deserialize_with = "deserialize_present")]
+    path: Option<String>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct AttachmentImageParams {
+    mime_type: String,
+    data: String,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct AttachmentFileParams {
+    name: String,
+    mime_type: String,
+    data: String,
 }
 
 #[derive(Deserialize)]

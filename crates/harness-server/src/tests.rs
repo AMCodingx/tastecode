@@ -15,6 +15,7 @@ use serde_json::{Value, json};
 use std::collections::HashMap;
 use std::fs;
 use std::net::{IpAddr, Ipv4Addr, TcpStream};
+use std::path::PathBuf;
 use std::process::Command;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::Instant;
@@ -37,10 +38,12 @@ fn start_test_server(
     store.close().unwrap();
     let server = start(ServerConfig {
         address: SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 0),
+        mobile_port: Some(0),
         access_token: access_token.map(str::to_owned),
         mcp_config_path: directory.path().join("mcp.json"),
         providers_config_path: directory.path().join("providers.json"),
         store_path,
+        project_browser_home: Some(directory.path().to_path_buf()),
     })
     .unwrap();
     (directory, server)
@@ -64,10 +67,12 @@ fn start_test_server_with_runtimes_and_seed(
     let server = start_with_runtimes(
         ServerConfig {
             address: SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 0),
+            mobile_port: Some(0),
             access_token: None,
             mcp_config_path: directory.path().join("mcp.json"),
             providers_config_path: directory.path().join("providers.json"),
             store_path,
+            project_browser_home: Some(directory.path().to_path_buf()),
         },
         runtimes,
     )
@@ -85,10 +90,12 @@ fn start_test_server_with_services(
     let server = start_with_services(
         ServerConfig {
             address: SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 0),
+            mobile_port: Some(0),
             access_token: None,
             mcp_config_path: directory.path().join("mcp.json"),
             providers_config_path: directory.path().join("providers.json"),
             store_path,
+            project_browser_home: Some(directory.path().to_path_buf()),
         },
         runtimes,
         credentials,
@@ -110,10 +117,12 @@ fn start_native_server_in(
 ) -> ServerHandle {
     let config = ServerConfig {
         address: SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 0),
+        mobile_port: Some(0),
         access_token: None,
         store_path: directory.join("harness.db"),
         mcp_config_path: directory.join("mcp.json"),
         providers_config_path: directory.join("providers.json"),
+        project_browser_home: Some(directory.to_path_buf()),
     };
     Store::open(&config.store_path).unwrap().close().unwrap();
     let credential_store: Arc<dyn CredentialStore> = credentials.clone();
@@ -396,6 +405,61 @@ fn wait_for_sent_count(session: &FakeSession, expected: usize) {
         "expected {expected} sent turns, got {}",
         session.sent_texts.lock().unwrap().len()
     );
+}
+
+#[test]
+fn remote_project_browsing_and_attachment_uploads_match_the_mobile_contract() {
+    let (directory, server) = start_test_server(None, |_| {});
+    let developer = directory.path().join("Developer");
+    fs::create_dir(&developer).unwrap();
+    fs::create_dir(developer.join("project10")).unwrap();
+    fs::create_dir(developer.join("project2")).unwrap();
+    fs::write(developer.join("notes.txt"), b"notes").unwrap();
+    fs::write(developer.join(".secret"), b"hidden").unwrap();
+    let mut socket = connect_native(&server, "");
+    assert_welcome(&mut socket);
+
+    send_request(
+        &mut socket,
+        "browse",
+        "projects.browse",
+        json!({ "path": developer.to_string_lossy() }),
+    );
+    let listing = read_value(&mut socket);
+    assert_eq!(
+        listing["result"]["entries"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|entry| entry["name"].as_str().unwrap())
+            .collect::<Vec<_>>(),
+        ["notes.txt", "project2", "project10"]
+    );
+
+    send_request(
+        &mut socket,
+        "upload",
+        "attachments.saveFile",
+        json!({
+            "name": "../references\\design notes.txt",
+            "mimeType": "text/plain",
+            "data": "aGVsbG8="
+        }),
+    );
+    let uploaded = read_value(&mut socket);
+    let uploaded_path = PathBuf::from(uploaded["result"]["path"].as_str().unwrap());
+    assert_eq!(fs::read_to_string(&uploaded_path).unwrap(), "hello");
+    assert!(
+        uploaded_path
+            .file_name()
+            .unwrap()
+            .to_string_lossy()
+            .ends_with("-design notes.txt")
+    );
+    fs::remove_file(uploaded_path).unwrap();
+
+    socket.close(None).unwrap();
+    server.close().unwrap();
 }
 
 #[test]
