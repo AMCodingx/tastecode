@@ -3,7 +3,7 @@ use super::code_extensions::code_file_extension;
 use crate::chrome;
 use crate::motion_icon::motion_icon;
 use crate::theme::{Theme, ThemeMode, web_ease_out};
-use crate::tracked_text::tracked_text;
+use crate::tracked_text::{TrackedText, TrackedTextLayout, tracked_text};
 use crate::zoom::px;
 use ::markdown::{ParseOptions, mdast::Node};
 use base64::{Engine as _, engine::general_purpose::STANDARD};
@@ -33,6 +33,12 @@ const STREAM_WORD_DURATION_MS: u64 = 160;
 const STREAM_WORD_STAGGER_MS: u64 = 14;
 const STREAM_CLEANUP_PADDING: Duration = Duration::from_millis(80);
 const SPACE_WIDTH: f32 = 3.7;
+
+#[derive(Clone, Copy)]
+struct InlineTracking {
+    letter_spacing_em: f32,
+    space_width: f32,
+}
 
 #[derive(Clone, Debug)]
 pub(super) struct StreamRevealBatch {
@@ -724,7 +730,7 @@ fn render_footnote_paragraph(
             builder
                 .units
                 .into_iter()
-                .map(|unit| render_inline_unit(unit, context)),
+                .map(|unit| render_inline_unit(unit, context, None)),
         )
         .children(render_footnote_backlinks(
             definition,
@@ -865,7 +871,12 @@ fn render_block(
                 .font_weight(FontWeight(580.0))
                 .text_size(px(size))
                 .line_height(relative(1.3))
-                .child(render_inline_flow(&heading.children, context))
+                .child(render_tracked_inline_flow(
+                    &heading.children,
+                    context,
+                    size,
+                    -0.014,
+                ))
                 .into_any_element()
         }
         Node::Blockquote(blockquote) => {
@@ -2643,12 +2654,22 @@ struct SelectableText {
     id: ElementId,
     key: String,
     text: SharedString,
-    styled_text: StyledText,
+    content: SelectableTextContent,
     source_start: usize,
     source_end: usize,
     space_after: bool,
     selection: Entity<MarkdownSelectionState>,
     theme: Theme,
+}
+
+enum SelectableTextContent {
+    Styled(StyledText),
+    Tracked(TrackedText),
+}
+
+pub(crate) enum SelectableTextLayout {
+    Styled,
+    Tracked(TrackedTextLayout),
 }
 
 struct SelectableTextSpec {
@@ -2669,7 +2690,28 @@ impl SelectableText {
         Self {
             id: ElementId::Name(SharedString::from(spec.key.clone())),
             key: spec.key,
-            styled_text: StyledText::new(text.clone()),
+            content: SelectableTextContent::Styled(StyledText::new(text.clone())),
+            text,
+            source_start: spec.source_start,
+            source_end: spec.source_end,
+            space_after: spec.space_after,
+            selection,
+            theme,
+        }
+    }
+
+    fn plain_tracked(
+        text: impl Into<SharedString>,
+        letter_spacing_em: f32,
+        spec: SelectableTextSpec,
+        selection: Entity<MarkdownSelectionState>,
+        theme: Theme,
+    ) -> Self {
+        let text = text.into();
+        Self {
+            id: ElementId::Name(SharedString::from(spec.key.clone())),
+            key: spec.key,
+            content: SelectableTextContent::Tracked(tracked_text(text.clone(), letter_spacing_em)),
             text,
             source_start: spec.source_start,
             source_end: spec.source_end,
@@ -2690,7 +2732,7 @@ impl SelectableText {
             id: ElementId::Name(SharedString::from(spec.key.clone())),
             key: spec.key,
             text: text.into(),
-            styled_text,
+            content: SelectableTextContent::Styled(styled_text),
             source_start: spec.source_start,
             source_end: spec.source_end,
             space_after: spec.space_after,
@@ -2701,7 +2743,7 @@ impl SelectableText {
 }
 
 impl Element for SelectableText {
-    type RequestLayoutState = ();
+    type RequestLayoutState = SelectableTextLayout;
     type PrepaintState = Hitbox;
 
     fn id(&self) -> Option<ElementId> {
@@ -2719,8 +2761,16 @@ impl Element for SelectableText {
         window: &mut Window,
         cx: &mut App,
     ) -> (LayoutId, Self::RequestLayoutState) {
-        self.styled_text
-            .request_layout(global_id, inspector_id, window, cx)
+        match &mut self.content {
+            SelectableTextContent::Styled(text) => {
+                let (layout_id, ()) = text.request_layout(global_id, inspector_id, window, cx);
+                (layout_id, SelectableTextLayout::Styled)
+            }
+            SelectableTextContent::Tracked(text) => {
+                let (layout_id, state) = text.request_layout(global_id, inspector_id, window, cx);
+                (layout_id, SelectableTextLayout::Tracked(state))
+            }
+        }
     }
 
     fn prepaint(
@@ -2732,8 +2782,15 @@ impl Element for SelectableText {
         window: &mut Window,
         cx: &mut App,
     ) -> Self::PrepaintState {
-        self.styled_text
-            .prepaint(global_id, inspector_id, bounds, state, window, cx);
+        match (&mut self.content, state) {
+            (SelectableTextContent::Styled(text), SelectableTextLayout::Styled) => {
+                text.prepaint(global_id, inspector_id, bounds, &mut (), window, cx);
+            }
+            (SelectableTextContent::Tracked(text), SelectableTextLayout::Tracked(state)) => {
+                text.prepaint(global_id, inspector_id, bounds, state, window, cx);
+            }
+            _ => unreachable!("selectable text layout must match its content"),
+        }
         window.insert_hitbox(bounds, HitboxBehavior::Normal)
     }
 
@@ -2747,11 +2804,17 @@ impl Element for SelectableText {
         window: &mut Window,
         cx: &mut App,
     ) {
-        let layout = self.styled_text.layout().clone();
         let selection_bounds = self.selection.read(cx).selection_bounds();
-        let selected = selection_bounds.and_then(|selection_bounds| {
-            selection_for_text_layout(&self.text, &layout, &selection_bounds)
-        });
+        let selected =
+            selection_bounds.and_then(|selection_bounds| match (&self.content, &*request_layout) {
+                (SelectableTextContent::Styled(text), SelectableTextLayout::Styled) => {
+                    selection_for_text_layout(&self.text, text.layout(), &selection_bounds)
+                }
+                (SelectableTextContent::Tracked(_), SelectableTextLayout::Tracked(layout)) => {
+                    selection_for_tracked_text(&self.text, layout, &selection_bounds)
+                }
+                _ => unreachable!("selectable text layout must match its content"),
+            });
         self.selection.update(cx, |selection, _| {
             selection.update_segment(
                 self.key.clone(),
@@ -2764,24 +2827,44 @@ impl Element for SelectableText {
         });
 
         if let Some(selected) = selected.as_ref() {
-            paint_text_selection(
-                selected,
-                &layout,
-                &bounds,
-                self.theme.attention.hsla().opacity(0.3),
-                window,
-            );
+            match (&self.content, &*request_layout) {
+                (SelectableTextContent::Styled(text), SelectableTextLayout::Styled) => {
+                    paint_text_selection(
+                        selected,
+                        text.layout(),
+                        &bounds,
+                        self.theme.attention.hsla().opacity(0.3),
+                        window,
+                    );
+                }
+                (SelectableTextContent::Tracked(_), SelectableTextLayout::Tracked(layout)) => {
+                    paint_tracked_text_selection(
+                        selected,
+                        layout,
+                        &bounds,
+                        self.theme.attention.hsla().opacity(0.3),
+                        window,
+                    );
+                }
+                _ => unreachable!("selectable text layout must match its content"),
+            }
         }
         window.set_cursor_style(CursorStyle::IBeam, hitbox);
-        self.styled_text.paint(
-            global_id,
-            inspector_id,
-            bounds,
-            request_layout,
-            &mut (),
-            window,
-            cx,
-        );
+        match (&mut self.content, request_layout) {
+            (SelectableTextContent::Styled(text), SelectableTextLayout::Styled) => text.paint(
+                global_id,
+                inspector_id,
+                bounds,
+                &mut (),
+                &mut (),
+                window,
+                cx,
+            ),
+            (SelectableTextContent::Tracked(text), SelectableTextLayout::Tracked(state)) => {
+                text.paint(global_id, inspector_id, bounds, state, &mut (), window, cx)
+            }
+            _ => unreachable!("selectable text layout must match its content"),
+        }
     }
 }
 
@@ -2885,15 +2968,34 @@ fn selection_for_text_layout(
     layout: &TextLayout,
     selection_bounds: &Bounds<Pixels>,
 ) -> Option<Range<usize>> {
-    let line_height = layout.line_height();
+    selection_for_text_positions(text, layout.line_height(), selection_bounds, |index| {
+        layout.position_for_index(index)
+    })
+}
+
+fn selection_for_tracked_text(
+    text: &str,
+    layout: &TrackedTextLayout,
+    selection_bounds: &Bounds<Pixels>,
+) -> Option<Range<usize>> {
+    selection_for_text_positions(text, layout.line_height(), selection_bounds, |index| {
+        layout.position_for_index(index)
+    })
+}
+
+fn selection_for_text_positions(
+    text: &str,
+    line_height: Pixels,
+    selection_bounds: &Bounds<Pixels>,
+    mut position_for_index: impl FnMut(usize) -> Option<Point<Pixels>>,
+) -> Option<Range<usize>> {
     let mut selected = None::<Range<usize>>;
     for (offset, character) in text.char_indices() {
         let next_offset = offset + character.len_utf8();
-        let Some(position) = layout.position_for_index(offset) else {
+        let Some(position) = position_for_index(offset) else {
             continue;
         };
-        let width = layout
-            .position_for_index(next_offset)
+        let width = position_for_index(next_offset)
             .filter(|next| next.y == position.y)
             .map_or(line_height / 2.0, |next| next.x - position.x);
         if point_in_text_selection(position, width, selection_bounds, line_height) {
@@ -2931,13 +3033,47 @@ fn paint_text_selection(
     color: gpui::Hsla,
     window: &mut Window,
 ) {
+    paint_text_selection_positions(
+        selection,
+        bounds,
+        layout.line_height(),
+        color,
+        |index| layout.position_for_index(index),
+        window,
+    );
+}
+
+fn paint_tracked_text_selection(
+    selection: &Range<usize>,
+    layout: &TrackedTextLayout,
+    bounds: &Bounds<Pixels>,
+    color: gpui::Hsla,
+    window: &mut Window,
+) {
+    paint_text_selection_positions(
+        selection,
+        bounds,
+        layout.line_height(),
+        color,
+        |index| layout.position_for_index(index),
+        window,
+    );
+}
+
+fn paint_text_selection_positions(
+    selection: &Range<usize>,
+    bounds: &Bounds<Pixels>,
+    line_height: Pixels,
+    color: gpui::Hsla,
+    mut position_for_index: impl FnMut(usize) -> Option<Point<Pixels>>,
+    window: &mut Window,
+) {
     let (Some(start), Some(end)) = (
-        layout.position_for_index(selection.start),
-        layout.position_for_index(selection.end),
+        position_for_index(selection.start),
+        position_for_index(selection.end),
     ) else {
         return;
     };
-    let line_height = layout.line_height();
     let paint = |bounds, window: &mut Window| {
         window.paint_quad(quad(
             bounds,
@@ -3074,7 +3210,7 @@ impl InlineBuilder {
 }
 
 fn render_inline_flow(children: &[Node], context: &RenderContext<'_>) -> AnyElement {
-    render_inline_flow_sized(children, context, true)
+    render_inline_flow_with_tracking(children, context, true, None)
 }
 
 fn render_inline_flow_sized(
@@ -3082,13 +3218,41 @@ fn render_inline_flow_sized(
     context: &RenderContext<'_>,
     full_width: bool,
 ) -> AnyElement {
+    render_inline_flow_with_tracking(children, context, full_width, None)
+}
+
+fn render_tracked_inline_flow(
+    children: &[Node],
+    context: &RenderContext<'_>,
+    font_size: f32,
+    letter_spacing_em: f32,
+) -> AnyElement {
+    let space_width =
+        (SPACE_WIDTH * font_size / 15.0 + 2.0 * font_size * letter_spacing_em).max(0.0);
+    render_inline_flow_with_tracking(
+        children,
+        context,
+        true,
+        Some(InlineTracking {
+            letter_spacing_em,
+            space_width,
+        }),
+    )
+}
+
+fn render_inline_flow_with_tracking(
+    children: &[Node],
+    context: &RenderContext<'_>,
+    full_width: bool,
+    tracking: Option<InlineTracking>,
+) -> AnyElement {
     let mut builder = InlineBuilder::default();
     let style = InlineStyle::default();
     collect_inline(children, &style, context, &mut builder);
     let units = builder
         .units
         .into_iter()
-        .map(|unit| render_inline_unit(unit, context));
+        .map(|unit| render_inline_unit(unit, context, tracking));
     div()
         .when(full_width, |flow| flow.w_full())
         .when(!full_width, |flow| flow.w_auto())
@@ -3396,7 +3560,11 @@ fn apply_inline_html(
     }
 }
 
-fn render_inline_unit(unit: InlineUnit, context: &RenderContext<'_>) -> AnyElement {
+fn render_inline_unit(
+    unit: InlineUnit,
+    context: &RenderContext<'_>,
+    tracking: Option<InlineTracking>,
+) -> AnyElement {
     let InlineUnit {
         kind,
         style,
@@ -3424,17 +3592,23 @@ fn render_inline_unit(unit: InlineUnit, context: &RenderContext<'_>) -> AnyEleme
     let token_id = format!("markdown-token:{}:{start}:{end}", context.id);
     let selectable = |text: String, suffix: &str| {
         let key = format!("{token_id}:{suffix}:{}", stable_hash(&text));
-        SelectableText::plain(
-            text,
-            SelectableTextSpec {
-                key,
-                source_start: start,
-                source_end: end,
-                space_after,
-            },
-            context.selection.clone(),
-            context.theme,
-        )
+        let spec = SelectableTextSpec {
+            key,
+            source_start: start,
+            source_end: end,
+            space_after,
+        };
+        if let Some(tracking) = tracking {
+            SelectableText::plain_tracked(
+                text,
+                tracking.letter_spacing_em,
+                spec,
+                context.selection.clone(),
+                context.theme,
+            )
+        } else {
+            SelectableText::plain(text, spec, context.selection.clone(), context.theme)
+        }
     };
     let element = match kind {
         InlineUnitKind::Text(text) => div().flex_none().child(selectable(text, "text")),
@@ -3489,7 +3663,9 @@ fn render_inline_unit(unit: InlineUnit, context: &RenderContext<'_>) -> AnyEleme
     };
     let mut element = element.id(SharedString::from(token_id));
     if space_after {
-        element = element.mr(px(SPACE_WIDTH));
+        element = element.mr(px(
+            tracking.map_or(SPACE_WIDTH, |tracking| tracking.space_width)
+        ));
     }
     if style.bold {
         element = element.font_weight(FontWeight::BOLD);
