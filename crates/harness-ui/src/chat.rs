@@ -4370,7 +4370,7 @@ impl ChatView {
                                     .text_color(gpui::white())
                                     .cursor_pointer()
                                     .hover(|style| style.bg(gpui::rgb(0x222222)))
-                                    .active(|style| style.opacity(0.78))
+                                    .active(|style| style.size(px(20.24)).m(px(0.88)))
                                     .on_click(cx.listener(move |this, _event, _window, cx| {
                                         cx.stop_propagation();
                                         if index < this.attachments.len() {
@@ -4378,13 +4378,24 @@ impl ChatView {
                                             cx.notify();
                                         }
                                     }))
-                                    .child(motion_icon(
-                                        ("attachment-preview-remove-icon", index),
-                                        "icons/x.svg",
-                                        13.0,
-                                        remove_group,
-                                        theme,
-                                    )),
+                                    .child(
+                                        div()
+                                            .id(("attachment-preview-remove-icon-press", index))
+                                            .size(px(13.0))
+                                            .group_active(remove_group.clone(), |style| {
+                                                style.size(px(11.96)).m(px(0.52))
+                                            })
+                                            .child(
+                                                motion_icon(
+                                                    ("attachment-preview-remove-icon", index),
+                                                    "icons/x.svg",
+                                                    13.0,
+                                                    remove_group,
+                                                    theme,
+                                                )
+                                                .size_full(),
+                                            ),
+                                    ),
                             )
                             .when(loading, |preview| {
                                 preview.child(
@@ -4412,7 +4423,15 @@ impl ChatView {
                                 ("attachment-preview-in", index),
                                 Animation::new(theme.motion.fast)
                                     .with_easing(crate::theme::web_ease_out),
-                                |preview, delta| preview.opacity(delta),
+                                |preview, delta| {
+                                    let scale = 0.98 + 0.02 * delta;
+                                    let size = 72.0 * scale;
+                                    preview
+                                        .size(px(size))
+                                        .m(px((72.0 - size) / 2.0))
+                                        .top(px(2.0 * (1.0 - delta)))
+                                        .opacity(delta)
+                                },
                             )
                             .into_any_element()
                     } else {

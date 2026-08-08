@@ -290,6 +290,8 @@ fn image_viewer_action(
     on_click: impl Fn(&gpui::ClickEvent, &mut Window, &mut gpui::App) + 'static,
 ) -> AnyElement {
     let group: SharedString = format!("{id}:icon-hover").into();
+    let icon_id: SharedString = format!("{id}:icon").into();
+    let icon_press_id: SharedString = format!("{id}:icon-press").into();
     div()
         .id(id)
         .group(group.clone())
@@ -310,13 +312,17 @@ fn image_viewer_action(
                 .active(|style| style.size(px(41.36)).m(px(1.32)))
                 .on_click(on_click)
         })
-        .child(motion_icon(
-            SharedString::from(format!("{id}:icon")),
-            icon,
-            icon_size,
-            group,
-            theme,
-        ))
+        .child(
+            div()
+                .id(icon_press_id)
+                .size(px(icon_size))
+                .when(!disabled, |icon_wrapper| {
+                    icon_wrapper.group_active(group.clone(), move |style| {
+                        style.size(px(icon_size * 0.94)).m(px(icon_size * 0.03))
+                    })
+                })
+                .child(motion_icon(icon_id, icon, icon_size, group, theme).size_full()),
+        )
         .into_any_element()
 }
 
