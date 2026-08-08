@@ -484,7 +484,7 @@ impl HarnessApp {
                     .clone();
                 let pin_path = path.clone();
                 let project_pinned = project.pinned;
-                items.push(sidebar_menu_item(
+                items.push(sidebar_project_menu_item(
                     "sidebar-project-pin",
                     if project_pinned {
                         "Unpin"
@@ -504,7 +504,7 @@ impl HarnessApp {
                     }),
                 ));
                 let reveal = path.clone();
-                items.push(sidebar_menu_item(
+                items.push(sidebar_project_menu_item(
                     "sidebar-project-reveal",
                     "Open in Explorer",
                     Some("icons/folder-open.svg"),
@@ -520,7 +520,7 @@ impl HarnessApp {
                     }),
                 ));
                 let rename = path.clone();
-                items.push(sidebar_menu_item(
+                items.push(sidebar_project_menu_item(
                     "sidebar-project-rename",
                     "Edit name",
                     Some("icons/pencil.svg"),
@@ -531,7 +531,7 @@ impl HarnessApp {
                     }),
                 ));
                 let archive = path.clone();
-                items.push(sidebar_menu_item(
+                items.push(sidebar_project_menu_item(
                     "sidebar-project-archive",
                     "Archive chats",
                     Some("icons/archive.svg"),
@@ -541,7 +541,7 @@ impl HarnessApp {
                         this.confirm_archive_project(archive.clone(), cx);
                     }),
                 ));
-                items.push(sidebar_menu_item(
+                items.push(sidebar_project_menu_item(
                     "sidebar-project-remove",
                     "Remove from sidebar",
                     Some("icons/panel-left-close.svg"),
@@ -1488,10 +1488,34 @@ fn sidebar_menu_top(anchor_y: f32, viewport_height: f32, panel_height: f32) -> (
     (preferred_top.clamp(gutter, max_top), grows_up)
 }
 
+fn sidebar_project_menu_item(
+    id: impl Into<SharedString>,
+    label: impl Into<SharedString>,
+    icon_path: Option<&'static str>,
+    danger: bool,
+    theme: crate::Theme,
+    listener: impl Fn(&gpui::ClickEvent, &mut Window, &mut gpui::App) + 'static,
+) -> AnyElement {
+    sidebar_menu_item_with_icon_size(id, label, icon_path, 14.0, danger, theme, listener)
+}
+
 fn sidebar_menu_item(
     id: impl Into<SharedString>,
     label: impl Into<SharedString>,
     icon_path: Option<&'static str>,
+    danger: bool,
+    theme: crate::Theme,
+    listener: impl Fn(&gpui::ClickEvent, &mut Window, &mut gpui::App) + 'static,
+) -> AnyElement {
+    sidebar_menu_item_with_icon_size(id, label, icon_path, 13.0, danger, theme, listener)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn sidebar_menu_item_with_icon_size(
+    id: impl Into<SharedString>,
+    label: impl Into<SharedString>,
+    icon_path: Option<&'static str>,
+    icon_size: f32,
     danger: bool,
     theme: crate::Theme,
     listener: impl Fn(&gpui::ClickEvent, &mut Window, &mut gpui::App) + 'static,
@@ -1535,13 +1559,17 @@ fn sidebar_menu_item(
         .when_some(icon_path, |item, icon_path| {
             item.child(
                 div()
-                    .size(px(13.0))
+                    .size(px(icon_size))
                     .flex_none()
-                    .child(motion_icon(icon_id, icon_path, 13.0, hover_group, theme).size_full())
+                    .child(
+                        motion_icon(icon_id, icon_path, icon_size, hover_group, theme).size_full(),
+                    )
                     .with_animation(
                         icon_animation_id,
                         sidebar_menu_entry_animation(theme),
-                        |icon, delta| icon.size(px(13.0 * sidebar_menu_entry_scale(delta))),
+                        move |icon, delta| {
+                            icon.size(px(icon_size * sidebar_menu_entry_scale(delta)))
+                        },
                     ),
             )
         })
