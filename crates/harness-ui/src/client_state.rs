@@ -814,6 +814,16 @@ impl ClientState {
         }
     }
 
+    pub(crate) fn ensure_healthy(&self) {
+        if matches!(
+            self.connection,
+            ConnectionState::Open | ConnectionState::Reconnecting
+        ) && let Some(client) = &self.client
+        {
+            let _ = client.ensure_healthy();
+        }
+    }
+
     pub(crate) fn restore_model_catalog_snapshot(&mut self, snapshot: Option<Vec<ModelChoice>>) {
         if let Some(snapshot) = snapshot {
             self.model_catalog = snapshot;

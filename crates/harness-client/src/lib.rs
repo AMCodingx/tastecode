@@ -20,6 +20,7 @@ use tungstenite::{Error as WebSocketError, Message, WebSocket, connect};
 use url::Url;
 
 const READ_POLL_INTERVAL: Duration = Duration::from_millis(40);
+const HEALTH_CHECK_TIMEOUT: Duration = Duration::from_millis(500);
 const INITIAL_RECONNECT_DELAY: Duration = Duration::from_millis(100);
 const MAX_RECONNECT_DELAY: Duration = Duration::from_secs(2);
 
@@ -104,6 +105,7 @@ impl Drop for ClientInner {
 
 enum Command {
     Send(Outbound),
+    Probe(Outbound),
     Shutdown,
 }
 
@@ -145,6 +147,17 @@ impl ClientHandle {
             }))
             .map_err(|_| ClientError::Closed)?;
         Ok(id)
+    }
+
+    pub fn ensure_healthy(&self) -> Result<(), ClientError> {
+        let number = self.inner.next_id.fetch_add(1, Ordering::Relaxed);
+        let id = format!("native-health-{number}");
+        let request = Request::new(id.clone(), "system.info", serde_json::json!({}));
+        let text = serde_json::to_string(&request).map_err(ClientError::Serialize)?;
+        self.inner
+            .commands
+            .send(Command::Probe(Outbound { id, text }))
+            .map_err(|_| ClientError::Closed)
     }
 }
 
@@ -206,10 +219,16 @@ fn run_connection(
 ) -> bool {
     let mut sequence = SequenceTracker::default();
     let mut in_flight = HashSet::new();
+    let mut health_check: Option<(String, Instant)> = None;
 
     loop {
         match commands.try_recv() {
             Ok(Command::Send(outbound)) => pending.push_back(outbound),
+            Ok(Command::Probe(outbound)) if health_check.is_none() => {
+                health_check = Some((outbound.id.clone(), Instant::now() + HEALTH_CHECK_TIMEOUT));
+                pending.push_back(outbound);
+            }
+            Ok(Command::Probe(_)) => {}
             Ok(Command::Shutdown) | Err(TryRecvError::Disconnected) => {
                 let _ = socket.close(None);
                 return true;
@@ -226,7 +245,7 @@ fn run_connection(
             in_flight.insert(outbound.id);
         }
 
-        match socket.read() {
+        let response_id = match socket.read() {
             Ok(Message::Text(text)) => {
                 decode_frame(text.as_str(), events, &mut sequence, &mut in_flight)
             }
@@ -236,18 +255,36 @@ fn run_connection(
             }
             Ok(Message::Ping(_) | Message::Pong(_)) => {
                 let _ = socket.flush();
+                None
             }
-            Ok(Message::Binary(_) | Message::Frame(_)) => emit(
-                events,
-                ClientEvent::DecodeFailed {
-                    reason: "expected a text WebSocket frame".into(),
-                },
-            ),
-            Err(error) if is_read_timeout(&error) => {}
+            Ok(Message::Binary(_) | Message::Frame(_)) => {
+                emit(
+                    events,
+                    ClientEvent::DecodeFailed {
+                        reason: "expected a text WebSocket frame".into(),
+                    },
+                );
+                None
+            }
+            Err(error) if is_read_timeout(&error) => None,
             Err(_) => {
                 abort_in_flight(events, &mut in_flight);
                 return false;
             }
+        };
+        if response_id.as_ref().is_some_and(|response_id| {
+            health_check
+                .as_ref()
+                .is_some_and(|(health_id, _)| response_id == health_id)
+        }) {
+            health_check = None;
+        }
+        if health_check
+            .as_ref()
+            .is_some_and(|(_, deadline)| Instant::now() >= *deadline)
+        {
+            abort_in_flight(events, &mut in_flight);
+            return false;
         }
     }
 }
@@ -257,24 +294,30 @@ fn decode_frame(
     events: &EventSender<ClientEvent>,
     sequence: &mut SequenceTracker,
     in_flight: &mut HashSet<String>,
-) {
+) -> Option<String> {
     match serde_json::from_str::<InboundFrame>(text) {
         Ok(InboundFrame::Response(response)) => {
-            in_flight.remove(response.id());
+            let id = response.id().to_owned();
+            in_flight.remove(&id);
             emit(events, ClientEvent::Response(response));
+            Some(id)
         }
         Ok(InboundFrame::Push(push)) => {
             if let Some((expected, received)) = sequence.observe(push.sequence) {
                 emit(events, ClientEvent::SequenceGap { expected, received });
             }
             emit(events, ClientEvent::Push(push));
+            None
         }
-        Err(error) => emit(
-            events,
-            ClientEvent::DecodeFailed {
-                reason: error.to_string(),
-            },
-        ),
+        Err(error) => {
+            emit(
+                events,
+                ClientEvent::DecodeFailed {
+                    reason: error.to_string(),
+                },
+            );
+            None
+        }
     }
 }
 
@@ -290,6 +333,7 @@ fn drain_commands(commands: &Receiver<Command>, pending: &mut VecDeque<Outbound>
     loop {
         match commands.try_recv() {
             Ok(Command::Send(outbound)) => pending.push_back(outbound),
+            Ok(Command::Probe(_)) => {}
             Ok(Command::Shutdown) | Err(TryRecvError::Disconnected) => return true,
             Err(TryRecvError::Empty) => return false,
         }
@@ -309,6 +353,7 @@ fn collect_during_backoff(
         }
         match commands.recv_timeout(remaining) {
             Ok(Command::Send(outbound)) => pending.push_back(outbound),
+            Ok(Command::Probe(_)) => return false,
             Ok(Command::Shutdown) | Err(RecvTimeoutError::Disconnected) => return true,
             Err(RecvTimeoutError::Timeout) => return false,
         }
@@ -371,6 +416,28 @@ mod tests {
         let second = client.request("projects.list", json!({})).unwrap();
         assert_eq!(first, "native-1");
         assert_eq!(second, "native-2");
+    }
+
+    #[test]
+    fn health_probe_uses_a_private_system_info_request() {
+        let (commands, receiver) = mpsc::channel();
+        let client = ClientHandle {
+            inner: Arc::new(ClientInner {
+                commands,
+                next_id: AtomicU64::new(7),
+            }),
+        };
+
+        client.ensure_healthy().unwrap();
+
+        let Command::Probe(outbound) = receiver.recv().unwrap() else {
+            panic!("expected a health probe");
+        };
+        let payload = serde_json::from_str::<Value>(&outbound.text).unwrap();
+        assert_eq!(outbound.id, "native-health-7");
+        assert_eq!(payload["id"], "native-health-7");
+        assert_eq!(payload["method"], "system.info");
+        assert_eq!(payload["params"], json!({}));
     }
 
     #[test]

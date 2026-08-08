@@ -149,6 +149,7 @@ struct HarnessApp {
     account_menu_open: bool,
     reconnect_notice_generation: u64,
     reconnect_notice_visible: bool,
+    window_active: bool,
     system_theme_mode: ThemeMode,
     reduced_motion: bool,
     preferences: NativePreferences,
@@ -203,6 +204,7 @@ impl HarnessApp {
             .collect::<HashSet<_>>();
         let has_boot_model_catalog = !state.model_catalog.is_empty();
         let sidebar_width = f32::from(preferences.rail_width);
+        let window_active = window.is_window_active();
         let system_theme_mode = theme_mode_for_appearance(window.appearance());
         let mode = match preferences.theme {
             ThemePreference::System => system_theme_mode,
@@ -539,6 +541,15 @@ impl HarnessApp {
             .detach();
         }
 
+        cx.observe_window_activation(window, |this, window, _cx| {
+            let active = window.is_window_active();
+            if active && !this.window_active {
+                this.state.ensure_healthy();
+            }
+            this.window_active = active;
+        })
+        .detach();
+
         cx.observe_window_appearance(window, |this, window, cx| {
             let mode = theme_mode_for_appearance(window.appearance());
             if this.system_theme_mode != mode {
@@ -641,6 +652,7 @@ impl HarnessApp {
             account_menu_open: false,
             reconnect_notice_generation: 0,
             reconnect_notice_visible: false,
+            window_active,
             system_theme_mode,
             reduced_motion,
             preferences,
