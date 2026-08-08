@@ -292,6 +292,12 @@ struct ComposerMenuAnchor {
     bottom: Pixels,
 }
 
+#[derive(Clone, Copy)]
+struct ComposerDropDownAnchor {
+    left: Pixels,
+    top: Pixels,
+}
+
 struct InputFieldSync {
     value: String,
     masked: bool,
@@ -413,6 +419,8 @@ pub(crate) struct ChatView {
     composer: Entity<InputState>,
     composer_box_bounds: Option<Bounds<Pixels>>,
     composer_field_bounds: Option<Bounds<Pixels>>,
+    project_trigger_bounds: Option<Bounds<Pixels>>,
+    branch_trigger_bounds: Option<Bounds<Pixels>>,
     permission_trigger_bounds: Option<Bounds<Pixels>>,
     model_trigger_bounds: Option<Bounds<Pixels>>,
     composer_dock_pending: Option<ComposerDockPending>,
@@ -569,6 +577,8 @@ impl ChatView {
             composer,
             composer_box_bounds: None,
             composer_field_bounds: None,
+            project_trigger_bounds: None,
+            branch_trigger_bounds: None,
             permission_trigger_bounds: None,
             model_trigger_bounds: None,
             composer_dock_pending: None,
@@ -686,6 +696,8 @@ impl ChatView {
         // only normal clear; a provider capability change can still cancel voice.
         self.composer_box_bounds = None;
         self.composer_field_bounds = None;
+        self.project_trigger_bounds = None;
+        self.branch_trigger_bounds = None;
         self.permission_trigger_bounds = None;
         self.model_trigger_bounds = None;
         self.composer_dock_pending = None;
@@ -4758,16 +4770,28 @@ impl ChatView {
             || SharedString::from("Choose project"),
             |session| session.project_name.clone().into(),
         );
+        let bounds_view = cx.entity();
+        let bounds_probe = canvas(
+            move |bounds, _, cx| {
+                bounds_view.update(cx, |this, _| {
+                    this.project_trigger_bounds = Some(bounds);
+                });
+            },
+            |_, _, _, _| {},
+        )
+        .absolute()
+        .inset_0();
         div()
             .id("composer-project")
             .group("composer-project-hover")
+            .relative()
             .flex_none()
             .max_w(px(260.0))
             .flex()
             .items_center()
             .gap(px(7.0))
-            .px(px(6.0))
-            .py(px(4.0))
+            .px(px(8.0))
+            .py(px(5.0))
             .rounded(px(crate::RADIUS_MD))
             .text_color(if open {
                 theme.text.hsla()
@@ -4783,6 +4807,7 @@ impl ChatView {
             .on_click(cx.listener(|this, _event, _window, cx| {
                 this.toggle_composer_menu(ComposerMenu::Project, cx);
             }))
+            .child(bounds_probe)
             .child(motion_icon(
                 "composer-project-icon",
                 "icons/folder.svg",
@@ -4803,16 +4828,28 @@ impl ChatView {
             .clone()
             .or_else(|| self.stage_settings.branches.first().cloned())
             .unwrap_or_else(|| "No branch".into());
+        let bounds_view = cx.entity();
+        let bounds_probe = canvas(
+            move |bounds, _, cx| {
+                bounds_view.update(cx, |this, _| {
+                    this.branch_trigger_bounds = Some(bounds);
+                });
+            },
+            |_, _, _, _| {},
+        )
+        .absolute()
+        .inset_0();
         div()
             .id("composer-branch")
             .group("composer-branch-hover")
+            .relative()
             .flex_none()
             .max_w(px(220.0))
             .flex()
             .items_center()
             .gap(px(7.0))
-            .px(px(6.0))
-            .py(px(4.0))
+            .px(px(8.0))
+            .py(px(5.0))
             .rounded(px(crate::RADIUS_MD))
             .text_color(if open {
                 theme.text.hsla()
@@ -4836,6 +4873,7 @@ impl ChatView {
                         this.toggle_composer_menu(ComposerMenu::Branch, cx);
                     }))
             })
+            .child(bounds_probe)
             .child(motion_icon(
                 "composer-branch-icon",
                 "icons/git-branch.svg",
@@ -5235,12 +5273,18 @@ impl ChatView {
             .session
             .as_ref()
             .map(|session| session.project_path.clone());
+        let anchor =
+            composer_drop_down_anchor(self.composer_box_bounds, self.project_trigger_bounds)
+                .unwrap_or(ComposerDropDownAnchor {
+                    left: px(8.0),
+                    top: px(38.0),
+                });
         div()
             .id("composer-project-menu")
             .occlude()
             .absolute()
-            .left(px(8.0))
-            .top(px(38.0))
+            .left(anchor.left)
+            .top(anchor.top)
             .w(px(350.0))
             .max_h(px(290.0))
             .overflow_y_scroll()
@@ -5348,10 +5392,10 @@ impl ChatView {
             .with_animation(
                 "composer-project-menu",
                 Animation::new(theme.motion.fast).with_easing(crate::theme::web_ease_out),
-                |menu, delta| {
+                move |menu, delta| {
                     let scale = menu_entry_scale(delta);
-                    menu.left(px(8.0 + 175.0 * (1.0 - scale)))
-                        .top(px(38.0 + 2.0 * (1.0 - delta)))
+                    menu.left(anchor.left + px(175.0 * (1.0 - scale)))
+                        .top(anchor.top + px(2.0 * (1.0 - delta)))
                         .w(px(350.0 * scale))
                         .rounded(px(8.0 * scale))
                         .p(px(4.0 * scale))
@@ -5364,12 +5408,18 @@ impl ChatView {
     fn branch_popover(&self, cx: &Context<Self>) -> AnyElement {
         let theme = self.theme;
         let selected = self.stage_settings.workspace_branch.clone();
+        let anchor =
+            composer_drop_down_anchor(self.composer_box_bounds, self.branch_trigger_bounds)
+                .unwrap_or(ComposerDropDownAnchor {
+                    left: px(175.0),
+                    top: px(38.0),
+                });
         div()
             .id("composer-branch-menu")
             .occlude()
             .absolute()
-            .left(px(175.0))
-            .top(px(38.0))
+            .left(anchor.left)
+            .top(anchor.top)
             .w(px(280.0))
             .max_h(px(290.0))
             .overflow_y_scroll()
@@ -5440,10 +5490,10 @@ impl ChatView {
             .with_animation(
                 "composer-branch-menu",
                 Animation::new(theme.motion.fast).with_easing(crate::theme::web_ease_out),
-                |menu, delta| {
+                move |menu, delta| {
                     let scale = menu_entry_scale(delta);
-                    menu.left(px(175.0 + 140.0 * (1.0 - scale)))
-                        .top(px(38.0 + 2.0 * (1.0 - delta)))
+                    menu.left(anchor.left + px(140.0 * (1.0 - scale)))
+                        .top(anchor.top + px(2.0 * (1.0 - delta)))
                         .w(px(280.0 * scale))
                         .rounded(px(8.0 * scale))
                         .p(px(4.0 * scale))
@@ -7869,6 +7919,18 @@ fn composer_menu_anchor(
     })
 }
 
+fn composer_drop_down_anchor(
+    composer: Option<Bounds<Pixels>>,
+    trigger: Option<Bounds<Pixels>>,
+) -> Option<ComposerDropDownAnchor> {
+    let composer = composer?;
+    let trigger = trigger?;
+    Some(ComposerDropDownAnchor {
+        left: trigger.origin.x - composer.origin.x,
+        top: trigger.origin.y + trigger.size.height - composer.origin.y + px(COMPOSER_MENU_GAP),
+    })
+}
+
 fn brief_option_background(theme: Theme, selected: bool, hovered: bool) -> Background {
     if selected {
         return theme.surface_3.hsla().into();
@@ -9362,6 +9424,22 @@ mod tests {
         .unwrap();
         assert_eq!(model_anchor.edge, px(72.0));
         assert_eq!(model_anchor.bottom, px(48.0));
+
+        let project = Bounds {
+            origin: point(px(113.0), px(203.0)),
+            size: size(px(130.0), px(31.0)),
+        };
+        let project_anchor = composer_drop_down_anchor(Some(composer), Some(project)).unwrap();
+        assert_eq!(project_anchor.left, px(13.0));
+        assert_eq!(project_anchor.top, px(40.0));
+
+        let branch = Bounds {
+            origin: point(px(300.0), px(203.0)),
+            size: size(px(120.0), px(31.0)),
+        };
+        let branch_anchor = composer_drop_down_anchor(Some(composer), Some(branch)).unwrap();
+        assert_eq!(branch_anchor.left, px(200.0));
+        assert_eq!(branch_anchor.top, px(40.0));
     }
 
     #[test]
