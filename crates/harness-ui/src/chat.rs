@@ -71,7 +71,6 @@ const COMPOSER_DOCKED_BOTTOM_PADDING: f32 = 12.0;
 const MODEL_PICKER_WIDTH: f32 = 382.0;
 const MODEL_PICKER_PANEL_HEIGHT: f32 = 337.0;
 const MODEL_CONTROLS_PADDING: f32 = 8.0;
-const EFFORT_SLIDER_WIDTH: f32 = MODEL_PICKER_WIDTH - MODEL_CONTROLS_PADDING * 2.0;
 const EFFORT_SLIDER_HEIGHT: f32 = 36.0;
 const EFFORT_SLIDER_INSET: f32 = 2.0;
 const EFFORT_SLIDER_MIN_FILL: f32 = 44.0;
@@ -2413,6 +2412,8 @@ impl ChatView {
             f32::from(bounds.origin.x),
             f32::from(bounds.size.width),
             count,
+            f32::from(px(EFFORT_SLIDER_INSET)),
+            f32::from(px(EFFORT_SLIDER_MIN_FILL)),
         )
     }
 
@@ -6129,7 +6130,7 @@ impl ChatView {
                     ),
             )
             .when_some(selected, |menu, selected| {
-                menu.child(self.model_controls(selected, window, cx))
+                menu.child(self.model_controls(selected, panel_width, window, cx))
             })
             .with_animation(
                 "composer-model-menu",
@@ -6290,6 +6291,7 @@ impl ChatView {
     fn model_controls(
         &self,
         selected: ModelChoice,
+        panel_width: Pixels,
         window: &Window,
         cx: &Context<Self>,
     ) -> AnyElement {
@@ -6428,6 +6430,7 @@ impl ChatView {
                     efforts,
                     selected_index,
                     display_index,
+                    panel_width - px(MODEL_CONTROLS_PADDING * 2.0),
                     window,
                     cx,
                 ))
@@ -6451,14 +6454,29 @@ impl ChatView {
         efforts: Vec<String>,
         selected_index: usize,
         display_index: usize,
+        track_width: Pixels,
         window: &Window,
         cx: &Context<Self>,
     ) -> AnyElement {
         let theme = self.theme;
         let count = efforts.len();
         let disabled = count <= 1;
-        let selected_width = effort_fill_width(selected_index, count);
-        let display_width = effort_fill_width(display_index, count);
+        let inset = f32::from(px(EFFORT_SLIDER_INSET));
+        let minimum_fill = f32::from(px(EFFORT_SLIDER_MIN_FILL));
+        let selected_width = gpui::px(effort_fill_width(
+            selected_index,
+            count,
+            f32::from(track_width),
+            inset,
+            minimum_fill,
+        ));
+        let display_width = gpui::px(effort_fill_width(
+            display_index,
+            count,
+            f32::from(track_width),
+            inset,
+            minimum_fill,
+        ));
         let entity = cx.entity();
         let bounds_probe = canvas(
             move |bounds, _, cx| {
@@ -6575,7 +6593,7 @@ impl ChatView {
             .top(px(EFFORT_SLIDER_INSET))
             .bottom(px(EFFORT_SLIDER_INSET))
             .left(px(EFFORT_SLIDER_INSET))
-            .w(px(display_width))
+            .w(display_width)
             .rounded_full()
             .overflow_hidden()
             .bg(fill_background)
@@ -6587,7 +6605,7 @@ impl ChatView {
                 Animation::new(theme.motion_duration(Duration::from_millis(170)))
                     .with_easing(crate::theme::web_ease_out),
                 move |fill, delta| {
-                    fill.w(px(selected_width + (display_width - selected_width) * delta))
+                    fill.w(selected_width + (display_width - selected_width) * delta)
                 },
             );
 
@@ -8807,16 +8825,23 @@ fn compact_model_name(display_name: &str) -> String {
     }
 }
 
-fn effort_index_from_pointer(client_x: f32, left: f32, width: f32, stop_count: usize) -> usize {
+fn effort_index_from_pointer(
+    client_x: f32,
+    left: f32,
+    width: f32,
+    stop_count: usize,
+    inset: f32,
+    minimum_fill: f32,
+) -> usize {
     if stop_count <= 1 {
         return 0;
     }
-    let inner_width = width - EFFORT_SLIDER_INSET * 2.0;
-    if inner_width <= EFFORT_SLIDER_MIN_FILL {
+    let inner_width = width - inset * 2.0;
+    if inner_width <= minimum_fill {
         return 0;
     }
-    let travel_width = inner_width - EFFORT_SLIDER_MIN_FILL;
-    let relative_x = client_x - left - EFFORT_SLIDER_INSET - EFFORT_SLIDER_MIN_FILL;
+    let travel_width = inner_width - minimum_fill;
+    let relative_x = client_x - left - inset - minimum_fill;
     let progress = (relative_x / travel_width).clamp(0.0, 1.0);
     (progress * (stop_count - 1) as f32).round() as usize
 }
@@ -8829,10 +8854,14 @@ fn effort_progress(index: usize, count: usize) -> f32 {
     }
 }
 
-fn effort_fill_width(index: usize, count: usize) -> f32 {
-    EFFORT_SLIDER_MIN_FILL
-        + effort_progress(index, count)
-            * (EFFORT_SLIDER_WIDTH - EFFORT_SLIDER_MIN_FILL - EFFORT_SLIDER_INSET * 2.0)
+fn effort_fill_width(
+    index: usize,
+    count: usize,
+    track_width: f32,
+    inset: f32,
+    minimum_fill: f32,
+) -> f32 {
+    minimum_fill + effort_progress(index, count) * (track_width - minimum_fill - inset * 2.0)
 }
 
 fn ease_out_cubic(progress: f32) -> f32 {
@@ -9764,14 +9793,30 @@ mod tests {
     #[test]
     fn effort_slider_geometry_matches_the_web_component() {
         let left = 100.0;
-        assert_eq!(effort_index_from_pointer(100.0, left, 314.0, 4), 0);
-        assert_eq!(effort_index_from_pointer(146.0, left, 314.0, 4), 0);
-        assert_eq!(effort_index_from_pointer(279.0, left, 314.0, 4), 2);
-        assert_eq!(effort_index_from_pointer(412.0, left, 314.0, 4), 3);
-        assert_eq!(effort_index_from_pointer(500.0, left, 314.0, 4), 3);
-        assert!((effort_fill_width(0, 4) - 44.0).abs() < f32::EPSILON);
-        assert!((effort_fill_width(3, 4) - 362.0).abs() < f32::EPSILON);
-        assert!((effort_fill_width(0, 1) - 203.0).abs() < f32::EPSILON);
+        assert_eq!(
+            effort_index_from_pointer(100.0, left, 314.0, 4, 2.0, 44.0),
+            0
+        );
+        assert_eq!(
+            effort_index_from_pointer(146.0, left, 314.0, 4, 2.0, 44.0),
+            0
+        );
+        assert_eq!(
+            effort_index_from_pointer(279.0, left, 314.0, 4, 2.0, 44.0),
+            2
+        );
+        assert_eq!(
+            effort_index_from_pointer(412.0, left, 314.0, 4, 2.0, 44.0),
+            3
+        );
+        assert_eq!(
+            effort_index_from_pointer(500.0, left, 314.0, 4, 2.0, 44.0),
+            3
+        );
+        assert!((effort_fill_width(0, 4, 366.0, 2.0, 44.0) - 44.0).abs() < f32::EPSILON);
+        assert!((effort_fill_width(3, 4, 366.0, 2.0, 44.0) - 362.0).abs() < f32::EPSILON);
+        assert!((effort_fill_width(0, 1, 366.0, 2.0, 44.0) - 203.0).abs() < f32::EPSILON);
+        assert!((effort_fill_width(3, 4, 328.0, 2.0, 44.0) - 324.0).abs() < f32::EPSILON);
     }
 
     #[test]
