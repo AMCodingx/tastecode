@@ -16,9 +16,22 @@ pub(crate) fn raised_hover(theme: Theme) -> Background {
 /// The web `--bg-rail` token stays flat in dark mode and aliases the raised
 /// chrome gradient in light mode.
 pub(crate) fn rail_background(theme: Theme) -> Background {
+    rail_background_with_opacity(theme, 1.0)
+}
+
+pub(crate) fn rail_background_with_opacity(theme: Theme, opacity: f32) -> Background {
+    let opacity = opacity.clamp(0.0, 1.0);
     match theme.mode {
-        ThemeMode::Dark => theme.rail.hsla().into(),
-        ThemeMode::Light => raised(theme),
+        ThemeMode::Dark => theme.rail.hsla().opacity(opacity).into(),
+        ThemeMode::Light => {
+            let from: Hsla = gpui::rgb(0xffffff).into();
+            let to: Hsla = gpui::rgb(0xfafafa).into();
+            linear_gradient(
+                180.0,
+                linear_color_stop(from.opacity(opacity), 0.0),
+                linear_color_stop(to.opacity(opacity), 1.0),
+            )
+        }
     }
 }
 
@@ -275,6 +288,28 @@ mod tests {
 
         assert_eq!(rail_background(dark), dark.rail.hsla().into());
         assert_eq!(rail_background(light), raised(light));
+    }
+
+    #[test]
+    fn translucent_rail_background_keeps_the_light_gradient() {
+        let dark = Theme::dark();
+        let light = Theme::light();
+        let opacity = 0.545;
+        let light_from: Hsla = gpui::rgb(0xffffff).into();
+        let light_to: Hsla = gpui::rgb(0xfafafa).into();
+
+        assert_eq!(
+            rail_background_with_opacity(dark, opacity),
+            dark.rail.hsla().opacity(opacity).into()
+        );
+        assert_eq!(
+            rail_background_with_opacity(light, opacity),
+            linear_gradient(
+                180.0,
+                linear_color_stop(light_from.opacity(opacity), 0.0),
+                linear_color_stop(light_to.opacity(opacity), 1.0),
+            )
+        );
     }
 
     #[test]

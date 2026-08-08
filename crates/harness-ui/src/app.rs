@@ -1908,7 +1908,7 @@ impl HarnessApp {
                         .bottom_0()
                         .left_0()
                         .w(px(rail_width))
-                        .bg(theme.rail.hsla())
+                        .bg(crate::chrome::rail_background(theme))
                         .border_r_1()
                         .border_color(glass_edge_color(theme, self.preferences.sidebar_glass)),
                 )

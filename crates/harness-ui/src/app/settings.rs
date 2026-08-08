@@ -5101,7 +5101,7 @@ fn glass_choice(
             div()
                 .absolute()
                 .inset_0()
-                .bg(theme.rail.hsla().opacity(pane_opacity)),
+                .bg(chrome::rail_background_with_opacity(theme, pane_opacity)),
         )
         .child(
             div()

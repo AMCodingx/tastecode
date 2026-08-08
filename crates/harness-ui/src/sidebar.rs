@@ -214,7 +214,10 @@ pub fn sidebar(props: SidebarProps<'_>, actions: SidebarActions) -> impl IntoEle
         .flex_none()
         .flex()
         .flex_col()
-        .bg(theme.rail.hsla().opacity(rail_opacity(glass)))
+        .bg(chrome::rail_background_with_opacity(
+            theme,
+            rail_opacity(glass),
+        ))
         .border_r_1()
         .border_color(glass_edge_color(theme, glass))
         .child(if mode == SidebarMode::Inbox {
