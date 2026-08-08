@@ -569,16 +569,10 @@ impl ChatView {
     }
 
     pub(crate) fn begin_session(&mut self, session: SessionContext, cx: &mut Context<Self>) {
-        self.reset_session(Some(session), false, cx);
+        self.reset_session(Some(session), cx);
     }
 
-    fn reset_session(
-        &mut self,
-        session: Option<SessionContext>,
-        preserve_draft: bool,
-        cx: &mut Context<Self>,
-    ) {
-        self.cancel_voice(cx);
+    fn reset_session(&mut self, session: Option<SessionContext>, cx: &mut Context<Self>) {
         self.release_terminal_for_session_change(cx);
         self.session = session;
         self.state = ThreadState::default();
@@ -601,10 +595,10 @@ impl ChatView {
         self.last_work_turn_id = None;
         self.last_specific_work_label = None;
         self.thread_search.close();
-        self.clear_composer = !preserve_draft;
-        if !preserve_draft {
-            self.restore_composer = None;
-        }
+        // React keeps one Composer mounted while navigation replaces the thread
+        // around it, so draft text, attachments, voice capture, and pending
+        // restoration survive project and session changes. Submission owns the
+        // only normal clear; a provider capability change can still cancel voice.
         self.composer_box_bounds = None;
         self.composer_field_bounds = None;
         self.composer_dock_pending = None;
@@ -620,10 +614,6 @@ impl ChatView {
             .is_some_and(|session| session.thread_id.is_some());
         self.pending_live.clear();
         self.delta_flush_scheduled = false;
-        if !preserve_draft {
-            self.attachments.clear();
-            self.attachment_error = None;
-        }
         self.composer_menu = None;
         self.model_search_reset = false;
         self.model_search_focus_pending = false;
@@ -648,13 +638,12 @@ impl ChatView {
 
     pub(crate) fn begin_draft(&mut self, session: SessionContext, cx: &mut Context<Self>) {
         debug_assert!(session.thread_id.is_none());
-        let preserve_draft = is_new_session(self.session.as_ref());
-        self.reset_session(Some(session), preserve_draft, cx);
+        self.reset_session(Some(session), cx);
         self.loading = false;
     }
 
     pub(crate) fn begin_empty_draft(&mut self, cx: &mut Context<Self>) {
-        self.reset_session(None, true, cx);
+        self.reset_session(None, cx);
         self.loading = false;
     }
 
