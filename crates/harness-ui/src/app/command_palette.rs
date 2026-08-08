@@ -167,9 +167,15 @@ impl HarnessApp {
             .read(cx)
             .focus_handle(cx)
             .is_focused(window);
+        let inbox_search_focused = self
+            .sidebar_search
+            .read(cx)
+            .focus_handle(cx)
+            .is_focused(window);
         if palette_input_focused
             || search_input_focused
             || sidebar_input_focused
+            || inbox_search_focused
             || self.chat.read(cx).text_input_focused(window, cx)
         {
             return;
