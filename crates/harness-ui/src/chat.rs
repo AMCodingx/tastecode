@@ -3464,6 +3464,7 @@ impl ChatView {
         let stopping = show_stop && self.interrupt_pending;
         let disabled = !show_stop && send_disabled;
         let sending = !show_stop && self.sending;
+        let action_group: SharedString = "composer-primary-action-hover".into();
         let composer_orb = theme.composer_orb.hsla();
         let composer_stop = theme.composer_stop.hsla();
         let stopping_background: gpui::Hsla = if theme.mode == ThemeMode::Dark {
@@ -3527,7 +3528,7 @@ impl ChatView {
             .child(
                 div()
                     .id("composer-primary-action")
-                    .group("composer-primary-action-hover")
+                    .group(action_group.clone())
                     .absolute()
                     .inset_0()
                     .rounded_full()
@@ -3542,16 +3543,38 @@ impl ChatView {
                         button
                             .cursor_pointer()
                             .hover(move |style| style.inset(px(-0.75)).bg(hover_background))
-                            .active(|style| style.inset(px(1.2)).opacity(0.84))
+                            .active(move |style| {
+                                if show_stop {
+                                    style.inset(px(1.2))
+                                } else {
+                                    style
+                                }
+                            })
                             .on_click(cx.listener(|this, _event, _window, cx| {
                                 this.primary_action(cx);
                             }))
+                    })
+                    .when(!show_stop, |button| {
+                        button.child(
+                            div()
+                                .id("composer-primary-active-shade")
+                                .absolute()
+                                .top_0()
+                                .left_0()
+                                .right_0()
+                                .h(px(1.0))
+                                .bg(gpui::black().opacity(0.08))
+                                .opacity(0.0)
+                                .group_active(action_group.clone(), |style| style.opacity(1.0)),
+                        )
                     })
                     .child(composer_primary_icon(
                         show_stop,
                         stopping,
                         self.sending,
                         self.send_motion_generation,
+                        !disabled && !stopping,
+                        action_group,
                         theme,
                     )),
             )
@@ -4000,9 +4023,10 @@ impl ChatView {
 
     fn voice_button(&self, cx: &Context<Self>) -> AnyElement {
         let theme = self.theme;
+        let group: SharedString = "composer-voice-hover".into();
         div()
             .id("composer-voice")
-            .group("composer-voice-hover")
+            .group(group.clone())
             .size(px(30.0))
             .ml(px(2.0))
             .rounded(px(15.0))
@@ -4019,15 +4043,18 @@ impl ChatView {
                     .bg(theme.surface_2.hsla())
                     .text_color(theme.text.hsla())
             })
-            .active(|style| style.opacity(0.72))
+            .active(|style| style.size(px(29.1)).ml(px(2.45)).mr(px(0.45)).my(px(0.45)))
             .on_click(cx.listener(|this, _event, _window, cx| this.start_voice(cx)))
-            .child(motion_icon(
-                "composer-voice-icon",
-                "icons/mic.svg",
-                15.0,
-                "composer-voice-hover",
-                theme,
-            ))
+            .child(
+                div()
+                    .id("composer-voice-icon-press")
+                    .size(px(15.0))
+                    .group_active(group.clone(), |style| style.size(px(14.55)).m(px(0.225)))
+                    .child(
+                        motion_icon("composer-voice-icon", "icons/mic.svg", 15.0, group, theme)
+                            .size_full(),
+                    ),
+            )
             .into_any_element()
     }
 
@@ -4035,8 +4062,33 @@ impl ChatView {
         let theme = self.theme;
         let transcribing = self.voice_phase == VoicePhase::Transcribing;
         let duration = format_voice_duration(self.voice_recorder.elapsed());
+        let stop_group: SharedString = "composer-voice-stop-hover".into();
+        let stop_icon_size = if transcribing { 13.0 } else { 11.0 };
+        let stop_icon = div()
+            .id("composer-voice-stop-icon-press")
+            .size(px(stop_icon_size))
+            .group_active(stop_group.clone(), move |style| {
+                style
+                    .size(px(stop_icon_size * 0.94))
+                    .m(px(stop_icon_size * 0.03))
+            })
+            .child(
+                motion_icon(
+                    "composer-voice-stop-icon",
+                    if transcribing {
+                        "icons/x.svg"
+                    } else {
+                        "icons/square.svg"
+                    },
+                    stop_icon_size,
+                    stop_group.clone(),
+                    theme,
+                )
+                .size_full(),
+            );
         let stop = div()
             .id("composer-voice-stop")
+            .group(stop_group)
             .size(px(28.0))
             .rounded(px(14.0))
             .flex()
@@ -4053,7 +4105,7 @@ impl ChatView {
                             .bg(theme.surface_3.hsla())
                             .text_color(theme.text.hsla())
                     })
-                    .active(|style| style.opacity(0.72))
+                    .active(|style| style.size(px(26.32)).m(px(0.84)))
                     .on_click(cx.listener(move |this, _event, _window, cx| {
                         if transcribing {
                             this.cancel_voice(cx);
@@ -4062,9 +4114,51 @@ impl ChatView {
                         }
                     }))
             })
-            .child(if transcribing { "×" } else { "■" });
+            .child(stop_icon);
+        let submit_group: SharedString = "composer-voice-submit-hover".into();
+        let submit_icon_size = if transcribing { 12.0 } else { 13.0 };
+        let submit_icon = motion_icon(
+            "composer-voice-submit-icon",
+            if transcribing {
+                "icons/loader-circle.svg"
+            } else {
+                "icons/arrow-up.svg"
+            },
+            submit_icon_size,
+            submit_group.clone(),
+            theme,
+        )
+        .size_full();
+        let submit_icon = if transcribing && !theme.reduced_motion {
+            submit_icon
+                .with_animation(
+                    "composer-voice-submit-spinner",
+                    theme.repeating_animation(Duration::from_millis(700)),
+                    |icon, delta| {
+                        icon.with_transformation(IconTransformation::rotate(delta * 360.0))
+                    },
+                )
+                .into_any_element()
+        } else {
+            submit_icon.into_any_element()
+        };
+        let submit_icon = div()
+            .id("composer-voice-submit-icon-press")
+            .size(px(submit_icon_size))
+            .group_hover(submit_group.clone(), move |style| {
+                style
+                    .size(px(submit_icon_size * 1.05))
+                    .m(px(submit_icon_size * -0.025))
+            })
+            .group_active(submit_group.clone(), move |style| {
+                style
+                    .size(px(submit_icon_size * 0.94))
+                    .m(px(submit_icon_size * 0.03))
+            })
+            .child(submit_icon);
         let submit = div()
             .id("composer-voice-submit")
+            .group(submit_group)
             .size(px(28.0))
             .rounded(px(14.0))
             .flex()
@@ -4078,13 +4172,13 @@ impl ChatView {
             .when(!running && !transcribing, |button| {
                 button
                     .cursor_pointer()
-                    .hover(|style| style.opacity(0.9))
-                    .active(|style| style.opacity(0.72))
+                    .hover(|style| style.size(px(29.4)).m(px(-0.7)))
+                    .active(|style| style.size(px(26.32)).m(px(0.84)))
                     .on_click(cx.listener(|this, _event, _window, cx| {
                         this.stop_voice(true, cx);
                     }))
             })
-            .child(if transcribing { "…" } else { "↑" });
+            .child(submit_icon);
         div()
             .min_w(px(0.0))
             .flex_1()
@@ -5088,23 +5182,32 @@ impl ChatView {
                     })
                     .cursor_pointer()
                     .hover(move |style| style.bg(model_picker_hover_background(theme)))
-                    .active(|style| style.opacity(0.78))
+                    .active(|style| style.size(px(32.64)).m(px(0.68)))
                     .on_click(cx.listener(move |this, _event, _window, cx| {
                         this.select_model_source(key.clone(), cx);
                     }))
                     .child(
-                        motion_icon(
-                            ("model-provider-icon", index),
-                            provider_mark_path(provider_mark(group.provider)),
-                            18.0,
-                            hover_group,
-                            theme,
-                        )
-                        .text_color(if active {
-                            theme.text.hsla()
-                        } else {
-                            theme.text_3.hsla()
-                        }),
+                        div()
+                            .id(("model-provider-icon-press", index))
+                            .size(px(18.0))
+                            .group_active(hover_group.clone(), |style| {
+                                style.size(px(17.28)).m(px(0.36))
+                            })
+                            .child(
+                                motion_icon(
+                                    ("model-provider-icon", index),
+                                    provider_mark_path(provider_mark(group.provider)),
+                                    18.0,
+                                    hover_group,
+                                    theme,
+                                )
+                                .size_full(),
+                            )
+                            .text_color(if active {
+                                theme.text.hsla()
+                            } else {
+                                theme.text_3.hsla()
+                            }),
                     )
             }));
 
@@ -5461,7 +5564,7 @@ impl ChatView {
                                         .border_color(theme.text_3.hsla())
                                         .bg(fast_toggle_hover_background(theme))
                                 })
-                                .active(|style| style.opacity(0.72))
+                                .active(|style| style.size(px(29.1)).m(px(0.45)))
                                 .on_click(cx.listener(|this, _event, _window, cx| {
                                     cx.emit(ChatEvent::ToggleFast);
                                     this.composer_menu = Some(ComposerMenu::Model);
@@ -7149,6 +7252,8 @@ fn composer_primary_icon(
     stopping: bool,
     sending: bool,
     send_motion_generation: u64,
+    interactive: bool,
+    action_group: SharedString,
     theme: Theme,
 ) -> AnyElement {
     if show_stop {
@@ -7156,11 +7261,12 @@ fn composer_primary_icon(
             "composer-primary-icon",
             "icons/square.svg",
             9.0,
-            "composer-primary-action-hover",
+            action_group.clone(),
             theme,
         )
+        .size_full()
         .flex_none();
-        if stopping {
+        let icon = if stopping {
             icon.with_animation(
                 "composer-stopping",
                 theme.repeating_animation(Duration::from_millis(900)),
@@ -7185,7 +7291,18 @@ fn composer_primary_icon(
                 },
             )
             .into_any_element()
-        }
+        };
+        div()
+            .id("composer-primary-icon-press")
+            .size(px(9.0))
+            .when(interactive, |icon| {
+                icon.group_hover(action_group.clone(), |style| {
+                    style.size(px(9.45)).m(px(-0.225))
+                })
+                .group_active(action_group, |style| style.size(px(8.28)).m(px(0.36)))
+            })
+            .child(icon)
+            .into_any_element()
     } else {
         let icon = motion_icon(
             "composer-primary-icon",
@@ -7195,7 +7312,7 @@ fn composer_primary_icon(
             theme,
         )
         .flex_none();
-        if sending {
+        let icon = if sending {
             icon.with_animation(
                 ("composer-send-motion", send_motion_generation),
                 Animation::new(theme.motion_duration(Duration::from_millis(180))),
@@ -7222,7 +7339,15 @@ fn composer_primary_icon(
                 },
             )
             .into_any_element()
-        }
+        };
+        div()
+            .id("composer-primary-icon-hover-scale")
+            .size(px(15.0))
+            .when(interactive, |icon| {
+                icon.group_hover(action_group, |style| style.size(px(15.75)).m(px(-0.375)))
+            })
+            .child(icon)
+            .into_any_element()
     }
 }
 
@@ -7448,21 +7573,26 @@ fn fast_toggle_shadows(theme: Theme) -> Vec<BoxShadow> {
 
 fn fast_toggle_icon(fast: bool, hover_group: &'static str, theme: Theme) -> AnyElement {
     let icon = div()
+        .id("model-fast-toggle-icon-press")
         .size(px(15.0))
+        .group_active(hover_group, |style| style.size(px(14.55)).m(px(0.225)))
         .flex()
         .items_center()
         .justify_center()
-        .child(motion_icon(
-            "model-fast-toggle-icon",
-            if fast {
-                "icons/zap-filled.svg"
-            } else {
-                "icons/zap.svg"
-            },
-            15.0,
-            hover_group,
-            theme,
-        ));
+        .child(
+            motion_icon(
+                "model-fast-toggle-icon",
+                if fast {
+                    "icons/zap-filled.svg"
+                } else {
+                    "icons/zap.svg"
+                },
+                15.0,
+                hover_group,
+                theme,
+            )
+            .size_full(),
+        );
     if fast {
         icon.with_animation(
             "model-fast-bolt-on",
