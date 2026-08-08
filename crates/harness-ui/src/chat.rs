@@ -6082,13 +6082,14 @@ impl ChatView {
             )
         };
         div()
+            .h(px(89.0))
             .flex()
             .flex_col()
             .gap(px(6.0))
             .border_t_1()
             .border_color(chrome::menu_border(theme))
             .bg(controls_background)
-            .p(px(8.0))
+            .p(px(MODEL_CONTROLS_PADDING))
             .child(
                 div()
                     .min_h(px(30.0))
@@ -6113,41 +6114,71 @@ impl ChatView {
                                         gpui::rgb(0x27272a)
                                     })
                                     .child(displayed_label),
+                            )
+                            .with_animation(
+                                "model-effort-title-in",
+                                menu_entry_animation(theme),
+                                |title, delta| title.text_size(px(11.5 * menu_entry_scale(delta))),
                             ),
                     )
                     .when(has_fast, |row| {
+                        let button = div()
+                            .id("model-fast-toggle")
+                            .group("model-fast-toggle-hover")
+                            .absolute()
+                            .inset_0()
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .rounded(px(15.0))
+                            .border_1()
+                            .border_color(fast_toggle_border(theme, fast))
+                            .bg(fast_toggle_background(theme, fast))
+                            .text_color(if fast {
+                                theme.text.hsla()
+                            } else {
+                                theme.text_2.hsla()
+                            })
+                            .shadow(fast_toggle_shadows(theme))
+                            .cursor_pointer()
+                            .hover(move |style| {
+                                style
+                                    .border_color(theme.text_3.hsla())
+                                    .bg(fast_toggle_hover_background(theme))
+                            })
+                            .active(|style| {
+                                style
+                                    .top(relative(0.015))
+                                    .right(relative(0.015))
+                                    .bottom(relative(0.015))
+                                    .left(relative(0.015))
+                            })
+                            .on_click(cx.listener(|this, _event, _window, cx| {
+                                cx.emit(ChatEvent::ToggleFast);
+                                this.composer_menu = Some(ComposerMenu::Model);
+                            }))
+                            .child(fast_toggle_icon(fast, "model-fast-toggle-hover", theme));
                         row.child(
                             div()
-                                .id("model-fast-toggle")
-                                .group("model-fast-toggle-hover")
+                                .relative()
                                 .size(px(30.0))
-                                .flex()
-                                .items_center()
-                                .justify_center()
-                                .rounded(px(15.0))
-                                .border_1()
-                                .border_color(fast_toggle_border(theme, fast))
-                                .bg(fast_toggle_background(theme, fast))
-                                .text_color(if fast {
-                                    theme.text.hsla()
-                                } else {
-                                    theme.text_2.hsla()
-                                })
-                                .shadow(fast_toggle_shadows(theme))
-                                .cursor_pointer()
-                                .hover(move |style| {
-                                    style
-                                        .border_color(theme.text_3.hsla())
-                                        .bg(fast_toggle_hover_background(theme))
-                                })
-                                .active(|style| style.size(px(29.1)).m(px(0.45)))
-                                .on_click(cx.listener(|this, _event, _window, cx| {
-                                    cx.emit(ChatEvent::ToggleFast);
-                                    this.composer_menu = Some(ComposerMenu::Model);
-                                }))
-                                .child(fast_toggle_icon(fast, "model-fast-toggle-hover", theme)),
+                                .flex_none()
+                                .child(button)
+                                .with_animation(
+                                    "model-fast-toggle-in",
+                                    menu_entry_animation(theme),
+                                    |toggle, delta| toggle.size(px(30.0 * menu_entry_scale(delta))),
+                                ),
                         )
-                    }),
+                    })
+                    .with_animation(
+                        "model-controls-head-in",
+                        menu_entry_animation(theme),
+                        |header, delta| {
+                            let scale = menu_entry_scale(delta);
+                            header.min_h(px(30.0 * scale)).pl(px(6.0 * scale))
+                        },
+                    ),
             )
             .when(!efforts.is_empty(), |controls| {
                 controls.child(self.effort_slider(
@@ -6158,6 +6189,17 @@ impl ChatView {
                     cx,
                 ))
             })
+            .with_animation(
+                "model-controls-in",
+                menu_entry_animation(theme),
+                |controls, delta| {
+                    let scale = menu_entry_scale(delta);
+                    controls
+                        .h(px(89.0 * scale))
+                        .gap(px(6.0 * scale))
+                        .p(px(MODEL_CONTROLS_PADDING * scale))
+                },
+            )
             .into_any_element()
     }
 
@@ -6339,7 +6381,25 @@ impl ChatView {
                         blur_radius: px(0.0),
                         spread_radius: px(1.0),
                     }])
-            }));
+                    .with_animation(
+                        ("effort-stop-in", index),
+                        menu_entry_animation(theme),
+                        |stop, delta| {
+                            let scale = menu_entry_scale(delta);
+                            stop.mt(px(-2.0 * scale))
+                                .ml(px(-2.0 * scale))
+                                .size(px(4.0 * scale))
+                        },
+                    )
+            }))
+            .with_animation(
+                "effort-stops-in",
+                menu_entry_animation(theme),
+                |stops, delta| {
+                    let inset = 22.0 * menu_entry_scale(delta);
+                    stops.left(px(inset)).right(px(inset))
+                },
+            );
 
         let track = div()
             .absolute()
@@ -6353,11 +6413,10 @@ impl ChatView {
             .child(fill)
             .child(stops);
 
-        let slider = div()
+        let surface = div()
             .id("model-effort-slider")
-            .relative()
-            .h(px(EFFORT_SLIDER_HEIGHT))
-            .w_full()
+            .absolute()
+            .inset_0()
             .track_focus(&self.effort_focus)
             .opacity(if disabled { 0.45 } else { 1.0 })
             .child(bounds_probe)
@@ -6376,41 +6435,51 @@ impl ChatView {
                 },
             );
 
-        if disabled {
-            return slider.into_any_element();
-        }
-
         let efforts_for_up = efforts.clone();
-        slider
-            .on_key_down(cx.listener(move |this, event, _window, cx| {
-                this.effort_key_down(event, &efforts, selected_index, cx);
-            }))
-            .on_mouse_down(
-                gpui::MouseButton::Left,
-                cx.listener(move |this, event, window, cx| {
-                    this.begin_effort_drag(event, count, window, cx);
-                }),
+        let surface = if disabled {
+            surface
+        } else {
+            surface
+                .on_key_down(cx.listener(move |this, event, _window, cx| {
+                    this.effort_key_down(event, &efforts, selected_index, cx);
+                }))
+                .on_mouse_down(
+                    gpui::MouseButton::Left,
+                    cx.listener(move |this, event, window, cx| {
+                        this.begin_effort_drag(event, count, window, cx);
+                    }),
+                )
+                .on_mouse_move(cx.listener(move |this, event, _window, cx| {
+                    this.effort_pointer_moved(event, count, cx);
+                }))
+                .on_mouse_up(
+                    gpui::MouseButton::Left,
+                    cx.listener(move |this, event, _window, cx| {
+                        this.finish_effort_drag(event, &efforts_for_up, selected_index, cx);
+                    }),
+                )
+                .on_mouse_up_out(
+                    gpui::MouseButton::Left,
+                    cx.listener(|this, _event, _window, cx| {
+                        this.cancel_effort_drag(cx);
+                    }),
+                )
+                .on_hover(cx.listener(|this, hovered: &bool, _window, cx| {
+                    if !*hovered && !this.effort_dragging {
+                        this.begin_effort_dither_fade(cx);
+                    }
+                }))
+        };
+        div()
+            .relative()
+            .h(px(EFFORT_SLIDER_HEIGHT))
+            .w_full()
+            .child(surface)
+            .with_animation(
+                "model-effort-slider-in",
+                menu_entry_animation(theme),
+                |slider, delta| slider.h(px(EFFORT_SLIDER_HEIGHT * menu_entry_scale(delta))),
             )
-            .on_mouse_move(cx.listener(move |this, event, _window, cx| {
-                this.effort_pointer_moved(event, count, cx);
-            }))
-            .on_mouse_up(
-                gpui::MouseButton::Left,
-                cx.listener(move |this, event, _window, cx| {
-                    this.finish_effort_drag(event, &efforts_for_up, selected_index, cx);
-                }),
-            )
-            .on_mouse_up_out(
-                gpui::MouseButton::Left,
-                cx.listener(|this, _event, _window, cx| {
-                    this.cancel_effort_drag(cx);
-                }),
-            )
-            .on_hover(cx.listener(|this, hovered: &bool, _window, cx| {
-                if !*hovered && !this.effort_dragging {
-                    this.begin_effort_dither_fade(cx);
-                }
-            }))
             .into_any_element()
     }
 }
