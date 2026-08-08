@@ -63,6 +63,8 @@ const COMPOSER_TOOLS_HEIGHT: f32 = 46.0;
 const BRIEF_CARD_GAP: f32 = 8.0;
 const BRIEF_STATUS_GAP: f32 = 6.0;
 const BRIEF_ENTRY_OFFSET: f32 = 8.0;
+const COMPOSER_MENU_GAP: f32 = 6.0;
+const MODEL_MENU_TRANSLATE_X: f32 = 28.0;
 const COMPOSER_DOCKED_BOTTOM_PADDING: f32 = 12.0;
 const MODEL_PICKER_WIDTH: f32 = 382.0;
 const MODEL_CONTROLS_PADDING: f32 = 8.0;
@@ -278,6 +280,18 @@ enum ComposerMenu {
     Branch,
 }
 
+#[derive(Clone, Copy)]
+enum ComposerMenuAlignment {
+    Left,
+    RightShiftedLeft(f32),
+}
+
+#[derive(Clone, Copy)]
+struct ComposerMenuAnchor {
+    edge: Pixels,
+    bottom: Pixels,
+}
+
 struct InputFieldSync {
     value: String,
     masked: bool,
@@ -399,6 +413,8 @@ pub(crate) struct ChatView {
     composer: Entity<InputState>,
     composer_box_bounds: Option<Bounds<Pixels>>,
     composer_field_bounds: Option<Bounds<Pixels>>,
+    permission_trigger_bounds: Option<Bounds<Pixels>>,
+    model_trigger_bounds: Option<Bounds<Pixels>>,
     composer_dock_pending: Option<ComposerDockPending>,
     composer_dock_motion: Option<ComposerDockMotion>,
     composer_dock_generation: u64,
@@ -553,6 +569,8 @@ impl ChatView {
             composer,
             composer_box_bounds: None,
             composer_field_bounds: None,
+            permission_trigger_bounds: None,
+            model_trigger_bounds: None,
             composer_dock_pending: None,
             composer_dock_motion: None,
             composer_dock_generation: 0,
@@ -668,6 +686,8 @@ impl ChatView {
         // only normal clear; a provider capability change can still cancel voice.
         self.composer_box_bounds = None;
         self.composer_field_bounds = None;
+        self.permission_trigger_bounds = None;
+        self.model_trigger_bounds = None;
         self.composer_dock_pending = None;
         self.composer_dock_motion = None;
         self.composer_dock_generation = self.composer_dock_generation.wrapping_add(1);
@@ -3699,7 +3719,7 @@ impl ChatView {
                 spread_radius: px(-18.0),
             }
         };
-        let popover = self.composer_popover(is_new_session, window, cx);
+        let popover = self.composer_popover(window, cx);
         let user_input = self.user_input_card(window, cx);
         let queue_panel = self.queue_panel(window, cx);
         let attach_view = cx.weak_entity();
@@ -4841,6 +4861,17 @@ impl ChatView {
         } else {
             theme.prompt.hsla()
         };
+        let bounds_view = cx.entity();
+        let bounds_probe = canvas(
+            move |bounds, _, cx| {
+                bounds_view.update(cx, |this, _| {
+                    this.permission_trigger_bounds = Some(bounds);
+                });
+            },
+            |_, _, _, _| {},
+        )
+        .absolute()
+        .inset_0();
         let sizing = div()
             .h(px(34.0))
             .px(px(12.0))
@@ -4936,6 +4967,7 @@ impl ChatView {
                         this.toggle_composer_menu(ComposerMenu::Permissions, cx);
                     }))
             })
+            .child(bounds_probe)
             .child(sizing)
             .child(visual)
             .into_any_element()
@@ -4961,6 +4993,17 @@ impl ChatView {
         };
         let group: SharedString = "composer-model-hover".into();
         let provider_icon = provider_mark_path(provider_mark(selected.provider));
+        let bounds_view = cx.entity();
+        let bounds_probe = canvas(
+            move |bounds, _, cx| {
+                bounds_view.update(cx, |this, _| {
+                    this.model_trigger_bounds = Some(bounds);
+                });
+            },
+            |_, _, _, _| {},
+        )
+        .absolute()
+        .inset_0();
         let chevron = motion_icon(
             "composer-model-chevron-icon",
             "icons/chevron-down.svg",
@@ -5169,21 +5212,17 @@ impl ChatView {
                             this.toggle_composer_menu(ComposerMenu::Model, cx);
                         }))
                 })
+                .child(bounds_probe)
                 .child(sizing)
                 .child(visual)
                 .into_any_element(),
         )
     }
 
-    fn composer_popover(
-        &self,
-        is_new_session: bool,
-        window: &Window,
-        cx: &Context<Self>,
-    ) -> Option<AnyElement> {
+    fn composer_popover(&self, window: &Window, cx: &Context<Self>) -> Option<AnyElement> {
         match self.composer_menu {
-            Some(ComposerMenu::Permissions) => Some(self.permission_popover(is_new_session, cx)),
-            Some(ComposerMenu::Model) => Some(self.model_popover(is_new_session, window, cx)),
+            Some(ComposerMenu::Permissions) => Some(self.permission_popover(cx)),
+            Some(ComposerMenu::Model) => Some(self.model_popover(window, cx)),
             Some(ComposerMenu::Project) => Some(self.project_popover(cx)),
             Some(ComposerMenu::Branch) => Some(self.branch_popover(cx)),
             None => None,
@@ -5414,11 +5453,19 @@ impl ChatView {
             .into_any_element()
     }
 
-    fn permission_popover(&self, is_new_session: bool, cx: &Context<Self>) -> AnyElement {
+    fn permission_popover(&self, cx: &Context<Self>) -> AnyElement {
         let theme = self.theme;
         let selected = self.composer_settings.approval;
         let auto_review = self.composer_settings.auto_review_supported;
-        let attachment_offset = self.attachment_shelf_height();
+        let anchor = composer_menu_anchor(
+            self.composer_box_bounds,
+            self.permission_trigger_bounds,
+            ComposerMenuAlignment::Left,
+        )
+        .unwrap_or(ComposerMenuAnchor {
+            edge: px(48.0),
+            bottom: px(49.0),
+        });
         let options = [
             (
                 ApprovalMode::Ask,
@@ -5441,12 +5488,11 @@ impl ChatView {
                 "No sandbox, no prompts, no undo. Use with care.",
             ),
         ];
-        let menu_bottom = (if is_new_session { 183.0 } else { 147.0 }) + attachment_offset;
         div()
             .occlude()
             .absolute()
-            .left(px(40.0))
-            .bottom(px(menu_bottom))
+            .left(anchor.edge)
+            .bottom(anchor.bottom)
             .w(px(315.0))
             .rounded(px(8.0))
             .border_1()
@@ -5578,23 +5624,18 @@ impl ChatView {
                 Animation::new(theme.motion.fast).with_easing(crate::theme::web_ease_out),
                 move |menu, delta| {
                     let scale = menu_entry_scale(delta);
-                    menu.left(px(40.0 + 157.5 * (1.0 - scale)))
+                    menu.left(anchor.edge + px(157.5 * (1.0 - scale)))
                         .w(px(315.0 * scale))
                         .rounded(px(8.0 * scale))
                         .p(px(4.0 * scale))
                         .opacity(delta)
-                        .bottom(px(menu_bottom - 2.0 * (1.0 - delta)))
+                        .bottom(anchor.bottom - px(2.0 * (1.0 - delta)))
                 },
             )
             .into_any_element()
     }
 
-    fn model_popover(
-        &self,
-        is_new_session: bool,
-        window: &Window,
-        cx: &Context<Self>,
-    ) -> AnyElement {
+    fn model_popover(&self, window: &Window, cx: &Context<Self>) -> AnyElement {
         let theme = self.theme;
         let selected_key = self.composer_settings.selected_model_key.clone();
         let selected = self.selected_model().cloned();
@@ -5613,8 +5654,15 @@ impl ChatView {
             .cloned();
         let active_group_key = active_group.as_ref().map(|group| group.key.clone());
         let query = self.model_search.read(cx).value().to_string();
-        let attachment_offset = self.attachment_shelf_height();
-        let menu_bottom = (if is_new_session { 183.0 } else { 147.0 }) + attachment_offset;
+        let anchor = composer_menu_anchor(
+            self.composer_box_bounds,
+            self.model_trigger_bounds,
+            ComposerMenuAlignment::RightShiftedLeft(MODEL_MENU_TRANSLATE_X),
+        )
+        .unwrap_or(ComposerMenuAnchor {
+            edge: px(72.0),
+            bottom: px(48.0),
+        });
         let provider_rail = div()
             .id("model-provider-rail")
             .h_full()
@@ -5895,8 +5943,8 @@ impl ChatView {
         div()
             .occlude()
             .absolute()
-            .right(px(38.0))
-            .bottom(px(menu_bottom))
+            .right(anchor.edge)
+            .bottom(anchor.bottom)
             .w(px(MODEL_PICKER_WIDTH))
             .max_h(px(520.0))
             .rounded(px(RADIUS_XL))
@@ -5927,11 +5975,11 @@ impl ChatView {
                 Animation::new(theme.motion.fast).with_easing(crate::theme::web_ease_out),
                 move |menu, delta| {
                     let scale = menu_entry_scale(delta);
-                    menu.right(px(38.0 + MODEL_PICKER_WIDTH / 2.0 * (1.0 - scale)))
+                    menu.right(anchor.edge + px(MODEL_PICKER_WIDTH / 2.0 * (1.0 - scale)))
                         .w(px(MODEL_PICKER_WIDTH * scale))
                         .rounded(px(RADIUS_XL * scale))
                         .opacity(delta)
-                        .bottom(px(menu_bottom - 2.0 * (1.0 - delta)))
+                        .bottom(anchor.bottom - px(2.0 * (1.0 - delta)))
                 },
             )
             .into_any_element()
@@ -7799,6 +7847,28 @@ fn brief_entry_margin(gap: f32, delta: f32) -> f32 {
     gap - BRIEF_ENTRY_OFFSET * (1.0 - delta)
 }
 
+fn composer_menu_anchor(
+    composer: Option<Bounds<Pixels>>,
+    trigger: Option<Bounds<Pixels>>,
+    alignment: ComposerMenuAlignment,
+) -> Option<ComposerMenuAnchor> {
+    let composer = composer?;
+    let trigger = trigger?;
+    let composer_right = composer.origin.x + composer.size.width;
+    let trigger_right = trigger.origin.x + trigger.size.width;
+    let edge = match alignment {
+        ComposerMenuAlignment::Left => trigger.origin.x - composer.origin.x,
+        ComposerMenuAlignment::RightShiftedLeft(shift) => {
+            composer_right - trigger_right + px(shift)
+        }
+    };
+    let composer_bottom = composer.origin.y + composer.size.height;
+    Some(ComposerMenuAnchor {
+        edge,
+        bottom: composer_bottom - trigger.origin.y + px(COMPOSER_MENU_GAP),
+    })
+}
+
 fn brief_option_background(theme: Theme, selected: bool, hovered: bool) -> Background {
     if selected {
         return theme.surface_3.hsla().into();
@@ -9259,6 +9329,39 @@ mod tests {
             .collect::<Vec<_>>(),
             ["reference.png"]
         );
+    }
+
+    #[test]
+    fn composer_menus_follow_their_measured_triggers() {
+        let composer = Bounds {
+            origin: point(px(100.0), px(200.0)),
+            size: size(px(500.0), px(114.0)),
+        };
+        let permission = Bounds {
+            origin: point(px(148.0), px(271.0)),
+            size: size(px(90.0), px(34.0)),
+        };
+        let permission_anchor = composer_menu_anchor(
+            Some(composer),
+            Some(permission),
+            ComposerMenuAlignment::Left,
+        )
+        .unwrap();
+        assert_eq!(permission_anchor.edge, px(48.0));
+        assert_eq!(permission_anchor.bottom, px(49.0));
+
+        let model = Bounds {
+            origin: point(px(430.0), px(272.0)),
+            size: size(px(126.0), px(32.0)),
+        };
+        let model_anchor = composer_menu_anchor(
+            Some(composer),
+            Some(model),
+            ComposerMenuAlignment::RightShiftedLeft(MODEL_MENU_TRANSLATE_X),
+        )
+        .unwrap();
+        assert_eq!(model_anchor.edge, px(72.0));
+        assert_eq!(model_anchor.bottom, px(48.0));
     }
 
     #[test]
