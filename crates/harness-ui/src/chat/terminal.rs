@@ -515,6 +515,14 @@ impl ChatView {
             px(f32::from(height) * crate::zoom::factor()).clamp(px(MIN_HEIGHT), maximum);
     }
 
+    pub(crate) fn reset_terminal_preferences(&mut self, cx: &mut Context<Self>) {
+        self.set_terminal_closed(cx);
+        self.terminal_ui.height = px(DEFAULT_HEIGHT * crate::zoom::factor());
+        self.terminal_ui.resize_drag = None;
+        self.terminal_ui.viewport_bounds = None;
+        cx.notify();
+    }
+
     pub(crate) fn toggle_terminal_from_shell(&mut self, cx: &mut Context<Self>) {
         self.toggle_terminal(cx);
     }
@@ -559,6 +567,11 @@ impl ChatView {
     }
 
     fn close_terminal(&mut self, cx: &mut Context<Self>) {
+        self.set_terminal_closed(cx);
+        self.emit_terminal_preferences(cx);
+    }
+
+    fn set_terminal_closed(&mut self, cx: &mut Context<Self>) {
         self.terminal_ui.visible = false;
         self.terminal_ui.opening = false;
         self.terminal_ui.blink_generation += 1;
@@ -567,7 +580,6 @@ impl ChatView {
         }
         self.terminal_ui.early_output.clear();
         self.terminal_ui.pending_output.clear();
-        self.emit_terminal_preferences(cx);
     }
 
     fn emit_terminal_preferences(&self, cx: &mut Context<Self>) {

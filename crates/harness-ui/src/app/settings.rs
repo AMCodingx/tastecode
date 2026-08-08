@@ -3328,13 +3328,20 @@ impl HarnessApp {
     fn reset_native_preferences(&mut self, cx: &mut Context<Self>) {
         self.preferences = NativePreferences::default();
         self.sidebar_width = f32::from(self.preferences.rail_width);
+        self.sidebar_collapsed = false;
         self.selected_model_key = None;
         self.effort = None;
         self.service_tier = None;
+        self.approval = self.preferences.approval;
+        self.isolate_session = false;
+        self.design_mode = false;
+        self.chat
+            .update(cx, |chat, cx| chat.reset_terminal_preferences(cx));
         match NativePreferences::reset_file() {
             Ok(()) => self.state.notice = Some("Native preferences were reset.".into()),
             Err(error) => self.state.notice = Some(format!("Could not reset preferences: {error}")),
         }
+        self.close_settings(cx);
         self.apply_native_theme(cx);
         self.sync_model_selection(cx);
         self.sync_composer_settings(cx);
