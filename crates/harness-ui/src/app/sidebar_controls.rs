@@ -706,7 +706,7 @@ impl HarnessApp {
                             }
                         }
                     }
-                    items.push(sidebar_menu_rule(theme));
+                    items.push(sidebar_menu_rule("sidebar-thread-edit-rule-in", theme));
                     let rename_id = thread_id.clone();
                     items.push(sidebar_menu_item(
                         "sidebar-thread-rename",
@@ -768,7 +768,7 @@ impl HarnessApp {
                             }),
                         ));
                     }
-                    items.push(sidebar_menu_rule(theme));
+                    items.push(sidebar_menu_rule("sidebar-thread-delete-rule-in", theme));
                     items.push(sidebar_menu_item(
                         "sidebar-thread-archive",
                         "Delete thread",
@@ -903,7 +903,7 @@ impl HarnessApp {
                         }),
                     ));
                 }
-                items.push(sidebar_menu_rule(theme));
+                items.push(sidebar_menu_rule("sidebar-selection-delete-rule-in", theme));
                 items.push(sidebar_menu_item(
                     "sidebar-thread-archive-many",
                     format!("Delete {} threads", selected.len()),
@@ -980,7 +980,7 @@ impl HarnessApp {
                             Animation::new(theme.motion.fast)
                                 .with_easing(crate::theme::web_ease_out),
                             move |panel, delta| {
-                                let scale = 0.97 + 0.03 * delta;
+                                let scale = sidebar_menu_entry_scale(delta);
                                 panel
                                     .left(left + px(105.0 * (1.0 - scale)))
                                     .top(top + px(2.0 * (1.0 - delta)))
@@ -1447,6 +1447,16 @@ impl HarnessApp {
     }
 }
 
+const SIDEBAR_MENU_ENTRY_SCALE_FROM: f32 = 0.97;
+
+fn sidebar_menu_entry_scale(progress: f32) -> f32 {
+    SIDEBAR_MENU_ENTRY_SCALE_FROM + (1.0 - SIDEBAR_MENU_ENTRY_SCALE_FROM) * progress
+}
+
+fn sidebar_menu_entry_animation(theme: crate::Theme) -> Animation {
+    Animation::new(theme.motion.fast).with_easing(crate::theme::web_ease_out)
+}
+
 fn sidebar_menu_item(
     id: impl Into<SharedString>,
     label: impl Into<SharedString>,
@@ -1458,6 +1468,8 @@ fn sidebar_menu_item(
     let id = id.into();
     let hover_group: SharedString = format!("{id}:hover").into();
     let icon_id: SharedString = format!("{id}:icon").into();
+    let icon_animation_id: SharedString = format!("{id}:icon-in").into();
+    let animation_id: SharedString = format!("{id}:in").into();
     div()
         .id(id)
         .group(hover_group.clone())
@@ -1490,9 +1502,31 @@ fn sidebar_menu_item(
         })
         .on_click(listener)
         .when_some(icon_path, |item, icon_path| {
-            item.child(motion_icon(icon_id, icon_path, 13.0, hover_group, theme))
+            item.child(
+                div()
+                    .size(px(13.0))
+                    .flex_none()
+                    .child(motion_icon(icon_id, icon_path, 13.0, hover_group, theme).size_full())
+                    .with_animation(
+                        icon_animation_id,
+                        sidebar_menu_entry_animation(theme),
+                        |icon, delta| icon.size(px(13.0 * sidebar_menu_entry_scale(delta))),
+                    ),
+            )
         })
         .child(label.into())
+        .with_animation(
+            animation_id,
+            sidebar_menu_entry_animation(theme),
+            |item, delta| {
+                let scale = sidebar_menu_entry_scale(delta);
+                item.gap(px(8.0 * scale))
+                    .px(px(9.0 * scale))
+                    .py(px(6.0 * scale))
+                    .rounded(px(5.0 * scale))
+                    .text_size(px(13.5 * scale))
+            },
+        )
         .into_any_element()
 }
 
@@ -1505,6 +1539,17 @@ fn sidebar_menu_selection(count: usize, theme: crate::Theme) -> AnyElement {
         .text_size(px(11.5))
         .text_color(theme.text_3.hsla())
         .child(format!("{count} selected"))
+        .with_animation(
+            "sidebar-menu-selection-in",
+            sidebar_menu_entry_animation(theme),
+            |selection, delta| {
+                let scale = sidebar_menu_entry_scale(delta);
+                selection
+                    .h(px(28.0 * scale))
+                    .px(px(9.0 * scale))
+                    .text_size(px(11.5 * scale))
+            },
+        )
         .into_any_element()
 }
 
@@ -1512,12 +1557,16 @@ fn thread_count(count: usize) -> String {
     format!("{count} {}", if count == 1 { "thread" } else { "threads" })
 }
 
-fn sidebar_menu_rule(theme: crate::Theme) -> AnyElement {
+fn sidebar_menu_rule(id: &'static str, theme: crate::Theme) -> AnyElement {
     div()
         .h(px(1.0))
         .mx(px(2.0))
         .my(px(4.0))
         .bg(chrome::menu_border(theme))
+        .with_animation(id, sidebar_menu_entry_animation(theme), |rule, delta| {
+            let scale = sidebar_menu_entry_scale(delta);
+            rule.h(px(scale)).mx(px(2.0 * scale)).my(px(4.0 * scale))
+        })
         .into_any_element()
 }
 
