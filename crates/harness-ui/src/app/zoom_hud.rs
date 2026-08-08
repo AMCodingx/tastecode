@@ -4,7 +4,7 @@ use crate::motion_icon::motion_icon;
 use crate::theme::{TITLEBAR_HEIGHT, Theme};
 use crate::zoom;
 use crate::zoom::px;
-use gpui::{AnyElement, Context, KeyDownEvent, SharedString, Window, div, prelude::*};
+use gpui::{AnyElement, Context, KeyDownEvent, SharedString, Window, div, prelude::*, relative};
 use std::time::Duration;
 
 const MIN_ZOOM: f32 = 0.5;
@@ -169,45 +169,99 @@ impl HarnessApp {
                         .mx(px(2.0))
                         .bg(theme.line_strong.hsla()),
                 )
-                .child(
-                    div()
-                        .id("zoom-hud-reset")
-                        .group("zoom-hud-reset-hover")
-                        .min_w(px(30.0))
-                        .h(px(30.0))
-                        .flex()
-                        .items_center()
-                        .justify_center()
-                        .gap(px(6.0))
-                        .px(px(9.0))
-                        .rounded(px(5.0))
-                        .text_size(px(12.5))
-                        .opacity(if reset_disabled { 0.4 } else { 1.0 })
-                        .when(!reset_disabled, |button| {
-                            button
-                                .cursor_pointer()
-                                .hover(move |style| {
-                                    style
-                                        .bg(theme.surface_3.hsla())
-                                        .text_color(theme.text.hsla())
-                                })
-                                .active(|style| style.opacity(0.82))
-                                .on_click(cx.listener(|this, _event, window, cx| {
-                                    this.apply_app_zoom(AppZoomAction::Reset, window, cx);
-                                }))
-                        })
-                        .child(motion_icon(
-                            "zoom-hud-reset-icon",
-                            "icons/rotate-ccw.svg",
-                            13.0,
-                            "zoom-hud-reset-hover",
-                            theme,
-                        ))
-                        .child("Reset"),
-                )
+                .child(zoom_hud_reset_button(
+                    reset_disabled,
+                    theme,
+                    cx.listener(|this, _event, window, cx| {
+                        this.apply_app_zoom(AppZoomAction::Reset, window, cx);
+                    }),
+                ))
                 .into_any_element(),
         )
     }
+}
+
+fn zoom_hud_reset_button(
+    disabled: bool,
+    theme: Theme,
+    on_click: impl Fn(&gpui::ClickEvent, &mut Window, &mut gpui::App) + 'static,
+) -> AnyElement {
+    let group: SharedString = "zoom-hud-reset-hover".into();
+    let sizing = div()
+        .min_w(px(30.0))
+        .h(px(30.0))
+        .flex()
+        .items_center()
+        .justify_center()
+        .gap(px(6.0))
+        .px(px(9.0))
+        .text_size(px(12.5))
+        .invisible()
+        .child(div().size(px(13.0)).flex_none())
+        .child("Reset");
+    let visual = div()
+        .id("zoom-hud-reset-visual")
+        .absolute()
+        .inset_0()
+        .flex()
+        .items_center()
+        .justify_center()
+        .gap(px(6.0))
+        .px(px(9.0))
+        .rounded(px(5.0))
+        .text_size(px(12.5))
+        .when(!disabled, |visual| {
+            visual
+                .group_hover(group.clone(), move |style| {
+                    style
+                        .bg(theme.surface_3.hsla())
+                        .text_color(theme.text.hsla())
+                })
+                .group_active(group.clone(), |style| {
+                    style
+                        .top(px(0.6))
+                        .right(relative(0.02))
+                        .bottom(px(0.6))
+                        .left(relative(0.02))
+                        .gap(px(5.76))
+                        .px(px(8.64))
+                        .rounded(px(4.8))
+                        .text_size(px(12.0))
+                })
+        })
+        .child(
+            div()
+                .id("zoom-hud-reset-icon-press")
+                .size(px(13.0))
+                .flex_none()
+                .when(!disabled, |icon| {
+                    icon.group_active(group.clone(), |style| style.size(px(12.48)).m(px(0.26)))
+                })
+                .child(
+                    motion_icon(
+                        "zoom-hud-reset-icon",
+                        "icons/rotate-ccw.svg",
+                        13.0,
+                        group.clone(),
+                        theme,
+                    )
+                    .size_full(),
+                ),
+        )
+        .child("Reset");
+    div()
+        .id("zoom-hud-reset")
+        .group(group)
+        .relative()
+        .h(px(30.0))
+        .flex_none()
+        .opacity(if disabled { 0.4 } else { 1.0 })
+        .when(!disabled, |button| {
+            button.cursor_pointer().on_click(on_click)
+        })
+        .child(sizing)
+        .child(visual)
+        .into_any_element()
 }
 
 fn zoom_hud_icon_button(
