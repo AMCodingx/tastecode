@@ -14,14 +14,14 @@ use crate::shortcuts::is_button_activation;
 use crate::theme::{Accent, Backdrop, Theme, ThemeMode};
 use crate::zoom::px;
 use gpui::{
-    Animation, AnimationExt, AnyElement, App, ClipboardItem, Context, Entity, Focusable,
-    FontWeight, Hsla, KeyDownEvent, MouseButton, MouseDownEvent, MouseMoveEvent, PathPromptOptions,
-    PromptButton, PromptLevel, Rgba, SharedString, Window, div, linear_color_stop, linear_gradient,
+    Animation, AnimationExt, AnyElement, App, ClipboardItem, Context, ElementId, Entity,
+    FocusHandle, Focusable, FontWeight, Hsla, IntoElement, KeyDownEvent, MouseButton,
+    MouseDownEvent, MouseMoveEvent, PathPromptOptions, PromptButton, PromptLevel, Render,
+    RenderOnce, Rgba, SharedString, Window, deferred, div, linear_color_stop, linear_gradient,
     prelude::*, relative,
 };
 use gpui_component::Sizable as _;
 use gpui_component::input::{Input, InputEvent, InputState};
-use gpui_component::tooltip::Tooltip;
 use harness_protocol::{
     McpAuth, McpAuthMethod, McpConfigValue, McpServer, McpServerConfig, McpStartupStatus,
     McpTransport, ModelConnectionInput, ModelConnectionPreset, ModelTransport, ProviderAuth,
@@ -2777,6 +2777,7 @@ impl HarnessApp {
             .gap(px(10.0))
             .when_some(update_error, |controls, error| {
                 controls.child(row_issue(
+                    "update-check-error",
                     error,
                     Some("Check your network or GitHub access, then retry.".into()),
                     theme,
@@ -4450,7 +4451,7 @@ fn provider_actions(
         .items_center()
         .gap(px(10.0))
         .when_some(issue, |actions, (message, tip)| {
-            actions.child(row_issue(message, tip, theme))
+            actions.child(row_issue(format!("{id}:issue"), message, tip, theme))
         })
         .when_some(status, |actions, status| actions.child(status))
         .child(
@@ -4551,35 +4552,200 @@ fn mask_email(email: &str) -> String {
     format!("{first}…{}", &email[at..])
 }
 
-fn row_issue(message: String, tip: Option<String>, theme: Theme) -> AnyElement {
-    let tooltip_message = message.clone();
-    let icon_id: SharedString = format!("row-issue-icon:{message}").into();
-    div()
-        .id(SharedString::from(format!("row-issue:{message}")))
-        .size(px(22.0))
-        .flex()
-        .items_center()
-        .justify_center()
-        .rounded_full()
-        .bg(theme.error.hsla().opacity(0.14))
-        .text_color(theme.error.hsla())
-        .tooltip(move |window, cx| {
-            let tooltip_message = tooltip_message.clone();
-            let tip = tip.clone();
-            Tooltip::element(move |_window, _cx| {
-                div()
-                    .max_w(px(300.0))
-                    .text_color(theme.text.hsla())
-                    .child(tooltip_message.clone())
-                    .when_some(tip.clone(), |content, tip| {
-                        content.child(div().mt(px(4.0)).text_color(theme.text_3.hsla()).child(tip))
-                    })
-            })
-            .m(px(8.0))
+fn row_issue(
+    id: impl Into<SharedString>,
+    message: String,
+    tip: Option<String>,
+    theme: Theme,
+) -> AnyElement {
+    RowIssue {
+        id: id.into(),
+        message,
+        tip,
+        theme,
+    }
+    .into_any_element()
+}
+
+#[derive(IntoElement)]
+struct RowIssue {
+    id: SharedString,
+    message: String,
+    tip: Option<String>,
+    theme: Theme,
+}
+
+impl RenderOnce for RowIssue {
+    fn render(self, window: &mut Window, cx: &mut App) -> impl IntoElement {
+        let initial_id = self.id.clone();
+        let initial_message = self.message.clone();
+        let initial_tip = self.tip.clone();
+        let initial_theme = self.theme;
+        let state = window.use_keyed_state(self.id, cx, move |window, cx| {
+            RowIssueState::new(
+                initial_id,
+                initial_message,
+                initial_tip,
+                initial_theme,
+                window,
+                cx,
+            )
+        });
+        state.update(cx, |state, cx| {
+            state.update_content(self.message, self.tip, self.theme, cx);
+        });
+        state
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
+struct RowIssueMotion {
+    from: f32,
+    target: f32,
+    started: Instant,
+    duration: Duration,
+    generation: u64,
+}
+
+impl RowIssueMotion {
+    fn hidden(now: Instant) -> Self {
+        Self {
+            from: 0.0,
+            target: 0.0,
+            started: now,
+            duration: Duration::ZERO,
+            generation: 0,
+        }
+    }
+
+    fn sample(self, now: Instant) -> (f32, bool) {
+        if self.duration.is_zero() {
+            return (self.target, false);
+        }
+        let elapsed = now.saturating_duration_since(self.started).as_secs_f32();
+        let progress = elapsed / self.duration.as_secs_f32();
+        if progress >= 1.0 {
+            return (self.target, false);
+        }
+        let eased = crate::theme::web_ease_out(progress.clamp(0.0, 1.0));
+        (self.from + (self.target - self.from) * eased, true)
+    }
+
+    fn retarget(&mut self, visible: bool, duration: Duration, now: Instant) -> bool {
+        let target = f32::from(visible);
+        if (self.target - target).abs() < f32::EPSILON {
+            return false;
+        }
+        let (current, _) = self.sample(now);
+        self.from = current;
+        self.target = target;
+        self.started = now;
+        self.duration = duration.mul_f32((target - current).abs());
+        self.generation = self.generation.wrapping_add(1);
+        true
+    }
+}
+
+struct RowIssueState {
+    id: SharedString,
+    message: String,
+    tip: Option<String>,
+    theme: Theme,
+    focus: FocusHandle,
+    hovered: bool,
+    focused: bool,
+    motion: RowIssueMotion,
+}
+
+impl RowIssueState {
+    fn new(
+        id: SharedString,
+        message: String,
+        tip: Option<String>,
+        theme: Theme,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Self {
+        let focus = cx.focus_handle();
+        cx.on_focus(&focus, window, |this, _window, cx| {
+            this.focused = true;
+            this.sync_visibility(cx);
+        })
+        .detach();
+        cx.on_blur(&focus, window, |this, _window, cx| {
+            this.focused = false;
+            this.sync_visibility(cx);
+        })
+        .detach();
+        Self {
+            id,
+            message,
+            tip,
+            theme,
+            focus,
+            hovered: false,
+            focused: false,
+            motion: RowIssueMotion::hidden(Instant::now()),
+        }
+    }
+
+    fn update_content(
+        &mut self,
+        message: String,
+        tip: Option<String>,
+        theme: Theme,
+        cx: &mut Context<Self>,
+    ) {
+        if self.message != message || self.tip != tip || self.theme != theme {
+            self.message = message;
+            self.tip = tip;
+            self.theme = theme;
+            cx.notify();
+        }
+    }
+
+    fn hover_changed(&mut self, hovered: bool, cx: &mut Context<Self>) {
+        if self.hovered != hovered {
+            self.hovered = hovered;
+            self.sync_visibility(cx);
+        }
+    }
+
+    fn sync_visibility(&mut self, cx: &mut Context<Self>) {
+        if self.motion.retarget(
+            self.hovered || self.focused,
+            self.theme.motion.fast,
+            Instant::now(),
+        ) {
+            cx.notify();
+        }
+    }
+}
+
+impl Focusable for RowIssueState {
+    fn focus_handle(&self, _cx: &App) -> FocusHandle {
+        self.focus.clone()
+    }
+}
+
+impl Render for RowIssueState {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let theme = self.theme;
+        let (progress, animating) = self.motion.sample(Instant::now());
+        let from = self.motion.from;
+        let target = self.motion.target;
+        let duration = self.motion.duration;
+        let generation = self.motion.generation;
+        let hover_group: SharedString = format!("{}:hover", self.id).into();
+        let icon_id: ElementId = SharedString::from(format!("{}:icon", self.id)).into();
+        let bubble = div()
+            .id("bubble")
+            .absolute()
+            .right_0()
+            .bottom(px(30.0 - (2.0 * (1.0 - progress))))
             .max_w(px(300.0))
             .px(px(10.0))
             .py(px(8.0))
-            .gap(px(0.0))
             .rounded(px(5.0))
             .border_1()
             .border_color(chrome::menu_border(theme))
@@ -4588,16 +4754,69 @@ fn row_issue(message: String, tip: Option<String>, theme: Theme) -> AnyElement {
             .text_size(px(12.5))
             .line_height(relative(1.45))
             .font_weight(FontWeight(400.0))
-            .build(window, cx)
-        })
-        .child(motion_icon(
-            icon_id,
-            "icons/circle-alert.svg",
-            14.0,
-            "row-issue-icon-direct-hover",
-            theme,
-        ))
-        .into_any_element()
+            .text_color(theme.text.hsla())
+            .opacity(progress)
+            .child(self.message.clone())
+            .when_some(self.tip.clone(), |content, tip| {
+                content.child(div().mt(px(4.0)).text_color(theme.text_3.hsla()).child(tip))
+            })
+            .when(animating || target > 0.0, |bubble| {
+                bubble.on_hover(cx.listener(|this, hovered, _window, cx| {
+                    this.hover_changed(*hovered, cx);
+                }))
+            });
+        let bubble = if animating {
+            bubble
+                .with_animation(
+                    ("row-issue-bubble", generation),
+                    Animation::new(duration).with_easing(crate::theme::web_ease_out),
+                    move |bubble, delta| {
+                        let progress = from + (target - from) * delta;
+                        bubble
+                            .bottom(px(30.0 - (2.0 * (1.0 - progress))))
+                            .opacity(progress)
+                    },
+                )
+                .into_any_element()
+        } else {
+            bubble.into_any_element()
+        };
+
+        div()
+            .id("trigger")
+            .group(hover_group.clone())
+            .relative()
+            .size(px(22.0))
+            .flex()
+            .items_center()
+            .justify_center()
+            .rounded_full()
+            .bg(theme.error.hsla().opacity(0.14))
+            .text_color(theme.error.hsla())
+            .track_focus(&self.focus)
+            .tab_index(0)
+            .on_hover(cx.listener(|this, hovered, _window, cx| {
+                this.hover_changed(*hovered, cx);
+            }))
+            .when(self.focus.is_focused(window), |trigger| {
+                trigger.child(
+                    div()
+                        .absolute()
+                        .inset(px(-3.0))
+                        .rounded_full()
+                        .border_2()
+                        .border_color(theme.text_2.hsla()),
+                )
+            })
+            .child(motion_icon(
+                icon_id,
+                "icons/circle-alert.svg",
+                14.0,
+                hover_group,
+                theme,
+            ))
+            .child(deferred(bubble).with_priority(90))
+    }
 }
 
 fn theme_card(
@@ -5080,6 +5299,29 @@ mod tests {
                 start + Duration::from_millis(221),
             )
             .is_none()
+        );
+    }
+
+    #[test]
+    fn row_issue_motion_mounts_hidden_and_reverses_from_its_current_opacity() {
+        let start = Instant::now();
+        let duration = Duration::from_millis(180);
+        let mut motion = RowIssueMotion::hidden(start);
+
+        assert_eq!(motion.sample(start), (0.0, false));
+        assert!(motion.retarget(true, duration, start));
+        let halfway = start + Duration::from_millis(90);
+        let (visible_progress, animating) = motion.sample(halfway);
+        assert!(animating);
+        assert!((0.0..1.0).contains(&visible_progress));
+
+        assert!(motion.retarget(false, duration, halfway));
+        assert!((motion.from - visible_progress).abs() < 0.001);
+        assert_eq!(motion.target, 0.0);
+        assert!(motion.duration < duration);
+        assert_eq!(
+            motion.sample(halfway + motion.duration + Duration::from_millis(1)),
+            (0.0, false)
         );
     }
 
