@@ -4504,7 +4504,7 @@ impl ChatView {
                             .when(loading, |preview| {
                                 preview.child(
                                     svg()
-                                        .path("icons/loader-circle.svg")
+                                        .path("icons/attachment-loader.svg")
                                         .absolute()
                                         .right(px(8.0))
                                         .bottom(px(8.0))
