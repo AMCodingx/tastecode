@@ -35,6 +35,12 @@ use std::time::{Duration, Instant};
 
 const SETTINGS_CONTENT_WIDTH: f32 = 840.0;
 const SETTINGS_SECTION_GAP: f32 = 30.0;
+const APPEARANCE_SECTION_GAP: f32 = 34.0;
+const THEME_PREVIEW_ASPECT_RATIO: f32 = 1.45;
+const THEME_PREVIEW_PRESS_SCALE: f32 = 0.985;
+const THEME_PREVIEW_PRESS_MARGIN_Y: f32 =
+    (1.0 - THEME_PREVIEW_PRESS_SCALE) / (2.0 * THEME_PREVIEW_ASPECT_RATIO);
+const THEME_SYSTEM_SPLIT_OFFSET: f32 = 0.0001;
 
 type SettingsAction = Rc<dyn Fn(&mut App)>;
 
@@ -2703,7 +2709,7 @@ impl HarnessApp {
             theme,
         ));
 
-        settings_panel("Appearance", blocks, theme)
+        settings_panel_with_gap("Appearance", blocks, theme, APPEARANCE_SECTION_GAP)
     }
 
     fn data_settings(&self, cx: &mut Context<Self>) -> gpui::Div {
@@ -3060,6 +3066,15 @@ impl HarnessApp {
 }
 
 fn settings_panel(title: &str, blocks: Vec<AnyElement>, theme: Theme) -> gpui::Div {
+    settings_panel_with_gap(title, blocks, theme, SETTINGS_SECTION_GAP)
+}
+
+fn settings_panel_with_gap(
+    title: &str,
+    blocks: Vec<AnyElement>,
+    theme: Theme,
+    section_gap: f32,
+) -> gpui::Div {
     div()
         .w_full()
         .child(
@@ -3076,7 +3091,7 @@ fn settings_panel(title: &str, blocks: Vec<AnyElement>, theme: Theme) -> gpui::D
                 .w_full()
                 .flex()
                 .flex_col()
-                .gap(px(SETTINGS_SECTION_GAP))
+                .gap(px(section_gap))
                 .children(blocks),
         )
 }
@@ -4831,10 +4846,9 @@ fn theme_card(
     action: SettingsAction,
 ) -> AnyElement {
     let group: SharedString = format!("theme-card:{index}").into();
-    let preview = div()
+    let mut preview = div()
         .id(("theme-preview", index))
         .relative()
-        .h(px(164.0))
         .w_full()
         .overflow_hidden()
         .rounded(px(8.0))
@@ -4852,10 +4866,9 @@ fn theme_card(
         })
         .group_active(group.clone(), |style| {
             style
-                .w(relative(0.985))
-                .h(px(161.54))
+                .w(relative(THEME_PREVIEW_PRESS_SCALE))
                 .mx(relative(0.0075))
-                .my(px(1.23))
+                .my(relative(THEME_PREVIEW_PRESS_MARGIN_Y))
                 .rounded(px(7.88))
         })
         .bg(theme_preview_background(
@@ -4922,6 +4935,7 @@ fn theme_card(
                         )
                 })),
         );
+    preview.style().aspect_ratio = Some(THEME_PREVIEW_ASPECT_RATIO);
     div()
         .id(("theme-card", index))
         .group(group)
@@ -4961,10 +4975,13 @@ fn theme_preview_background(
 ) -> gpui::Background {
     if preference == ThemePreference::System {
         let (light, dark) = theme_preview_pair(part);
+        // GPUI currently supports two gradient stops. Keeping those stops on
+        // opposite sides of the midpoint produces the browser's hard 50/50
+        // system-theme split without a visible interpolation band.
         return linear_gradient(
             90.0,
-            linear_color_stop(gpui::rgb(light), 0.0),
-            linear_color_stop(gpui::rgb(dark), 1.0),
+            linear_color_stop(gpui::rgb(light), 0.5 - THEME_SYSTEM_SPLIT_OFFSET),
+            linear_color_stop(gpui::rgb(dark), 0.5 + THEME_SYSTEM_SPLIT_OFFSET),
         );
     }
     if preference == ThemePreference::Light && matches!(part, ThemePreviewPart::Panel) {
@@ -5301,6 +5318,18 @@ mod tests {
     #[test]
     fn public_beta_keeps_parked_provider_surfaces_hidden() {
         assert!(!parked_provider_surfaces_visible());
+    }
+
+    #[test]
+    fn appearance_geometry_matches_the_web_surface() {
+        assert_eq!(APPEARANCE_SECTION_GAP, 34.0);
+        assert_eq!(THEME_PREVIEW_ASPECT_RATIO, 1.45);
+        assert_eq!(THEME_PREVIEW_PRESS_SCALE, 0.985);
+        assert_eq!(THEME_SYSTEM_SPLIT_OFFSET, 0.0001);
+
+        let pressed_height = THEME_PREVIEW_PRESS_SCALE / THEME_PREVIEW_ASPECT_RATIO
+            + 2.0 * THEME_PREVIEW_PRESS_MARGIN_Y;
+        assert!((pressed_height - 1.0 / THEME_PREVIEW_ASPECT_RATIO).abs() < f32::EPSILON);
     }
 
     #[test]
