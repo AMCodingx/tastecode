@@ -43,6 +43,7 @@ gpui = "=0.2.2"
 gpui-component = "=0.5.1"
 headless_chrome = { version = "=1.0.22", default-features = false, features = ["offline"] }
 html5ever = "=0.27.0"
+if-addrs = "0.15.0"
 keyring = "4.1.6"
 libc = "0.2.189"
 markdown = "1.0.0"

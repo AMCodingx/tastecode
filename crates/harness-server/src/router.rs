@@ -1,4 +1,4 @@
-use crate::{ServerState, diff_review::DiffReviewError};
+use crate::{ServerState, diff_review::DiffReviewError, mobile_access::ConnectionAccess};
 use chrono::{Datelike as _, Local, TimeZone as _};
 use harness_protocol::method;
 use harness_protocol::{
@@ -71,6 +71,7 @@ impl From<DiffReviewError> for RouteError {
 pub(crate) fn route(
     state: &Arc<ServerState>,
     connection_id: u64,
+    access: &ConnectionAccess,
     method_name: &str,
     params: Value,
 ) -> Result<Value, RouteError> {
@@ -240,6 +241,64 @@ pub(crate) fn route(
                     .list_connection_models(state, &params.connection_id)
                     .map_err(RouteError::internal)?,
             })
+        }
+        method::CONNECTIONS_STATUS => {
+            let _: EmptyParams = decode(method_name, params)?;
+            encoded(
+                state
+                    .mobile_access
+                    .status(state)
+                    .map_err(RouteError::internal)?,
+            )
+        }
+        method::CONNECTIONS_START_PAIRING => {
+            let _: EmptyParams = decode(method_name, params)?;
+            let offer = state
+                .mobile_access
+                .start_pairing(state)
+                .map_err(RouteError::internal)?;
+            lock_store(state)?.set_mobile_access_enabled(true)?;
+            encoded(offer)
+        }
+        method::CONNECTIONS_STOP => {
+            let _: EmptyParams = decode(method_name, params)?;
+            lock_store(state)?.set_mobile_access_enabled(false)?;
+            state.mobile_access.stop().map_err(RouteError::internal)?;
+            empty_result()
+        }
+        method::CONNECTIONS_REVOKE => {
+            let params: DeviceIdParams = decode(method_name, params)?;
+            require_non_empty(method_name, "deviceId", &params.device_id)?;
+            state
+                .mobile_access
+                .revoke(state, &params.device_id)
+                .map_err(RouteError::internal)?;
+            empty_result()
+        }
+        method::CONNECTIONS_DEVICE_STATUS => {
+            let _: EmptyParams = decode(method_name, params)?;
+            encoded(
+                state
+                    .mobile_access
+                    .device_status()
+                    .map_err(RouteError::internal)?,
+            )
+        }
+        method::CONNECTIONS_CLAIM => {
+            let params: ConnectionClaimParams = decode(method_name, params)?;
+            let name = params.name.trim();
+            if name.is_empty() || name.encode_utf16().count() > 80 {
+                return Err(RouteError::bad_params(
+                    method_name,
+                    "name must contain between 1 and 80 UTF-16 code units",
+                ));
+            }
+            encoded(
+                state
+                    .mobile_access
+                    .claim(state, access, name)
+                    .map_err(RouteError::internal)?,
+            )
         }
         method::AUTH_STATUS => {
             let params: AuthParams = decode(method_name, params)?;
@@ -1603,6 +1662,17 @@ struct ConnectionCredentialParams {
 #[serde(rename_all = "camelCase")]
 struct ConnectionIdParams {
     connection_id: String,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct DeviceIdParams {
+    device_id: String,
+}
+
+#[derive(Deserialize)]
+struct ConnectionClaimParams {
+    name: String,
 }
 
 #[derive(Deserialize)]
