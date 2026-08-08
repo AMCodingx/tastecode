@@ -241,7 +241,7 @@ impl HarnessApp {
         let mut state = ClientState::new(fixture);
         let preview_capture = PreviewCaptureRuntime::discover();
         state.set_preview_capture_available(preview_capture.is_some());
-        let preferences = match NativePreferences::load() {
+        let mut preferences = match NativePreferences::load() {
             Ok(preferences) => preferences,
             Err(error) => {
                 state.notice = Some(format!("Could not load native preferences: {error}"));
@@ -280,6 +280,13 @@ impl HarnessApp {
             );
             chat
         });
+        let restored_terminal_height = chat.read(cx).terminal_preference_height();
+        if preferences.terminal_height != restored_terminal_height {
+            preferences.terminal_height = restored_terminal_height;
+            if let Err(error) = preferences.save() {
+                state.notice = Some(format!("Could not save native preferences: {error}"));
+            }
+        }
         let connection_name = cx.new(|cx| {
             InputState::new(window, cx)
                 .default_value("OpenAI API")

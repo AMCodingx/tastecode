@@ -515,6 +515,10 @@ impl ChatView {
             px(f32::from(height) * crate::zoom::factor()).clamp(px(MIN_HEIGHT), maximum);
     }
 
+    pub(crate) fn terminal_preference_height(&self) -> u16 {
+        terminal_preference_height(self.terminal_ui.height, crate::zoom::factor())
+    }
+
     pub(crate) fn reset_terminal_preferences(&mut self, cx: &mut Context<Self>) {
         self.set_terminal_closed(cx);
         self.terminal_ui.height = px(DEFAULT_HEIGHT * crate::zoom::factor());
@@ -583,12 +587,9 @@ impl ChatView {
     }
 
     fn emit_terminal_preferences(&self, cx: &mut Context<Self>) {
-        let height = (f32::from(self.terminal_ui.height) / crate::zoom::factor())
-            .round()
-            .clamp(MIN_HEIGHT, f32::from(u16::MAX)) as u16;
         cx.emit(ChatEvent::TerminalPreferencesChanged {
             visible: self.terminal_ui.visible,
-            height,
+            height: self.terminal_preference_height(),
         });
     }
 
@@ -1218,6 +1219,12 @@ impl ChatView {
     }
 }
 
+fn terminal_preference_height(height: Pixels, zoom: f32) -> u16 {
+    (f32::from(height) / zoom)
+        .round()
+        .clamp(MIN_HEIGHT, f32::from(u16::MAX)) as u16
+}
+
 fn terminal_action_button(
     id: &'static str,
     icon: &'static str,
@@ -1664,5 +1671,12 @@ mod tests {
             terminal_paste_data("first\nsecond".into(), true),
             "\u{1b}[200~first\rsecond\u{1b}[201~"
         );
+    }
+
+    #[test]
+    fn restored_terminal_height_persists_in_unscaled_app_units() {
+        assert_eq!(terminal_preference_height(px(260.0), 1.0), 260);
+        assert_eq!(terminal_preference_height(px(520.0), 2.0), 260);
+        assert_eq!(terminal_preference_height(px(120.0), 1.0), 160);
     }
 }
