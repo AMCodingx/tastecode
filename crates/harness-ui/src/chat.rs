@@ -5502,7 +5502,7 @@ impl RenderOnce for ContextUsage {
 }
 
 #[derive(Clone, Copy, Debug)]
-struct ContextUsageMotion {
+struct ScalarMotion {
     from: f32,
     target: f32,
     started: Instant,
@@ -5510,7 +5510,7 @@ struct ContextUsageMotion {
     generation: u64,
 }
 
-impl ContextUsageMotion {
+impl ScalarMotion {
     fn stationary(value: f32, now: Instant) -> Self {
         Self {
             from: value,
@@ -5565,8 +5565,8 @@ struct ContextUsageState {
     focus: FocusHandle,
     hovered: bool,
     focused: bool,
-    ring_motion: ContextUsageMotion,
-    tooltip_motion: ContextUsageMotion,
+    ring_motion: ScalarMotion,
+    tooltip_motion: ScalarMotion,
 }
 
 impl ContextUsageState {
@@ -5585,8 +5585,8 @@ impl ContextUsageState {
             focus: cx.focus_handle(),
             hovered: false,
             focused: false,
-            ring_motion: ContextUsageMotion::stationary(progress, now),
-            tooltip_motion: ContextUsageMotion::stationary(0.0, now),
+            ring_motion: ScalarMotion::stationary(progress, now),
+            tooltip_motion: ScalarMotion::stationary(0.0, now),
         }
     }
 
@@ -7024,7 +7024,7 @@ mod tests {
     fn context_usage_motion_animates_updates_without_animating_mounts() {
         let start = Instant::now();
         let duration = Duration::from_millis(170);
-        let mut motion = ContextUsageMotion::stationary(0.15, start);
+        let mut motion = ScalarMotion::stationary(0.15, start);
 
         assert_eq!(motion.sample(start), (0.15, false));
         assert!(motion.retarget(0.42, duration, false, start));
