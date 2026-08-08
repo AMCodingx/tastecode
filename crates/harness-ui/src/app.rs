@@ -678,6 +678,14 @@ impl HarnessApp {
         let shell_changed = update.shell_changed;
         let mut refresh_stage = false;
         for chat_update in update.chat {
+            if matches!(&chat_update, ChatUpdate::DraftError { .. })
+                && self
+                    .selected_thread_id
+                    .as_deref()
+                    .is_some_and(|thread_id| thread_id.starts_with("pending:"))
+            {
+                self.selected_thread_id = None;
+            }
             if let ChatUpdate::Connection(connection) = &chat_update {
                 self.update_reconnect_notice(*connection, cx);
             }
@@ -1239,7 +1247,10 @@ impl HarnessApp {
         {
             attachments.push(DESIGN_BRIEF_ATTACHMENT.into());
         }
-        self.state.start_thread(NewThreadRequest {
+        let provisional_id = format!("pending:{}", uuid::Uuid::new_v4());
+        self.selected_thread_id = Some(provisional_id.clone());
+        let update = self.state.start_thread(NewThreadRequest {
+            provisional_id,
             project_path,
             title: title_from(&text),
             attachments,
@@ -1250,6 +1261,7 @@ impl HarnessApp {
             approval: self.approval,
             isolate: self.isolate_session,
         });
+        self.apply_client_update(update, cx);
     }
 
     fn selected_model_choice(&self) -> Option<&crate::client_state::ModelChoice> {

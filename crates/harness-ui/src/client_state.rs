@@ -229,6 +229,7 @@ struct ModelSource {
 
 #[derive(Clone)]
 pub(crate) struct NewThreadRequest {
+    pub(crate) provisional_id: String,
     pub(crate) project_path: String,
     pub(crate) text: String,
     pub(crate) title: String,
@@ -2094,7 +2095,37 @@ impl ClientState {
         ClientUpdate::shell_changed()
     }
 
-    pub(crate) fn start_thread(&mut self, request: NewThreadRequest) {
+    pub(crate) fn start_thread(&mut self, request: NewThreadRequest) -> ClientUpdate {
+        let Some(project) = self
+            .projects
+            .iter_mut()
+            .find(|project| project.path == request.project_path)
+        else {
+            return self.fail_start_thread(request, "That project is no longer available.".into());
+        };
+        project
+            .sessions
+            .retain(|session| session.id != request.provisional_id);
+        project.sessions.insert(
+            0,
+            SessionSummary {
+                id: request.provisional_id.clone(),
+                title: request.title.clone(),
+                provider: request.choice.provider,
+                agent: request.choice.agent_id.clone(),
+                created_at: unix_time_ms(),
+                running: true,
+                pinned: false,
+                status: Some(ThreadInboxStatus::Starting),
+                unread: Some(false),
+                lifecycle: Some(ThreadLifecycle::Active {
+                    keep_active: false,
+                    woke_at: None,
+                }),
+                closed_at: None,
+                worktree_branch: None,
+            },
+        );
         let mut params = serde_json::Map::from_iter([
             ("provider".into(), json!(request.choice.provider)),
             ("workspacePath".into(), json!(request.project_path)),
@@ -2118,11 +2149,33 @@ impl ClientState {
         if request.isolate {
             params.insert("isolate".into(), json!(true));
         }
-        self.send_request(
+        if self.send_request(
             method::THREAD_START,
             Value::Object(params),
-            PendingRequest::StartThread { request },
-        );
+            PendingRequest::StartThread {
+                request: request.clone(),
+            },
+        ) {
+            ClientUpdate::shell_changed()
+        } else {
+            self.fail_start_thread(
+                request,
+                "The session could not be started because the server is unavailable.".into(),
+            )
+        }
+    }
+
+    fn fail_start_thread(&mut self, request: NewThreadRequest, message: String) -> ClientUpdate {
+        self.remove_session(&request.provisional_id);
+        ClientUpdate {
+            shell_changed: true,
+            chat: vec![ChatUpdate::DraftError {
+                message,
+                restore_text: request.text,
+                restore_attachments: request.attachments,
+            }],
+            shell_events: Vec::new(),
+        }
     }
 
     fn request_initial_state(&mut self) {
@@ -2447,11 +2500,7 @@ impl ClientState {
                         }
                     }
                     Some(PendingRequest::StartThread { request }) => {
-                        ClientUpdate::chat(ChatUpdate::DraftError {
-                            message,
-                            restore_text: request.text,
-                            restore_attachments: request.attachments,
-                        })
+                        self.fail_start_thread(request, message)
                     }
                     Some(PendingRequest::SendTurn {
                         thread_id,
@@ -3173,11 +3222,10 @@ impl ClientState {
                     shell_events: vec![ShellEvent::ArchiveFailed { thread_id }],
                 }
             }
-            PendingRequest::StartThread { request } => ClientUpdate::chat(ChatUpdate::DraftError {
-                message: "The server connection was lost before the session was created.".into(),
-                restore_text: request.text,
-                restore_attachments: request.attachments,
-            }),
+            PendingRequest::StartThread { request } => self.fail_start_thread(
+                request,
+                "The server connection was lost before the session was created.".into(),
+            ),
             PendingRequest::SendTurn {
                 thread_id,
                 restore_text,
@@ -3317,11 +3365,8 @@ impl ClientState {
         let started = match serde_json::from_value::<ThreadStartResult>(result) {
             Ok(started) => started,
             Err(error) => {
-                return ClientUpdate::chat(ChatUpdate::DraftError {
-                    message: format!("thread.start was invalid: {error}"),
-                    restore_text: request.text,
-                    restore_attachments: request.attachments,
-                });
+                return self
+                    .fail_start_thread(request, format!("thread.start was invalid: {error}"));
             }
         };
         let thread_id = started.thread_id;
@@ -3330,13 +3375,17 @@ impl ClientState {
             .projects
             .iter_mut()
             .find(|project| project.path == request.project_path)
-            && !project
+        {
+            let provisional_index = project
                 .sessions
                 .iter()
-                .any(|session| session.id == thread_id)
-        {
+                .position(|session| session.id == request.provisional_id)
+                .unwrap_or(0);
+            project
+                .sessions
+                .retain(|session| session.id != request.provisional_id && session.id != thread_id);
             project.sessions.insert(
-                0,
+                provisional_index.min(project.sessions.len()),
                 SessionSummary {
                     id: thread_id.clone(),
                     title: request.title.clone(),
@@ -4363,6 +4412,12 @@ impl ClientState {
             .flat_map(|project| project.sessions.iter_mut())
             .find(|session| session.id == thread_id)
     }
+
+    fn remove_session(&mut self, thread_id: &str) {
+        for project in &mut self.projects {
+            project.sessions.retain(|session| session.id != thread_id);
+        }
+    }
 }
 
 impl PendingRequest {
@@ -4553,6 +4608,41 @@ mod tests {
                 default_service_tier: None,
             },
             catalog_order: (0, 0, 0),
+        }
+    }
+
+    fn new_thread_request(provisional_id: &str) -> NewThreadRequest {
+        NewThreadRequest {
+            provisional_id: provisional_id.into(),
+            project_path: "/workspace".into(),
+            text: "Build it".into(),
+            title: "Build it".into(),
+            attachments: Vec::new(),
+            choice: model_choice("gpt-test"),
+            effort: Some("high".into()),
+            service_tier: None,
+            approval: ApprovalMode::Ask,
+            isolate: false,
+        }
+    }
+
+    fn provisional_session(id: &str) -> SessionSummary {
+        SessionSummary {
+            id: id.into(),
+            title: "Build it".into(),
+            provider: ProviderId::Codex,
+            agent: None,
+            created_at: 1.0,
+            running: true,
+            pinned: false,
+            status: Some(ThreadInboxStatus::Starting),
+            unread: Some(false),
+            lifecycle: Some(ThreadLifecycle::Active {
+                keep_active: false,
+                woke_at: None,
+            }),
+            closed_at: None,
+            worktree_branch: None,
         }
     }
 
@@ -5227,40 +5317,12 @@ mod tests {
             name: "Harness".into(),
             pinned: false,
             created_at: 1.0,
-            sessions: Vec::new(),
+            sessions: vec![provisional_session("pending:native-start")],
         });
         state.pending.insert(
             "native-start".into(),
             PendingRequest::StartThread {
-                request: NewThreadRequest {
-                    project_path: "/workspace".into(),
-                    text: "Build it".into(),
-                    title: "Build it".into(),
-                    attachments: Vec::new(),
-                    choice: ModelChoice {
-                        key: "codex\u{1f}gpt-test".into(),
-                        provider: ProviderId::Codex,
-                        source_name: "Codex".into(),
-                        connection_id: None,
-                        agent_id: None,
-                        agent_name: None,
-                        model: Model {
-                            id: "gpt-test".into(),
-                            display_name: "GPT Test".into(),
-                            description: None,
-                            is_default: true,
-                            reasoning_efforts: vec!["high".into()],
-                            default_reasoning_effort: Some("high".into()),
-                            service_tiers: Vec::new(),
-                            default_service_tier: None,
-                        },
-                        catalog_order: (0, 0, 0),
-                    },
-                    effort: Some("high".into()),
-                    service_tier: None,
-                    approval: ApprovalMode::Ask,
-                    isolate: false,
-                },
+                request: new_thread_request("pending:native-start"),
             },
         );
 
@@ -5273,11 +5335,69 @@ mod tests {
             update.shell_events.as_slice(),
             [ShellEvent::ThreadStarted { thread_id, .. }] if thread_id == "thread-1"
         ));
+        assert_eq!(state.projects[0].sessions.len(), 1);
         assert_eq!(state.projects[0].sessions[0].id, "thread-1");
         assert_eq!(
             state.projects[0].sessions[0].status,
             Some(ThreadInboxStatus::Starting)
         );
+    }
+
+    #[test]
+    fn failed_thread_start_removes_the_provisional_sidebar_row() {
+        let mut state = ClientState::new(true);
+        state.projects.push(ProjectSummary {
+            path: "/workspace".into(),
+            name: "Harness".into(),
+            pinned: false,
+            created_at: 1.0,
+            sessions: vec![provisional_session("pending:native-start")],
+        });
+        state.pending.insert(
+            "native-start".into(),
+            PendingRequest::StartThread {
+                request: new_thread_request("pending:native-start"),
+            },
+        );
+
+        let update = state.handle_response(Response::Failure {
+            id: "native-start".into(),
+            error: harness_protocol::WireError {
+                code: ErrorCode::BadRequest,
+                message: "The project cannot be opened".into(),
+                detail: None,
+            },
+        });
+
+        assert!(update.shell_changed);
+        assert!(state.projects[0].sessions.is_empty());
+        assert!(matches!(
+            update.chat.as_slice(),
+            [ChatUpdate::DraftError { message, restore_text, .. }]
+                if message == "The project cannot be opened" && restore_text == "Build it"
+        ));
+    }
+
+    #[test]
+    fn unavailable_server_never_leaves_a_provisional_sidebar_row() {
+        let mut state = ClientState::new(true);
+        state.projects.push(ProjectSummary {
+            path: "/workspace".into(),
+            name: "Harness".into(),
+            pinned: false,
+            created_at: 1.0,
+            sessions: Vec::new(),
+        });
+
+        let update = state.start_thread(new_thread_request("pending:native-start"));
+
+        assert!(update.shell_changed);
+        assert!(state.projects[0].sessions.is_empty());
+        assert!(matches!(
+            update.chat.as_slice(),
+            [ChatUpdate::DraftError { message, .. }]
+                if message == "The session could not be started because the server is unavailable."
+        ));
     }
 
     #[test]
