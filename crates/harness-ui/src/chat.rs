@@ -5608,11 +5608,11 @@ impl ChatView {
                 let active = active_group_key.as_deref() == Some(group.key.as_str());
                 let key = group.key;
                 let hover_group: SharedString = format!("model-provider-{index}").into();
-                div()
+                let button = div()
                     .id(("model-provider", index))
                     .group(hover_group.clone())
-                    .size(px(34.0))
-                    .flex_none()
+                    .absolute()
+                    .inset_0()
                     .flex()
                     .items_center()
                     .justify_center()
@@ -5632,34 +5632,70 @@ impl ChatView {
                     })
                     .cursor_pointer()
                     .hover(move |style| style.bg(model_picker_hover_background(theme)))
-                    .active(|style| style.size(px(32.64)).m(px(0.68)))
+                    .active(|style| {
+                        style
+                            .top(relative(0.02))
+                            .right(relative(0.02))
+                            .bottom(relative(0.02))
+                            .left(relative(0.02))
+                    })
                     .on_click(cx.listener(move |this, _event, _window, cx| {
                         this.select_model_source(key.clone(), cx);
                     }))
                     .child(
                         div()
-                            .id(("model-provider-icon-press", index))
                             .size(px(18.0))
-                            .group_active(hover_group.clone(), |style| {
-                                style.size(px(17.28)).m(px(0.36))
-                            })
                             .child(
-                                motion_icon(
-                                    ("model-provider-icon", index),
-                                    provider_mark_path(provider_mark(group.provider)),
-                                    18.0,
-                                    hover_group,
-                                    theme,
-                                )
-                                .size_full(),
+                                div()
+                                    .id(("model-provider-icon-press", index))
+                                    .size_full()
+                                    .group_active(hover_group.clone(), |style| {
+                                        style.size(px(17.28)).m(px(0.36))
+                                    })
+                                    .child(
+                                        motion_icon(
+                                            ("model-provider-icon", index),
+                                            provider_mark_path(provider_mark(group.provider)),
+                                            18.0,
+                                            hover_group,
+                                            theme,
+                                        )
+                                        .size_full(),
+                                    ),
                             )
                             .text_color(if active {
                                 theme.text.hsla()
                             } else {
                                 theme.text_3.hsla()
-                            }),
+                            })
+                            .with_animation(
+                                ("model-provider-icon-in", index),
+                                menu_entry_animation(theme),
+                                |icon, delta| icon.size(px(18.0 * menu_entry_scale(delta))),
+                            ),
+                    );
+                div()
+                    .relative()
+                    .size(px(34.0))
+                    .flex_none()
+                    .child(button)
+                    .with_animation(
+                        ("model-provider-in", index),
+                        menu_entry_animation(theme),
+                        |provider, delta| provider.size(px(34.0 * menu_entry_scale(delta))),
                     )
-            }));
+            }))
+            .with_animation(
+                "model-provider-rail-in",
+                menu_entry_animation(theme),
+                |rail, delta| {
+                    let scale = menu_entry_scale(delta);
+                    rail.w(px(52.0 * scale))
+                        .gap(px(4.0 * scale))
+                        .px(px(8.0 * scale))
+                        .py(px(6.0 * scale))
+                },
+            );
 
         let models = if let Some(group) = active_group {
             let rows = filter_model_choices_by_query(&group.entries, &query)
@@ -5699,11 +5735,19 @@ impl ChatView {
                                 .truncate()
                                 .text_size(px(12.5))
                                 .text_color(theme.text.hsla())
-                                .child(choice.model.display_name),
+                                .child(choice.model.display_name)
+                                .with_animation(
+                                    ("model-option-name-in", index),
+                                    menu_entry_animation(theme),
+                                    |name, delta| {
+                                        name.text_size(px(12.5 * menu_entry_scale(delta)))
+                                    },
+                                ),
                         )
                         .when(active, |row| {
                             row.child(div().flex_none().text_color(theme.text_2.hsla()).child(
-                                motion_icon(
+                                menu_entry_icon(
+                                    ("model-option-check-in", index),
                                     ("model-option-check", index),
                                     "icons/check.svg",
                                     14.0,
@@ -5712,6 +5756,17 @@ impl ChatView {
                                 ),
                             ))
                         })
+                        .with_animation(
+                            ("model-option-in", index),
+                            menu_entry_animation(theme),
+                            |row, delta| {
+                                let scale = menu_entry_scale(delta);
+                                row.min_h(px(32.0 * scale))
+                                    .gap(px(8.0 * scale))
+                                    .px(px(8.0 * scale))
+                                    .rounded(px(5.0 * scale))
+                            },
+                        )
                         .into_any_element()
                 })
                 .collect::<Vec<_>>();
@@ -5744,9 +5799,29 @@ impl ChatView {
                                 .text_size(px(10.0))
                                 .font_weight(FontWeight(560.0))
                                 .text_color(theme.text_3.hsla())
-                                .child(tracked_text(group.name, 0.02)),
+                                .child(tracked_text(group.name, 0.02))
+                                .with_animation(
+                                    "model-group-title-in",
+                                    menu_entry_animation(theme),
+                                    |title, delta| {
+                                        title.text_size(px(10.0 * menu_entry_scale(delta)))
+                                    },
+                                ),
                         )
-                        .child(self.model_search_field(query, window, cx)),
+                        .child(self.model_search_field(query, window, cx))
+                        .with_animation(
+                            "model-group-head-in",
+                            menu_entry_animation(theme),
+                            |header, delta| {
+                                let scale = menu_entry_scale(delta);
+                                header
+                                    .h(px(34.0 * scale))
+                                    .gap(px(6.0 * scale))
+                                    .pl(px(8.0 * scale))
+                                    .pr(px(4.0 * scale))
+                                    .py(px(3.0 * scale))
+                            },
+                        ),
                 )
                 .child(
                     div()
@@ -5765,10 +5840,26 @@ impl ChatView {
                                     .text_center()
                                     .text_size(px(12.5))
                                     .text_color(theme.text_3.hsla())
-                                    .child("No matching models."),
+                                    .child("No matching models.")
+                                    .with_animation(
+                                        "model-empty-in",
+                                        menu_entry_animation(theme),
+                                        |empty, delta| {
+                                            let scale = menu_entry_scale(delta);
+                                            empty
+                                                .px(px(8.0 * scale))
+                                                .py(px(24.0 * scale))
+                                                .text_size(px(12.5 * scale))
+                                        },
+                                    ),
                             )
                         })
                         .children(rows),
+                )
+                .with_animation(
+                    "model-models-in",
+                    menu_entry_animation(theme),
+                    |models, delta| models.p(px(6.0 * menu_entry_scale(delta))),
                 )
                 .into_any_element()
         } else {
@@ -5795,7 +5886,12 @@ impl ChatView {
                     .flex()
                     .overflow_hidden()
                     .child(provider_rail)
-                    .child(models),
+                    .child(models)
+                    .with_animation(
+                        "model-catalog-in",
+                        menu_entry_animation(theme),
+                        |catalog, delta| catalog.h(px(246.0 * menu_entry_scale(delta))),
+                    ),
             )
             .when_some(selected, |menu, selected| {
                 menu.child(self.model_controls(selected, window, cx))
@@ -5855,7 +5951,8 @@ impl ChatView {
                 }
             }))
             .child(chrome::inset_top_shade(theme))
-            .child(motion_icon(
+            .child(menu_entry_icon(
+                "model-search-icon-in",
                 "model-search-icon",
                 "icons/search.svg",
                 13.0,
@@ -5875,7 +5972,12 @@ impl ChatView {
                     .py(px(0.0))
                     .line_height(relative(1.55))
                     .text_size(px(12.5))
-                    .text_color(theme.text.hsla()),
+                    .text_color(theme.text.hsla())
+                    .with_animation(
+                        "model-search-input-in",
+                        menu_entry_animation(theme),
+                        |input, delta| input.text_size(px(12.5 * menu_entry_scale(delta))),
+                    ),
             )
             .when(!query.is_empty(), |field| {
                 field.child(
@@ -5910,15 +6012,35 @@ impl ChatView {
                                 input.focus(window, cx);
                             });
                         })
-                        .child(motion_icon(
+                        .child(menu_entry_icon(
+                            "clear-model-search-icon-in",
                             "clear-model-search-icon",
                             "icons/x.svg",
                             12.0,
                             "clear-model-search-hover",
                             theme,
-                        )),
+                        ))
+                        .with_animation(
+                            "clear-model-search-in",
+                            menu_entry_animation(theme),
+                            |clear, delta| clear.size(px(18.0 * menu_entry_scale(delta))),
+                        ),
                 )
             })
+            .with_animation(
+                "model-search-in",
+                menu_entry_animation(theme),
+                |field, delta| {
+                    let scale = menu_entry_scale(delta);
+                    field
+                        .h(px(26.0 * scale))
+                        .w(px(184.0 * scale))
+                        .min_w(px(120.0 * scale))
+                        .gap(px(6.0 * scale))
+                        .px(px(7.0 * scale))
+                        .rounded(px(5.0 * scale))
+                },
+            )
             .into_any_element()
     }
 
