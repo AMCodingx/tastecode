@@ -364,6 +364,7 @@ impl HarnessApp {
                 model,
                 effort,
                 service_tier,
+                optimistic_queue_id,
             } => {
                 let update = this.state.send_turn(
                     thread_id,
@@ -375,6 +376,7 @@ impl HarnessApp {
                         effort: effort.clone(),
                         service_tier: service_tier.clone(),
                     },
+                    optimistic_queue_id.clone(),
                 );
                 this.apply_client_update(update, cx);
             }
@@ -897,6 +899,7 @@ impl HarnessApp {
                             effort: pending.effort,
                             service_tier: pending.service_tier,
                         },
+                        None,
                     );
                     self.apply_client_update(update, cx);
                 }

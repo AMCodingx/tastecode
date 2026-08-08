@@ -32,8 +32,8 @@ use gpui_component::{RopeExt, Sizable as _};
 use harness_protocol::{
     ApprovalDecision, ApprovalKind, ApprovalMode, ApprovalReview, ApprovalReviewStatus,
     CheckpointSummary, DiffDecision, DomainEvent, Item, ItemStatus, ItemType, MessageRole,
-    ProviderId, QueueDirection, RiskLevel, ThreadEventPush, ThreadQueueResult, Turn, TurnStatus,
-    Usage, UserInputQuestion, VoiceMimeType, VoiceTranscribeParams,
+    ProviderId, QueueDirection, QueuedTurn, RiskLevel, ThreadEventPush, ThreadQueueResult, Turn,
+    TurnStatus, Usage, UserInputQuestion, VoiceMimeType, VoiceTranscribeParams,
 };
 use harness_state::{ApplyOutcome, HistoryError, ThreadState};
 use markdown::StreamRevealBatch;
@@ -91,6 +91,7 @@ pub(crate) enum ChatEvent {
         model: Option<String>,
         effort: Option<String>,
         service_tier: Option<String>,
+        optimistic_queue_id: Option<String>,
     },
     Interrupt {
         thread_id: String,
@@ -952,7 +953,22 @@ impl ChatView {
                 cx.notify();
             }
             ChatUpdate::Queue { thread_id, queue } if self.is_selected(&thread_id) => {
-                self.queue = queue;
+                self.queue = reconcile_queue_snapshot(&self.queue, queue);
+                cx.notify();
+            }
+            ChatUpdate::QueueSubmissionResolved {
+                thread_id,
+                optimistic_queue_id,
+                queued_turn,
+            } if self.is_selected(&thread_id) => {
+                if optimistic_queue_id.is_none() && queued_turn.is_some() {
+                    self.rollback_optimistic_active_turn();
+                }
+                resolve_queue_submission(
+                    &mut self.queue,
+                    optimistic_queue_id.as_deref(),
+                    queued_turn,
+                );
                 cx.notify();
             }
             ChatUpdate::Event(push) if self.is_selected(&push.thread_id) => {
@@ -1015,7 +1031,9 @@ impl ChatView {
                 message,
                 restore_text,
                 restore_attachments,
+                optimistic_queue_id,
             } if self.is_selected(&thread_id) => {
+                resolve_queue_submission(&mut self.queue, optimistic_queue_id.as_deref(), None);
                 self.rollback_optimistic_active_turn();
                 self.loading = false;
                 self.interrupt_pending = false;
@@ -1103,6 +1121,7 @@ impl ChatView {
             } => self.apply_terminal_error(terminal_id, message, cx),
             ChatUpdate::History { .. }
             | ChatUpdate::Queue { .. }
+            | ChatUpdate::QueueSubmissionResolved { .. }
             | ChatUpdate::Event(_)
             | ChatUpdate::Error { .. }
             | ChatUpdate::DraftError { .. }
@@ -1779,6 +1798,11 @@ impl ChatView {
             });
             self.append_optimistic_draft_prompt(text, cx);
         } else if let Some(thread_id) = thread_id {
+            let optimistic_queue_id = if self.state.running && !steer {
+                Some(self.append_optimistic_queue_prompt(text.clone(), attachments.clone()))
+            } else {
+                None
+            };
             if !self.state.running {
                 self.append_optimistic_active_prompt(&thread_id, text.clone(), cx);
             }
@@ -1790,6 +1814,7 @@ impl ChatView {
                 model,
                 effort,
                 service_tier,
+                optimistic_queue_id,
             });
         } else {
             self.creating = true;
@@ -1852,6 +1877,17 @@ impl ChatView {
             cx,
         );
         self.optimistic_active_turn = Some(pending);
+    }
+
+    fn append_optimistic_queue_prompt(&mut self, text: String, attachments: Vec<String>) -> String {
+        let id = format!("pending:{}", uuid::Uuid::new_v4());
+        self.queue.items.push(QueuedTurn {
+            id: id.clone(),
+            text,
+            attachments,
+            created_at: unix_time_ms(),
+        });
+        id
     }
 
     fn reconcile_optimistic_active_turn_after_history(
@@ -5822,6 +5858,74 @@ fn optimistic_prompt_events(
     events
 }
 
+fn reconcile_queue_snapshot(
+    current: &ThreadQueueResult,
+    mut incoming: ThreadQueueResult,
+) -> ThreadQueueResult {
+    let mut matched_canonical = HashSet::new();
+    for pending in current
+        .items
+        .iter()
+        .filter(|queued_turn| queued_turn.id.starts_with("pending:"))
+    {
+        let canonical_arrived = incoming
+            .items
+            .iter()
+            .enumerate()
+            .find(|(index, queued_turn)| {
+                !matched_canonical.contains(index)
+                    && !queued_turn.id.starts_with("pending:")
+                    && queued_turn.created_at >= pending.created_at - 5_000.0
+                    && same_queue_submission(queued_turn, pending)
+            })
+            .map(|(index, _)| matched_canonical.insert(index))
+            .is_some();
+        if !canonical_arrived
+            && !incoming
+                .items
+                .iter()
+                .any(|queued_turn| queued_turn.id == pending.id)
+        {
+            incoming.items.push(pending.clone());
+        }
+    }
+    incoming
+}
+
+fn same_queue_submission(left: &QueuedTurn, right: &QueuedTurn) -> bool {
+    left.text == right.text
+        && left
+            .attachments
+            .iter()
+            .filter(|path| path.as_str() != DESIGN_BRIEF_ATTACHMENT)
+            .eq(right
+                .attachments
+                .iter()
+                .filter(|path| path.as_str() != DESIGN_BRIEF_ATTACHMENT))
+}
+
+fn resolve_queue_submission(
+    queue: &mut ThreadQueueResult,
+    optimistic_queue_id: Option<&str>,
+    queued_turn: Option<QueuedTurn>,
+) {
+    let optimistic_index = optimistic_queue_id
+        .and_then(|queue_id| queue.items.iter().position(|item| item.id == queue_id));
+    if let Some(queue_id) = optimistic_queue_id {
+        queue.items.retain(|item| item.id != queue_id);
+    }
+    let Some(queued_turn) = queued_turn else {
+        return;
+    };
+    if queue.items.iter().any(|item| item.id == queued_turn.id) {
+        return;
+    }
+    let index = optimistic_index
+        .unwrap_or(queue.items.len())
+        .min(queue.items.len());
+    queue.items.insert(index, queued_turn);
+}
+
 fn design_attachments(mut attachments: Vec<String>, design_mode: bool) -> Vec<String> {
     if design_mode
         && !attachments
@@ -7670,6 +7774,15 @@ fn insert_transcript_at_cursor(
 mod tests {
     use super::*;
 
+    fn queued_turn(id: &str, text: &str, attachments: &[&str], created_at: f64) -> QueuedTurn {
+        QueuedTurn {
+            id: id.into(),
+            text: text.into(),
+            attachments: attachments.iter().map(|path| (*path).into()).collect(),
+            created_at,
+        }
+    }
+
     #[test]
     fn transcript_insertion_preserves_both_sides_of_the_draft() {
         let inserted = insert_transcript_at_cursor("hello world", " spoken words ", 5).unwrap();
@@ -7700,6 +7813,90 @@ mod tests {
                 .collect::<Vec<_>>(),
             ["/work/existing.png", "/work/reference.png"]
         );
+    }
+
+    #[test]
+    fn queue_snapshots_keep_unconfirmed_prompts_and_reconcile_canonical_rows_once() {
+        let current = ThreadQueueResult {
+            items: vec![
+                queued_turn("queued-old", "Earlier", &[], 1.0),
+                queued_turn("pending:1", "Same prompt", &["reference.png"], 10_000.0),
+                queued_turn("pending:2", "Same prompt", &["reference.png"], 10_001.0),
+            ],
+            can_steer: true,
+        };
+        let stale = reconcile_queue_snapshot(
+            &current,
+            ThreadQueueResult {
+                items: vec![queued_turn("queued-old", "Earlier", &[], 1.0)],
+                can_steer: false,
+            },
+        );
+        assert_eq!(
+            stale
+                .items
+                .iter()
+                .map(|item| item.id.as_str())
+                .collect::<Vec<_>>(),
+            ["queued-old", "pending:1", "pending:2"]
+        );
+
+        let confirmed = reconcile_queue_snapshot(
+            &current,
+            ThreadQueueResult {
+                items: vec![
+                    queued_turn("queued-old", "Earlier", &[], 1.0),
+                    queued_turn(
+                        "queued-new",
+                        "Same prompt",
+                        &["reference.png", DESIGN_BRIEF_ATTACHMENT],
+                        10_002.0,
+                    ),
+                ],
+                can_steer: true,
+            },
+        );
+        assert_eq!(
+            confirmed
+                .items
+                .iter()
+                .map(|item| item.id.as_str())
+                .collect::<Vec<_>>(),
+            ["queued-old", "queued-new", "pending:2"]
+        );
+    }
+
+    #[test]
+    fn queue_response_replaces_the_optimistic_row_in_place() {
+        let mut queue = ThreadQueueResult {
+            items: vec![
+                queued_turn("queued-old", "Earlier", &[], 1.0),
+                queued_turn("pending:1", "Next", &[], 2.0),
+                queued_turn("queued-later", "Later", &[], 3.0),
+            ],
+            can_steer: false,
+        };
+
+        resolve_queue_submission(
+            &mut queue,
+            Some("pending:1"),
+            Some(queued_turn("queued-next", "Next", &[], 2.0)),
+        );
+        assert_eq!(
+            queue
+                .items
+                .iter()
+                .map(|item| item.id.as_str())
+                .collect::<Vec<_>>(),
+            ["queued-old", "queued-next", "queued-later"]
+        );
+
+        resolve_queue_submission(
+            &mut queue,
+            Some("pending:1"),
+            Some(queued_turn("queued-next", "Next", &[], 2.0)),
+        );
+        assert_eq!(queue.items.len(), 3);
     }
 
     #[test]

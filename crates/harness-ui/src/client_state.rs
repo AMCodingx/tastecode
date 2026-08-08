@@ -454,6 +454,7 @@ enum PendingRequest {
         steer: bool,
         restore_text: String,
         restore_attachments: Vec<String>,
+        optimistic_queue_id: Option<String>,
     },
     Steer {
         thread_id: String,
@@ -623,6 +624,11 @@ pub(crate) enum ChatUpdate {
         thread_id: String,
         queue: ThreadQueueResult,
     },
+    QueueSubmissionResolved {
+        thread_id: String,
+        optimistic_queue_id: Option<String>,
+        queued_turn: Option<harness_protocol::QueuedTurn>,
+    },
     Event(ThreadEventPush),
     Refresh,
     Error {
@@ -639,6 +645,7 @@ pub(crate) enum ChatUpdate {
         message: String,
         restore_text: String,
         restore_attachments: Vec<String>,
+        optimistic_queue_id: Option<String>,
     },
     ApprovalError {
         thread_id: String,
@@ -1635,7 +1642,12 @@ impl ClientState {
         self.notice.clone().unwrap_or_else(|| fallback.into())
     }
 
-    pub(crate) fn send_turn(&mut self, thread_id: &str, request: SendTurnRequest) -> ClientUpdate {
+    pub(crate) fn send_turn(
+        &mut self,
+        thread_id: &str,
+        request: SendTurnRequest,
+        optimistic_queue_id: Option<String>,
+    ) -> ClientUpdate {
         let steer = request.steer;
         let restore_text = request.text.clone();
         let restore_attachments = request.attachments.clone();
@@ -1647,6 +1659,7 @@ impl ClientState {
                 steer,
                 restore_text: restore_text.clone(),
                 restore_attachments: restore_attachments.clone(),
+                optimistic_queue_id: optimistic_queue_id.clone(),
             },
         ) {
             ClientUpdate::default()
@@ -1658,6 +1671,7 @@ impl ClientState {
                 ),
                 restore_text,
                 restore_attachments,
+                optimistic_queue_id,
             })
         }
     }
@@ -2517,12 +2531,14 @@ impl ClientState {
                         thread_id,
                         restore_text,
                         restore_attachments,
+                        optimistic_queue_id,
                         ..
                     }) => ClientUpdate::chat(ChatUpdate::TurnError {
                         thread_id,
                         message,
                         restore_text,
                         restore_attachments,
+                        optimistic_queue_id,
                     }),
                     Some(PendingRequest::RespondApproval {
                         thread_id,
@@ -2938,8 +2954,16 @@ impl ClientState {
                     steer,
                     restore_text,
                     restore_attachments,
+                    optimistic_queue_id,
                 }) => match serde_json::from_value::<SendTurnResult>(result) {
-                    Ok(SendTurnResult::Started { queued: false, .. }) => ClientUpdate::default(),
+                    Ok(SendTurnResult::Started { queued: false, .. }) => optimistic_queue_id
+                        .map_or_else(ClientUpdate::default, |queue_id| {
+                            ClientUpdate::chat(ChatUpdate::QueueSubmissionResolved {
+                                thread_id,
+                                optimistic_queue_id: Some(queue_id),
+                                queued_turn: None,
+                            })
+                        }),
                     Ok(SendTurnResult::Queued {
                         queued: true,
                         queued_turn,
@@ -2949,24 +2973,32 @@ impl ClientState {
                                 method::THREAD_STEER_QUEUED_TURN,
                                 json!({
                                     "threadId": thread_id,
-                                    "queuedTurnId": queued_turn.id
+                                    "queuedTurnId": queued_turn.id.clone()
                                 }),
                                 PendingRequest::Steer { thread_id },
                             );
+                            ClientUpdate::default()
+                        } else {
+                            ClientUpdate::chat(ChatUpdate::QueueSubmissionResolved {
+                                thread_id,
+                                optimistic_queue_id,
+                                queued_turn: Some(queued_turn),
+                            })
                         }
-                        ClientUpdate::default()
                     }
                     Ok(_) => ClientUpdate::chat(ChatUpdate::TurnError {
                         thread_id,
                         message: "thread.sendTurn returned a contradictory queue state.".into(),
                         restore_text,
                         restore_attachments,
+                        optimistic_queue_id,
                     }),
                     Err(error) => ClientUpdate::chat(ChatUpdate::TurnError {
                         thread_id,
                         message: format!("thread.sendTurn was invalid: {error}"),
                         restore_text,
                         restore_attachments,
+                        optimistic_queue_id,
                     }),
                 },
                 Some(PendingRequest::Diff { thread_id }) => {
@@ -3241,12 +3273,14 @@ impl ClientState {
                 thread_id,
                 restore_text,
                 restore_attachments,
+                optimistic_queue_id,
                 ..
             } => ClientUpdate::chat(ChatUpdate::TurnError {
                 thread_id,
                 message: "The server connection was lost before this request completed.".into(),
                 restore_text,
                 restore_attachments,
+                optimistic_queue_id,
             }),
             PendingRequest::RespondApproval {
                 thread_id,
@@ -3432,6 +3466,7 @@ impl ClientState {
                 effort: request.effort,
                 service_tier: request.service_tier,
             },
+            None,
         );
         self.request_projects();
         ClientUpdate::shell_event(ShellEvent::ThreadStarted {
@@ -5452,6 +5487,7 @@ mod tests {
                 effort: Some("high".into()),
                 service_tier: None,
             },
+            None,
         );
 
         assert!(matches!(
@@ -5464,6 +5500,45 @@ mod tests {
             }] if thread_id == "thread-1"
                 && restore_text == "Try again"
                 && restore_attachments == &["reference.png"]
+        ));
+    }
+
+    #[test]
+    fn queued_send_response_replaces_the_matching_optimistic_row() {
+        let mut state = ClientState::new(true);
+        state.pending.insert(
+            "native-send".into(),
+            PendingRequest::SendTurn {
+                thread_id: "thread-1".into(),
+                steer: false,
+                restore_text: "Queue this next".into(),
+                restore_attachments: Vec::new(),
+                optimistic_queue_id: Some("pending:1".into()),
+            },
+        );
+
+        let update = state.handle_response(Response::Success {
+            id: "native-send".into(),
+            result: json!({
+                "queued": true,
+                "queuedTurn": {
+                    "id": "queued-1",
+                    "text": "Queue this next",
+                    "attachments": [],
+                    "createdAt": 1
+                }
+            }),
+        });
+
+        assert!(matches!(
+            update.chat.as_slice(),
+            [ChatUpdate::QueueSubmissionResolved {
+                thread_id,
+                optimistic_queue_id: Some(optimistic_queue_id),
+                queued_turn: Some(queued_turn),
+            }] if thread_id == "thread-1"
+                && optimistic_queue_id == "pending:1"
+                && queued_turn.id == "queued-1"
         ));
     }
 
