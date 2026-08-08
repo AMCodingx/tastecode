@@ -3974,7 +3974,12 @@ fn settings_button_enabled(
         .border_color(chrome::border(theme))
         .bg(chrome::raised(theme))
         .shadow(chrome::shadows(theme))
-        .child(chrome::top_highlight(theme))
+        .child(chrome::interactive_top_highlight(
+            theme,
+            hover_group.clone(),
+            true,
+        ))
+        .child(chrome::interactive_inset_shade(theme, hover_group.clone()))
         .text_size(px(12.5))
         .text_color(text)
         .opacity(if enabled { 1.0 } else { 0.5 })
@@ -3986,12 +3991,7 @@ fn settings_button_enabled(
                         .bg(theme.surface_3.hsla())
                         .text_color(theme.text.hsla())
                 })
-                .active(move |style| {
-                    style
-                        .top(px(1.0))
-                        .bg(chrome::recessed(theme))
-                        .shadow(Vec::new())
-                })
+                .active(|style| style.top(px(1.0)).shadow(Vec::new()))
                 .on_click(move |_event, _window, cx| action(cx))
         })
         .child(motion_icon(icon_id, icon, 13.0, hover_group, theme))
@@ -4000,8 +4000,10 @@ fn settings_button_enabled(
 }
 
 fn connection_remove_button(index: usize, theme: Theme, action: SettingsAction) -> AnyElement {
+    let hover_group: SharedString = format!("remove-connection-hover:{index}").into();
     div()
         .id(("remove-connection", index))
+        .group(hover_group.clone())
         .relative()
         .h(px(26.0))
         .flex()
@@ -4012,17 +4014,17 @@ fn connection_remove_button(index: usize, theme: Theme, action: SettingsAction) 
         .border_color(chrome::border(theme))
         .bg(chrome::raised(theme))
         .shadow(chrome::shadows(theme))
-        .child(chrome::top_highlight(theme))
+        .child(chrome::interactive_top_highlight(
+            theme,
+            hover_group.clone(),
+            true,
+        ))
+        .child(chrome::interactive_inset_shade(theme, hover_group))
         .text_size(px(12.5))
         .text_color(theme.error.hsla())
         .cursor_pointer()
         .hover(move |style| style.bg(theme.surface_3.hsla()))
-        .active(move |style| {
-            style
-                .top(px(1.0))
-                .bg(chrome::recessed(theme))
-                .shadow(Vec::new())
-        })
+        .active(|style| style.top(px(1.0)).shadow(Vec::new()))
         .on_click(move |_event, _window, cx| action(cx))
         .child("Remove")
         .into_any_element()
@@ -4050,7 +4052,12 @@ fn provider_action_button(
         .border_color(chrome::border(theme))
         .bg(chrome::raised(theme))
         .shadow(chrome::shadows(theme))
-        .child(chrome::top_highlight(theme))
+        .child(chrome::interactive_top_highlight(
+            theme,
+            hover_group.clone(),
+            true,
+        ))
+        .child(chrome::interactive_inset_shade(theme, hover_group.clone()))
         .text_size(px(12.5))
         .line_height(relative(1.55))
         .text_color(theme.text_2.hsla())
@@ -4060,12 +4067,7 @@ fn provider_action_button(
                 .bg(theme.surface_3.hsla())
                 .text_color(theme.text.hsla())
         })
-        .active(move |style| {
-            style
-                .top(px(1.0))
-                .bg(chrome::recessed(theme))
-                .shadow(Vec::new())
-        })
+        .active(|style| style.top(px(1.0)).shadow(Vec::new()))
         .on_click(move |_event, _window, cx| action(cx))
         .when(sign_out, |button| {
             button.child(motion_icon(
@@ -4136,7 +4138,12 @@ fn mcp_action_button(
         .border_color(chrome::border(theme))
         .bg(chrome::raised(theme))
         .shadow(chrome::shadows(theme))
-        .child(chrome::top_highlight(theme))
+        .child(chrome::interactive_top_highlight(
+            theme,
+            hover_group.clone(),
+            true,
+        ))
+        .child(chrome::interactive_inset_shade(theme, hover_group.clone()))
         .text_size(px(12.5))
         .line_height(relative(1.55))
         .text_color(if destructive {
@@ -4155,12 +4162,7 @@ fn mcp_action_button(
                         theme.text.hsla()
                     })
                 })
-                .active(move |style| {
-                    style
-                        .top(px(1.0))
-                        .bg(chrome::recessed(theme))
-                        .shadow(Vec::new())
-                })
+                .active(|style| style.top(px(1.0)).shadow(Vec::new()))
                 .on_click(action)
         })
         .when_some(icon, |button, icon| {
