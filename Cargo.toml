@@ -50,6 +50,7 @@ markdown = "1.0.0"
 markup5ever_rcdom = "=0.3.0"
 objc2-app-kit = { version = "=0.3.2", default-features = false, features = ["NSAccessibility", "NSWorkspace"] }
 portable-pty = "=0.9.0"
+qrcode = { version = "0.14.1", default-features = false }
 rusqlite = { version = "=0.39.0", default-features = false, features = ["bundled", "cache"] }
 reqwest = { version = "0.13.4", features = ["blocking", "json"] }
 serde = { version = "1.0.228", features = ["derive"] }
