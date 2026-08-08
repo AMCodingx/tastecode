@@ -2494,7 +2494,6 @@ fn titlebar_tool_button(
         })
         .cursor_pointer()
         .hover(move |style| style.bg(theme.surface.hsla()).text_color(theme.text.hsla()))
-        .active(|style| style.opacity(0.72))
         .child(motion_icon(
             icon_id,
             icon_path,
