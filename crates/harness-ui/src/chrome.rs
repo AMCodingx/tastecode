@@ -13,6 +13,15 @@ pub(crate) fn raised_hover(theme: Theme) -> Background {
     gradient(theme, 0x2c2c2c, 0x222222, 0xffffff, 0xf5f5f6)
 }
 
+/// The web `--bg-rail` token stays flat in dark mode and aliases the raised
+/// chrome gradient in light mode.
+pub(crate) fn rail_background(theme: Theme) -> Background {
+    match theme.mode {
+        ThemeMode::Dark => theme.rail.hsla().into(),
+        ThemeMode::Light => raised(theme),
+    }
+}
+
 pub(crate) fn recessed(theme: Theme) -> Hsla {
     match theme.mode {
         ThemeMode::Dark => gpui::rgb(0x101010).into(),
@@ -196,4 +205,18 @@ fn gradient(
         linear_color_stop(from, 0.0),
         linear_color_stop(to, 1.0),
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn rail_background_matches_the_theme_specific_web_token() {
+        let dark = Theme::dark();
+        let light = Theme::light();
+
+        assert_eq!(rail_background(dark), dark.rail.hsla().into());
+        assert_eq!(rail_background(light), raised(light));
+    }
 }

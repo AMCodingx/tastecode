@@ -654,7 +654,7 @@ impl HarnessApp {
             .rounded(px(8.0))
             .border_1()
             .border_color(chrome::border(theme))
-            .bg(theme.rail.hsla())
+            .bg(chrome::rail_background(theme))
             .shadow(chrome::panel_shadows(theme))
             .child(chrome::top_highlight(theme))
             .child(search)

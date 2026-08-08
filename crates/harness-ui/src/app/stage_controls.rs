@@ -748,7 +748,7 @@ impl HarnessApp {
                         .rounded(px(10.0))
                         .border_1()
                         .border_color(theme.line_strong.hsla())
-                        .bg(theme.rail.hsla())
+                        .bg(chrome::rail_background(theme))
                         .shadow(chrome::modal_shadows(theme))
                         .child(
                             div()
