@@ -2071,8 +2071,11 @@ impl HarnessApp {
             self.sidebar_resize_drag = None;
             return;
         }
-        let delta = f32::from(event.position.x - drag.start_x);
-        let next = clamp_rail_width(drag.start_width + delta);
+        let next = resized_rail_width(
+            drag.start_width,
+            event.position.x - drag.start_x,
+            crate::zoom::factor(),
+        );
         if (self.sidebar_width - next).abs() >= f32::EPSILON {
             self.sidebar_width = next;
             cx.notify();
@@ -2415,6 +2418,10 @@ fn theme_mode_for_appearance(appearance: WindowAppearance) -> ThemeMode {
 
 fn clamp_rail_width(width: f32) -> f32 {
     width.round().clamp(MIN_RAIL_PREVIEW_WIDTH, MAX_RAIL_WIDTH)
+}
+
+fn resized_rail_width(start_width: f32, pointer_delta: Pixels, scale: f32) -> f32 {
+    clamp_rail_width(start_width + f32::from(pointer_delta) / scale)
 }
 
 fn reorder_project_sessions(
@@ -2801,6 +2808,7 @@ mod tests {
         assert_eq!(clamp_rail_width(248.4), 248.0);
         assert_eq!(clamp_rail_width(248.6), 249.0);
         assert_eq!(clamp_rail_width(500.0), MAX_RAIL_WIDTH);
+        assert_eq!(resized_rail_width(248.0, gpui::px(40.0), 2.0), 268.0);
     }
 
     #[test]
