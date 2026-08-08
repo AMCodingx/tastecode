@@ -1881,6 +1881,7 @@ impl HarnessApp {
             .as_ref()
             .filter(|session| !session.running)
             .map_or(0, |_| self.stage_controls.checkpoint_count());
+        let toggle_group: SharedString = "toggle-sidebar-hover".into();
 
         div()
             .relative()
@@ -1915,7 +1916,7 @@ impl HarnessApp {
             .child(
                 div()
                     .id("toggle-sidebar")
-                    .group("toggle-sidebar-hover")
+                    .group(toggle_group.clone())
                     .relative()
                     .size(px(22.0))
                     .flex()
@@ -1923,23 +1924,33 @@ impl HarnessApp {
                     .justify_center()
                     .rounded(px(3.0))
                     .text_color(theme.titlebar_symbol.hsla())
-                    .opacity(0.78)
                     .cursor_pointer()
-                    .hover(move |style| style.bg(theme.surface_2.hsla()).opacity(1.0))
-                    .active(|style| style.opacity(0.7))
+                    .hover(move |style| style.bg(theme.surface_2.hsla()))
+                    .active(|style| style.size(px(20.68)).m(px(0.66)))
                     .on_mouse_down(MouseButton::Left, |_event, _window, cx| {
                         cx.stop_propagation();
                     })
                     .on_click(cx.listener(|this, _event, _window, cx| {
                         this.toggle_sidebar(cx);
                     }))
-                    .child(motion_icon(
-                        "toggle-sidebar-icon",
-                        "icons/panel-left.svg",
-                        15.0,
-                        "toggle-sidebar-hover",
-                        theme,
-                    )),
+                    .child(
+                        div()
+                            .id("toggle-sidebar-icon-press")
+                            .size(px(15.0))
+                            .group_active(toggle_group.clone(), |style| {
+                                style.size(px(14.1)).m(px(0.45))
+                            })
+                            .child(
+                                motion_icon(
+                                    "toggle-sidebar-icon",
+                                    "icons/panel-left.svg",
+                                    15.0,
+                                    toggle_group,
+                                    theme,
+                                )
+                                .size_full(),
+                            ),
+                    ),
             )
             .when_some(session, |titlebar, session| {
                 let branch = session.worktree_branch.clone();

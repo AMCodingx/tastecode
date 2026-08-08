@@ -407,31 +407,34 @@ fn search_button(
     theme: crate::Theme,
     listener: impl Fn(&gpui::ClickEvent, &mut Window, &mut gpui::App) + 'static,
 ) -> AnyElement {
+    let group: SharedString = format!("{id}:hover").into();
+    let icon_id: SharedString = format!("{id}:icon").into();
+    let icon_press_id: SharedString = format!("{id}:icon-press").into();
     div()
         .id(id)
-        .group(id)
-        .size(px(28.0))
+        .group(group.clone())
+        .size(px(22.0))
         .flex_none()
         .flex()
         .items_center()
         .justify_center()
-        .rounded(px(7.0))
-        .text_color(theme.text_2.hsla())
+        .rounded(px(3.0))
+        .text_color(theme.text_3.hsla())
         .cursor_pointer()
         .hover(move |style| {
             style
-                .bg(theme.surface_3.hsla())
+                .bg(theme.surface_2.hsla())
                 .text_color(theme.text.hsla())
         })
-        .active(|style| style.opacity(0.72))
+        .active(|style| style.size(px(20.68)).m(px(0.66)))
         .on_click(listener)
-        .child(motion_icon(
-            SharedString::from(format!("{id}-icon")),
-            icon_path,
-            12.0,
-            id,
-            theme,
-        ))
+        .child(
+            div()
+                .id(icon_press_id)
+                .size(px(12.0))
+                .group_active(group.clone(), |style| style.size(px(11.28)).m(px(0.36)))
+                .child(motion_icon(icon_id, icon_path, 12.0, group, theme).size_full()),
+        )
         .into_any_element()
 }
 

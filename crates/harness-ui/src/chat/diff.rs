@@ -691,7 +691,6 @@ fn diff_pill_button(
             button
                 .cursor_pointer()
                 .hover(move |style| style.bg(theme.surface.hsla()))
-                .active(|style| style.opacity(0.72))
         })
         .when_some(action, |button, action| {
             button.on_click(move |_event, _window, cx| action(cx))
