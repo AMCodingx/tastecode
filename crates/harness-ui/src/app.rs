@@ -2118,7 +2118,7 @@ impl HarnessApp {
             .h(px(TITLEBAR_HEIGHT))
             .w_full()
             .flex_none()
-            .bg(self.theme.titlebar.hsla())
+            .bg(crate::chrome::titlebar_background(self.theme))
             .border_b_1()
             .border_color(self.theme.line.hsla())
             .child(crate::chrome::top_highlight(self.theme))

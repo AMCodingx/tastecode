@@ -22,6 +22,15 @@ pub(crate) fn rail_background(theme: Theme) -> Background {
     }
 }
 
+/// The settings titlebar uses its dedicated dark color and the raised chrome
+/// gradient in light mode, matching `--titlebar-bg`.
+pub(crate) fn titlebar_background(theme: Theme) -> Background {
+    match theme.mode {
+        ThemeMode::Dark => theme.titlebar.hsla().into(),
+        ThemeMode::Light => raised(theme),
+    }
+}
+
 pub(crate) fn recessed(theme: Theme) -> Hsla {
     match theme.mode {
         ThemeMode::Dark => gpui::rgb(0x101010).into(),
@@ -218,5 +227,14 @@ mod tests {
 
         assert_eq!(rail_background(dark), dark.rail.hsla().into());
         assert_eq!(rail_background(light), raised(light));
+    }
+
+    #[test]
+    fn titlebar_background_matches_the_theme_specific_web_token() {
+        let dark = Theme::dark();
+        let light = Theme::light();
+
+        assert_eq!(titlebar_background(dark), dark.titlebar.hsla().into());
+        assert_eq!(titlebar_background(light), raised(light));
     }
 }
