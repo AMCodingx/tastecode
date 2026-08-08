@@ -14,6 +14,12 @@ const MODEL_CATALOG_CACHE_VERSION: u8 = 1;
 const MODEL_CATALOG_CACHE_FILE: &str = "gpui-model-catalog-cache.json";
 const MAX_MODEL_CATALOG_CACHE_BYTES: usize = 2_000_000;
 const MAX_CACHED_MODELS: usize = 2_000;
+const DEFAULT_RAIL_WIDTH: u16 = 248;
+const MIN_STORED_RAIL_WIDTH: u16 = 176;
+const MAX_STORED_RAIL_WIDTH: u16 = 420;
+const DEFAULT_TERMINAL_HEIGHT: u16 = 260;
+const MIN_TERMINAL_HEIGHT: u16 = 160;
+const MAX_STORED_TERMINAL_HEIGHT: u16 = 4_096;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -64,14 +70,14 @@ impl Default for NativePreferences {
             accent: Accent::Neutral,
             backdrop: Backdrop::Default,
             sidebar_glass: 35,
-            rail_width: 248,
+            rail_width: DEFAULT_RAIL_WIDTH,
             session_order: HashMap::new(),
             hidden_models: HashSet::new(),
             selected_model_key: None,
             model_by_source: HashMap::new(),
             approval: ApprovalMode::Ask,
             terminal_open: false,
-            terminal_height: 260,
+            terminal_height: DEFAULT_TERMINAL_HEIGHT,
         }
     }
 }
@@ -128,12 +134,12 @@ impl NativePreferences {
             preferences.sidebar_glass = 35;
         }
         if preferences.version < 5 {
-            preferences.rail_width = 248;
+            preferences.rail_width = DEFAULT_RAIL_WIDTH;
         }
         preferences.version = PREFERENCES_VERSION;
         preferences.sidebar_glass = preferences.sidebar_glass.min(60);
-        preferences.rail_width = preferences.rail_width.clamp(177, 420);
-        preferences.terminal_height = preferences.terminal_height.clamp(160, 4_096);
+        preferences.rail_width = normalized_rail_width(preferences.rail_width);
+        preferences.terminal_height = normalized_terminal_height(preferences.terminal_height);
         Ok(preferences)
     }
 
@@ -408,6 +414,22 @@ fn model_catalog_cache_path() -> Option<PathBuf> {
     })
 }
 
+fn normalized_rail_width(width: u16) -> u16 {
+    if (MIN_STORED_RAIL_WIDTH..=MAX_STORED_RAIL_WIDTH).contains(&width) {
+        width
+    } else {
+        DEFAULT_RAIL_WIDTH
+    }
+}
+
+fn normalized_terminal_height(height: u16) -> u16 {
+    if height < MIN_TERMINAL_HEIGHT {
+        DEFAULT_TERMINAL_HEIGHT
+    } else {
+        height.min(MAX_STORED_TERMINAL_HEIGHT)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -455,6 +477,19 @@ mod tests {
         assert_eq!(preferences.approval, ApprovalMode::Ask);
         assert!(!preferences.terminal_open);
         assert_eq!(preferences.terminal_height, 260);
+    }
+
+    #[test]
+    fn stored_geometry_uses_the_web_bounds_and_fallbacks() {
+        assert_eq!(normalized_rail_width(175), 248);
+        assert_eq!(normalized_rail_width(176), 176);
+        assert_eq!(normalized_rail_width(420), 420);
+        assert_eq!(normalized_rail_width(421), 248);
+
+        assert_eq!(normalized_terminal_height(159), 260);
+        assert_eq!(normalized_terminal_height(160), 160);
+        assert_eq!(normalized_terminal_height(4_096), 4_096);
+        assert_eq!(normalized_terminal_height(4_097), 4_096);
     }
 
     #[test]
