@@ -28,9 +28,9 @@ use crate::zoom::{self, px};
 use anyhow::Result;
 use command_palette::{CommandPaletteState, CommandScope};
 use gpui::{
-    Animation, AnimationExt, App, Application, Bounds, Context, CursorStyle, Entity, FocusHandle,
-    Focusable, KeyDownEvent, MouseButton, MouseDownEvent, MouseMoveEvent, PathPromptOptions,
-    Pixels, Render, SharedString, TitlebarOptions, Window, WindowAppearance,
+    Animation, AnimationExt, AnyElement, App, Application, Bounds, Context, CursorStyle, Entity,
+    FocusHandle, Focusable, KeyDownEvent, MouseButton, MouseDownEvent, MouseMoveEvent,
+    PathPromptOptions, Pixels, Render, SharedString, TitlebarOptions, Window, WindowAppearance,
     WindowBackgroundAppearance, WindowBounds, WindowOptions, div, point, prelude::*, relative,
     size,
 };
@@ -2100,6 +2100,43 @@ impl HarnessApp {
         cx.notify();
     }
 
+    fn sidebar_resize_handle(&self, window: &Window, cx: &mut Context<Self>) -> AnyElement {
+        let focused = self.sidebar_resize_focus.is_focused(window);
+        div()
+            .id("rail-resize")
+            .absolute()
+            .top_0()
+            .right_0()
+            .h_full()
+            .w(px(6.0))
+            .group("rail-resize")
+            .cursor_ew_resize()
+            .track_focus(&self.sidebar_resize_focus)
+            .tab_index(0)
+            .on_key_down(cx.listener(|this, event, _window, cx| {
+                this.resize_sidebar_with_keyboard(event, cx);
+            }))
+            .on_mouse_down(
+                MouseButton::Left,
+                cx.listener(|this, event, _window, cx| {
+                    this.begin_sidebar_resize(event, cx);
+                }),
+            )
+            .child(
+                div()
+                    .absolute()
+                    .top(px(12.0))
+                    .bottom(px(12.0))
+                    .right(px(2.0))
+                    .w(px(1.0))
+                    .rounded_full()
+                    .bg(self.theme.text_3.hsla())
+                    .opacity(if focused { 0.72 } else { 0.0 })
+                    .group_hover("rail-resize", |line| line.opacity(0.72)),
+            )
+            .into_any_element()
+    }
+
     fn settings_titlebar(&self) -> impl IntoElement {
         div()
             .relative()
@@ -2212,41 +2249,7 @@ impl Render for HarnessApp {
             .child(sidebar_bloom(self.theme, self.preferences.sidebar_glass))
             .child(rail)
             .when(!self.sidebar_collapsed, |slot| {
-                let focused = self.sidebar_resize_focus.is_focused(window);
-                slot.child(
-                    div()
-                        .id("rail-resize")
-                        .absolute()
-                        .top_0()
-                        .right_0()
-                        .h_full()
-                        .w(px(6.0))
-                        .group("rail-resize")
-                        .cursor_ew_resize()
-                        .track_focus(&self.sidebar_resize_focus)
-                        .tab_index(0)
-                        .on_key_down(cx.listener(|this, event, _window, cx| {
-                            this.resize_sidebar_with_keyboard(event, cx);
-                        }))
-                        .on_mouse_down(
-                            MouseButton::Left,
-                            cx.listener(|this, event, _window, cx| {
-                                this.begin_sidebar_resize(event, cx);
-                            }),
-                        )
-                        .child(
-                            div()
-                                .absolute()
-                                .top(px(12.0))
-                                .bottom(px(12.0))
-                                .right(px(2.0))
-                                .w(px(1.0))
-                                .rounded_full()
-                                .bg(self.theme.text_3.hsla())
-                                .opacity(if focused { 0.72 } else { 0.0 })
-                                .group_hover("rail-resize", |line| line.opacity(0.72)),
-                        ),
-                )
+                slot.child(self.sidebar_resize_handle(window, cx))
             });
         let rail_slot = if self.sidebar_transition == 0 {
             rail_slot
