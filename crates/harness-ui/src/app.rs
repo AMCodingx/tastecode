@@ -8,7 +8,7 @@ mod stage_controls;
 mod zoom_hud;
 
 use crate::assets::{HarnessAssets, register_fonts};
-use crate::chat::{ChatEvent, ChatView, ComposerSettings, SessionContext};
+use crate::chat::{ChatEvent, ChatView, ComposerSettings, DESIGN_BRIEF_ATTACHMENT, SessionContext};
 use crate::client_state::{
     AuthTarget, ChatUpdate, ClientState, ClientUpdate, NewThreadRequest, ReviewHunkRequest,
     SendTurnRequest, ShellEvent,
@@ -51,7 +51,6 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 const APP_WIDTH: f32 = 1180.0;
 const APP_HEIGHT: f32 = 820.0;
-const DESIGN_BRIEF_ATTACHMENT: &str = "personal-harness://design-brief-v1";
 const MIN_RAIL_PREVIEW_WIDTH: f32 = 148.0;
 const COLLAPSE_RAIL_WIDTH: f32 = 176.0;
 const MAX_RAIL_WIDTH: f32 = 420.0;
@@ -362,28 +361,19 @@ impl HarnessApp {
                 text,
                 attachments,
                 steer,
+                model,
+                effort,
+                service_tier,
             } => {
-                let mut attachments = attachments.clone();
-                if this.design_mode
-                    && !attachments
-                        .iter()
-                        .any(|path| path == DESIGN_BRIEF_ATTACHMENT)
-                {
-                    attachments.push(DESIGN_BRIEF_ATTACHMENT.into());
-                }
-                let model = this
-                    .selected_model_choice()
-                    .map(|choice| choice.model.id.clone())
-                    .filter(|model| !model.is_empty());
                 this.state.send_turn(
                     thread_id,
                     SendTurnRequest {
                         text: text.clone(),
                         steer: *steer,
-                        attachments,
-                        model,
-                        effort: this.effort.clone(),
-                        service_tier: this.service_tier.clone(),
+                        attachments: attachments.clone(),
+                        model: model.clone(),
+                        effort: effort.clone(),
+                        service_tier: service_tier.clone(),
                     },
                 );
             }
@@ -875,7 +865,7 @@ impl HarnessApp {
                 self.stage_controls.clear_restore_undo();
                 self.account_menu_open = false;
                 self.settings_open = false;
-                self.chat.update(cx, |chat, cx| {
+                let pending_turns = self.chat.update(cx, |chat, cx| {
                     chat.promote_draft(
                         SessionContext {
                             thread_id: Some(thread_id.clone()),
@@ -885,8 +875,21 @@ impl HarnessApp {
                             provider: Some(provider),
                         },
                         cx,
-                    );
+                    )
                 });
+                for pending in pending_turns {
+                    self.state.send_turn(
+                        &thread_id,
+                        SendTurnRequest {
+                            text: pending.text,
+                            steer: pending.steer,
+                            attachments: pending.attachments,
+                            model: pending.model,
+                            effort: pending.effort,
+                            service_tier: pending.service_tier,
+                        },
+                    );
+                }
                 self.state.select_thread(&thread_id);
                 self.refresh_stage_context(cx);
             }

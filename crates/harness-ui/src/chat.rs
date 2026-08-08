@@ -31,9 +31,9 @@ use gpui_component::input::{Input, InputEvent, InputState};
 use gpui_component::{RopeExt, Sizable as _};
 use harness_protocol::{
     ApprovalDecision, ApprovalKind, ApprovalMode, ApprovalReview, ApprovalReviewStatus,
-    CheckpointSummary, DiffDecision, DomainEvent, Item, ProviderId, QueueDirection, RiskLevel,
-    ThreadEventPush, ThreadQueueResult, Usage, UserInputQuestion, VoiceMimeType,
-    VoiceTranscribeParams,
+    CheckpointSummary, DiffDecision, DomainEvent, Item, ItemStatus, ItemType, MessageRole,
+    ProviderId, QueueDirection, RiskLevel, ThreadEventPush, ThreadQueueResult, Turn, TurnStatus,
+    Usage, UserInputQuestion, VoiceMimeType, VoiceTranscribeParams,
 };
 use harness_state::{ApplyOutcome, HistoryError, ThreadState};
 use markdown::StreamRevealBatch;
@@ -46,7 +46,7 @@ use std::io::Write as _;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use terminal::TerminalUiState;
 use voice::{MAX_RECORDING_DURATION, VOICE_SAMPLE_RATE, VoiceRecorder};
 
@@ -66,6 +66,7 @@ const EFFORT_SLIDER_INSET: f32 = 2.0;
 const EFFORT_SLIDER_MIN_FILL: f32 = 44.0;
 const EFFORT_DITHER_FADE_IN: Duration = Duration::from_millis(150);
 const EFFORT_DITHER_FADE_OUT: Duration = Duration::from_millis(140);
+pub(crate) const DESIGN_BRIEF_ATTACHMENT: &str = "personal-harness://design-brief-v1";
 
 #[derive(Clone)]
 pub(crate) struct SessionContext {
@@ -87,6 +88,9 @@ pub(crate) enum ChatEvent {
         text: String,
         attachments: Vec<String>,
         steer: bool,
+        model: Option<String>,
+        effort: Option<String>,
+        service_tier: Option<String>,
     },
     Interrupt {
         thread_id: String,
@@ -273,6 +277,16 @@ struct PendingTranscript {
     send_after: bool,
 }
 
+#[derive(Clone)]
+pub(crate) struct PendingDraftTurn {
+    pub(crate) text: String,
+    pub(crate) attachments: Vec<String>,
+    pub(crate) steer: bool,
+    pub(crate) model: Option<String>,
+    pub(crate) effort: Option<String>,
+    pub(crate) service_tier: Option<String>,
+}
+
 #[derive(Clone, Copy)]
 struct ComposerDockPending {
     box_bounds: Bounds<Pixels>,
@@ -349,6 +363,8 @@ pub(crate) struct ChatView {
     clear_composer: bool,
     restore_composer: Option<String>,
     creating: bool,
+    pending_draft_turns: Vec<PendingDraftTurn>,
+    optimistic_draft_turn_id: Option<String>,
     sending: bool,
     send_motion_generation: u64,
     interrupt_pending: bool,
@@ -500,6 +516,8 @@ impl ChatView {
             clear_composer: false,
             restore_composer: None,
             creating: false,
+            pending_draft_turns: Vec::new(),
+            optimistic_draft_turn_id: None,
             sending: false,
             send_motion_generation: 0,
             interrupt_pending: false,
@@ -605,6 +623,8 @@ impl ChatView {
         self.composer_dock_motion = None;
         self.composer_dock_generation = self.composer_dock_generation.wrapping_add(1);
         self.creating = false;
+        self.pending_draft_turns.clear();
+        self.optimistic_draft_turn_id = None;
         self.sending = false;
         self.send_motion_generation = self.send_motion_generation.wrapping_add(1);
         self.interrupt_pending = false;
@@ -647,15 +667,22 @@ impl ChatView {
         self.loading = false;
     }
 
-    pub(crate) fn promote_draft(&mut self, session: SessionContext, cx: &mut Context<Self>) {
+    pub(crate) fn promote_draft(
+        &mut self,
+        session: SessionContext,
+        cx: &mut Context<Self>,
+    ) -> Vec<PendingDraftTurn> {
         debug_assert!(session.thread_id.is_some());
+        let pending_turns = std::mem::take(&mut self.pending_draft_turns);
         self.session = Some(session);
         self.creating = false;
+        self.optimistic_draft_turn_id = None;
         self.loading = true;
         self.history_in_flight = true;
         self.error = None;
         self.reopen_visible_terminal(cx);
         cx.notify();
+        pending_turns
     }
 
     pub(crate) fn update_composer_settings(
@@ -917,14 +944,19 @@ impl ChatView {
                 .as_ref()
                 .is_some_and(|session| session.thread_id.is_none()) =>
             {
+                let pending_restore = self.pending_draft_turns.last().cloned();
+                let session = self.session.clone();
+                self.reset_session(session, cx);
                 self.loading = false;
-                self.creating = false;
                 self.error = Some(message);
-                self.restore_composer = Some(restore_text);
-                self.attachments = restore_attachments
-                    .into_iter()
-                    .map(ComposerAttachment::file)
-                    .collect();
+                self.restore_composer = Some(
+                    pending_restore
+                        .as_ref()
+                        .map_or(restore_text, |pending| pending.text.clone()),
+                );
+                self.attachments = restored_composer_attachments(
+                    pending_restore.map_or(restore_attachments, |pending| pending.attachments),
+                );
                 cx.notify();
             }
             ChatUpdate::TurnError {
@@ -937,10 +969,7 @@ impl ChatView {
                 self.interrupt_pending = false;
                 self.error = Some(message);
                 self.restore_composer = Some(restore_text);
-                self.attachments = restore_attachments
-                    .into_iter()
-                    .map(ComposerAttachment::file)
-                    .collect();
+                self.attachments = restored_composer_attachments(restore_attachments);
                 cx.notify();
             }
             ChatUpdate::ApprovalError {
@@ -1622,9 +1651,6 @@ impl ChatView {
         if text.is_empty() {
             return;
         }
-        if self.creating {
-            return;
-        }
         if self
             .attachments
             .iter()
@@ -1636,10 +1662,13 @@ impl ChatView {
             cx.emit(ChatEvent::ProjectRequired);
             return;
         };
-        if session.thread_id.is_none() && self.selected_model().is_none() {
+        if !self.creating && session.thread_id.is_none() && self.selected_model().is_none() {
             return;
         }
-        if session.thread_id.is_none()
+        let thread_id = session.thread_id.clone();
+        let project_path = session.project_path.clone();
+        if thread_id.is_none()
+            && !self.creating
             && let (Some(box_bounds), Some(field_bounds)) =
                 (self.composer_box_bounds, self.composer_field_bounds)
         {
@@ -1669,26 +1698,68 @@ impl ChatView {
         let attachments = std::mem::take(&mut self.attachments)
             .into_iter()
             .filter_map(|attachment| attachment.path)
-            .collect();
+            .collect::<Vec<_>>();
         self.attachment_error = None;
-        match &session.thread_id {
-            Some(thread_id) => cx.emit(ChatEvent::Submit {
-                thread_id: thread_id.clone(),
-                text,
+        let model = self
+            .selected_model()
+            .map(|choice| choice.model.id.clone())
+            .filter(|model| !model.is_empty());
+        let effort = self.composer_settings.effort.clone();
+        let service_tier = self.composer_settings.service_tier.clone();
+        if self.creating {
+            let attachments = design_attachments(attachments, self.composer_settings.design_mode);
+            self.pending_draft_turns.push(PendingDraftTurn {
+                text: text.clone(),
                 attachments,
                 steer,
-            }),
-            None => {
-                self.creating = true;
-                self.loading = true;
-                cx.emit(ChatEvent::Create {
-                    project_path: session.project_path.clone(),
-                    text,
-                    attachments,
-                });
-            }
+                model,
+                effort,
+                service_tier,
+            });
+            self.append_optimistic_draft_prompt(text, cx);
+        } else if let Some(thread_id) = thread_id {
+            cx.emit(ChatEvent::Submit {
+                thread_id,
+                text,
+                attachments: design_attachments(attachments, self.composer_settings.design_mode),
+                steer,
+                model,
+                effort,
+                service_tier,
+            });
+        } else {
+            self.creating = true;
+            self.loading = false;
+            self.append_optimistic_draft_prompt(text.clone(), cx);
+            cx.emit(ChatEvent::Create {
+                project_path,
+                text,
+                attachments,
+            });
         }
         cx.notify();
+    }
+
+    fn append_optimistic_draft_prompt(&mut self, text: String, cx: &mut Context<Self>) {
+        let now = unix_time_ms();
+        let (turn_id, started) = self.optimistic_draft_turn_id.clone().map_or_else(
+            || {
+                let turn_id = format!("local-turn:{}", uuid::Uuid::new_v4());
+                self.optimistic_draft_turn_id = Some(turn_id.clone());
+                (turn_id, true)
+            },
+            |turn_id| (turn_id, false),
+        );
+        self.apply_live_events(
+            optimistic_draft_events(
+                &turn_id,
+                format!("optimistic:{}", uuid::Uuid::new_v4()),
+                text,
+                now,
+                started,
+            ),
+            cx,
+        );
     }
 
     fn primary_action(&mut self, cx: &mut Context<Self>) {
@@ -3218,10 +3289,9 @@ impl ChatView {
             || self
                 .attachments
                 .iter()
-                .any(|attachment| attachment.path.is_none())
-            || self.creating;
+                .any(|attachment| attachment.path.is_none());
         let running = self.state.running;
-        let is_new_session = is_new_session(session.as_ref());
+        let is_new_session = is_centered_new_session(session.as_ref(), self.creating);
         let composer_focused = self.composer.read(cx).focus_handle(cx).is_focused(window);
         let prompt_shadow = if theme.mode == ThemeMode::Dark {
             BoxShadow {
@@ -5444,7 +5514,7 @@ impl Render for ChatView {
         let terminal_pane = self.terminal_pane(window, cx);
         let thread_search = self.thread_search_overlay(cx);
         let markdown_table_overlay = self.markdown_table_overlay(window, cx);
-        let is_new_session = is_new_session(self.session.as_ref());
+        let is_new_session = is_centered_new_session(self.session.as_ref(), self.creating);
         if !is_new_session {
             self.prepare_composer_dock_motion(window);
         }
@@ -5536,6 +5606,10 @@ fn is_new_session(session: Option<&SessionContext>) -> bool {
     session.is_none_or(|session| session.thread_id.is_none())
 }
 
+fn is_centered_new_session(session: Option<&SessionContext>, creating: bool) -> bool {
+    is_new_session(session) && !creating
+}
+
 fn new_session_prompt_size(viewport_width: f32) -> f32 {
     (viewport_width * 0.024).clamp(20.0, 30.0)
 }
@@ -5555,6 +5629,79 @@ fn new_session_prompt_label(
             project_name.unwrap_or("a project")
         ))
     }
+}
+
+fn optimistic_draft_events(
+    turn_id: &str,
+    item_id: String,
+    text: String,
+    created_at: f64,
+    start_turn: bool,
+) -> Vec<ThreadEventPush> {
+    let mut events = Vec::with_capacity(usize::from(start_turn) + 1);
+    if start_turn {
+        events.push(ThreadEventPush {
+            thread_id: String::new(),
+            seq: None,
+            event: DomainEvent::TurnStarted {
+                turn: Turn {
+                    id: turn_id.into(),
+                    thread_id: String::new(),
+                    status: TurnStatus::Running,
+                    created_at,
+                },
+            },
+        });
+    }
+    events.push(ThreadEventPush {
+        thread_id: String::new(),
+        seq: None,
+        event: DomainEvent::ItemCompleted {
+            item: Item {
+                id: item_id,
+                turn_id: turn_id.into(),
+                item_type: ItemType::Message,
+                status: ItemStatus::Completed,
+                role: Some(MessageRole::User),
+                text: Some(text),
+                command: None,
+                exit_code: None,
+                duration_ms: None,
+                path: None,
+                lines_added: None,
+                lines_removed: None,
+                created_at,
+            },
+        },
+    });
+    events
+}
+
+fn design_attachments(mut attachments: Vec<String>, design_mode: bool) -> Vec<String> {
+    if design_mode
+        && !attachments
+            .iter()
+            .any(|path| path == DESIGN_BRIEF_ATTACHMENT)
+    {
+        attachments.push(DESIGN_BRIEF_ATTACHMENT.into());
+    }
+    attachments
+}
+
+fn restored_composer_attachments(paths: Vec<String>) -> Vec<ComposerAttachment> {
+    paths
+        .into_iter()
+        .filter(|path| path != DESIGN_BRIEF_ATTACHMENT)
+        .map(ComposerAttachment::file)
+        .collect()
+}
+
+fn unix_time_ms() -> f64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs_f64()
+        * 1_000.0
 }
 
 fn composer_dock_offset(pending: ComposerDockPending, viewport_height: f32, now: Instant) -> f32 {
@@ -7455,6 +7602,8 @@ mod tests {
             provider: None,
         };
         assert!(is_new_session(Some(&session)));
+        assert!(is_centered_new_session(Some(&session), false));
+        assert!(!is_centered_new_session(Some(&session), true));
         session.thread_id = Some("thread-1".into());
         assert!(!is_new_session(Some(&session)));
         assert_eq!(new_session_prompt_label(false, true, None), None);
@@ -7469,6 +7618,65 @@ mod tests {
         assert_eq!(
             new_session_prompt_label(true, false, Some("Harness")).as_deref(),
             Some("What should we build in Harness?")
+        );
+    }
+
+    #[test]
+    fn provisional_session_keeps_consecutive_prompts_visible_and_ordered() {
+        let mut state = ThreadState::default();
+        let events = optimistic_draft_events(
+            "local-turn:1",
+            "optimistic:1".into(),
+            "Start immediately".into(),
+            1.0,
+            true,
+        )
+        .into_iter()
+        .chain(optimistic_draft_events(
+            "local-turn:1",
+            "optimistic:2".into(),
+            "Then do this too".into(),
+            2.0,
+            false,
+        ));
+
+        for push in events {
+            assert!(matches!(
+                state.apply_live(push.seq, push.event),
+                ApplyOutcome::Applied(_)
+            ));
+        }
+
+        assert!(state.running);
+        assert_eq!(state.timeline_len(), 2);
+        assert_eq!(
+            (0..state.timeline_len())
+                .filter_map(|row| state.item_at_row(row)?.text.as_deref())
+                .collect::<Vec<_>>(),
+            ["Start immediately", "Then do this too"]
+        );
+    }
+
+    #[test]
+    fn pending_design_turn_captures_the_brief_at_submit_time() {
+        assert_eq!(
+            design_attachments(vec!["reference.png".into()], true),
+            ["reference.png", DESIGN_BRIEF_ATTACHMENT]
+        );
+        assert_eq!(
+            design_attachments(vec![DESIGN_BRIEF_ATTACHMENT.into()], true),
+            [DESIGN_BRIEF_ATTACHMENT]
+        );
+        assert!(design_attachments(Vec::new(), false).is_empty());
+        assert_eq!(
+            restored_composer_attachments(vec![
+                "reference.png".into(),
+                DESIGN_BRIEF_ATTACHMENT.into(),
+            ])
+            .into_iter()
+            .filter_map(|attachment| attachment.path)
+            .collect::<Vec<_>>(),
+            ["reference.png"]
         );
     }
 
