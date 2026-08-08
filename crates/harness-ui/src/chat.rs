@@ -2943,6 +2943,10 @@ impl ChatView {
                         .w(relative(0.985))
                         .min_h(px(37.43))
                         .my(px(0.285))
+                        .gap(px(8.865))
+                        .px(px(9.85))
+                        .py(px(6.895))
+                        .rounded(px(4.925))
                         .shadow(Vec::new())
                 })
                 .on_click(move |_event, _window, cx| {
@@ -2952,10 +2956,16 @@ impl ChatView {
                         this.select_user_input_option(question_id, answer, cx);
                     });
                 })
-                .child(brief_option_inset(active, press_group))
-                .child(radio_mark(active, theme))
+                .child(brief_option_inset(active, press_group.clone()))
+                .child(radio_mark(
+                    format!("brief-option-radio-{index}").into(),
+                    active,
+                    press_group.clone(),
+                    theme,
+                ))
                 .child(
                     div()
+                        .id(("brief-option-label", index))
                         .min_w(px(0.0))
                         .truncate()
                         .text_size(px(12.5))
@@ -2965,6 +2975,7 @@ impl ChatView {
                         } else {
                             theme.text_2.hsla()
                         })
+                        .group_active(press_group, |style| style.text_size(px(12.3125)))
                         .child(option.label.clone()),
                 )
                 .into_any_element()
@@ -3015,6 +3026,10 @@ impl ChatView {
                         .w(relative(0.985))
                         .min_h(px(37.43))
                         .my(px(0.285))
+                        .gap(px(8.865))
+                        .px(px(9.85))
+                        .py(px(6.895))
+                        .rounded(px(4.925))
                         .shadow(Vec::new())
                 })
                 .on_click(move |_event, _window, cx| {
@@ -3023,17 +3038,26 @@ impl ChatView {
                         this.select_user_input_custom(question_id, cx);
                     });
                 })
-                .child(brief_option_inset(custom_selected, press_group))
-                .child(radio_mark(custom_selected, theme))
+                .child(brief_option_inset(custom_selected, press_group.clone()))
+                .child(radio_mark(
+                    "brief-custom-radio".into(),
+                    custom_selected,
+                    press_group.clone(),
+                    theme,
+                ))
                 .when(custom_selected, |row| {
                     row.child(
                         div()
+                            .id("brief-custom-input-press")
                             .h(px(28.0))
                             .min_w(px(0.0))
                             .flex_1()
                             .flex()
                             .items_center()
                             .px(px(8.0))
+                            .group_active(press_group.clone(), |style| {
+                                style.h(px(27.58)).px(px(7.88))
+                            })
                             .child(
                                 Input::new(&self.user_input_custom)
                                     .xsmall()
@@ -3053,6 +3077,7 @@ impl ChatView {
                 .when(!custom_selected, |row| {
                     row.child(
                         div()
+                            .id("brief-custom-preview-press")
                             .relative()
                             .flex_1()
                             .min_h(px(28.0))
@@ -3067,6 +3092,15 @@ impl ChatView {
                             .text_size(px(12.5))
                             .font_weight(FontWeight(450.0))
                             .text_color(theme.text_3.hsla())
+                            .group_active(press_group, |style| {
+                                style
+                                    .min_h(px(27.58))
+                                    .rounded(px(2.955))
+                                    .px(px(7.88))
+                                    .py(px(4.925))
+                                    .line_height(px(15.76))
+                                    .text_size(px(12.3125))
+                            })
                             .child(brief_inset_top_shadow(0.18))
                             .child("Write your own answer…"),
                     )
@@ -6244,8 +6278,15 @@ fn risk_label(risk: RiskLevel) -> &'static str {
     }
 }
 
-fn radio_mark(active: bool, theme: Theme) -> impl IntoElement {
+fn radio_mark(
+    id: SharedString,
+    active: bool,
+    press_group: SharedString,
+    theme: Theme,
+) -> impl IntoElement {
+    let dot_id: SharedString = format!("{id}:dot").into();
     div()
+        .id(id)
         .size(px(14.0))
         .flex_none()
         .flex()
@@ -6258,8 +6299,18 @@ fn radio_mark(active: bool, theme: Theme) -> impl IntoElement {
         } else {
             theme.text_3.hsla()
         })
+        .group_active(press_group.clone(), |style| {
+            style.size(px(13.79)).rounded(px(6.895))
+        })
         .when(active, |radio| {
-            radio.child(div().size(px(6.0)).rounded(px(3.0)).bg(theme.text.hsla()))
+            radio.child(
+                div()
+                    .id(dot_id)
+                    .size(px(6.0))
+                    .rounded(px(3.0))
+                    .bg(theme.text.hsla())
+                    .group_active(press_group, |style| style.size(px(5.91)).rounded(px(2.955))),
+            )
         })
 }
 
@@ -6997,43 +7048,101 @@ fn input_nav_button(
     action: Option<UiAction>,
 ) -> impl IntoElement {
     let enabled = action.is_some();
-    div()
-        .id(id)
+    let group: SharedString = format!("{id}:press").into();
+    let visual_id: SharedString = format!("{id}:visual").into();
+    let resting_inset_id: SharedString = format!("{id}:resting-inset").into();
+    let pressed_inset_id: SharedString = format!("{id}:pressed-inset").into();
+    let border = if primary && enabled {
+        brief_primary_color(theme).opacity(0.54)
+    } else {
+        theme.line_strong.hsla().opacity(0.7)
+    };
+    let text_color = if primary && enabled {
+        brief_on_primary_color(theme)
+    } else {
+        theme.text_2.hsla()
+    };
+    let shadow = vec![BoxShadow {
+        color: gpui::black().opacity(if primary && enabled { 0.28 } else { 0.18 }),
+        offset: point(px(0.0), px(1.0)),
+        blur_radius: px(if primary && enabled { 2.0 } else { 1.0 }),
+        spread_radius: px(0.0),
+    }];
+    let sizing = div()
         .min_w(px(58.0))
         .h(px(32.0))
         .px(px(11.0))
         .flex()
         .items_center()
         .justify_center()
-        .rounded(px(5.0))
-        .border_1()
-        .border_color(if primary && enabled {
-            brief_primary_color(theme).opacity(0.54)
-        } else {
-            theme.line_strong.hsla().opacity(0.7)
-        })
-        .bg(brief_action_background(theme, primary && enabled))
-        .shadow(vec![BoxShadow {
-            color: gpui::black().opacity(if primary && enabled { 0.28 } else { 0.18 }),
-            offset: point(px(0.0), px(1.0)),
-            blur_radius: px(if primary && enabled { 2.0 } else { 1.0 }),
-            spread_radius: px(0.0),
-        }])
         .text_size(px(12.5))
         .font_weight(FontWeight(570.0))
-        .text_color(if primary && enabled {
-            brief_on_primary_color(theme)
-        } else {
-            theme.text_2.hsla()
-        })
-        .opacity(if enabled { 1.0 } else { 0.38 })
+        .invisible()
+        .child(label);
+    let visual = div()
+        .id(visual_id)
+        .absolute()
+        .inset_0()
+        .flex()
+        .items_center()
+        .justify_center()
+        .rounded(px(5.0))
+        .overflow_hidden()
+        .border_1()
+        .border_color(border)
+        .bg(brief_action_background(theme, primary && enabled))
+        .shadow(shadow)
+        .text_size(px(12.5))
+        .font_weight(FontWeight(570.0))
+        .text_color(text_color)
         .when(enabled, |button| {
-            button.cursor_pointer().active(|style| style.opacity(0.97))
+            button.group_active(group.clone(), |style| {
+                style
+                    .top(px(0.48))
+                    .right(relative(0.015))
+                    .bottom(px(0.48))
+                    .left(relative(0.015))
+                    .rounded(px(4.85))
+                    .shadow(Vec::new())
+                    .text_size(px(12.125))
+            })
         })
+        .child(
+            div()
+                .id(resting_inset_id)
+                .absolute()
+                .top_0()
+                .left_0()
+                .right_0()
+                .h(px(1.0))
+                .bg(gpui::white().opacity(if primary && enabled { 1.0 } else { 0.09 }))
+                .when(enabled, |inset| {
+                    inset.group_active(group.clone(), |style| style.opacity(0.0))
+                }),
+        )
+        .child(
+            brief_inset_top_shadow(0.24)
+                .id(pressed_inset_id)
+                .opacity(0.0)
+                .when(enabled, |inset| {
+                    inset.group_active(group.clone(), |style| style.opacity(1.0))
+                }),
+        )
+        .child(label);
+    div()
+        .id(id)
+        .group(group)
+        .relative()
+        .min_w(px(58.0))
+        .h(px(32.0))
+        .flex_none()
+        .opacity(if enabled { 1.0 } else { 0.38 })
+        .when(enabled, |button| button.cursor_pointer())
         .when_some(action, |button, action| {
             button.on_click(move |_event, _window, cx| action(cx))
         })
-        .child(label)
+        .child(sizing)
+        .child(visual)
 }
 
 fn brief_option_background(theme: Theme, selected: bool, hovered: bool) -> Background {
