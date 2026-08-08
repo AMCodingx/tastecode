@@ -2019,6 +2019,7 @@ fn classic_session_action_button(
 ) -> AnyElement {
     let hover_group: SharedString = format!("{id}:hover").into();
     let icon_id: SharedString = format!("{id}:icon").into();
+    let icon_press_id: SharedString = format!("{id}:icon-press").into();
     div()
         .id(id)
         .group(hover_group.clone())
@@ -2035,18 +2036,20 @@ fn classic_session_action_button(
                 .bg(theme.surface_3.hsla())
                 .text_color(theme.text.hsla())
         })
-        .active(|style| style.inset(px(0.66)))
+        .active(|style| style.size(px(20.68)).m(px(0.66)))
         .on_click(move |_event, _window, cx| {
             cx.stop_propagation();
             action(thread_id.clone(), cx);
         })
-        .child(motion_icon(
-            icon_id,
-            icon_path,
-            icon_size,
-            hover_group,
-            theme,
-        ))
+        .child(
+            div()
+                .id(icon_press_id)
+                .size(px(icon_size))
+                .group_active(hover_group.clone(), move |style| {
+                    style.size(px(icon_size * 0.94)).m(px(icon_size * 0.03))
+                })
+                .child(motion_icon(icon_id, icon_path, icon_size, hover_group, theme).size_full()),
+        )
         .into_any_element()
 }
 

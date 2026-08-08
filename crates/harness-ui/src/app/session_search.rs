@@ -217,6 +217,7 @@ impl HarnessApp {
             .map_or("All agents", search_provider_label);
         let project_open = self.session_search.filter_menu == Some(SearchFilterMenu::Project);
         let provider_open = self.session_search.filter_menu == Some(SearchFilterMenu::Provider);
+        let close_group: SharedString = "session-search-close-hover".into();
 
         let search_row = div()
             .relative()
@@ -252,7 +253,7 @@ impl HarnessApp {
             .child(
                 div()
                     .id("session-search-close")
-                    .group("session-search-close-hover")
+                    .group(close_group.clone())
                     .size(px(22.0))
                     .flex()
                     .items_center()
@@ -268,13 +269,24 @@ impl HarnessApp {
                     .on_click(cx.listener(|this, _event, _window, cx| {
                         this.close_session_search(cx);
                     }))
-                    .child(motion_icon(
-                        "session-search-close-icon",
-                        "icons/x.svg",
-                        13.0,
-                        "session-search-close-hover",
-                        theme,
-                    )),
+                    .child(
+                        div()
+                            .id("session-search-close-icon-press")
+                            .size(px(13.0))
+                            .group_active(close_group.clone(), |style| {
+                                style.size(px(12.22)).m(px(0.39))
+                            })
+                            .child(
+                                motion_icon(
+                                    "session-search-close-icon",
+                                    "icons/x.svg",
+                                    13.0,
+                                    close_group,
+                                    theme,
+                                )
+                                .size_full(),
+                            ),
+                    ),
             );
 
         let filters = div()

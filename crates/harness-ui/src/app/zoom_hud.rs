@@ -218,11 +218,13 @@ fn zoom_hud_icon_button(
     theme: Theme,
     on_click: impl Fn(&gpui::ClickEvent, &mut Window, &mut gpui::App) + 'static,
 ) -> AnyElement {
+    let group: SharedString = format!("{id}:hover").into();
+    let icon_id: SharedString = format!("{id}:icon").into();
+    let icon_press_id: SharedString = format!("{id}:icon-press").into();
     div()
         .id(id)
-        .group(id)
-        .min_w(px(30.0))
-        .h(px(30.0))
+        .group(group.clone())
+        .size(px(30.0))
         .flex()
         .items_center()
         .justify_center()
@@ -237,16 +239,20 @@ fn zoom_hud_icon_button(
                         .bg(theme.surface_3.hsla())
                         .text_color(theme.text.hsla())
                 })
-                .active(|style| style.opacity(0.82))
+                .active(|style| style.size(px(28.8)).m(px(0.6)))
                 .on_click(on_click)
         })
-        .child(motion_icon(
-            SharedString::from(format!("{id}-icon")),
-            icon,
-            icon_size,
-            id,
-            theme,
-        ))
+        .child(
+            div()
+                .id(icon_press_id)
+                .size(px(icon_size))
+                .when(!disabled, |icon_wrapper| {
+                    icon_wrapper.group_active(group.clone(), move |style| {
+                        style.size(px(icon_size * 0.96)).m(px(icon_size * 0.02))
+                    })
+                })
+                .child(motion_icon(icon_id, icon, icon_size, group, theme).size_full()),
+        )
         .into_any_element()
 }
 
