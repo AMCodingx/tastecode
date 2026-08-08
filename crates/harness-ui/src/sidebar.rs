@@ -445,6 +445,8 @@ fn sidebar_footer(
         .child(
             div()
                 .id("account-trigger")
+                .group("account-trigger")
+                .relative()
                 .h(px(38.0))
                 .w_full()
                 .flex()
@@ -453,23 +455,22 @@ fn sidebar_footer(
                 .px(px(8.0))
                 .rounded(px(8.0))
                 .border_1()
-                .border_color(if account_menu_open {
-                    theme.line_strong.hsla()
-                } else {
-                    theme.line.hsla()
-                })
-                .bg(theme.surface.hsla())
-                .text_size(px(12.0))
+                .border_color(chrome::border(theme))
+                .bg(chrome::raised(theme))
+                .shadow(chrome::shadows(theme))
+                .text_size(px(12.5))
                 .text_color(theme.text_2.hsla())
                 .cursor_pointer()
                 .hover(move |style| {
                     style
-                        .bg(theme.surface_2.hsla())
-                        .border_color(theme.line_strong.hsla())
+                        .bg(chrome::raised_hover(theme))
+                        .border_color(chrome::hover_border(theme))
                         .text_color(theme.text.hsla())
                 })
-                .active(|style| style.top(px(1.0)))
+                .active(|style| style.top(px(1.0)).shadow(Vec::new()))
                 .on_click(move |_event, _window, cx| toggle(cx))
+                .child(account_trigger_top_highlight(theme))
+                .child(account_trigger_inset_shade(theme))
                 .child(
                     div()
                         .size(px(22.0))
@@ -479,8 +480,14 @@ fn sidebar_footer(
                         .justify_center()
                         .rounded(px(11.0))
                         .bg(theme.surface_3.hsla())
-                        .text_size(px(10.0))
+                        .text_size(px(11.5))
                         .font_weight(FontWeight::SEMIBOLD)
+                        .text_color(theme.text_2.hsla())
+                        .group_hover("account-trigger", move |avatar| {
+                            avatar
+                                .bg(theme.text_3.mix_srgb(theme.surface_3, 0.24).hsla())
+                                .text_color(theme.text.hsla())
+                        })
                         .child(initial),
                 )
                 .child(
@@ -2941,6 +2948,41 @@ fn chrome_highlight(theme: Theme) -> Hsla {
     } else {
         gpui::white().opacity(0.96)
     }
+}
+
+fn account_trigger_top_highlight(theme: Theme) -> AnyElement {
+    div()
+        .id("account-trigger-highlight")
+        .absolute()
+        .top_0()
+        .left_0()
+        .right_0()
+        .h(px(1.0))
+        .bg(chrome_highlight(theme))
+        .group_active("account-trigger", |highlight| highlight.opacity(0.0))
+        .into_any_element()
+}
+
+fn account_trigger_inset_shade(theme: Theme) -> AnyElement {
+    let (from, to): (Hsla, Hsla) = match theme.mode {
+        ThemeMode::Dark => (gpui::black().opacity(0.34), gpui::transparent_black()),
+        ThemeMode::Light => (gpui::rgba(0x18181b14).into(), gpui::transparent_black()),
+    };
+    div()
+        .id("account-trigger-inset")
+        .absolute()
+        .top_0()
+        .left_0()
+        .right_0()
+        .h(px(3.0))
+        .bg(linear_gradient(
+            180.0,
+            linear_color_stop(from, 0.0),
+            linear_color_stop(to, 1.0),
+        ))
+        .opacity(0.0)
+        .group_active("account-trigger", |shade| shade.opacity(1.0))
+        .into_any_element()
 }
 
 fn chrome_shadows(theme: Theme) -> Vec<BoxShadow> {
