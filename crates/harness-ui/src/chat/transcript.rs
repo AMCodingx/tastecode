@@ -263,11 +263,14 @@ impl ChatView {
                         .left(px(0.0))
                         .right(px(0.0))
                         .bottom(px(14.0))
+                        .h(px(28.0))
                         .flex()
+                        .items_center()
                         .justify_center()
                         .child(
                             div()
                                 .id("jump-to-latest")
+                                .relative()
                                 .h(px(28.0))
                                 .flex()
                                 .items_center()
@@ -293,7 +296,15 @@ impl ChatView {
                                     "jump-to-latest-in",
                                     Animation::new(theme.motion.fast)
                                         .with_easing(crate::theme::web_ease_out),
-                                    |button, delta| button.opacity(delta),
+                                    |button, delta| {
+                                        let scale = 0.97 + 0.03 * delta;
+                                        button
+                                            .h(px(28.0 * scale))
+                                            .px(px(13.0 * scale))
+                                            .top(px(4.0 * (1.0 - delta)))
+                                            .text_size(px(12.5 * scale))
+                                            .opacity(delta)
+                                    },
                                 ),
                         ),
                 )
@@ -500,7 +511,9 @@ fn render_transcript_row(
         RowPresentation::Suppressed => unreachable!(),
     };
     let activity_lead = matches!(snapshot.presentation, RowPresentation::ActivityLead { .. });
-    let body = if snapshot.entering && !(activity_lead && snapshot.settling) {
+    let prompt = snapshot.item.item_type == ItemType::Message
+        && snapshot.item.role == Some(MessageRole::User);
+    let body = if snapshot.entering && !prompt && !(activity_lead && snapshot.settling) {
         animate_transcript_entry(body, &snapshot.item, snapshot.motion_epoch, snapshot.theme)
     } else {
         body
@@ -573,85 +586,128 @@ fn user_message(snapshot: &TranscriptRowSnapshot, view: Entity<ChatView>) -> Any
     let edit_text = text.clone();
     let checkpoint_id = snapshot.checkpoint_id;
 
+    let bubble = div()
+        .group(group.clone())
+        .relative()
+        .max_w(relative(0.88))
+        .px(px(13.0))
+        .py(px(9.0))
+        .rounded(px(16.0))
+        .bg(theme.surface_2.hsla())
+        .text_size(px(15.0))
+        .line_height(relative(1.52))
+        .whitespace_normal()
+        .child(text.clone())
+        .child(
+            div()
+                .absolute()
+                .right(px(0.0))
+                .bottom(px(-30.0))
+                .h(px(28.0))
+                .flex()
+                .items_center()
+                .justify_end()
+                .gap(px(6.0))
+                .opacity(0.0)
+                .group_hover(group, |actions| actions.opacity(1.0))
+                .child(transcript_action_button(
+                    format!("copy-prompt:{}", snapshot.item.id),
+                    if snapshot.copied {
+                        "icons/check.svg"
+                    } else {
+                        "icons/copy.svg"
+                    },
+                    theme,
+                    {
+                        let view = view.clone();
+                        move |_event, _window, cx| {
+                            cx.write_to_clipboard(ClipboardItem::new_string(copy_text.clone()));
+                            view.update(cx, |this, cx| {
+                                this.mark_transcript_copied(copy_id.clone(), cx);
+                            });
+                        }
+                    },
+                ))
+                .child(transcript_action_button(
+                    format!("edit-prompt:{}", snapshot.item.id),
+                    "icons/pencil.svg",
+                    theme,
+                    {
+                        let view = view.clone();
+                        move |_event, window, cx| {
+                            view.update(cx, |this, cx| {
+                                this.edit_prompt(edit_text.clone(), window, cx);
+                            });
+                        }
+                    },
+                ))
+                .when_some(checkpoint_id, |actions, checkpoint_id| {
+                    actions.child(transcript_action_button(
+                        format!("revert-prompt:{}", snapshot.item.id),
+                        "icons/rotate-ccw.svg",
+                        theme,
+                        {
+                            let view = view.clone();
+                            move |_event, _window, cx| {
+                                view.update(cx, |_this, cx| {
+                                    cx.emit(ChatEvent::OpenCheckpoint { checkpoint_id });
+                                });
+                            }
+                        },
+                    ))
+                }),
+        );
+    if !snapshot.entering {
+        return div()
+            .w_full()
+            .flex()
+            .justify_end()
+            .child(bubble)
+            .into_any_element();
+    }
+
+    let sizing = div()
+        .max_w(relative(0.88))
+        .px(px(13.0))
+        .py(px(9.0))
+        .text_size(px(15.0))
+        .line_height(relative(1.52))
+        .whitespace_normal()
+        .invisible()
+        .child(text);
+    let motion_id: SharedString = format!(
+        "transcript-entry:{}:{}",
+        snapshot.motion_epoch, snapshot.item.id
+    )
+    .into();
+    let bubble = bubble
+        .absolute()
+        .right(px(0.0))
+        .bottom(px(0.0))
+        .with_animation(
+            motion_id,
+            Animation::new(theme.motion_duration(PROMPT_ENTRY_DURATION))
+                .with_easing(crate::theme::web_ease_out),
+            |bubble, delta| {
+                let scale = 0.985 + 0.015 * delta;
+                bubble
+                    .right(px(0.0))
+                    .bottom(px(-6.0 * (1.0 - delta)))
+                    .max_w(relative(0.88 * scale))
+                    .px(px(13.0 * scale))
+                    .py(px(9.0 * scale))
+                    .rounded(px(16.0 * scale))
+                    .text_size(px(15.0 * scale))
+                    .opacity(delta)
+            },
+        );
     div()
+        .relative()
         .w_full()
         .flex()
         .justify_end()
-        .child(
-            div()
-                .group(group.clone())
-                .relative()
-                .max_w(relative(0.88))
-                .px(px(13.0))
-                .py(px(9.0))
-                .rounded(px(16.0))
-                .bg(theme.surface_2.hsla())
-                .text_size(px(15.0))
-                .line_height(relative(1.52))
-                .whitespace_normal()
-                .child(text)
-                .child(
-                    div()
-                        .absolute()
-                        .right(px(0.0))
-                        .bottom(px(-30.0))
-                        .h(px(28.0))
-                        .flex()
-                        .items_center()
-                        .justify_end()
-                        .gap(px(6.0))
-                        .opacity(0.0)
-                        .group_hover(group, |actions| actions.opacity(1.0))
-                        .child(transcript_action_button(
-                            format!("copy-prompt:{}", snapshot.item.id),
-                            if snapshot.copied {
-                                "icons/check.svg"
-                            } else {
-                                "icons/copy.svg"
-                            },
-                            theme,
-                            {
-                                let view = view.clone();
-                                move |_event, _window, cx| {
-                                    cx.write_to_clipboard(ClipboardItem::new_string(
-                                        copy_text.clone(),
-                                    ));
-                                    view.update(cx, |this, cx| {
-                                        this.mark_transcript_copied(copy_id.clone(), cx);
-                                    });
-                                }
-                            },
-                        ))
-                        .child(transcript_action_button(
-                            format!("edit-prompt:{}", snapshot.item.id),
-                            "icons/pencil.svg",
-                            theme,
-                            {
-                                let view = view.clone();
-                                move |_event, window, cx| {
-                                    view.update(cx, |this, cx| {
-                                        this.edit_prompt(edit_text.clone(), window, cx);
-                                    });
-                                }
-                            },
-                        ))
-                        .when_some(checkpoint_id, |actions, checkpoint_id| {
-                            actions.child(transcript_action_button(
-                                format!("revert-prompt:{}", snapshot.item.id),
-                                "icons/rotate-ccw.svg",
-                                theme,
-                                {
-                                    let view = view.clone();
-                                    move |_event, _window, cx| {
-                                        view.update(cx, |_this, cx| {
-                                            cx.emit(ChatEvent::OpenCheckpoint { checkpoint_id });
-                                        });
-                                    }
-                                },
-                            ))
-                        }),
-                ),
-        )
+        .child(sizing)
+        .child(bubble)
         .into_any_element()
 }
 
