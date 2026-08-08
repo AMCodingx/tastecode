@@ -1204,6 +1204,7 @@ impl HarnessApp {
             cx.notify();
             return;
         };
+        let _ = self.state.delete_untouched_sessions(&project.path);
         self.initial_project_selection_done = true;
         self.selected_thread_id = None;
         self.active_project_path = Some(project.path.clone());

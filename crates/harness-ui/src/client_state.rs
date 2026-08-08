@@ -74,6 +74,7 @@ pub(crate) struct ClientState {
     pending: HashMap<String, PendingRequest>,
     catalog_discovery_pending: usize,
     catalog_model_pending: usize,
+    untouched_deletes_pending: usize,
     pub(crate) notice: Option<String>,
 }
 
@@ -379,6 +380,7 @@ enum PendingRequest {
     ProjectMutation {
         removed_path: Option<String>,
     },
+    DeleteUntouched,
     SearchSessions {
         revision: u64,
         append: bool,
@@ -793,6 +795,7 @@ impl ClientState {
             pending: HashMap::new(),
             catalog_discovery_pending: 0,
             catalog_model_pending: 0,
+            untouched_deletes_pending: 0,
             notice: None,
         }
     }
@@ -2017,6 +2020,46 @@ impl ClientState {
         ClientUpdate::shell_changed()
     }
 
+    pub(crate) fn delete_untouched_sessions(&mut self, project_path: &str) -> bool {
+        let Some(project) = self
+            .projects
+            .iter_mut()
+            .find(|project| project.path == project_path)
+        else {
+            return false;
+        };
+        let untouched = project
+            .sessions
+            .iter()
+            .filter(|session| session.title == "New session")
+            .map(|session| session.id.clone())
+            .collect::<Vec<_>>();
+        if untouched.is_empty() {
+            return false;
+        }
+        project
+            .sessions
+            .retain(|session| session.title != "New session");
+        for thread_id in untouched {
+            if self.send_request(
+                method::THREAD_DELETE,
+                json!({ "threadId": thread_id }),
+                PendingRequest::DeleteUntouched,
+            ) {
+                self.untouched_deletes_pending += 1;
+            }
+        }
+        true
+    }
+
+    fn finish_untouched_delete(&mut self) -> ClientUpdate {
+        self.untouched_deletes_pending = self.untouched_deletes_pending.saturating_sub(1);
+        if self.untouched_deletes_pending == 0 {
+            self.request_projects();
+        }
+        ClientUpdate::shell_changed()
+    }
+
     pub(crate) fn rename_thread(&mut self, thread_id: String, title: String) -> ClientUpdate {
         if self.send_request(
             method::THREAD_RENAME,
@@ -2545,6 +2588,7 @@ impl ClientState {
                     Some(PendingRequest::StartThread { request }) => {
                         self.fail_start_thread(request, message)
                     }
+                    Some(PendingRequest::DeleteUntouched) => self.finish_untouched_delete(),
                     Some(PendingRequest::SendTurn {
                         thread_id,
                         restore_text,
@@ -2751,6 +2795,7 @@ impl ClientState {
                         None => ClientUpdate::shell_changed(),
                     }
                 }
+                Some(PendingRequest::DeleteUntouched) => self.finish_untouched_delete(),
                 Some(PendingRequest::SearchSessions { revision, append }) => {
                     match serde_json::from_value::<SessionSearchPage>(result) {
                         Ok(page) => ClientUpdate::shell_event(ShellEvent::SessionSearchResults {
@@ -3297,6 +3342,7 @@ impl ClientState {
                     Some("The server connection was lost while updating the sidebar.".into());
                 ClientUpdate::shell_changed()
             }
+            PendingRequest::DeleteUntouched => self.finish_untouched_delete(),
             PendingRequest::ArchiveInspect { thread_id }
             | PendingRequest::ArchiveClose { thread_id, .. }
             | PendingRequest::ArchiveDiscard { thread_id }
@@ -4553,6 +4599,7 @@ impl PendingRequest {
             | Self::UpdateSidebarSettings
             | Self::AddProject { .. }
             | Self::ProjectMutation { .. }
+            | Self::DeleteUntouched
             | Self::SearchSessions { .. }
             | Self::WorkspaceInfo { .. }
             | Self::WorkspaceBranches { .. }
@@ -4737,6 +4784,14 @@ mod tests {
         }
     }
 
+    fn sidebar_session(id: &str, title: &str) -> SessionSummary {
+        let mut session = provisional_session(id);
+        session.title = title.into();
+        session.running = false;
+        session.status = Some(ThreadInboxStatus::Idle);
+        session
+    }
+
     #[test]
     fn streamed_delta_routes_to_chat_without_invalidating_the_shell() {
         let mut state = ClientState::new(true);
@@ -4782,6 +4837,37 @@ mod tests {
         assert!(update.shell_changed);
         assert!(state.projects_loaded);
         assert_eq!(state.projects[0].name, "Harness");
+    }
+
+    #[test]
+    fn new_draft_removes_only_untouched_sessions_in_its_project() {
+        let mut state = ClientState::new(true);
+        state.projects = vec![
+            ProjectSummary {
+                path: "/workspace".into(),
+                name: "Harness".into(),
+                pinned: false,
+                created_at: 1.0,
+                sessions: vec![
+                    sidebar_session("empty-1", "New session"),
+                    sidebar_session("kept", "Keep this work"),
+                    sidebar_session("empty-2", "New session"),
+                ],
+            },
+            ProjectSummary {
+                path: "/other".into(),
+                name: "Other".into(),
+                pinned: false,
+                created_at: 2.0,
+                sessions: vec![sidebar_session("other-empty", "New session")],
+            },
+        ];
+
+        assert!(state.delete_untouched_sessions("/workspace"));
+        assert_eq!(state.projects[0].sessions.len(), 1);
+        assert_eq!(state.projects[0].sessions[0].id, "kept");
+        assert_eq!(state.projects[1].sessions[0].id, "other-empty");
+        assert!(!state.delete_untouched_sessions("/missing"));
     }
 
     #[test]
