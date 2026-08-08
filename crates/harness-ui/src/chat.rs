@@ -6896,7 +6896,7 @@ impl ChatView {
 }
 
 fn new_session_optical_padding(viewport_height: f32) -> f32 {
-    (viewport_height * 0.16).clamp(0.0, 148.0)
+    (viewport_height * 0.015).clamp(0.0, 14.0)
 }
 
 fn design_dimension(dimension: Pixels, scale: f32) -> f32 {
@@ -9564,8 +9564,8 @@ mod tests {
 
     #[test]
     fn new_session_geometry_matches_the_web_stage() {
-        assert_eq!(new_session_optical_padding(800.0), 128.0);
-        assert_eq!(new_session_optical_padding(1_000.0), 148.0);
+        assert_eq!(new_session_optical_padding(800.0), 12.0);
+        assert_eq!(new_session_optical_padding(1_000.0), 14.0);
         assert_eq!(new_session_prompt_size(700.0), 20.0);
         assert_eq!(new_session_prompt_size(1_000.0), 24.0);
         assert_eq!(new_session_prompt_size(1_400.0), 30.0);

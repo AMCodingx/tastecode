@@ -225,8 +225,6 @@ pub fn sidebar(props: SidebarProps<'_>, actions: SidebarActions) -> impl IntoEle
             theme,
             rail_opacity(glass),
         ))
-        .border_r_1()
-        .border_color(glass_edge_color(theme, glass))
         .child(if mode == SidebarMode::Inbox {
             sidebar_actions(
                 theme,
@@ -291,14 +289,6 @@ pub fn sidebar(props: SidebarProps<'_>, actions: SidebarActions) -> impl IntoEle
 
 fn rail_opacity(glass: u8) -> f32 {
     (1.0 - f32::from(glass.min(60)) * 0.013).max(0.0)
-}
-
-pub(crate) fn glass_edge_color(theme: Theme, glass: u8) -> Hsla {
-    if glass == 0 {
-        theme.line.hsla()
-    } else {
-        gpui::white().opacity(0.04 + f32::from(glass.min(60)) / 1_000.0)
-    }
 }
 
 pub(crate) fn sidebar_bloom(theme: Theme, glass: u8) -> AnyElement {
@@ -753,66 +743,52 @@ fn classic_sidebar_actions(theme: Theme, actions: &SidebarActions) -> impl IntoE
         .flex_none()
         .flex()
         .flex_col()
+        .gap(px(1.0))
         .px(px(10.0))
         .pt(px(12.0))
-        .pb(px(8.0))
-        .child(nav_item(
-            "new-chat",
-            "icons/square-pen.svg",
-            "New chat",
-            shortcut_label(NEW_CHAT),
-            theme,
-            Some(actions.new_chat.clone()),
-        ))
-        .child(nav_item(
-            "new-project",
-            "icons/folder-pen.svg",
-            "New project",
-            shortcut_label(NEW_PROJECT),
-            theme,
-            Some(actions.new_project.clone()),
-        ))
+        .pb(px(10.0))
         .child(
             div()
-                .mt(px(7.0))
-                .h(px(30.0))
+                .min_w(px(0.0))
                 .flex()
                 .items_center()
-                .justify_end()
+                .gap(px(2.0))
+                .child(nav_item(
+                    "new-chat",
+                    ("icons/plus.svg", 15.0),
+                    "New chat",
+                    shortcut_label(NEW_CHAT),
+                    theme,
+                    true,
+                    Some(actions.new_chat.clone()),
+                ))
                 .child(
                     div()
                         .id("classic-search-chats")
                         .group("classic-search-chats-hover")
                         .relative()
-                        .size(px(30.0))
+                        .size(px(28.0))
+                        .flex_none()
                         .flex()
                         .items_center()
                         .justify_center()
                         .overflow_hidden()
                         .rounded(px(RADIUS_MD))
-                        .border_1()
-                        .border_color(chrome::border(theme))
-                        .bg(chrome::recessed(theme))
                         .text_color(theme.text_3.hsla())
                         .cursor_pointer()
                         .hover(move |style| {
                             style
-                                .border_color(inbox_search_hover_border(theme))
-                                .text_color(theme.text_2.hsla())
+                                .bg(theme.surface_2.hsla())
+                                .text_color(theme.text.hsla())
                         })
-                        .active(|style| style.size(px(28.2)).m(px(0.9)))
                         .on_click({
                             let open_search = actions.open_search.clone();
                             move |_event, _window, cx| open_search(cx)
                         })
-                        .child(chrome::inset_top_shade(theme))
                         .child(
                             div()
                                 .id("classic-search-chats-icon-press")
                                 .size(px(14.0))
-                                .group_active("classic-search-chats-hover", |style| {
-                                    style.size(px(13.16)).m(px(0.42))
-                                })
                                 .child(
                                     motion_icon(
                                         "classic-search-chats-icon",
@@ -826,6 +802,15 @@ fn classic_sidebar_actions(theme: Theme, actions: &SidebarActions) -> impl IntoE
                         ),
                 ),
         )
+        .child(nav_item(
+            "new-project",
+            ("icons/folder-pen.svg", 15.0),
+            "New project",
+            shortcut_label(NEW_PROJECT),
+            theme,
+            false,
+            Some(actions.new_project.clone()),
+        ))
 }
 
 fn sidebar_actions(
@@ -1394,12 +1379,14 @@ fn sidebar_body(
 
 fn nav_item(
     id: &'static str,
-    icon_path: &'static str,
+    icon: (&'static str, f32),
     label: &'static str,
     shortcut: impl Into<SharedString>,
     theme: Theme,
+    grow: bool,
     action: Option<SidebarAction>,
 ) -> impl IntoElement {
+    let (icon_path, icon_size) = icon;
     let shortcut = shortcut.into();
     let hover_group: SharedString = format!("{id}:hover").into();
     let icon_id: SharedString = format!("{id}:icon").into();
@@ -1412,10 +1399,11 @@ fn nav_item(
         .group(hover_group.clone())
         .h(px(32.0))
         .w_full()
+        .when(grow, |item| item.min_w(px(0.0)).flex_1())
         .flex()
         .items_center()
         .px(px(8.0))
-        .rounded(px(8.0))
+        .rounded(px(RADIUS_MD))
         .text_color(theme.text_2.hsla())
         .cursor_pointer()
         .hover(move |style| {
@@ -1430,7 +1418,7 @@ fn nav_item(
                 .mx(relative(0.01))
                 .my(px(0.32))
                 .px(px(7.84))
-                .rounded(px(7.84))
+                .rounded(px(RADIUS_MD * 0.98))
         })
         .when_some(action, |item, action| {
             item.on_click(move |_event, _window, cx| action(cx))
@@ -1447,10 +1435,12 @@ fn nav_item(
                 .child(
                     div()
                         .id(icon_press_id)
-                        .size(px(14.0))
-                        .group_active(hover_group.clone(), |style| style.size(px(13.72)))
+                        .size(px(icon_size))
+                        .group_active(hover_group.clone(), move |style| {
+                            style.size(px(icon_size * 0.98))
+                        })
                         .child(
-                            motion_icon(icon_id, icon_path, 14.0, hover_group.clone(), theme)
+                            motion_icon(icon_id, icon_path, icon_size, hover_group.clone(), theme)
                                 .size_full(),
                         ),
                 ),
@@ -1459,7 +1449,9 @@ fn nav_item(
             div()
                 .id(label_id)
                 .ml(px(9.0))
+                .min_w(px(0.0))
                 .flex_1()
+                .truncate()
                 .text_size(px(13.5))
                 .group_active(hover_group.clone(), |style| {
                     style.ml(px(8.82)).text_size(px(13.23))
@@ -1469,9 +1461,12 @@ fn nav_item(
         .child(
             div()
                 .id(shortcut_id)
+                .opacity(0.0)
                 .font_family("Geist Mono")
                 .text_size(px(10.5))
+                .font_weight(FontWeight(450.0))
                 .text_color(theme.text_3.hsla())
+                .group_hover(hover_group.clone(), |style| style.opacity(1.0))
                 .group_active(hover_group, |style| style.text_size(px(10.29)))
                 .child(shortcut),
         )
@@ -1949,16 +1944,6 @@ fn classic_session_row(
             row.child(
                 div()
                     .absolute()
-                    .top(px(7.0))
-                    .bottom(px(7.0))
-                    .left_0()
-                    .w(px(2.0))
-                    .rounded(px(2.0))
-                    .bg(theme.attention.hsla().opacity(0.85)),
-            )
-            .child(
-                div()
-                    .absolute()
                     .top_0()
                     .left(px(1.0))
                     .right(px(1.0))
@@ -1976,7 +1961,7 @@ fn classic_session_row(
                 .items_center()
                 .gap(px(7.0))
                 .pl(px(if standalone { 8.0 } else { 32.0 }))
-                .pr(px(61.0))
+                .pr(px(16.0))
                 .text_size(px(12.5))
                 .text_color(if active {
                     theme.text.hsla()

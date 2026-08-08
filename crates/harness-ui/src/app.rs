@@ -21,7 +21,7 @@ use crate::preferences::{FontPreference, NativePreferences, SourceSelection, The
 use crate::preview_capture::PreviewCaptureRuntime;
 use crate::sidebar::{
     SelectionModifiers, SessionDropPosition, SidebarActions, SidebarMenuAnchor, SidebarMenuRequest,
-    SidebarProps, glass_edge_color, ordered_inbox_ids, sidebar, sidebar_bloom,
+    SidebarProps, ordered_inbox_ids, sidebar, sidebar_bloom,
 };
 use crate::theme::{BASE_LINE_HEIGHT, TITLEBAR_HEIGHT, Theme, ThemeMode};
 use crate::zoom::{self, px};
@@ -1861,11 +1861,6 @@ impl HarnessApp {
         } else {
             12.0
         };
-        let rail_width = if self.sidebar_collapsed {
-            0.0
-        } else {
-            self.sidebar_width
-        };
         let stage_left = if self.sidebar_collapsed {
             left_padding + 30.0
         } else {
@@ -1895,26 +1890,13 @@ impl HarnessApp {
             .items_center()
             .pl(px(left_padding))
             .pr(px(12.0))
-            .bg(theme.background.hsla())
+            .bg(crate::chrome::rail_background(theme))
             .on_mouse_down(MouseButton::Left, |event, window, _cx| {
                 if event.click_count == 2 {
                     window.titlebar_double_click();
                 } else {
                     window.start_window_move();
                 }
-            })
-            .when(rail_width > 0.0, |titlebar| {
-                titlebar.child(
-                    div()
-                        .absolute()
-                        .top_0()
-                        .bottom_0()
-                        .left_0()
-                        .w(px(rail_width))
-                        .bg(crate::chrome::rail_background(theme))
-                        .border_r_1()
-                        .border_color(glass_edge_color(theme, self.preferences.sidebar_glass)),
-                )
             })
             .child(
                 div()
@@ -2255,10 +2237,11 @@ impl Render for HarnessApp {
                         .child(
                             div()
                                 .absolute()
-                                .top_0()
+                                .top(px(12.0))
+                                .bottom(px(12.0))
                                 .right(px(2.0))
-                                .h_full()
                                 .w(px(1.0))
+                                .rounded_full()
                                 .bg(self.theme.text_3.hsla())
                                 .opacity(if focused { 0.72 } else { 0.0 })
                                 .group_hover("rail-resize", |line| line.opacity(0.72)),
@@ -2287,13 +2270,26 @@ impl Render for HarnessApp {
                 )
                 .into_any_element()
         };
+        let stage = div()
+            .flex_1()
+            .min_h(px(0.0))
+            .min_w(px(0.0))
+            .overflow_hidden()
+            .bg(self.theme.background.hsla())
+            .border_t_1()
+            .border_color(self.theme.line.hsla())
+            .when(!self.sidebar_collapsed, |stage| {
+                stage.border_l_1().rounded_tl(px(10.0))
+            })
+            .child(content);
         let normal_body = div()
             .flex_1()
             .min_h(px(0.0))
             .w_full()
             .flex()
+            .bg(crate::chrome::rail_background(self.theme))
             .child(rail_slot)
-            .child(content)
+            .child(stage)
             .into_any_element();
         let body = if self.settings_open {
             self.settings_panel(window, cx)
