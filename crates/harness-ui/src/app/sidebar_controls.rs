@@ -471,6 +471,8 @@ impl HarnessApp {
         let position = menu.position;
         let theme = self.theme;
         let mut items = Vec::new();
+        let mut rule_count = 0_usize;
+        let mut selection_count = 0_usize;
 
         match request {
             SidebarMenuRequest::Project(path) => {
@@ -707,6 +709,7 @@ impl HarnessApp {
                         }
                     }
                     items.push(sidebar_menu_rule("sidebar-thread-edit-rule-in", theme));
+                    rule_count += 1;
                     let rename_id = thread_id.clone();
                     items.push(sidebar_menu_item(
                         "sidebar-thread-rename",
@@ -769,6 +772,7 @@ impl HarnessApp {
                         ));
                     }
                     items.push(sidebar_menu_rule("sidebar-thread-delete-rule-in", theme));
+                    rule_count += 1;
                     items.push(sidebar_menu_item(
                         "sidebar-thread-archive",
                         "Delete thread",
@@ -835,6 +839,7 @@ impl HarnessApp {
                     .map(|session| session.id.clone())
                     .collect::<Vec<_>>();
                 items.push(sidebar_menu_selection(sessions.len(), theme));
+                selection_count += 1;
                 if !active.is_empty() {
                     let settle_ids = active.clone();
                     items.push(sidebar_menu_item(
@@ -904,6 +909,7 @@ impl HarnessApp {
                     ));
                 }
                 items.push(sidebar_menu_rule("sidebar-selection-delete-rule-in", theme));
+                rule_count += 1;
                 items.push(sidebar_menu_item(
                     "sidebar-thread-archive-many",
                     format!("Delete {} threads", selected.len()),
@@ -934,16 +940,22 @@ impl HarnessApp {
         }
 
         let panel_width = px(210.0);
-        let panel_height = px((items.len() as f32 * 33.0 + 8.0).min(430.0));
         let viewport = window.viewport_size();
+        let row_count = items.len().saturating_sub(rule_count + selection_count);
+        let content_height =
+            row_count as f32 * 33.0 + rule_count as f32 * 9.0 + selection_count as f32 * 29.0;
+        let max_panel_height = (f32::from(viewport.height) - 16.0).clamp(0.0, 340.0);
+        let panel_height_value = (content_height + 10.0).min(max_panel_height);
         let left = position
             .x
             .max(px(8.0))
             .min((viewport.width - panel_width - px(8.0)).max(px(8.0)));
-        let top = position
-            .y
-            .max(px(8.0))
-            .min((viewport.height - panel_height - px(8.0)).max(px(8.0)));
+        let (top_value, grows_up) = sidebar_menu_top(
+            f32::from(position.y),
+            f32::from(viewport.height),
+            panel_height_value,
+        );
+        let top = px(top_value);
 
         Some(
             div()
@@ -965,7 +977,7 @@ impl HarnessApp {
                         .left(left)
                         .top(top)
                         .w(panel_width)
-                        .max_h(px(430.0))
+                        .max_h(px(max_panel_height))
                         .overflow_y_scroll()
                         .occlude()
                         .rounded(px(8.0))
@@ -981,9 +993,14 @@ impl HarnessApp {
                                 .with_easing(crate::theme::web_ease_out),
                             move |panel, delta| {
                                 let scale = sidebar_menu_entry_scale(delta);
+                                let anchor_offset = if grows_up {
+                                    panel_height_value * (1.0 - scale)
+                                } else {
+                                    0.0
+                                };
                                 panel
                                     .left(left + px(105.0 * (1.0 - scale)))
-                                    .top(top + px(2.0 * (1.0 - delta)))
+                                    .top(top + px(anchor_offset + 2.0 * (1.0 - delta)))
                                     .w(px(210.0 * scale))
                                     .rounded(px(8.0 * scale))
                                     .p(px(4.0 * scale))
@@ -1457,6 +1474,20 @@ fn sidebar_menu_entry_animation(theme: crate::Theme) -> Animation {
     Animation::new(theme.motion.fast).with_easing(crate::theme::web_ease_out)
 }
 
+fn sidebar_menu_top(anchor_y: f32, viewport_height: f32, panel_height: f32) -> (f32, bool) {
+    let gutter = 8.0;
+    let space_above = anchor_y - gutter;
+    let space_below = viewport_height - anchor_y - gutter;
+    let grows_up = panel_height > space_below && space_above > space_below;
+    let preferred_top = if grows_up {
+        anchor_y - panel_height
+    } else {
+        anchor_y
+    };
+    let max_top = (viewport_height - panel_height - gutter).max(gutter);
+    (preferred_top.clamp(gutter, max_top), grows_up)
+}
+
 fn sidebar_menu_item(
     id: impl Into<SharedString>,
     label: impl Into<SharedString>,
@@ -1835,4 +1866,16 @@ fn reveal_path(path: &str) -> std::io::Result<()> {
         command
     };
     command.spawn().map(|_| ())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::sidebar_menu_top;
+
+    #[test]
+    fn sidebar_menu_flips_and_clamps_like_the_web_menu() {
+        assert_eq!(sidebar_menu_top(100.0, 800.0, 200.0), (100.0, false));
+        assert_eq!(sidebar_menu_top(750.0, 800.0, 200.0), (550.0, true));
+        assert_eq!(sidebar_menu_top(2.0, 800.0, 200.0), (8.0, false));
+    }
 }
