@@ -4106,28 +4106,24 @@ impl ChatView {
 
     fn voice_waveform(&self, transcribing: bool) -> AnyElement {
         let theme = self.theme;
-        let start = self.voice_levels.len().saturating_sub(52);
-        let mut levels = vec![0.035_f32; 52_usize.saturating_sub(self.voice_levels.len())];
-        levels.extend_from_slice(&self.voice_levels[start..]);
+        let levels = self.voice_levels.clone();
         div()
+            .relative()
             .h(px(28.0))
             .min_w(px(0.0))
             .flex_1()
-            .flex()
-            .items_center()
-            .justify_end()
-            .gap(px(2.0))
             .overflow_hidden()
             .opacity(if transcribing { 0.5 } else { 1.0 })
-            .children(levels.into_iter().enumerate().map(|(index, level)| {
-                let smoothed = level.clamp(0.0, 1.0).powf(0.72);
-                div()
-                    .id(("voice-level", index))
-                    .w(px(2.0))
-                    .h(px(2.0 + smoothed * 22.0))
-                    .rounded(px(1.0))
-                    .bg(theme.text_2.hsla().opacity(0.16 + smoothed * 0.72))
-            }))
+            .child(
+                canvas(
+                    |_, _, _| {},
+                    move |bounds, _, window, _| {
+                        paint_voice_dither(bounds, &levels, theme, window);
+                    },
+                )
+                .absolute()
+                .inset_0(),
+            )
             .into_any_element()
     }
 
@@ -7628,6 +7624,123 @@ fn dither_noise_threshold(x: u32, y: u32) -> f32 {
     (hash ^ (hash >> 16)) as f32 / 4_294_967_296.0
 }
 
+fn smoothed_voice_level(levels: &[f32], index: usize) -> f32 {
+    let current = levels.get(index).copied().unwrap_or_default();
+    let previous = index
+        .checked_sub(1)
+        .and_then(|index| levels.get(index).copied())
+        .unwrap_or(current);
+    let next = levels.get(index + 1).copied().unwrap_or(current);
+    previous * 0.2 + current * 0.6 + next * 0.2
+}
+
+fn for_each_voice_dither_dot(
+    width: f32,
+    height: f32,
+    levels: &[f32],
+    mut visit: impl FnMut(u32, u32, f32),
+) {
+    const CELL_SIZE: f32 = 4.0;
+    const BAYER: [[f32; 4]; 4] = [
+        [0.03125, 0.53125, 0.15625, 0.65625],
+        [0.78125, 0.28125, 0.90625, 0.40625],
+        [0.21875, 0.71875, 0.09375, 0.59375],
+        [0.96875, 0.46875, 0.84375, 0.34375],
+    ];
+
+    if width <= 0.0 || height <= 0.0 {
+        return;
+    }
+    let columns = (width / CELL_SIZE).ceil().max(4.0) as usize;
+    let rows = (height / CELL_SIZE).ceil().max(4.0) as usize;
+    let visible_start = levels.len().saturating_sub(columns);
+    let visible_levels = &levels[visible_start..];
+    let first_level_column = columns - visible_levels.len();
+    let center_y = height / 2.0;
+
+    for x in 0..columns {
+        let level_index = x.checked_sub(first_level_column);
+        let level = level_index.map_or(0.0, |index| {
+            (smoothed_voice_level(visible_levels, index).clamp(0.0, 1.0) * 1.6)
+                .clamp(0.0, 1.0)
+                .powf(0.72)
+        });
+        let envelope_radius = CELL_SIZE * (0.7 + level * (rows as f32 / 2.0 - 0.8).max(0.5));
+
+        for y in 0..rows {
+            let cell_center_y = y as f32 * CELL_SIZE + CELL_SIZE / 2.0;
+            let distance_from_center = (cell_center_y - center_y).abs();
+            let baseline_density: f32 = if distance_from_center <= CELL_SIZE * 0.34 {
+                0.18
+            } else {
+                0.0
+            };
+            let envelope_density = level_index.map_or(0.0, |_| {
+                (1.0 - distance_from_center / envelope_radius.max(1.0)).clamp(0.0, 1.0)
+                    * (0.48 + level * 0.52)
+            });
+            let density = baseline_density.max(envelope_density);
+            if density <= BAYER[y & 3][x & 3] {
+                continue;
+            }
+            let alpha = if level_index.is_some() {
+                (0.16 + envelope_density * 0.7 + level * 0.14).min(1.0)
+            } else {
+                0.08
+            };
+            visit(x as u32, y as u32, alpha);
+        }
+    }
+}
+
+fn paint_voice_dither(bounds: Bounds<Pixels>, levels: &[f32], theme: Theme, window: &mut Window) {
+    const CELL_SIZE: f32 = 4.0;
+    const DOT_SIZE: f32 = 2.0;
+    const DOT_INSET: f32 = 1.0;
+
+    let width = f32::from(bounds.size.width);
+    let height = f32::from(bounds.size.height);
+    let dark = theme.mode == ThemeMode::Dark;
+    let texture_color: gpui::Hsla = if dark {
+        gpui::rgb(0xededed).into()
+    } else {
+        gpui::rgb(0x121212).into()
+    };
+    let texture_opacity = if dark { 1.0 } else { 0.26 };
+    let bloom_opacity = if dark { 0.44 } else { 0.05 };
+    let fade_width = width * 0.08;
+
+    for_each_voice_dither_dot(width, height, levels, |x, y, alpha| {
+        let origin_x = f32::from(bounds.origin.x) + x as f32 * CELL_SIZE + DOT_INSET;
+        let origin_y = f32::from(bounds.origin.y) + y as f32 * CELL_SIZE + DOT_INSET;
+        let mask = if fade_width > 0.0 {
+            ((origin_x - f32::from(bounds.origin.x)) / fade_width).clamp(0.0, 1.0)
+        } else {
+            1.0
+        };
+        let alpha = alpha * mask;
+        let bloom_size = DOT_SIZE + if dark { 3.5 } else { 2.5 };
+        let bloom_inset = (bloom_size - DOT_SIZE) / 2.0;
+        window.paint_quad(
+            fill(
+                Bounds {
+                    origin: point(px(origin_x - bloom_inset), px(origin_y - bloom_inset)),
+                    size: size(px(bloom_size), px(bloom_size)),
+                },
+                texture_color.opacity(alpha * bloom_opacity),
+            )
+            .corner_radii(px(bloom_size / 2.0)),
+        );
+        window.paint_quad(fill(
+            Bounds {
+                origin: point(px(origin_x), px(origin_y)),
+                size: size(px(DOT_SIZE), px(DOT_SIZE)),
+            },
+            texture_color.opacity(alpha * texture_opacity),
+        ));
+    });
+}
+
 fn smoothstep(progress: f32) -> f32 {
     let progress = progress.clamp(0.0, 1.0);
     progress * progress * (3.0 - 2.0 * progress)
@@ -8071,6 +8184,18 @@ mod tests {
     fn voice_duration_uses_the_web_minutes_and_seconds_format() {
         assert_eq!(format_voice_duration(Duration::from_millis(999)), "0:00");
         assert_eq!(format_voice_duration(Duration::from_secs(65)), "1:05");
+    }
+
+    #[test]
+    fn voice_dither_density_tracks_microphone_level() {
+        let mut quiet_dots = 0;
+        let mut loud_dots = 0;
+        for_each_voice_dither_dot(320.0, 28.0, &[0.0; 80], |_, _, _| quiet_dots += 1);
+        for_each_voice_dither_dot(320.0, 28.0, &[1.0; 80], |_, _, _| loud_dots += 1);
+
+        assert!(quiet_dots > 0);
+        assert!(loud_dots > quiet_dots * 2);
+        assert!((smoothed_voice_level(&[0.0, 1.0, 0.0], 1) - 0.6).abs() < 0.001);
     }
 
     #[test]
