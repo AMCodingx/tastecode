@@ -67,7 +67,36 @@ const EFFORT_SLIDER_INSET: f32 = 2.0;
 const EFFORT_SLIDER_MIN_FILL: f32 = 44.0;
 const EFFORT_DITHER_FADE_IN: Duration = Duration::from_millis(150);
 const EFFORT_DITHER_FADE_OUT: Duration = Duration::from_millis(140);
+const MENU_ENTRY_SCALE_FROM: f32 = 0.97;
 pub(crate) const DESIGN_BRIEF_ATTACHMENT: &str = "personal-harness://design-brief-v1";
+
+fn menu_entry_scale(progress: f32) -> f32 {
+    MENU_ENTRY_SCALE_FROM + (1.0 - MENU_ENTRY_SCALE_FROM) * progress
+}
+
+fn menu_entry_animation(theme: Theme) -> Animation {
+    Animation::new(theme.motion.fast).with_easing(crate::theme::web_ease_out)
+}
+
+fn menu_entry_icon(
+    animation_id: impl Into<gpui::ElementId>,
+    icon_id: impl Into<gpui::ElementId>,
+    icon_path: &'static str,
+    size: f32,
+    hover_group: impl Into<SharedString>,
+    theme: Theme,
+) -> AnyElement {
+    div()
+        .size(px(size))
+        .flex_none()
+        .child(motion_icon(icon_id, icon_path, size, hover_group, theme).size_full())
+        .with_animation(
+            animation_id,
+            menu_entry_animation(theme),
+            move |icon, delta| icon.size(px(size * menu_entry_scale(delta))),
+        )
+        .into_any_element()
+}
 
 #[derive(Clone)]
 pub(crate) struct SessionContext {
@@ -5194,17 +5223,32 @@ impl ChatView {
                                             .truncate()
                                             .text_size(px(13.5))
                                             .text_color(theme.text.hsla())
-                                            .child(project.name),
+                                            .child(project.name)
+                                            .with_animation(
+                                                ("composer-project-option-title-in", index),
+                                                menu_entry_animation(theme),
+                                                |title, delta| {
+                                                    title.text_size(px(
+                                                        13.5 * menu_entry_scale(delta)
+                                                    ))
+                                                },
+                                            ),
                                     )
                                     .when(selected, |name| {
-                                        name.child(motion_icon(
+                                        name.child(menu_entry_icon(
+                                            ("composer-project-option-check-in", index),
                                             ("composer-project-option-check", index),
                                             "icons/check.svg",
                                             13.0,
                                             hover_group,
                                             theme,
                                         ))
-                                    }),
+                                    })
+                                    .with_animation(
+                                        ("composer-project-option-name-in", index),
+                                        menu_entry_animation(theme),
+                                        |name, delta| name.gap(px(6.0 * menu_entry_scale(delta))),
+                                    ),
                             )
                             .child(
                                 div()
@@ -5212,7 +5256,25 @@ impl ChatView {
                                     .truncate()
                                     .text_size(px(11.5))
                                     .text_color(theme.text_3.hsla())
-                                    .child(project.path),
+                                    .child(project.path)
+                                    .with_animation(
+                                        ("composer-project-option-detail-in", index),
+                                        menu_entry_animation(theme),
+                                        |detail, delta| {
+                                            detail.text_size(px(11.5 * menu_entry_scale(delta)))
+                                        },
+                                    ),
+                            )
+                            .with_animation(
+                                ("composer-project-option-in", index),
+                                menu_entry_animation(theme),
+                                |option, delta| {
+                                    let scale = menu_entry_scale(delta);
+                                    option
+                                        .px(px(9.0 * scale))
+                                        .py(px(7.0 * scale))
+                                        .rounded(px(5.0 * scale))
+                                },
                             )
                     }),
             )
@@ -5220,7 +5282,7 @@ impl ChatView {
                 "composer-project-menu",
                 Animation::new(theme.motion.fast).with_easing(crate::theme::web_ease_out),
                 |menu, delta| {
-                    let scale = 0.97 + 0.03 * delta;
+                    let scale = menu_entry_scale(delta);
                     menu.left(px(8.0 + 175.0 * (1.0 - scale)))
                         .top(px(38.0 + 2.0 * (1.0 - delta)))
                         .w(px(350.0 * scale))
@@ -5284,7 +5346,8 @@ impl ChatView {
                             }))
                             .child(div().min_w(px(0.0)).flex_1().truncate().child(branch))
                             .when(active, |row| {
-                                row.child(motion_icon(
+                                row.child(menu_entry_icon(
+                                    ("composer-branch-option-check-in", index),
                                     ("composer-branch-option-check", index),
                                     "icons/check.svg",
                                     13.0,
@@ -5292,13 +5355,26 @@ impl ChatView {
                                     theme,
                                 ))
                             })
+                            .with_animation(
+                                ("composer-branch-option-in", index),
+                                menu_entry_animation(theme),
+                                |option, delta| {
+                                    let scale = menu_entry_scale(delta);
+                                    option
+                                        .gap(px(6.0 * scale))
+                                        .px(px(9.0 * scale))
+                                        .py(px(7.0 * scale))
+                                        .rounded(px(5.0 * scale))
+                                        .text_size(px(13.5 * scale))
+                                },
+                            )
                     }),
             )
             .with_animation(
                 "composer-branch-menu",
                 Animation::new(theme.motion.fast).with_easing(crate::theme::web_ease_out),
                 |menu, delta| {
-                    let scale = 0.97 + 0.03 * delta;
+                    let scale = menu_entry_scale(delta);
                     menu.left(px(175.0 + 140.0 * (1.0 - scale)))
                         .top(px(38.0 + 2.0 * (1.0 - delta)))
                         .w(px(280.0 * scale))
@@ -5391,7 +5467,8 @@ impl ChatView {
                                             .items_center()
                                             .gap(px(8.0))
                                             .child(div().flex_none().text_color(icon_color).child(
-                                                motion_icon(
+                                                menu_entry_icon(
+                                                    ("permission-option-icon-in", index),
                                                     ("permission-option-icon", index),
                                                     icon_path,
                                                     14.0,
@@ -5405,18 +5482,40 @@ impl ChatView {
                                                     .truncate()
                                                     .text_size(px(13.5))
                                                     .text_color(title_color)
-                                                    .child(title),
+                                                    .child(title)
+                                                    .with_animation(
+                                                        ("permission-option-title-in", index),
+                                                        menu_entry_animation(theme),
+                                                        |title, delta| {
+                                                            title.text_size(px(
+                                                                13.5 * menu_entry_scale(delta)
+                                                            ))
+                                                        },
+                                                    ),
+                                            )
+                                            .with_animation(
+                                                ("permission-option-label-in", index),
+                                                menu_entry_animation(theme),
+                                                |label, delta| {
+                                                    label.gap(px(8.0 * menu_entry_scale(delta)))
+                                                },
                                             ),
                                     )
                                     .when(active, |name| {
-                                        name.child(motion_icon(
+                                        name.child(menu_entry_icon(
+                                            ("permission-option-check-in", index),
                                             ("permission-option-check", index),
                                             "icons/check.svg",
                                             13.0,
                                             hover_group,
                                             theme,
                                         ))
-                                    }),
+                                    })
+                                    .with_animation(
+                                        ("permission-option-name-in", index),
+                                        menu_entry_animation(theme),
+                                        |name, delta| name.gap(px(6.0 * menu_entry_scale(delta))),
+                                    ),
                             )
                             .child(
                                 div()
@@ -5424,7 +5523,25 @@ impl ChatView {
                                     .truncate()
                                     .text_size(px(11.5))
                                     .text_color(theme.text_3.hsla())
-                                    .child(detail),
+                                    .child(detail)
+                                    .with_animation(
+                                        ("permission-option-detail-in", index),
+                                        menu_entry_animation(theme),
+                                        |detail, delta| {
+                                            detail.text_size(px(11.5 * menu_entry_scale(delta)))
+                                        },
+                                    ),
+                            )
+                            .with_animation(
+                                ("permission-option-in", index),
+                                menu_entry_animation(theme),
+                                |option, delta| {
+                                    let scale = menu_entry_scale(delta);
+                                    option
+                                        .px(px(9.0 * scale))
+                                        .py(px(7.0 * scale))
+                                        .rounded(px(5.0 * scale))
+                                },
                             )
                     }),
             )
@@ -5432,7 +5549,7 @@ impl ChatView {
                 "composer-permission-menu",
                 Animation::new(theme.motion.fast).with_easing(crate::theme::web_ease_out),
                 move |menu, delta| {
-                    let scale = 0.97 + 0.03 * delta;
+                    let scale = menu_entry_scale(delta);
                     menu.left(px(40.0 + 157.5 * (1.0 - scale)))
                         .w(px(315.0 * scale))
                         .rounded(px(8.0 * scale))
@@ -5685,7 +5802,7 @@ impl ChatView {
                 "composer-model-menu",
                 Animation::new(theme.motion.fast).with_easing(crate::theme::web_ease_out),
                 move |menu, delta| {
-                    let scale = 0.97 + 0.03 * delta;
+                    let scale = menu_entry_scale(delta);
                     menu.right(px(38.0 + 191.0 * (1.0 - scale)))
                         .w(px(382.0 * scale))
                         .rounded(px(RADIUS_XL * scale))
@@ -9062,6 +9179,8 @@ mod tests {
     fn composer_control_motion_matches_the_web_keyframes() {
         assert_eq!(DESIGN_BEAM_DURATION, Duration::from_millis(2_400));
         assert_eq!(SEND_BEAM_DURATION, Duration::from_millis(1_960));
+        assert!((menu_entry_scale(0.0) - 0.97).abs() < 0.000_1);
+        assert!((menu_entry_scale(1.0) - 1.0).abs() < 0.000_1);
         assert!((fast_bolt_on_scale(0.0) - 0.7).abs() < 0.000_1);
         assert!((fast_bolt_on_scale(0.48) - 1.25).abs() < 0.000_1);
         assert!((fast_bolt_on_scale(1.0) - 1.0).abs() < 0.000_1);
