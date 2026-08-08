@@ -814,20 +814,39 @@ fn sidebar_actions(
                         .text_color(theme.text.hsla())
                         .cursor_pointer()
                         .hover(move |style| style.bg(theme.surface_2.hsla()))
-                        .active(|style| style.opacity(0.82).top(px(1.0)))
+                        .active(|style| {
+                            style
+                                .w(relative(0.985))
+                                .h(px(33.49))
+                                .mx(relative(0.0075))
+                                .my(px(0.255))
+                                .gap(px(7.88))
+                                .px(px(7.88))
+                                .rounded(px(7.88))
+                                .text_size(px(13.2975))
+                        })
                         .on_click({
                             let new_chat = actions.new_chat.clone();
                             move |_event, _window, cx| new_chat(cx)
                         })
-                        .child(div().flex_none().text_color(theme.text_2.hsla()).child(
-                            motion_icon(
-                                "new-chat-icon",
-                                "icons/square-pen.svg",
-                                16.0,
-                                "new-chat-hover",
-                                theme,
-                            ),
-                        ))
+                        .child(
+                            div()
+                                .id("new-chat-icon-press")
+                                .size(px(16.0))
+                                .flex_none()
+                                .text_color(theme.text_2.hsla())
+                                .group_active("new-chat-hover", |style| style.size(px(15.76)))
+                                .child(
+                                    motion_icon(
+                                        "new-chat-icon",
+                                        "icons/square-pen.svg",
+                                        16.0,
+                                        "new-chat-hover",
+                                        theme,
+                                    )
+                                    .size_full(),
+                                ),
+                        )
                         .child("New chat"),
                 ),
         )
@@ -869,7 +888,6 @@ fn sidebar_actions(
                                 .border_color(theme.text_3.hsla().opacity(0.72))
                                 .text_color(theme.text.hsla())
                         })
-                        .active(|style| style.opacity(0.76).top(px(1.0)))
                         .on_click({
                             let new_project = actions.new_project.clone();
                             move |_event, _window, cx| new_project(cx)
@@ -1239,6 +1257,10 @@ fn nav_item(
     let shortcut = shortcut.into();
     let hover_group: SharedString = format!("{id}:hover").into();
     let icon_id: SharedString = format!("{id}:icon").into();
+    let icon_press_id: SharedString = format!("{id}:icon-press").into();
+    let icon_box_id: SharedString = format!("{id}:icon-box").into();
+    let label_id: SharedString = format!("{id}:label").into();
+    let shortcut_id: SharedString = format!("{id}:shortcut").into();
     div()
         .id(id)
         .group(hover_group.clone())
@@ -1255,25 +1277,56 @@ fn nav_item(
                 .bg(theme.surface_2.hsla())
                 .text_color(theme.text.hsla())
         })
-        .active(|style| style.opacity(0.72))
+        .active(|style| {
+            style
+                .w(relative(0.98))
+                .h(px(31.36))
+                .mx(relative(0.01))
+                .my(px(0.32))
+                .px(px(7.84))
+                .rounded(px(7.84))
+        })
         .when_some(action, |item, action| {
             item.on_click(move |_event, _window, cx| action(cx))
         })
         .child(
             div()
+                .id(icon_box_id)
                 .size(px(16.0))
                 .flex()
                 .items_center()
                 .justify_center()
                 .text_color(theme.text_3.hsla())
-                .child(motion_icon(icon_id, icon_path, 14.0, hover_group, theme)),
+                .group_active(hover_group.clone(), |style| style.size(px(15.68)))
+                .child(
+                    div()
+                        .id(icon_press_id)
+                        .size(px(14.0))
+                        .group_active(hover_group.clone(), |style| style.size(px(13.72)))
+                        .child(
+                            motion_icon(icon_id, icon_path, 14.0, hover_group.clone(), theme)
+                                .size_full(),
+                        ),
+                ),
         )
-        .child(div().ml(px(9.0)).flex_1().text_size(px(13.5)).child(label))
         .child(
             div()
+                .id(label_id)
+                .ml(px(9.0))
+                .flex_1()
+                .text_size(px(13.5))
+                .group_active(hover_group.clone(), |style| {
+                    style.ml(px(8.82)).text_size(px(13.23))
+                })
+                .child(label),
+        )
+        .child(
+            div()
+                .id(shortcut_id)
                 .font_family("Geist Mono")
                 .text_size(px(10.5))
                 .text_color(theme.text_3.hsla())
+                .group_active(hover_group, |style| style.text_size(px(10.29)))
                 .child(shortcut),
         )
 }
