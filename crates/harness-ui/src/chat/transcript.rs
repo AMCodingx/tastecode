@@ -32,6 +32,7 @@ struct TranscriptRowSnapshot {
     row: usize,
     item: Item,
     presentation: RowPresentation,
+    hidden_design_marker: bool,
     turn: Option<TurnPresentation>,
     visible_activity: Vec<Item>,
     live: bool,
@@ -313,6 +314,11 @@ impl ChatView {
     }
     fn transcript_row_snapshot(&self, row: usize) -> Option<TranscriptRowSnapshot> {
         let item = self.state.item_at_row(row)?.clone();
+        let prior = row
+            .checked_sub(1)
+            .and_then(|prior_row| self.state.item_at_row(prior_row));
+        let hidden_design_marker = is_started_design_marker(&item)
+            || prior.is_some_and(|prior| is_repeated_design_row(&item, prior));
         let turn = self.presentation.turn(&item.turn_id).cloned();
         let active_turn = self.state.active_turn();
         let live =
@@ -353,6 +359,7 @@ impl ChatView {
             working: show_working_rail.then(|| self.working_snapshot()),
             item,
             presentation,
+            hidden_design_marker,
             turn,
             visible_activity,
             live,
@@ -479,7 +486,18 @@ fn render_transcript_row(
     window: &mut Window,
     cx: &mut App,
 ) -> AnyElement {
-    if snapshot.presentation == RowPresentation::Suppressed {
+    if snapshot.presentation == RowPresentation::Suppressed || snapshot.hidden_design_marker {
+        if snapshot.show_working_rail
+            && let Some(working) = snapshot.working.clone()
+        {
+            return div()
+                .w_full()
+                .max_w(px(CHAT_WIDTH + 48.0))
+                .mx_auto()
+                .h(px(WORKING_RAIL_HEIGHT))
+                .child(working_rail(working, snapshot.theme))
+                .into_any_element();
+        }
         return div().h(px(0.0)).into_any_element();
     }
 
@@ -1029,7 +1047,11 @@ fn auxiliary_item(snapshot: &TranscriptRowSnapshot, view: Entity<ChatView>) -> A
     };
     let item_id = item.id.clone();
     let row = snapshot.row;
-    let output = item.text.clone().unwrap_or_default();
+    let output = if is_design_marker(item) {
+        String::new()
+    } else {
+        item.text.clone().unwrap_or_default()
+    };
     let icon = glyph(item);
     let failed = item.item_type == ItemType::Error;
     let hover_group = SharedString::from(format!("aux-row-hover:{}", item.id));
@@ -1243,7 +1265,9 @@ fn glyph(item: &Item) -> &'static str {
         ItemType::FileChange => "icons/file-pen-line.svg",
         ItemType::ToolCall => {
             let text = tool_text(item);
-            if text.contains("image") {
+            if super::design_phase_label(&text).is_some() {
+                "icons/palette.svg"
+            } else if text.contains("image") {
                 "icons/images.svg"
             } else if contains_any(&text, &["read", "open", "file"]) {
                 "icons/book-open.svg"
@@ -1317,7 +1341,13 @@ fn summarise(item: &Item) -> String {
         ItemType::Command => item.command.clone().unwrap_or_else(|| "command".into()),
         ItemType::Reasoning => "Thinking".into(),
         ItemType::FileChange => "Edited files".into(),
-        ItemType::ToolCall => item.text.clone().unwrap_or_else(|| "Tool call".into()),
+        ItemType::ToolCall => {
+            let text = tool_text(item);
+            super::design_phase_label(&text)
+                .map(str::to_owned)
+                .or_else(|| item.text.clone())
+                .unwrap_or_else(|| "Tool call".into())
+        }
         ItemType::Plan => "Plan".into(),
         ItemType::Error => item.text.clone().unwrap_or_else(|| "Error".into()),
         ItemType::Unknown => "unknown".into(),
@@ -1332,6 +1362,22 @@ fn tool_text(item: &Item) -> String {
         item.command.as_deref().unwrap_or_default()
     )
     .to_lowercase()
+}
+
+fn is_design_marker(item: &Item) -> bool {
+    item.item_type == ItemType::ToolCall && super::design_phase_label(&tool_text(item)).is_some()
+}
+
+fn is_started_design_marker(item: &Item) -> bool {
+    item.status == ItemStatus::Started && is_design_marker(item)
+}
+
+fn is_repeated_design_row(item: &Item, prior: &Item) -> bool {
+    if item.item_type != ItemType::ToolCall || prior.item_type != ItemType::ToolCall {
+        return false;
+    }
+    let phase = super::design_phase_label(&tool_text(item));
+    phase.is_some() && phase == super::design_phase_label(&tool_text(prior))
 }
 
 fn contains_any(text: &str, needles: &[&str]) -> bool {
@@ -1422,5 +1468,19 @@ mod tests {
             )),
             "Building the website"
         );
+    }
+
+    #[test]
+    fn design_markers_hide_while_running_and_deduplicate_retries() {
+        let started = item(ItemType::ToolCall, ItemStatus::Started, "design:build");
+        let completed = item(ItemType::ToolCall, ItemStatus::Completed, "design:build");
+        let next_phase = item(ItemType::ToolCall, ItemStatus::Completed, "design:review");
+
+        assert!(is_started_design_marker(&started));
+        assert!(!is_started_design_marker(&completed));
+        assert!(is_repeated_design_row(&completed, &started));
+        assert!(!is_repeated_design_row(&next_phase, &completed));
+        assert_eq!(glyph(&completed), "icons/palette.svg");
+        assert_eq!(summarise(&completed), "Building the website");
     }
 }
