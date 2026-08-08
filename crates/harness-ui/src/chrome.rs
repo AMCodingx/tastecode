@@ -85,14 +85,14 @@ pub(crate) fn hover_border(theme: Theme) -> Hsla {
 
 pub(crate) fn menu_background(theme: Theme) -> Background {
     match theme.mode {
-        ThemeMode::Dark => theme.surface_2.hsla().into(),
+        ThemeMode::Dark => gpui::rgb(0x222222).into(),
         ThemeMode::Light => raised(theme),
     }
 }
 
 pub(crate) fn menu_hover_background(theme: Theme) -> Background {
     match theme.mode {
-        ThemeMode::Dark => theme.surface_3.hsla().into(),
+        ThemeMode::Dark => gpui::rgb(0x2b2b2b).into(),
         ThemeMode::Light => raised_hover(theme),
     }
 }
@@ -350,6 +350,26 @@ mod tests {
                 rail_background_with_opacity(theme, 0.545),
                 theme.rail.hsla().opacity(0.545).into()
             );
+        }
+    }
+
+    #[test]
+    fn custom_backdrops_do_not_tint_fixed_menu_chrome() {
+        for backdrop in [
+            Backdrop::Default,
+            Backdrop::Slate,
+            Backdrop::Mocha,
+            Backdrop::Forest,
+            Backdrop::Midnight,
+            Backdrop::Plum,
+        ] {
+            let dark = Theme::new(ThemeMode::Dark, backdrop, Accent::Neutral);
+            let light = Theme::new(ThemeMode::Light, backdrop, Accent::Neutral);
+
+            assert_eq!(menu_background(dark), gpui::rgb(0x222222).into());
+            assert_eq!(menu_hover_background(dark), gpui::rgb(0x2b2b2b).into());
+            assert_eq!(menu_background(light), raised(light));
+            assert_eq!(menu_hover_background(light), raised_hover(light));
         }
     }
 
