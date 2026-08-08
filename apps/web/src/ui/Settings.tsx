@@ -49,7 +49,7 @@ import {
   type ModelChoice,
   type ProviderMark,
 } from '../model-catalog.js'
-import { isDesktop } from '../bridge.js'
+import { isDesktop, writeClipboardText } from '../bridge.js'
 import {
   beginInstall,
   beginLogin,
@@ -707,6 +707,7 @@ function MobileAccessSettings(props: { transport: Transport }) {
   const [qrSvg, setQrSvg] = useState<string>()
   const [error, setError] = useState<string>()
   const [busy, setBusy] = useState<'pair' | 'stop' | string>()
+  const [copiedPairingUri, setCopiedPairingUri] = useState<string>()
   const [now, setNow] = useState(Date.now)
 
   const refresh = useCallback(async () => {
@@ -782,6 +783,18 @@ function MobileAccessSettings(props: { transport: Transport }) {
       setError(cause instanceof Error ? cause.message : String(cause))
     } finally {
       setBusy(undefined)
+    }
+  }
+
+  const copyPairingLink = async (pairingUri: string) => {
+    try {
+      await writeClipboardText(pairingUri)
+      setCopiedPairingUri(pairingUri)
+      setError(undefined)
+    } catch (cause) {
+      setCopiedPairingUri(undefined)
+      const message = cause instanceof Error ? cause.message : String(cause)
+      setError(`Could not copy pairing link: ${message}`)
     }
   }
 
@@ -864,9 +877,9 @@ function MobileAccessSettings(props: { transport: Transport }) {
             <button
               className="settings__action"
               type="button"
-              onClick={() => void navigator.clipboard?.writeText(activePairing.pairingUri)}
+              onClick={() => void copyPairingLink(activePairing.pairingUri)}
             >
-              Copy pairing link
+              {copiedPairingUri === activePairing.pairingUri ? 'Copied' : 'Copy pairing link'}
             </button>
           </div>
         </div>

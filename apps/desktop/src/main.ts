@@ -5,6 +5,7 @@ import path from 'node:path'
 import {
   app,
   BrowserWindow,
+  clipboard,
   dialog,
   ipcMain,
   Menu,
@@ -58,6 +59,7 @@ const devServer = process.env['HARNESS_DEV_SERVER']
  *  "the app's windows" must not count them. */
 const captureWindows = new Set<BrowserWindow>()
 const MAX_PASTED_IMAGE_BYTES = 25 * 1024 * 1024
+const MAX_CLIPBOARD_TEXT_LENGTH = 64 * 1024
 const CAPTURE_SETTLE_SCRIPT = `new Promise(resolve => requestAnimationFrame(resolve))
   .then(() => Promise.race([
     Promise.allSettled(document.getAnimations().map(animation => animation.finished)),
@@ -231,6 +233,14 @@ ipcMain.handle('harness:setTheme', (event, theme: unknown) => {
   if (process.platform === 'win32' || process.platform === 'linux') {
     window.setTitleBarOverlay(options.titleBarOverlay)
   }
+})
+
+ipcMain.handle('harness:writeClipboardText', (event, value: unknown) => {
+  requireOwnRenderer(event.sender)
+  if (typeof value !== 'string' || value.length === 0 || value.length > MAX_CLIPBOARD_TEXT_LENGTH) {
+    throw new Error('Invalid clipboard text')
+  }
+  clipboard.writeText(value)
 })
 
 ipcMain.handle('harness:capturePreview', async (event, value: unknown) => {

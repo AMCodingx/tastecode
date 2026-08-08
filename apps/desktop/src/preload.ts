@@ -16,6 +16,8 @@ const api = {
   revealPath: (path: string): Promise<void> => ipcRenderer.invoke('harness:revealPath', path),
   savePastedImage: (image: { type: string; bytes: ArrayBuffer }): Promise<string> =>
     ipcRenderer.invoke('harness:savePastedImage', image),
+  writeClipboardText: (text: string): Promise<void> =>
+    ipcRenderer.invoke('harness:writeClipboardText', text),
   setZoom: (action: 'in' | 'out' | 'reset'): Promise<void> =>
     ipcRenderer.invoke('harness:setZoom', action),
   setTheme: (theme: 'light' | 'dark'): Promise<void> =>
