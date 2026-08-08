@@ -135,6 +135,7 @@ impl AssetSource for HarnessAssets {
             }
             "icons/folder.svg" => Some(include_bytes!("../assets/icons/folder.svg")),
             "icons/laptop.svg" => Some(include_bytes!("../assets/icons/laptop.svg")),
+            "icons/smartphone.svg" => Some(include_bytes!("../assets/icons/smartphone.svg")),
             "icons/gauge.svg" => Some(include_bytes!("../assets/icons/gauge.svg")),
             "icons/octagon-x.svg" => Some(include_bytes!("../assets/icons/octagon-x.svg")),
             "icons/panels-top-left.svg" => {
@@ -186,7 +187,8 @@ pub fn register_fonts(cx: &mut App) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use super::FONT_FACES;
+    use super::{FONT_FACES, HarnessAssets};
+    use gpui::AssetSource as _;
 
     const REQUIRED_WEIGHTS: &[u16] = &[
         400, 450, 500, 520, 530, 540, 550, 560, 570, 580, 600, 680, 700,
@@ -226,6 +228,35 @@ mod tests {
                 declared_weight(bytes),
                 Some(*weight),
                 "{family} face metadata does not match weight {weight}"
+            );
+        }
+    }
+
+    #[test]
+    fn every_bundled_icon_is_registered_with_the_native_asset_source() {
+        let directory = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("assets/icons");
+        let mut paths = std::fs::read_dir(directory)
+            .expect("native icon directory should be readable")
+            .map(|entry| {
+                let entry = entry.expect("native icon entry should be readable");
+                format!(
+                    "icons/{}",
+                    entry
+                        .file_name()
+                        .to_str()
+                        .expect("native icon names should be UTF-8")
+                )
+            })
+            .collect::<Vec<_>>();
+        paths.sort();
+
+        for path in paths {
+            assert!(
+                HarnessAssets
+                    .load(&path)
+                    .expect("native icon load should not fail")
+                    .is_some(),
+                "{path} is not registered with HarnessAssets"
             );
         }
     }
