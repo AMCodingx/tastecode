@@ -49,6 +49,7 @@ pub struct WireError {
 #[serde(rename_all = "snake_case")]
 pub enum ErrorCode {
     BadRequest,
+    Forbidden,
     NotFound,
     ProviderUnavailable,
     StaleSnapshot,
@@ -88,6 +89,12 @@ pub mod method {
     pub const CONNECTIONS_SET_CREDENTIAL: &str = "connections.setCredential";
     pub const CONNECTIONS_REMOVE: &str = "connections.remove";
     pub const CONNECTIONS_MODELS: &str = "connections.models";
+    pub const CONNECTIONS_STATUS: &str = "connections.status";
+    pub const CONNECTIONS_START_PAIRING: &str = "connections.startPairing";
+    pub const CONNECTIONS_STOP: &str = "connections.stop";
+    pub const CONNECTIONS_REVOKE: &str = "connections.revoke";
+    pub const CONNECTIONS_DEVICE_STATUS: &str = "connections.deviceStatus";
+    pub const CONNECTIONS_CLAIM: &str = "connections.claim";
     pub const MCP_LIST: &str = "mcp.list";
     pub const MCP_ADD: &str = "mcp.add";
     pub const MCP_UPDATE: &str = "mcp.update";
@@ -108,6 +115,7 @@ pub mod method {
     pub const AUTH_USE_API_KEY: &str = "auth.useApiKey";
     pub const AUTH_SIGN_OUT: &str = "auth.signOut";
     pub const PROJECTS_LIST: &str = "projects.list";
+    pub const PROJECTS_BROWSE: &str = "projects.browse";
     pub const PROJECTS_ADD: &str = "projects.add";
     pub const PROJECTS_PIN: &str = "projects.pin";
     pub const PROJECTS_RENAME: &str = "projects.rename";
@@ -116,6 +124,8 @@ pub mod method {
     pub const TERMINAL_INPUT: &str = "terminal.input";
     pub const TERMINAL_RESIZE: &str = "terminal.resize";
     pub const TERMINAL_CLOSE: &str = "terminal.close";
+    pub const ATTACHMENTS_SAVE_IMAGE: &str = "attachments.saveImage";
+    pub const ATTACHMENTS_SAVE_FILE: &str = "attachments.saveFile";
     pub const MODELS_LIST: &str = "models.list";
     pub const THREAD_START: &str = "thread.start";
     pub const THREAD_RENAME: &str = "thread.rename";
@@ -307,6 +317,25 @@ mod tests {
             "connections.setCredential"
         );
         assert_eq!(method::CONNECTIONS_REMOVE, "connections.remove");
+        assert_eq!(method::CONNECTIONS_STATUS, "connections.status");
+        assert_eq!(
+            method::CONNECTIONS_START_PAIRING,
+            "connections.startPairing"
+        );
+        assert_eq!(method::CONNECTIONS_STOP, "connections.stop");
+        assert_eq!(method::CONNECTIONS_REVOKE, "connections.revoke");
+        assert_eq!(
+            method::CONNECTIONS_DEVICE_STATUS,
+            "connections.deviceStatus"
+        );
+        assert_eq!(method::CONNECTIONS_CLAIM, "connections.claim");
+    }
+
+    #[test]
+    fn remote_project_and_attachment_methods_match_the_mobile_contract() {
+        assert_eq!(method::PROJECTS_BROWSE, "projects.browse");
+        assert_eq!(method::ATTACHMENTS_SAVE_IMAGE, "attachments.saveImage");
+        assert_eq!(method::ATTACHMENTS_SAVE_FILE, "attachments.saveFile");
     }
 
     #[test]
