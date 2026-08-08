@@ -20,6 +20,7 @@ afterEach(() => {
   cleanup()
   vi.restoreAllMocks()
   resetInstalls()
+  Reflect.deleteProperty(navigator, 'clipboard')
 })
 
 describe('model settings', () => {
@@ -171,6 +172,11 @@ describe('provider settings', () => {
     } as unknown as Transport
     const onAccountChange = vi.fn()
     const open = vi.spyOn(window, 'open').mockImplementation(() => null)
+    const writeText = vi.fn(async () => undefined)
+    Object.defineProperty(navigator, 'clipboard', {
+      configurable: true,
+      value: { writeText },
+    })
 
     render(
       <Settings
@@ -295,6 +301,11 @@ describe('provider settings', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Generate pairing code' }))
     await waitFor(() => expect(screen.getByRole('img', { name: 'Pairing QR code' })).toBeTruthy())
     expect(screen.getByText('Tailscale 100.101.2.3')).toBeTruthy()
+    fireEvent.click(screen.getByRole('button', { name: 'Copy pairing link' }))
+    await waitFor(() =>
+      expect(writeText).toHaveBeenCalledWith('harness://pair?payload=test-ticket'),
+    )
+    expect(screen.getByRole('button', { name: 'Copied' })).toBeTruthy()
   })
 
   it('runs installs in the background and refreshes once the install exits cleanly', async () => {

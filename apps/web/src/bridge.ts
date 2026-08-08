@@ -11,6 +11,7 @@ type Bridge = {
   pickFiles: () => Promise<string[]>
   revealPath: (path: string) => Promise<void>
   savePastedImage: (image: { type: string; bytes: ArrayBuffer }) => Promise<string>
+  writeClipboardText?: (text: string) => Promise<void>
   setZoom: (action: ZoomAction) => Promise<void>
   setTheme: (theme: AppTheme) => Promise<void>
   capturePreview: (request: PreviewCaptureRequest) => Promise<PreviewCaptureResult>
@@ -53,6 +54,12 @@ export function revealPath(path: string): Promise<void> {
 export async function savePastedImage(file: File): Promise<string | undefined> {
   if (!bridge) return undefined
   return bridge.savePastedImage({ type: file.type, bytes: await file.arrayBuffer() })
+}
+
+export async function writeClipboardText(text: string): Promise<void> {
+  if (bridge?.writeClipboardText) return bridge.writeClipboardText(text)
+  if (!navigator.clipboard?.writeText) throw new Error('Clipboard access is unavailable')
+  await navigator.clipboard.writeText(text)
 }
 
 export function setAppZoom(action: ZoomAction): Promise<void> {
