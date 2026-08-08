@@ -18,9 +18,9 @@ const MAX_CACHED_MODELS: usize = 2_000;
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub(crate) enum ThemePreference {
-    #[default]
     System,
     Light,
+    #[default]
     Dark,
 }
 
@@ -59,7 +59,7 @@ impl Default for NativePreferences {
     fn default() -> Self {
         Self {
             version: PREFERENCES_VERSION,
-            theme: ThemePreference::System,
+            theme: ThemePreference::Dark,
             font: FontPreference::Geist,
             accent: Accent::Neutral,
             backdrop: Backdrop::Default,
@@ -443,7 +443,7 @@ mod tests {
     fn missing_fields_keep_stable_defaults() {
         let preferences: NativePreferences = serde_json::from_str("{}").unwrap();
 
-        assert_eq!(preferences.theme, ThemePreference::System);
+        assert_eq!(preferences.theme, ThemePreference::Dark);
         assert_eq!(preferences.font, FontPreference::Geist);
         assert_eq!(preferences.accent, Accent::Neutral);
         assert_eq!(preferences.sidebar_glass, 35);
