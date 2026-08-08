@@ -21,8 +21,9 @@ use url::Url;
 
 const READ_POLL_INTERVAL: Duration = Duration::from_millis(40);
 const HEALTH_CHECK_TIMEOUT: Duration = Duration::from_millis(500);
-const INITIAL_RECONNECT_DELAY: Duration = Duration::from_millis(100);
-const MAX_RECONNECT_DELAY: Duration = Duration::from_secs(2);
+const INITIAL_RECONNECT_DELAY: Duration = Duration::ZERO;
+const FIRST_BACKOFF_DELAY: Duration = Duration::from_millis(100);
+const MAX_RECONNECT_DELAY: Duration = Duration::from_secs(1);
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Endpoint(String);
@@ -114,6 +115,19 @@ struct Outbound {
     text: String,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ConnectionExit {
+    Shutdown,
+    Reconnect { server_spoke: bool },
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum BackoffExit {
+    Elapsed,
+    Probe,
+    Shutdown,
+}
+
 impl ClientHandle {
     pub fn start(endpoint: Endpoint) -> Result<(Self, EventReceiver<ClientEvent>), ClientError> {
         let (command_tx, command_rx) = mpsc::channel();
@@ -180,10 +194,14 @@ fn run_transport(
             Ok((mut socket, _response)) => {
                 configure_socket(&mut socket);
                 state = ConnectionState::Open;
-                reconnect_delay = INITIAL_RECONNECT_DELAY;
                 emit(&events, ClientEvent::StateChanged(state));
-                if run_connection(&mut socket, &commands, &events, &mut pending) {
-                    break;
+                match run_connection(&mut socket, &commands, &events, &mut pending) {
+                    ConnectionExit::Shutdown => break,
+                    ConnectionExit::Reconnect { server_spoke } => {
+                        if server_spoke {
+                            reconnect_delay = INITIAL_RECONNECT_DELAY;
+                        }
+                    }
                 }
             }
             Err(_error) => {}
@@ -193,10 +211,13 @@ fn run_transport(
             state = ConnectionState::Reconnecting;
             emit(&events, ClientEvent::StateChanged(state));
         }
-        if collect_during_backoff(&commands, &mut pending, reconnect_delay) {
-            break;
+        match collect_during_backoff(&commands, &mut pending, reconnect_delay) {
+            BackoffExit::Shutdown => break,
+            BackoffExit::Elapsed => {
+                reconnect_delay = next_reconnect_delay(reconnect_delay);
+            }
+            BackoffExit::Probe => {}
         }
-        reconnect_delay = (reconnect_delay * 2).min(MAX_RECONNECT_DELAY);
     }
 
     emit(&events, ClientEvent::StateChanged(ConnectionState::Closed));
@@ -216,10 +237,11 @@ fn run_connection(
     commands: &Receiver<Command>,
     events: &EventSender<ClientEvent>,
     pending: &mut VecDeque<Outbound>,
-) -> bool {
+) -> ConnectionExit {
     let mut sequence = SequenceTracker::default();
     let mut in_flight = HashSet::new();
     let mut health_check: Option<(String, Instant)> = None;
+    let mut server_spoke = false;
 
     loop {
         match commands.try_recv() {
@@ -231,7 +253,7 @@ fn run_connection(
             Ok(Command::Probe(_)) => {}
             Ok(Command::Shutdown) | Err(TryRecvError::Disconnected) => {
                 let _ = socket.close(None);
-                return true;
+                return ConnectionExit::Shutdown;
             }
             Err(TryRecvError::Empty) => {}
         }
@@ -240,24 +262,26 @@ fn run_connection(
             if socket.send(Message::text(outbound.text)).is_err() {
                 emit(events, ClientEvent::RequestAborted { id: outbound.id });
                 abort_in_flight(events, &mut in_flight);
-                return false;
+                return ConnectionExit::Reconnect { server_spoke };
             }
             in_flight.insert(outbound.id);
         }
 
         let response_id = match socket.read() {
             Ok(Message::Text(text)) => {
+                server_spoke = true;
                 decode_frame(text.as_str(), events, &mut sequence, &mut in_flight)
             }
             Ok(Message::Close(_)) => {
                 abort_in_flight(events, &mut in_flight);
-                return false;
+                return ConnectionExit::Reconnect { server_spoke };
             }
             Ok(Message::Ping(_) | Message::Pong(_)) => {
                 let _ = socket.flush();
                 None
             }
             Ok(Message::Binary(_) | Message::Frame(_)) => {
+                server_spoke = true;
                 emit(
                     events,
                     ClientEvent::DecodeFailed {
@@ -269,7 +293,7 @@ fn run_connection(
             Err(error) if is_read_timeout(&error) => None,
             Err(_) => {
                 abort_in_flight(events, &mut in_flight);
-                return false;
+                return ConnectionExit::Reconnect { server_spoke };
             }
         };
         if response_id.as_ref().is_some_and(|response_id| {
@@ -284,7 +308,7 @@ fn run_connection(
             .is_some_and(|(_, deadline)| Instant::now() >= *deadline)
         {
             abort_in_flight(events, &mut in_flight);
-            return false;
+            return ConnectionExit::Reconnect { server_spoke };
         }
     }
 }
@@ -344,19 +368,29 @@ fn collect_during_backoff(
     commands: &Receiver<Command>,
     pending: &mut VecDeque<Outbound>,
     delay: Duration,
-) -> bool {
+) -> BackoffExit {
     let deadline = Instant::now() + delay;
     loop {
         let remaining = deadline.saturating_duration_since(Instant::now());
         if remaining.is_zero() {
-            return false;
+            return BackoffExit::Elapsed;
         }
         match commands.recv_timeout(remaining) {
             Ok(Command::Send(outbound)) => pending.push_back(outbound),
-            Ok(Command::Probe(_)) => return false,
-            Ok(Command::Shutdown) | Err(RecvTimeoutError::Disconnected) => return true,
-            Err(RecvTimeoutError::Timeout) => return false,
+            Ok(Command::Probe(_)) => return BackoffExit::Probe,
+            Ok(Command::Shutdown) | Err(RecvTimeoutError::Disconnected) => {
+                return BackoffExit::Shutdown;
+            }
+            Err(RecvTimeoutError::Timeout) => return BackoffExit::Elapsed,
         }
+    }
+}
+
+fn next_reconnect_delay(current: Duration) -> Duration {
+    if current.is_zero() {
+        FIRST_BACKOFF_DELAY
+    } else {
+        (current * 2).min(MAX_RECONNECT_DELAY)
     }
 }
 
@@ -438,6 +472,43 @@ mod tests {
         assert_eq!(payload["id"], "native-health-7");
         assert_eq!(payload["method"], "system.info");
         assert_eq!(payload["params"], json!({}));
+    }
+
+    #[test]
+    fn reconnect_backoff_starts_immediately_and_caps_at_one_second() {
+        let first = next_reconnect_delay(Duration::ZERO);
+        let second = next_reconnect_delay(first);
+        let third = next_reconnect_delay(second);
+
+        assert_eq!(first, Duration::from_millis(100));
+        assert_eq!(second, Duration::from_millis(200));
+        assert_eq!(third, Duration::from_millis(400));
+        assert_eq!(
+            next_reconnect_delay(Duration::from_millis(800)),
+            MAX_RECONNECT_DELAY
+        );
+        assert_eq!(
+            next_reconnect_delay(MAX_RECONNECT_DELAY),
+            MAX_RECONNECT_DELAY
+        );
+    }
+
+    #[test]
+    fn focus_probe_interrupts_backoff_without_advancing_it() {
+        let (sender, commands) = mpsc::channel();
+        sender
+            .send(Command::Probe(Outbound {
+                id: "native-health-1".into(),
+                text: "probe".into(),
+            }))
+            .unwrap();
+        let mut pending = VecDeque::new();
+
+        assert_eq!(
+            collect_during_backoff(&commands, &mut pending, MAX_RECONNECT_DELAY),
+            BackoffExit::Probe
+        );
+        assert!(pending.is_empty());
     }
 
     #[test]
