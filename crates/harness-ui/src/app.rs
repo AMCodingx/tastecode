@@ -55,6 +55,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 const APP_WIDTH: f32 = 1180.0;
 const APP_HEIGHT: f32 = 820.0;
+const APP_BACKGROUND_APPEARANCE: WindowBackgroundAppearance = WindowBackgroundAppearance::Blurred;
 const MIN_RAIL_PREVIEW_WIDTH: f32 = 240.0;
 const COLLAPSE_RAIL_WIDTH: f32 = MIN_RAIL_PREVIEW_WIDTH * 0.5;
 const MAX_RAIL_WIDTH: f32 = 420.0;
@@ -138,7 +139,7 @@ pub fn run_with_endpoint(endpoint: Endpoint) -> Result<()> {
                     appears_transparent: true,
                     traffic_light_position: Some(point(px(12.0), px(11.0))),
                 }),
-                window_background: WindowBackgroundAppearance::Opaque,
+                window_background: APP_BACKGROUND_APPEARANCE,
                 ..Default::default()
             };
 
@@ -3303,6 +3304,15 @@ mod tests {
     fn first_prompt_title_is_whitespace_normalized_and_bounded() {
         assert_eq!(title_from("  build\nthis   please "), "build this please");
         assert_eq!(title_from(&"x".repeat(41)), format!("{}…", "x".repeat(40)));
+    }
+
+    #[test]
+    fn native_window_geometry_and_glass_match_the_desktop_shell() {
+        assert_eq!((APP_WIDTH, APP_HEIGHT), (1180.0, 820.0));
+        assert_eq!(
+            APP_BACKGROUND_APPEARANCE,
+            WindowBackgroundAppearance::Blurred
+        );
     }
 
     #[test]
