@@ -4828,6 +4828,7 @@ fn theme_card(
 ) -> AnyElement {
     let group: SharedString = format!("theme-card:{index}").into();
     let preview = div()
+        .id(("theme-preview", index))
         .relative()
         .h(px(164.0))
         .w_full()
@@ -4844,6 +4845,14 @@ fn theme_card(
             preview.group_hover(group.clone(), move |style| {
                 style.border_color(theme.text.hsla().opacity(0.32))
             })
+        })
+        .group_active(group.clone(), |style| {
+            style
+                .w(relative(0.985))
+                .h(px(161.54))
+                .mx(relative(0.0075))
+                .my(px(1.23))
+                .rounded(px(7.88))
         })
         .bg(theme_preview_background(
             preference,
@@ -4992,8 +5001,10 @@ fn appearance_choice(
     theme: Theme,
     action: SettingsAction,
 ) -> AnyElement {
+    let group: SharedString = format!("appearance-choice:{id}").into();
     let preview = match swatch {
         Some((from, to)) => div()
+            .id(("appearance-choice-preview", id))
             .relative()
             .size(px(34.0))
             .flex_none()
@@ -5006,6 +5017,9 @@ fn appearance_choice(
                 linear_color_stop(gpui::rgb(from), 0.0),
                 linear_color_stop(gpui::rgb(to), 1.0),
             ))
+            .group_active(group.clone(), |style| {
+                style.size(px(33.49)).rounded(px(4.925))
+            })
             .child(
                 div()
                     .absolute()
@@ -5017,6 +5031,7 @@ fn appearance_choice(
             )
             .into_any_element(),
         None => div()
+            .id(("appearance-choice-preview", id))
             .size(px(34.0))
             .flex_none()
             .flex()
@@ -5029,6 +5044,12 @@ fn appearance_choice(
             .font_family(preview_font)
             .text_size(px(15.0))
             .text_color(theme.text.hsla())
+            .group_active(group, |style| {
+                style
+                    .size(px(33.49))
+                    .rounded(px(4.925))
+                    .text_size(px(14.775))
+            })
             .child("Ag")
             .into_any_element(),
     };
@@ -5043,6 +5064,7 @@ fn glass_choice(
     theme: Theme,
     action: SettingsAction,
 ) -> AnyElement {
+    let group: SharedString = format!("appearance-choice:{id}").into();
     let effort: gpui::Hsla = match theme.mode {
         ThemeMode::Dark => gpui::rgb(0xef706e).into(),
         ThemeMode::Light => gpui::rgb(0xc2413d).into(),
@@ -5055,6 +5077,7 @@ fn glass_choice(
         _ => (1.0 - f32::from(glass) / 100.0).clamp(0.0, 1.0),
     };
     let preview = div()
+        .id(("appearance-choice-preview", id))
         .relative()
         .size(px(34.0))
         .flex_none()
@@ -5067,6 +5090,9 @@ fn glass_choice(
             linear_color_stop(theme.attention.hsla().opacity(0.55), 0.0),
             linear_color_stop(effort.opacity(0.40), 1.0),
         ))
+        .group_active(group, |style| {
+            style.size(px(33.49)).rounded(px(crate::RADIUS_MD * 0.985))
+        })
         .child(
             div()
                 .absolute()
@@ -5094,6 +5120,7 @@ fn appearance_choice_shell(
     theme: Theme,
     action: SettingsAction,
 ) -> AnyElement {
+    let group: SharedString = format!("appearance-choice:{id}").into();
     let background = if selected {
         chrome::recessed(theme).into()
     } else if theme.mode == ThemeMode::Light {
@@ -5108,6 +5135,7 @@ fn appearance_choice_shell(
     };
     div()
         .id(("appearance-choice", id))
+        .group(group)
         .relative()
         .w_full()
         .min_w(px(0.0))
@@ -5153,7 +5181,19 @@ fn appearance_choice_shell(
                     .border_color(theme.line_strong.hsla())
             }
         })
-        .active(|style| style.m(px(0.4)))
+        .active(|style| {
+            style
+                .w(relative(0.985))
+                .h(px(53.19))
+                .min_h(px(53.19))
+                .mx(relative(0.0075))
+                .my(px(0.405))
+                .gap(px(9.85))
+                .px(px(9.85))
+                .py(px(7.88))
+                .rounded(px(7.88))
+                .text_size(px(12.3125))
+        })
         .on_click(move |_event, _window, cx| action(cx))
         .child(preview)
         .child(label)
