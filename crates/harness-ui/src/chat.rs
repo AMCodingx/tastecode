@@ -22,10 +22,10 @@ use diff::DiffUiState;
 use gpui::{
     Animation, AnimationExt, AnyElement, App, Background, Bounds, BoxShadow, ClipboardEntry,
     Context, Entity, EventEmitter, ExternalPaths, FocusHandle, Focusable, FontWeight,
-    HighlightStyle, Image, ImageFormat, IntoElement, KeyDownEvent, ListAlignment, ListOffset,
-    ListState, ObjectFit, PathBuilder, Pixels, Point, Render, RenderOnce, Rgba, ScrollWheelEvent,
-    SharedString, StyledImage, StyledText, Window, canvas, deferred, div, fill, img,
-    linear_color_stop, linear_gradient, point, prelude::*, relative, size, svg,
+    HighlightStyle, Image, ImageFormat, IntoElement, KeyDownEvent, LineFragment, ListAlignment,
+    ListOffset, ListState, ObjectFit, PathBuilder, Pixels, Point, Render, RenderOnce, Rgba,
+    ScrollWheelEvent, SharedString, StyledImage, StyledText, WeakEntity, Window, canvas, deferred,
+    div, fill, img, linear_color_stop, linear_gradient, point, prelude::*, relative, size, svg,
 };
 use gpui_component::input::{Input, InputEvent, InputState};
 use gpui_component::{RopeExt, Sizable as _};
@@ -375,7 +375,7 @@ impl ChatView {
         cx: &mut Context<Self>,
     ) -> Self {
         thinking_orb::initialize_clock();
-        let composer = cx.new(|cx| InputState::new(window, cx).auto_grow(2, 11).placeholder(""));
+        let composer = cx.new(|cx| InputState::new(window, cx).auto_grow(2, 10).placeholder(""));
         let model_search = cx.new(|cx| InputState::new(window, cx).placeholder("Search models"));
         let user_input_custom =
             cx.new(|cx| InputState::new(window, cx).placeholder("Type your answer…"));
@@ -3356,37 +3356,12 @@ impl ChatView {
                                     .when_some(self.attachment_chips(cx), |prompt, chips| {
                                         prompt.child(chips)
                                     })
-                                    .child(
-                                        div()
-                                            .relative()
-                                            .child(
-                                                Input::new(&self.composer)
-                                                    .appearance(false)
-                                                    .bordered(false)
-                                                    .focus_bordered(false)
-                                                    .h(px(68.0))
-                                                    .px(px(18.0))
-                                                    .pt(px(16.0))
-                                                    .pb(px(8.0))
-                                                    .text_size(px(14.0))
-                                                    .line_height(relative(1.55))
-                                                    .text_color(theme.text.hsla()),
-                                            )
-                                            .when(composer_empty, |input| {
-                                                input.child(
-                                                    div()
-                                                        .absolute()
-                                                        .top(px(16.0))
-                                                        .left(px(18.0))
-                                                        .text_size(px(14.0))
-                                                        .line_height(relative(1.55))
-                                                        .text_color(
-                                                            theme.composer_placeholder.hsla(),
-                                                        )
-                                                        .child("Do anything"),
-                                                )
-                                            }),
-                                    )
+                                    .child(ComposerField {
+                                        input: self.composer.clone(),
+                                        empty: composer_empty,
+                                        interface_font: self.interface_font.clone(),
+                                        theme,
+                                    })
                                     .child(
                                         div()
                                             .flex()
@@ -5433,6 +5408,226 @@ fn radio_mark(active: bool, theme: Theme) -> impl IntoElement {
         })
 }
 
+const COMPOSER_MIN_HEIGHT: f32 = 68.0;
+const COMPOSER_MAX_HEIGHT: f32 = 242.0;
+const COMPOSER_TEXT_SIZE: f32 = 14.0;
+const COMPOSER_LINE_HEIGHT: f32 = COMPOSER_TEXT_SIZE * 1.55;
+const COMPOSER_VERTICAL_PADDING: f32 = 24.0;
+const COMPOSER_HORIZONTAL_PADDING: f32 = 36.0;
+const COMPOSER_INPUT_RIGHT_MARGIN: f32 = 10.0;
+
+#[derive(IntoElement)]
+struct ComposerField {
+    input: Entity<InputState>,
+    empty: bool,
+    interface_font: SharedString,
+    theme: Theme,
+}
+
+impl RenderOnce for ComposerField {
+    fn render(self, window: &mut Window, cx: &mut App) -> impl IntoElement {
+        let state = window.use_keyed_state("composer-field-state", cx, |_window, _cx| {
+            ComposerFieldState::new(
+                self.input.clone(),
+                self.empty,
+                self.interface_font.clone(),
+                self.theme,
+            )
+        });
+        state.update(cx, |state, cx| {
+            state.update_content(self.input, self.empty, self.interface_font, self.theme, cx);
+        });
+        state
+    }
+}
+
+struct ComposerFieldState {
+    input: Entity<InputState>,
+    empty: bool,
+    interface_font: SharedString,
+    theme: Theme,
+    width: Option<Pixels>,
+    height_motion: ScalarMotion,
+}
+
+impl ComposerFieldState {
+    fn new(
+        input: Entity<InputState>,
+        empty: bool,
+        interface_font: SharedString,
+        theme: Theme,
+    ) -> Self {
+        Self {
+            input,
+            empty,
+            interface_font,
+            theme,
+            width: None,
+            height_motion: ScalarMotion::stationary(COMPOSER_MIN_HEIGHT, Instant::now()),
+        }
+    }
+
+    fn update_content(
+        &mut self,
+        input: Entity<InputState>,
+        empty: bool,
+        interface_font: SharedString,
+        theme: Theme,
+        cx: &mut Context<Self>,
+    ) {
+        let mut changed = false;
+        if self.input != input {
+            self.input = input;
+            self.width = None;
+            changed = true;
+        }
+        if self.empty != empty {
+            self.empty = empty;
+            changed = true;
+        }
+        if self.interface_font != interface_font {
+            self.interface_font = interface_font;
+            changed = true;
+        }
+        if self.theme != theme {
+            self.theme = theme;
+            changed = true;
+        }
+        if changed {
+            cx.notify();
+        }
+    }
+
+    fn observe_width(&mut self, width: Pixels, cx: &mut Context<Self>) {
+        if width > px(0.0) && self.width != Some(width) {
+            self.width = Some(width);
+            cx.notify();
+        }
+    }
+}
+
+impl Render for ComposerFieldState {
+    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let text = self.input.read(cx).value();
+        let target_height = self.width.map_or(COMPOSER_MIN_HEIGHT, |width| {
+            composer_height_for_text(&text, width, &self.interface_font, cx)
+        });
+        let now = Instant::now();
+        self.height_motion
+            .retarget(target_height, self.theme.motion.fast, false, now);
+        let (height, animating) = self.height_motion.sample(now);
+        let from = self.height_motion.from;
+        let target = self.height_motion.target;
+        let duration = self.height_motion.duration;
+        let generation = self.height_motion.generation;
+        let frame = ComposerFieldFrame {
+            input: self.input.clone(),
+            empty: self.empty,
+            height,
+            theme: self.theme,
+            observer: cx.weak_entity(),
+        };
+        if animating {
+            frame
+                .with_animation(
+                    ("composer-field-height", generation),
+                    Animation::new(duration).with_easing(crate::theme::web_ease_out),
+                    move |mut frame, delta| {
+                        frame.height = from + (target - from) * delta;
+                        frame
+                    },
+                )
+                .into_any_element()
+        } else {
+            frame.into_any_element()
+        }
+    }
+}
+
+#[derive(IntoElement)]
+struct ComposerFieldFrame {
+    input: Entity<InputState>,
+    empty: bool,
+    height: f32,
+    theme: Theme,
+    observer: WeakEntity<ComposerFieldState>,
+}
+
+impl RenderOnce for ComposerFieldFrame {
+    fn render(self, _window: &mut Window, _cx: &mut App) -> impl IntoElement {
+        let observer = self.observer;
+        div()
+            .relative()
+            .h(px(self.height))
+            .overflow_hidden()
+            .on_children_prepainted(move |bounds, window, cx| {
+                let Some(width) = bounds.first().map(|bounds| bounds.size.width) else {
+                    return;
+                };
+                let observer = observer.clone();
+                window.defer(cx, move |_window, cx| {
+                    let _ = observer.update(cx, |state, cx| state.observe_width(width, cx));
+                });
+            })
+            .child(
+                Input::new(&self.input)
+                    .appearance(false)
+                    .bordered(false)
+                    .focus_bordered(false)
+                    .h(px(self.height))
+                    .px(px(18.0))
+                    .pt(px(16.0))
+                    .pb(px(8.0))
+                    .text_size(px(COMPOSER_TEXT_SIZE))
+                    .line_height(relative(1.55))
+                    .text_color(self.theme.text.hsla()),
+            )
+            .when(self.empty, |input| {
+                input.child(
+                    div()
+                        .absolute()
+                        .top(px(16.0))
+                        .left(px(18.0))
+                        .text_size(px(COMPOSER_TEXT_SIZE))
+                        .line_height(relative(1.55))
+                        .text_color(self.theme.composer_placeholder.hsla())
+                        .child("Do anything"),
+                )
+            })
+    }
+}
+
+fn composer_height_for_text(
+    text: &str,
+    outer_width: Pixels,
+    interface_font: &SharedString,
+    cx: &App,
+) -> f32 {
+    let wrap_width = px((f32::from(outer_width)
+        - COMPOSER_HORIZONTAL_PADDING
+        - COMPOSER_INPUT_RIGHT_MARGIN)
+        .max(1.0));
+    let mut line_wrapper = cx
+        .text_system()
+        .line_wrapper(gpui::font(interface_font.clone()), px(COMPOSER_TEXT_SIZE));
+    let lines = text
+        .split('\n')
+        .map(|line| {
+            let fragments = [LineFragment::text(line)];
+            let (boundary_count, last_boundary) = line_wrapper
+                .wrap_line(&fragments, wrap_width)
+                .fold((0, 0), |(count, _), boundary| (count + 1, boundary.ix));
+            boundary_count + usize::from(last_boundary == 0 || last_boundary < line.len())
+        })
+        .sum::<usize>();
+    composer_height_for_line_count(lines)
+}
+
+fn composer_height_for_line_count(lines: usize) -> f32 {
+    (lines.max(2) as f32 * COMPOSER_LINE_HEIGHT + COMPOSER_VERTICAL_PADDING)
+        .clamp(COMPOSER_MIN_HEIGHT, COMPOSER_MAX_HEIGHT)
+}
+
 fn context_usage(usage: &Usage, theme: Theme) -> AnyElement {
     let context_window = usage.context_window.unwrap_or_default();
     let progress = context_usage_progress(usage.total_tokens, context_window);
@@ -7018,6 +7213,16 @@ mod tests {
         assert_eq!(context_usage_progress(10.0, 0.0), 0.0);
         assert_eq!(format_token_count(15_000.0), "15,000");
         assert_eq!(format_token_count(1_234_567.4), "1,234,567");
+    }
+
+    #[test]
+    fn composer_height_matches_the_web_textarea_bounds() {
+        assert_eq!(composer_height_for_line_count(0), COMPOSER_MIN_HEIGHT);
+        assert_eq!(composer_height_for_line_count(2), COMPOSER_MIN_HEIGHT);
+        assert!((composer_height_for_line_count(3) - 89.1).abs() < 0.001);
+        assert!((composer_height_for_line_count(10) - 241.0).abs() < 0.001);
+        assert_eq!(composer_height_for_line_count(11), COMPOSER_MAX_HEIGHT);
+        assert_eq!(composer_height_for_line_count(100), COMPOSER_MAX_HEIGHT);
     }
 
     #[test]
