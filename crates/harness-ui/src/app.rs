@@ -3218,6 +3218,7 @@ fn sync_component_theme(theme: Theme, interface_font: &'static str, cx: &mut App
     component.link_hover = theme.text.hsla();
     component.link_active = theme.text_2.hsla();
     component.selection = theme.attention.hsla().opacity(0.3);
+    component.highlight_theme = crate::theme::github_highlight_theme(theme.mode);
 }
 
 #[cfg(test)]

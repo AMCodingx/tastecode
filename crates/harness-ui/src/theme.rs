@@ -1,5 +1,8 @@
 use gpui::{Animation, Hsla, rgb};
+use gpui_component::highlighter::HighlightTheme;
 use serde::{Deserialize, Serialize};
+use std::borrow::Cow;
+use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 
 pub const RAIL_WIDTH: f32 = 248.0;
@@ -153,6 +156,308 @@ fn oklab_to_token(color: [f64; 3]) -> ColorToken {
 pub enum ThemeMode {
     Dark,
     Light,
+}
+
+#[derive(Clone, Copy)]
+#[repr(usize)]
+enum GithubHighlightVariant {
+    General,
+    StructuredData,
+    Stylesheet,
+    Diff,
+    Python,
+    Toml,
+}
+
+#[derive(Clone, Copy)]
+struct GithubHighlightPalette {
+    foreground: &'static str,
+    background: &'static str,
+    comment: &'static str,
+    constant: &'static str,
+    entity: &'static str,
+    function: &'static str,
+    tag: &'static str,
+    keyword: &'static str,
+    string: &'static str,
+    invalid: &'static str,
+}
+
+impl GithubHighlightPalette {
+    const DARK: Self = Self {
+        foreground: "#e6edf3",
+        background: "#0d1117",
+        comment: "#8b949e",
+        constant: "#79c0ff",
+        entity: "#ffa657",
+        function: "#d2a8ff",
+        tag: "#7ee787",
+        keyword: "#ff7b72",
+        string: "#a5d6ff",
+        invalid: "#ffa198",
+    };
+
+    const LIGHT: Self = Self {
+        foreground: "#1f2328",
+        background: "#ffffff",
+        comment: "#6e7781",
+        constant: "#0550ae",
+        entity: "#953800",
+        function: "#8250df",
+        tag: "#116329",
+        keyword: "#cf222e",
+        string: "#0a3069",
+        invalid: "#82071e",
+    };
+}
+
+pub(crate) fn native_syntax_language(language: &str) -> Cow<'_, str> {
+    if language.eq_ignore_ascii_case("jsx") {
+        Cow::Borrowed("javascript")
+    } else if ["shell", "zsh", "fish"]
+        .iter()
+        .any(|alias| language.eq_ignore_ascii_case(alias))
+    {
+        Cow::Borrowed("bash")
+    } else if language.bytes().any(|byte| byte.is_ascii_uppercase()) {
+        Cow::Owned(language.to_ascii_lowercase())
+    } else {
+        Cow::Borrowed(language)
+    }
+}
+
+pub(crate) fn github_highlight_theme(mode: ThemeMode) -> Arc<HighlightTheme> {
+    github_highlight_theme_for_variant(mode, GithubHighlightVariant::General)
+}
+
+pub(crate) fn github_highlight_theme_for_language(
+    mode: ThemeMode,
+    language: &str,
+) -> Arc<HighlightTheme> {
+    let variant = match language.to_ascii_lowercase().as_str() {
+        "json" | "jsonc" | "yaml" | "yml" => GithubHighlightVariant::StructuredData,
+        "css" | "scss" => GithubHighlightVariant::Stylesheet,
+        "diff" | "patch" => GithubHighlightVariant::Diff,
+        "python" | "py" => GithubHighlightVariant::Python,
+        "toml" => GithubHighlightVariant::Toml,
+        _ => GithubHighlightVariant::General,
+    };
+    github_highlight_theme_for_variant(mode, variant)
+}
+
+fn github_highlight_theme_for_variant(
+    mode: ThemeMode,
+    variant: GithubHighlightVariant,
+) -> Arc<HighlightTheme> {
+    static DARK: [OnceLock<Arc<HighlightTheme>>; 6] = [const { OnceLock::new() }; 6];
+    static LIGHT: [OnceLock<Arc<HighlightTheme>>; 6] = [const { OnceLock::new() }; 6];
+
+    let cache = match mode {
+        ThemeMode::Dark => &DARK,
+        ThemeMode::Light => &LIGHT,
+    };
+    cache[variant as usize]
+        .get_or_init(|| Arc::new(build_github_highlight_theme(mode, variant)))
+        .clone()
+}
+
+fn build_github_highlight_theme(
+    mode: ThemeMode,
+    variant: GithubHighlightVariant,
+) -> HighlightTheme {
+    let palette = match mode {
+        ThemeMode::Dark => GithubHighlightPalette::DARK,
+        ThemeMode::Light => GithubHighlightPalette::LIGHT,
+    };
+    let property = match variant {
+        GithubHighlightVariant::StructuredData => palette.tag,
+        GithubHighlightVariant::Stylesheet => palette.constant,
+        GithubHighlightVariant::Toml => palette.entity,
+        _ => palette.foreground,
+    };
+    let type_color = match variant {
+        GithubHighlightVariant::Python => palette.constant,
+        GithubHighlightVariant::Toml => palette.foreground,
+        _ => palette.entity,
+    };
+    let string = match variant {
+        GithubHighlightVariant::Diff => palette.tag,
+        _ => palette.string,
+    };
+    let keyword = match variant {
+        GithubHighlightVariant::Diff => palette.invalid,
+        _ => palette.keyword,
+    };
+    let (appearance, name) = match mode {
+        ThemeMode::Dark => ("dark", "GitHub Dark Default"),
+        ThemeMode::Light => ("light", "GitHub Light Default"),
+    };
+
+    let syntax = serde_json::Map::from_iter([
+        (
+            "attribute".into(),
+            highlight_style(palette.constant, None, None),
+        ),
+        (
+            "boolean".into(),
+            highlight_style(palette.constant, None, None),
+        ),
+        (
+            "comment".into(),
+            highlight_style(palette.comment, None, None),
+        ),
+        (
+            "comment.doc".into(),
+            highlight_style(palette.comment, None, None),
+        ),
+        (
+            "constant".into(),
+            highlight_style(palette.constant, None, None),
+        ),
+        (
+            "constructor".into(),
+            highlight_style(palette.entity, None, None),
+        ),
+        (
+            "embedded".into(),
+            highlight_style(palette.foreground, None, None),
+        ),
+        (
+            "emphasis".into(),
+            highlight_style(palette.foreground, Some("italic"), None),
+        ),
+        (
+            "emphasis.strong".into(),
+            highlight_style(palette.foreground, None, Some(700)),
+        ),
+        ("enum".into(), highlight_style(palette.entity, None, None)),
+        (
+            "function".into(),
+            highlight_style(palette.function, None, None),
+        ),
+        ("hint".into(), highlight_style(palette.comment, None, None)),
+        ("keyword".into(), highlight_style(keyword, None, None)),
+        ("label".into(), highlight_style(palette.entity, None, None)),
+        (
+            "link_text".into(),
+            highlight_style(palette.constant, None, None),
+        ),
+        (
+            "link_uri".into(),
+            highlight_style(palette.string, None, None),
+        ),
+        (
+            "number".into(),
+            highlight_style(palette.constant, None, None),
+        ),
+        (
+            "operator".into(),
+            highlight_style(palette.keyword, None, None),
+        ),
+        (
+            "predictive".into(),
+            highlight_style(palette.comment, None, None),
+        ),
+        (
+            "preproc".into(),
+            highlight_style(palette.keyword, None, None),
+        ),
+        (
+            "primary".into(),
+            highlight_style(palette.foreground, None, None),
+        ),
+        ("property".into(), highlight_style(property, None, None)),
+        (
+            "punctuation".into(),
+            highlight_style(palette.foreground, None, None),
+        ),
+        (
+            "punctuation.bracket".into(),
+            highlight_style(palette.foreground, None, None),
+        ),
+        (
+            "punctuation.delimiter".into(),
+            highlight_style(palette.foreground, None, None),
+        ),
+        (
+            "punctuation.list_marker".into(),
+            highlight_style(palette.entity, None, None),
+        ),
+        (
+            "punctuation.special".into(),
+            highlight_style(palette.keyword, None, None),
+        ),
+        ("string".into(), highlight_style(string, None, None)),
+        (
+            "string.escape".into(),
+            highlight_style(palette.tag, None, None),
+        ),
+        (
+            "string.regex".into(),
+            highlight_style(palette.string, None, None),
+        ),
+        (
+            "string.special".into(),
+            highlight_style(palette.string, None, None),
+        ),
+        (
+            "string.special.symbol".into(),
+            highlight_style(palette.constant, None, None),
+        ),
+        ("tag".into(), highlight_style(palette.tag, None, None)),
+        (
+            "tag.doctype".into(),
+            highlight_style(palette.constant, None, None),
+        ),
+        (
+            "text.literal".into(),
+            highlight_style(palette.constant, None, None),
+        ),
+        (
+            "title".into(),
+            highlight_style(palette.constant, None, Some(700)),
+        ),
+        ("type".into(), highlight_style(type_color, None, None)),
+        (
+            "variable".into(),
+            highlight_style(palette.foreground, None, None),
+        ),
+        (
+            "variable.special".into(),
+            highlight_style(palette.constant, None, None),
+        ),
+        (
+            "variant".into(),
+            highlight_style(palette.entity, None, None),
+        ),
+    ]);
+
+    serde_json::from_value(serde_json::json!({
+        "name": name,
+        "appearance": appearance,
+        "style": {
+            "editor.background": palette.background,
+            "editor.foreground": palette.foreground,
+            "syntax": syntax
+        }
+    }))
+    .expect("the built-in GitHub highlight theme must be valid")
+}
+
+fn highlight_style(
+    color: &'static str,
+    font_style: Option<&'static str>,
+    font_weight: Option<u16>,
+) -> serde_json::Value {
+    let mut style = serde_json::Map::new();
+    style.insert("color".into(), color.into());
+    if let Some(font_style) = font_style {
+        style.insert("font_style".into(), font_style.into());
+    }
+    if let Some(font_weight) = font_weight {
+        style.insert("font_weight".into(), font_weight.into());
+    }
+    style.into()
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -513,6 +818,56 @@ mod tests {
         assert_eq!(light.running, ColorToken(0x52525b));
         assert_eq!(light.file_reference, ColorToken(0x4a53a8));
         assert_eq!(light.effort, ColorToken(0xc2413d));
+    }
+
+    #[test]
+    fn syntax_palettes_match_the_web_shiki_themes() {
+        let dark = github_highlight_theme(ThemeMode::Dark);
+        let light = github_highlight_theme(ThemeMode::Light);
+        let color = |theme: &HighlightTheme, capture: &str| {
+            theme
+                .style(capture)
+                .and_then(|style| style.color)
+                .expect("capture should have an explicit color")
+        };
+
+        assert_eq!(dark.style.editor_foreground, Some(rgb(0xe6edf3).into()));
+        assert_eq!(color(&dark, "comment"), rgb(0x8b949e).into());
+        assert_eq!(color(&dark, "keyword"), rgb(0xff7b72).into());
+        assert_eq!(color(&dark, "string"), rgb(0xa5d6ff).into());
+        assert_eq!(color(&dark, "number"), rgb(0x79c0ff).into());
+        assert_eq!(color(&dark, "function"), rgb(0xd2a8ff).into());
+        assert_eq!(color(&dark, "type"), rgb(0xffa657).into());
+        assert_eq!(color(&dark, "tag"), rgb(0x7ee787).into());
+
+        assert_eq!(light.style.editor_foreground, Some(rgb(0x1f2328).into()));
+        assert_eq!(color(&light, "comment"), rgb(0x6e7781).into());
+        assert_eq!(color(&light, "keyword"), rgb(0xcf222e).into());
+        assert_eq!(color(&light, "string"), rgb(0x0a3069).into());
+        assert_eq!(color(&light, "number"), rgb(0x0550ae).into());
+        assert_eq!(color(&light, "function"), rgb(0x8250df).into());
+        assert_eq!(color(&light, "type"), rgb(0x953800).into());
+        assert_eq!(color(&light, "tag"), rgb(0x116329).into());
+    }
+
+    #[test]
+    fn language_specific_shiki_scopes_keep_common_code_semantics() {
+        let color = |language: &str, capture: &str| {
+            github_highlight_theme_for_language(ThemeMode::Dark, language)
+                .style(capture)
+                .and_then(|style| style.color)
+                .expect("capture should have an explicit color")
+        };
+
+        assert_eq!(color("typescript", "property"), rgb(0xe6edf3).into());
+        assert_eq!(color("json", "property"), rgb(0x7ee787).into());
+        assert_eq!(color("yaml", "property"), rgb(0x7ee787).into());
+        assert_eq!(color("css", "property"), rgb(0x79c0ff).into());
+        assert_eq!(color("diff", "string"), rgb(0x7ee787).into());
+        assert_eq!(color("diff", "keyword"), rgb(0xffa198).into());
+        assert_eq!(color("python", "type"), rgb(0x79c0ff).into());
+        assert_eq!(color("toml", "type"), rgb(0xe6edf3).into());
+        assert_eq!(color("toml", "property"), rgb(0xffa657).into());
     }
 
     #[test]

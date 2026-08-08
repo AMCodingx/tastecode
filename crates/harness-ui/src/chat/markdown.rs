@@ -2,7 +2,10 @@ use super::ChatView;
 use super::code_extensions::code_file_extension;
 use crate::chrome;
 use crate::motion_icon::motion_icon;
-use crate::theme::{Theme, ThemeMode, web_ease_out};
+use crate::theme::{
+    RADIUS_MD, RADIUS_SM, Theme, ThemeMode, github_highlight_theme_for_language,
+    native_syntax_language, web_ease_out,
+};
 use crate::tracked_text::{TrackedText, TrackedTextLayout, tracked_text};
 use crate::zoom::px;
 use ::markdown::{ParseOptions, mdast::Node};
@@ -15,10 +18,10 @@ use gpui::{
     ObjectFit, Pixels, Point, SharedString, StyleRefinement, Styled, StyledImage, StyledText,
     TextLayout, Window, div, img, point, prelude::*, quad, relative, rems,
 };
+use gpui_component::Rope;
 use gpui_component::highlighter::SyntaxHighlighter;
 use gpui_component::scroll::ScrollableElement;
 use gpui_component::text::{TextView, TextViewStyle};
-use gpui_component::{ActiveTheme, Rope};
 use html5ever::{parse_document, tendril::TendrilSink as _};
 use markup5ever_rcdom::{Handle as HtmlHandle, NodeData as HtmlNodeData, RcDom};
 use std::cell::RefCell;
@@ -1482,12 +1485,25 @@ fn render_code_block(
         .map_or(start + code.value.len(), |position| position.end.offset);
     let block_id = format!("{}:code:{start}", context.id);
     let group: SharedString = format!("markdown-code-group:{block_id}").into();
-    let highlights = code.lang.as_deref().map_or_else(Vec::new, |language| {
+    let mut code_foreground = context.theme.text.hsla();
+    let highlights = if let Some(language) = code.lang.as_deref() {
+        let native_language = native_syntax_language(language);
+        let highlight_theme =
+            github_highlight_theme_for_language(context.theme.mode, native_language.as_ref());
         let rope = Rope::from(code.value.as_str());
-        let mut highlighter = SyntaxHighlighter::new(language);
+        let mut highlighter = SyntaxHighlighter::new(native_language.as_ref());
         highlighter.update(None, &rope);
-        highlighter.styles(&(0..code.value.len()), &cx.theme().highlight_theme)
-    });
+        let highlights = highlighter.styles(&(0..code.value.len()), &highlight_theme);
+        if !highlights.is_empty() {
+            code_foreground = highlight_theme
+                .style
+                .editor_foreground
+                .unwrap_or(code_foreground);
+        }
+        highlights
+    } else {
+        Vec::new()
+    };
     let content = if highlights.is_empty() {
         StyledText::new(code.value.clone())
     } else {
@@ -1547,7 +1563,7 @@ fn render_code_block(
                     div()
                         .flex()
                         .items_center()
-                        .gap(px(4.0))
+                        .gap(px(3.0))
                         .child(download)
                         .child(copy),
                 ),
@@ -1557,7 +1573,7 @@ fn render_code_block(
                 .id(SharedString::from(format!("{block_id}:scroll")))
                 .w_full()
                 .overflow_x_scrollbar()
-                .rounded(px(8.0))
+                .rounded(px(RADIUS_MD))
                 .border_1()
                 .border_color(context.theme.line.hsla())
                 .bg(context.theme.surface.hsla())
@@ -1566,7 +1582,7 @@ fn render_code_block(
                 .font_family("Geist Mono")
                 .text_size(px(12.5))
                 .line_height(relative(1.52))
-                .text_color(context.theme.response_text.hsla())
+                .text_color(code_foreground)
                 .whitespace_nowrap()
                 .child(selectable_content),
         )
@@ -1953,7 +1969,7 @@ fn copy_control(
         .flex()
         .items_center()
         .justify_center()
-        .rounded(px(5.0))
+        .rounded(px(RADIUS_SM))
         .border_1()
         .border_color(theme.line.hsla())
         .bg(theme.surface_2.hsla())
@@ -2018,7 +2034,7 @@ fn download_control(
         .flex()
         .items_center()
         .justify_center()
-        .rounded(px(5.0))
+        .rounded(px(RADIUS_SM))
         .border_1()
         .border_color(theme.line.hsla())
         .bg(theme.surface_2.hsla())
@@ -4158,6 +4174,51 @@ mod tests {
         assert!(!is_file_reference("no-extension"));
         assert_eq!(file_icon_spec("view.tsx").kind, "react");
         assert_eq!(file_icon_spec("script.ts").label, Some("TS"));
+    }
+
+    #[test]
+    fn common_web_syntax_languages_are_registered_natively() {
+        let registered = gpui_component::highlighter::LanguageRegistry::singleton().languages();
+        for (language, source) in [
+            ("typescript", "const answer: number = 42;"),
+            ("tsx", "const view = <button>Save</button>;"),
+            ("javascript", "const answer = 42;"),
+            ("jsx", "const view = <button>Save</button>;"),
+            ("json", r#"{"enabled": true}"#),
+            ("bash", "echo \"hello\""),
+            ("shell", "echo \"hello\""),
+            ("python", "def greet(name: str): return name"),
+            ("css", ".button { color: red; }"),
+            ("html", "<button disabled>Save</button>"),
+            ("markdown", "# Heading"),
+            ("yaml", "enabled: true"),
+            ("diff", "-old\n+new"),
+            ("sql", "SELECT id FROM users;"),
+            ("rust", "fn answer() -> u32 { 42 }"),
+            ("go", "func answer() int { return 42 }"),
+        ] {
+            let native = native_syntax_language(language);
+            assert!(
+                registered
+                    .iter()
+                    .any(|candidate| candidate.as_ref() == native.as_ref()),
+                "{language} should resolve to the registered {native} grammar"
+            );
+            let rope = Rope::from(source);
+            let mut highlighter = SyntaxHighlighter::new(native.as_ref());
+            highlighter.update(None, &rope);
+            assert!(
+                !highlighter
+                    .styles(
+                        &(0..source.len()),
+                        &github_highlight_theme_for_language(ThemeMode::Dark, language),
+                    )
+                    .is_empty(),
+                "{language} should produce native highlight spans"
+            );
+        }
+        assert_eq!(native_syntax_language("jsx"), "javascript");
+        assert_eq!(native_syntax_language("shell"), "bash");
     }
 
     #[test]
