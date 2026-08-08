@@ -2,6 +2,7 @@ use super::HarnessApp;
 use crate::chrome;
 use crate::motion_icon::motion_icon;
 use crate::sidebar::{SelectionModifiers, SidebarMenuRequest, ordered_inbox_ids};
+use crate::tracked_text::tracked_text;
 use crate::zoom::px;
 use chrono::{Datelike, Duration as ChronoDuration, Local, Timelike};
 use gpui::{
@@ -1126,7 +1127,7 @@ impl HarnessApp {
                                     .text_size(px(15.0))
                                     .line_height(relative(1.55))
                                     .font_weight(FontWeight(560.0))
-                                    .child(title),
+                                    .child(tracked_text(title, -0.014)),
                             )
                             .child(
                                 div()
@@ -1291,7 +1292,10 @@ impl HarnessApp {
                                             .line_height(relative(1.55))
                                             .font_weight(FontWeight(560.0))
                                             .text_color(theme.text.hsla())
-                                            .child("This checkout has uncommitted work"),
+                                            .child(tracked_text(
+                                                "This checkout has uncommitted work",
+                                                -0.014,
+                                            )),
                                     )
                                     .child(
                                         div()

@@ -17,6 +17,7 @@ use crate::motion_icon::{IconTransformation, motion_icon};
 use crate::provider_icon::{provider_mark, provider_mark_path};
 use crate::shortcuts::is_button_activation;
 use crate::theme::{CHAT_WIDTH, RADIUS_XL, Theme, ThemeMode, cubic_bezier_timing};
+use crate::tracked_text::tracked_text;
 use crate::zoom::px;
 use diff::DiffUiState;
 use gpui::{
@@ -4094,10 +4095,10 @@ impl ChatView {
             .child(
                 div()
                     .flex_none()
-                    .text_size(px(10.5))
+                    .text_size(px(11.5))
                     .font_weight(FontWeight::MEDIUM)
                     .text_color(theme.text_3.hsla())
-                    .child(duration),
+                    .child(tracked_text(duration, 0.02)),
             )
             .child(stop)
             .child(submit)
@@ -5190,7 +5191,7 @@ impl ChatView {
                                 .text_size(px(10.0))
                                 .font_weight(FontWeight(560.0))
                                 .text_color(theme.text_3.hsla())
-                                .child(group.name),
+                                .child(tracked_text(group.name, 0.02)),
                         )
                         .child(self.model_search_field(query, window, cx)),
                 )

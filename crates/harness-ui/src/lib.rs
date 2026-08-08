@@ -13,6 +13,7 @@ mod provider_icon;
 mod shortcuts;
 mod sidebar;
 mod theme;
+mod tracked_text;
 mod zoom;
 
 pub use app::{run, run_with_endpoint};

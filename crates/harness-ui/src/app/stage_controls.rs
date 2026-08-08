@@ -4,6 +4,7 @@ use crate::chrome;
 use crate::client_state::{RollbackOperation, UsageScope, WorkspaceOperation};
 use crate::motion_icon::motion_icon;
 use crate::theme::ThemeMode;
+use crate::tracked_text::tracked_text;
 use crate::zoom::px;
 use chrono::{DateTime, Local};
 use gpui::{
@@ -768,7 +769,10 @@ impl HarnessApp {
                                                 .line_height(relative(1.55))
                                                 .font_weight(FontWeight(560.0))
                                                 .text_color(theme.text.hsla())
-                                                .child("Return to a checkpoint"),
+                                                .child(tracked_text(
+                                                    "Return to a checkpoint",
+                                                    -0.014,
+                                                )),
                                         )
                                         .child(
                                             div()

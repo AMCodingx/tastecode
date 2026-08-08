@@ -12,6 +12,7 @@ use crate::provider_icon::{
 };
 use crate::shortcuts::is_button_activation;
 use crate::theme::{Accent, Backdrop, Theme, ThemeMode};
+use crate::tracked_text::tracked_text;
 use crate::zoom::px;
 use gpui::{
     Animation, AnimationExt, AnyElement, App, ClipboardItem, Context, ElementId, Entity,
@@ -1054,9 +1055,9 @@ impl HarnessApp {
                         .border_color(theme.line_strong.hsla())
                         .bg(theme.surface_2.hsla())
                         .font_family("Geist Mono")
-                        .text_size(px(14.0))
+                        .text_size(px(15.0))
                         .text_color(theme.text.hsla())
-                        .child(code),
+                        .child(tracked_text(code, 0.08)),
                 )
                 .when_some(copy_action, |row, action| {
                     row.child(provider_action_button(
@@ -3066,7 +3067,7 @@ fn settings_panel(title: &str, blocks: Vec<AnyElement>, theme: Theme) -> gpui::D
                 .line_height(relative(1.2))
                 .font_weight(FontWeight(550.0))
                 .text_color(theme.text.hsla())
-                .child(title.to_owned()),
+                .child(tracked_text(title.to_owned(), -0.026)),
         )
         .child(
             div()

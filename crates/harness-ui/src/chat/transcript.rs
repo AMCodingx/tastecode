@@ -4,6 +4,7 @@ use super::thinking_orb::{ThinkingOrbState, thinking_orb};
 use super::{ChatEvent, ChatView, TranscriptScrollMode};
 use crate::motion_icon::{IconTransformation, motion_icon};
 use crate::theme::{CHAT_WIDTH, Theme, ThemeMode};
+use crate::tracked_text::tracked_text;
 use crate::zoom::px;
 use chrono::{DateTime, Local};
 use gpui::{
@@ -813,7 +814,7 @@ fn completion_rail(
                                     "activity-file-icon-direct-hover",
                                     theme,
                                 ))
-                                .child("Edited files")
+                                .child(tracked_text("Edited files", -0.012))
                                 .into_any_element(),
                         }
                     })),
@@ -876,7 +877,10 @@ fn completion_summary(
                 .cursor_pointer()
                 .hover(move |style| style.text_color(theme.text_2.hsla()))
         })
-        .child(format!("Worked for {}", worked_for(elapsed_ms)))
+        .child(tracked_text(
+            format!("Worked for {}", worked_for(elapsed_ms)),
+            -0.012,
+        ))
         .when(on_click.is_some(), |summary| {
             summary.child(
                 motion_icon(icon_id, "icons/chevron-right.svg", 15.0, id.clone(), theme)
@@ -922,12 +926,15 @@ fn working_rail(working: WorkingSnapshot, theme: Theme) -> AnyElement {
                 .child(thinking_orb(orb_state, theme)),
         )
         .child(
-            div().relative().child(working.label).with_animation(
-                label_animation_id,
-                Animation::new(theme.motion_duration(Duration::from_millis(180)))
-                    .with_easing(crate::theme::web_ease_out),
-                |label, delta| label.top(px(3.0 * (1.0 - delta))).opacity(delta),
-            ),
+            div()
+                .relative()
+                .child(tracked_text(working.label, -0.012))
+                .with_animation(
+                    label_animation_id,
+                    Animation::new(theme.motion_duration(Duration::from_millis(180)))
+                        .with_easing(crate::theme::web_ease_out),
+                    |label, delta| label.top(px(3.0 * (1.0 - delta))).opacity(delta),
+                ),
         )
         .child(
             div()
