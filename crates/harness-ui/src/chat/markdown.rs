@@ -3,6 +3,7 @@ use super::code_extensions::code_file_extension;
 use crate::chrome;
 use crate::motion_icon::motion_icon;
 use crate::theme::{Theme, ThemeMode, web_ease_out};
+use crate::tracked_text::tracked_text;
 use crate::zoom::px;
 use ::markdown::{ParseOptions, mdast::Node};
 use base64::{Engine as _, engine::general_purpose::STANDARD};
@@ -3591,7 +3592,7 @@ fn render_file_reference(
             .font_weight(FontWeight(680.0))
             .text_size(px(7.2))
             .line_height(relative(1.0))
-            .child(spec.label.unwrap_or(""))
+            .child(tracked_text(spec.label.unwrap_or(""), -0.06))
             .into_any_element()
     };
     div()

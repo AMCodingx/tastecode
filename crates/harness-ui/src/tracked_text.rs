@@ -1,17 +1,18 @@
 use gpui::{
-    App, Bounds, Element, ElementId, FontFeatures, GlobalElementId, InspectorElementId,
-    IntoElement, LayoutId, Pixels, SharedString, Size, TextAlign, TextRun, Window, point, size,
+    App, AvailableSpace, Bounds, Element, ElementId, FontFeatures, GlobalElementId,
+    InspectorElementId, IntoElement, LayoutId, Pixels, SharedString, Size, TextAlign, TextRun,
+    WhiteSpace, Window, point, size,
 };
 use std::cell::RefCell;
 use std::rc::Rc;
 use std::sync::Arc;
 
-/// Paints one line of uniformly styled text with CSS-compatible letter spacing.
+/// Paints uniformly styled text with CSS-compatible letter spacing.
 ///
 /// GPUI 0.2.2 does not expose tracking in `TextStyle`, but its shaped glyph
 /// positions are public. Keeping the adjustment here preserves GPUI's native
-/// shaping, font fallback, glyph cache, and rasterization while matching the
-/// handful of tracked labels in the web oracle.
+/// shaping, font fallback, glyph cache, wrapping, and rasterization while
+/// matching the handful of tracked labels in the web oracle.
 pub(crate) fn tracked_text(text: impl Into<SharedString>, letter_spacing_em: f32) -> TrackedText {
     TrackedText {
         text: text.into(),
@@ -29,12 +30,26 @@ pub(crate) struct TrackedTextLayout(Rc<RefCell<Option<TrackedTextLayoutState>>>)
 
 struct TrackedTextLayoutState {
     line: gpui::ShapedLine,
+    visual_lines: Vec<TrackedVisualLine>,
     line_height: Pixels,
     letter_spacing: Pixels,
-    content_width: Pixels,
     color: gpui::Hsla,
     align: TextAlign,
     bounds: Option<Bounds<Pixels>>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct TrackedVisualLine {
+    start_cluster: usize,
+    end_cluster: usize,
+    start_x: Pixels,
+    width: Pixels,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct TrackedCluster {
+    source_index: usize,
+    x: Pixels,
 }
 
 impl Element for TrackedText {
@@ -58,7 +73,7 @@ impl Element for TrackedText {
     ) -> (LayoutId, Self::RequestLayoutState) {
         debug_assert!(
             !self.text.contains('\n'),
-            "tracked text is intentionally a single-line primitive"
+            "tracked text does not accept hard line breaks"
         );
         let layout = TrackedTextLayout::default();
         let layout_for_measure = layout.clone();
@@ -76,16 +91,37 @@ impl Element for TrackedText {
 
         let layout_id = window.request_measured_layout(
             Default::default(),
-            move |known_dimensions, _available_space, window, _cx| {
+            move |known_dimensions, available_space, window, _cx| {
                 let line = window.text_system().shape_line(
                     text.clone(),
                     font_size,
                     std::slice::from_ref(&run),
                     None,
                 );
-                let cluster_count = shaped_cluster_count(&line);
-                let content_width = tracked_width(line.width, letter_spacing, cluster_count);
-                let intrinsic = size(content_width.ceil(), line_height.ceil());
+                let clusters = shaped_clusters(&line);
+                let unwrapped_width = tracked_width(line.width, letter_spacing, clusters.len());
+                let wrap_width = if text_style.white_space == WhiteSpace::Normal {
+                    known_dimensions.width.or(match available_space.width {
+                        AvailableSpace::Definite(width) => Some(width),
+                        AvailableSpace::MinContent | AvailableSpace::MaxContent => None,
+                    })
+                } else {
+                    None
+                };
+                let visual_lines = wrap_tracked_clusters(
+                    &text,
+                    &clusters,
+                    unwrapped_width,
+                    letter_spacing,
+                    wrap_width,
+                );
+                let content_width = wrap_width
+                    .map(|width| unwrapped_width.min(width))
+                    .unwrap_or(unwrapped_width);
+                let intrinsic = size(
+                    content_width.ceil(),
+                    (line_height * visual_lines.len() as f32).ceil(),
+                );
                 let measured = Size {
                     width: known_dimensions.width.unwrap_or(intrinsic.width),
                     height: known_dimensions.height.unwrap_or(intrinsic.height),
@@ -95,9 +131,9 @@ impl Element for TrackedText {
                     .borrow_mut()
                     .replace(TrackedTextLayoutState {
                         line,
+                        visual_lines,
                         line_height,
                         letter_spacing,
-                        content_width,
                         color,
                         align,
                         bounds: None,
@@ -142,42 +178,60 @@ impl Element for TrackedText {
         let bounds = state
             .bounds
             .expect("tracked text must be prepainted before paint");
-        let horizontal_offset = match state.align {
-            TextAlign::Left => Pixels::ZERO,
-            TextAlign::Center => (bounds.size.width - state.content_width) / 2.0,
-            TextAlign::Right => bounds.size.width - state.content_width,
-        };
         let padding_top = (state.line_height - state.line.ascent - state.line.descent) / 2.0;
-        let baseline_y = bounds.origin.y + padding_top + state.line.ascent;
-        let mut cluster_ordinal = 0usize;
-        let mut previous_cluster = None;
+        window.paint_layer(bounds, |window| {
+            for (line_ordinal, visual_line) in state.visual_lines.iter().enumerate() {
+                let horizontal_offset = match state.align {
+                    TextAlign::Left => Pixels::ZERO,
+                    TextAlign::Center => (bounds.size.width - visual_line.width) / 2.0,
+                    TextAlign::Right => bounds.size.width - visual_line.width,
+                };
+                let baseline_y = bounds.origin.y
+                    + state.line_height * line_ordinal as f32
+                    + padding_top
+                    + state.line.ascent;
+                let mut cluster_ordinal = 0usize;
+                let mut previous_cluster = None;
 
-        for run in &state.line.runs {
-            for glyph in &run.glyphs {
-                if previous_cluster.is_some_and(|index| index != glyph.index) {
-                    cluster_ordinal += 1;
-                }
-                previous_cluster = Some(glyph.index);
-                let origin = point(
-                    bounds.origin.x
-                        + horizontal_offset
-                        + glyph.position.x
-                        + state.letter_spacing * cluster_ordinal as f32,
-                    baseline_y,
-                );
-                if glyph.is_emoji {
-                    let _ = window.paint_emoji(origin, run.font_id, glyph.id, state.line.font_size);
-                } else {
-                    let _ = window.paint_glyph(
-                        origin,
-                        run.font_id,
-                        glyph.id,
-                        state.line.font_size,
-                        state.color,
-                    );
+                for run in &state.line.runs {
+                    for glyph in &run.glyphs {
+                        if previous_cluster.is_some_and(|index| index != glyph.index) {
+                            cluster_ordinal += 1;
+                        }
+                        previous_cluster = Some(glyph.index);
+                        if cluster_ordinal < visual_line.start_cluster
+                            || cluster_ordinal >= visual_line.end_cluster
+                        {
+                            continue;
+                        }
+                        let origin = point(
+                            bounds.origin.x
+                                + horizontal_offset
+                                + glyph.position.x
+                                + state.letter_spacing * cluster_ordinal as f32
+                                - visual_line.start_x,
+                            baseline_y,
+                        );
+                        if glyph.is_emoji {
+                            let _ = window.paint_emoji(
+                                origin,
+                                run.font_id,
+                                glyph.id,
+                                state.line.font_size,
+                            );
+                        } else {
+                            let _ = window.paint_glyph(
+                                origin,
+                                run.font_id,
+                                glyph.id,
+                                state.line.font_size,
+                                state.color,
+                            );
+                        }
+                    }
                 }
             }
-        }
+        });
     }
 }
 
@@ -189,21 +243,111 @@ impl IntoElement for TrackedText {
     }
 }
 
-fn shaped_cluster_count(line: &gpui::ShapedLine) -> usize {
-    let mut count = 0;
+fn shaped_clusters(line: &gpui::ShapedLine) -> Vec<TrackedCluster> {
+    let mut clusters = Vec::new();
     let mut previous = None;
     for glyph in line.runs.iter().flat_map(|run| &run.glyphs) {
         if previous != Some(glyph.index) {
-            count += 1;
+            clusters.push(TrackedCluster {
+                source_index: glyph.index,
+                x: glyph.position.x,
+            });
             previous = Some(glyph.index);
         }
     }
-    count
+    clusters
 }
 
 fn tracked_width(base: Pixels, letter_spacing: Pixels, cluster_count: usize) -> Pixels {
     let gaps = cluster_count.saturating_sub(1) as f32;
     (base + letter_spacing * gaps).max(Pixels::ZERO)
+}
+
+fn wrap_tracked_clusters(
+    text: &str,
+    clusters: &[TrackedCluster],
+    unwrapped_width: Pixels,
+    letter_spacing: Pixels,
+    wrap_width: Option<Pixels>,
+) -> Vec<TrackedVisualLine> {
+    let words = tracked_words(text, clusters);
+    if words.is_empty() {
+        return vec![TrackedVisualLine {
+            start_cluster: 0,
+            end_cluster: 0,
+            start_x: Pixels::ZERO,
+            width: Pixels::ZERO,
+        }];
+    }
+
+    let adjusted_x = |cluster: usize| {
+        if let Some(cluster_position) = clusters.get(cluster) {
+            cluster_position.x + letter_spacing * cluster as f32
+        } else {
+            unwrapped_width
+        }
+    };
+    let Some(wrap_width) = wrap_width else {
+        let start_cluster = words[0].0;
+        let end_cluster = words.last().expect("non-empty words").1;
+        let start_x = adjusted_x(start_cluster);
+        return vec![TrackedVisualLine {
+            start_cluster,
+            end_cluster,
+            start_x,
+            width: (adjusted_x(end_cluster) - start_x).max(Pixels::ZERO),
+        }];
+    };
+
+    let mut lines = Vec::new();
+    let mut line_start = words[0].0;
+    let mut line_end = words[0].1;
+    for &(word_start, word_end) in words.iter().skip(1) {
+        let candidate_width = adjusted_x(word_end) - adjusted_x(line_start);
+        if candidate_width > wrap_width {
+            let start_x = adjusted_x(line_start);
+            lines.push(TrackedVisualLine {
+                start_cluster: line_start,
+                end_cluster: line_end,
+                start_x,
+                width: (adjusted_x(line_end) - start_x).max(Pixels::ZERO),
+            });
+            line_start = word_start;
+        }
+        line_end = word_end;
+    }
+    let start_x = adjusted_x(line_start);
+    lines.push(TrackedVisualLine {
+        start_cluster: line_start,
+        end_cluster: line_end,
+        start_x,
+        width: (adjusted_x(line_end) - start_x).max(Pixels::ZERO),
+    });
+    lines
+}
+
+fn tracked_words(text: &str, clusters: &[TrackedCluster]) -> Vec<(usize, usize)> {
+    let mut words = Vec::new();
+    let mut cluster = 0;
+    while cluster < clusters.len() {
+        while cluster < clusters.len() && cluster_is_whitespace(text, clusters[cluster]) {
+            cluster += 1;
+        }
+        let start = cluster;
+        while cluster < clusters.len() && !cluster_is_whitespace(text, clusters[cluster]) {
+            cluster += 1;
+        }
+        if start < cluster {
+            words.push((start, cluster));
+        }
+    }
+    words
+}
+
+fn cluster_is_whitespace(text: &str, cluster: TrackedCluster) -> bool {
+    text.get(cluster.source_index..)
+        .and_then(|text| text.chars().next())
+        .is_some_and(char::is_whitespace)
 }
 
 fn disable_spacing_ligatures(run: &mut TextRun) {
@@ -248,6 +392,87 @@ mod tests {
             tracked_width(gpui::px(4.0), gpui::px(-8.0), 3),
             Pixels::ZERO
         );
+    }
+
+    #[test]
+    fn wrapping_breaks_before_the_word_that_exceeds_the_available_width() {
+        let text = "alpha beta";
+        let clusters = text
+            .char_indices()
+            .enumerate()
+            .map(|(ordinal, (source_index, _))| TrackedCluster {
+                source_index,
+                x: gpui::px(ordinal as f32 * 10.0),
+            })
+            .collect::<Vec<_>>();
+
+        assert_eq!(
+            wrap_tracked_clusters(
+                text,
+                &clusters,
+                gpui::px(100.0),
+                Pixels::ZERO,
+                Some(gpui::px(55.0)),
+            ),
+            vec![
+                TrackedVisualLine {
+                    start_cluster: 0,
+                    end_cluster: 5,
+                    start_x: gpui::px(0.0),
+                    width: gpui::px(50.0),
+                },
+                TrackedVisualLine {
+                    start_cluster: 6,
+                    end_cluster: 10,
+                    start_x: gpui::px(60.0),
+                    width: gpui::px(40.0),
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn wrapping_keeps_an_overwide_word_intact() {
+        let text = "alpha";
+        let clusters = text
+            .char_indices()
+            .enumerate()
+            .map(|(ordinal, (source_index, _))| TrackedCluster {
+                source_index,
+                x: gpui::px(ordinal as f32 * 10.0),
+            })
+            .collect::<Vec<_>>();
+
+        assert_eq!(
+            wrap_tracked_clusters(
+                text,
+                &clusters,
+                gpui::px(50.0),
+                Pixels::ZERO,
+                Some(gpui::px(30.0)),
+            ),
+            vec![TrackedVisualLine {
+                start_cluster: 0,
+                end_cluster: 5,
+                start_x: gpui::px(0.0),
+                width: gpui::px(50.0),
+            }]
+        );
+    }
+
+    #[test]
+    fn word_boundaries_follow_utf8_cluster_indices() {
+        let text = "Ångström beta";
+        let clusters = text
+            .char_indices()
+            .enumerate()
+            .map(|(ordinal, (source_index, _))| TrackedCluster {
+                source_index,
+                x: gpui::px(ordinal as f32),
+            })
+            .collect::<Vec<_>>();
+
+        assert_eq!(tracked_words(text, &clusters), vec![(0, 8), (9, 13)]);
     }
 
     #[test]

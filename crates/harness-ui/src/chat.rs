@@ -3128,7 +3128,7 @@ impl ChatView {
                                 .line_height(relative(1.35))
                                 .text_color(theme.text.hsla())
                                 .whitespace_normal()
-                                .child(question.question.clone()),
+                                .child(tracked_text(question.question.clone(), -0.01)),
                         )
                         .child(
                             div()
@@ -5842,8 +5842,8 @@ impl Render for ChatView {
 
 impl ChatView {
     fn new_session_prompt(&self, window: &Window) -> AnyElement {
-        let (label, text_size, text_color) = if let Some(error) = &self.error {
-            (Some(error.clone()), 12.5, self.theme.text_3.hsla())
+        let (label, text_size, text_color, letter_spacing) = if let Some(error) = &self.error {
+            (Some(error.clone()), 12.5, self.theme.text_3.hsla(), None)
         } else {
             (
                 new_session_prompt_label(
@@ -5855,6 +5855,7 @@ impl ChatView {
                 ),
                 new_session_prompt_size(f32::from(window.viewport_size().width)),
                 self.theme.text.hsla(),
+                Some(-0.035),
             )
         };
         div()
@@ -5869,7 +5870,13 @@ impl ChatView {
             .line_height(relative(1.12))
             .font_weight(FontWeight(400.0))
             .text_color(text_color)
-            .when_some(label, |prompt, label| prompt.child(label))
+            .when_some(label, |prompt, label| {
+                prompt.child(if let Some(letter_spacing) = letter_spacing {
+                    tracked_text(label, letter_spacing).into_any_element()
+                } else {
+                    label.into_any_element()
+                })
+            })
             .into_any_element()
     }
 }
