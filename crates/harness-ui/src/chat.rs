@@ -60,6 +60,9 @@ const DESIGN_BEAM_DURATION: Duration = Duration::from_millis(2_400);
 const SEND_BEAM_DURATION: Duration = Duration::from_millis(1_960);
 const COMPOSER_DOCK_DURATION: Duration = Duration::from_millis(180);
 const COMPOSER_TOOLS_HEIGHT: f32 = 46.0;
+const BRIEF_CARD_GAP: f32 = 8.0;
+const BRIEF_STATUS_GAP: f32 = 6.0;
+const BRIEF_ENTRY_OFFSET: f32 = 8.0;
 const COMPOSER_DOCKED_BOTTOM_PADDING: f32 = 12.0;
 const MODEL_PICKER_WIDTH: f32 = 382.0;
 const MODEL_CONTROLS_PADDING: f32 = 8.0;
@@ -2859,27 +2862,20 @@ impl ChatView {
             .into_any_element()
     }
 
-    fn user_input_card(
-        &self,
-        is_new_session: bool,
-        window: &Window,
-        cx: &Context<Self>,
-    ) -> Option<AnyElement> {
+    fn user_input_card(&self, window: &Window, cx: &Context<Self>) -> Option<AnyElement> {
         let request = self.active_user_input()?;
         let question = request.questions.get(self.user_input_step)?;
         let theme = self.theme;
         let pending = self.pending_user_inputs.contains(&request.id);
-        let attachment_offset = self.attachment_shelf_height();
-        let bottom = (if is_new_session { 150.0 } else { 114.0 }) + attachment_offset;
 
         if pending {
-            let status_bottom = bottom - 2.0;
             let request_animation_id = request.created_at.max(0.0) as u64;
             return Some(
                 div()
                     .absolute()
                     .left(px(0.0))
-                    .bottom(px(status_bottom))
+                    .bottom(relative(1.0))
+                    .mb(px(BRIEF_STATUS_GAP))
                     .h(px(36.0))
                     .overflow_hidden()
                     .flex()
@@ -2941,7 +2937,7 @@ impl ChatView {
                         Animation::new(theme.motion_duration(Duration::from_millis(220)))
                             .with_easing(crate::theme::web_ease_out),
                         move |card, delta| {
-                            card.bottom(px(status_bottom - (8.0 * (1.0 - delta))))
+                            card.mb(px(brief_entry_margin(BRIEF_STATUS_GAP, delta)))
                                 .opacity(delta)
                         },
                     )
@@ -3190,7 +3186,8 @@ impl ChatView {
                 .absolute()
                 .left(px(0.0))
                 .right(px(0.0))
-                .bottom(px(bottom))
+                .bottom(relative(1.0))
+                .mb(px(BRIEF_CARD_GAP))
                 .w_full()
                 .overflow_hidden()
                 .rounded(px(20.0))
@@ -3294,7 +3291,7 @@ impl ChatView {
                         .with_easing(crate::theme::web_ease_out),
                     move |card, delta| {
                         let horizontal_inset = 0.005 * (1.0 - delta);
-                        card.bottom(px(bottom - (8.0 * (1.0 - delta))))
+                        card.mb(px(brief_entry_margin(BRIEF_CARD_GAP, delta)))
                             .left(relative(horizontal_inset))
                             .right(relative(horizontal_inset))
                             .opacity(delta)
@@ -3703,7 +3700,7 @@ impl ChatView {
             }
         };
         let popover = self.composer_popover(is_new_session, window, cx);
-        let user_input = self.user_input_card(is_new_session, window, cx);
+        let user_input = self.user_input_card(window, cx);
         let queue_panel = self.queue_panel(window, cx);
         let attach_view = cx.weak_entity();
         let attach_action: UiAction = Rc::new(move |cx| {
@@ -7798,6 +7795,10 @@ fn input_nav_button(
         .child(visual)
 }
 
+fn brief_entry_margin(gap: f32, delta: f32) -> f32 {
+    gap - BRIEF_ENTRY_OFFSET * (1.0 - delta)
+}
+
 fn brief_option_background(theme: Theme, selected: bool, hovered: bool) -> Background {
     if selected {
         return theme.surface_3.hsla().into();
@@ -9150,6 +9151,14 @@ mod tests {
         assert!((composer_height_for_line_count(10) - 241.0).abs() < 0.001);
         assert_eq!(composer_height_for_line_count(11), COMPOSER_MAX_HEIGHT);
         assert_eq!(composer_height_for_line_count(100), COMPOSER_MAX_HEIGHT);
+    }
+
+    #[test]
+    fn brief_card_entry_keeps_the_web_relative_anchor() {
+        assert_eq!(brief_entry_margin(BRIEF_CARD_GAP, 0.0), 0.0);
+        assert_eq!(brief_entry_margin(BRIEF_CARD_GAP, 1.0), 8.0);
+        assert_eq!(brief_entry_margin(BRIEF_STATUS_GAP, 0.0), -2.0);
+        assert_eq!(brief_entry_margin(BRIEF_STATUS_GAP, 1.0), 6.0);
     }
 
     #[test]
