@@ -179,7 +179,8 @@ fn rotation_matrix(
 
 fn base_transformation_matrix(
     bounds: Bounds<Pixels>,
-    scale_factor: f32,
+    device_scale_factor: f32,
+    app_zoom_factor: f32,
     transformation: IconTransformation,
 ) -> TransformationMatrix {
     let angle = transformation.rotation_degrees.to_radians();
@@ -192,10 +193,11 @@ fn base_transformation_matrix(
         [sine * scale_x, cosine * scale_y],
     ];
     let center = bounds.center();
-    let center_x = f32::from(center.x) * scale_factor;
-    let center_y = f32::from(center.y) * scale_factor;
-    let translation_x = transformation.translation[0] * scale_factor;
-    let translation_y = transformation.translation[1] * scale_factor;
+    let center_x = f32::from(center.x) * device_scale_factor;
+    let center_y = f32::from(center.y) * device_scale_factor;
+    let translation_scale = device_scale_factor * app_zoom_factor;
+    let translation_x = transformation.translation[0] * translation_scale;
+    let translation_y = transformation.translation[1] * translation_scale;
     TransformationMatrix {
         rotation_scale,
         translation: [
@@ -296,7 +298,12 @@ impl Element for MotionIcon {
                 let color = window.text_style().color;
                 let scale_factor = window.scale_factor();
                 let transformation = rotation_matrix(bounds, scale_factor, progress).compose(
-                    base_transformation_matrix(bounds, scale_factor, base_transformation),
+                    base_transformation_matrix(
+                        bounds,
+                        scale_factor,
+                        crate::zoom::factor(),
+                        base_transformation,
+                    ),
                 );
                 let _ = window.paint_svg(bounds, path, transformation, color, cx);
             },
@@ -370,6 +377,7 @@ mod tests {
         let base = base_transformation_matrix(
             bounds,
             2.0,
+            1.0,
             IconTransformation::scale(0.8)
                 .with_translation(0.0, -2.0)
                 .with_rotation(-18.0),
@@ -381,5 +389,20 @@ mod tests {
         assert_ne!(composed, hover);
         assert!(composed.rotation_scale[0][0].is_finite());
         assert!(composed.translation[1].is_finite());
+    }
+
+    #[test]
+    fn base_translation_tracks_app_zoom_in_device_pixels() {
+        let bounds = Bounds::new(
+            gpui::point(gpui::px(10.0), gpui::px(20.0)),
+            gpui::size(gpui::px(16.0), gpui::px(16.0)),
+        );
+        let transformation = IconTransformation::default().with_translation(0.0, -2.0);
+
+        let unzoomed = base_transformation_matrix(bounds, 2.0, 1.0, transformation);
+        let zoomed = base_transformation_matrix(bounds, 2.0, 2.0, transformation);
+
+        assert_eq!(unzoomed.translation, [0.0, -4.0]);
+        assert_eq!(zoomed.translation, [0.0, -8.0]);
     }
 }
