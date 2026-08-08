@@ -93,6 +93,7 @@ pub(crate) enum ChatEvent {
         service_tier: Option<String>,
         optimistic_queue_id: Option<String>,
         steer_echo_after_row: Option<usize>,
+        started_echo_after_row: Option<usize>,
     },
     Interrupt {
         thread_id: String,
@@ -972,6 +973,25 @@ impl ChatView {
                 );
                 cx.notify();
             }
+            ChatUpdate::RunningSubmissionStarted {
+                thread_id,
+                turn_id,
+                optimistic_queue_id,
+                text,
+                created_at,
+                echo_after_row,
+            } if self.is_selected(&thread_id) => {
+                resolve_queue_submission(&mut self.queue, optimistic_queue_id.as_deref(), None);
+                self.append_started_prompt_if_missing(
+                    &thread_id,
+                    &turn_id,
+                    text,
+                    created_at,
+                    echo_after_row,
+                    cx,
+                );
+                cx.notify();
+            }
             ChatUpdate::SteerAccepted {
                 thread_id,
                 text,
@@ -1137,6 +1157,7 @@ impl ChatView {
             ChatUpdate::History { .. }
             | ChatUpdate::Queue { .. }
             | ChatUpdate::QueueSubmissionResolved { .. }
+            | ChatUpdate::RunningSubmissionStarted { .. }
             | ChatUpdate::SteerAccepted { .. }
             | ChatUpdate::Event(_)
             | ChatUpdate::Error { .. }
@@ -1814,6 +1835,7 @@ impl ChatView {
             });
             self.append_optimistic_draft_prompt(text, cx);
         } else if let Some(thread_id) = thread_id {
+            let started_echo_after_row = self.state.running.then_some(self.state.timeline_len());
             let steer_echo_after_row =
                 (self.state.running && steer).then_some(self.state.timeline_len());
             let optimistic_queue_id = if self.state.running && !steer {
@@ -1834,6 +1856,7 @@ impl ChatView {
                 service_tier,
                 optimistic_queue_id,
                 steer_echo_after_row,
+                started_echo_after_row,
             });
         } else {
             self.creating = true;
@@ -1917,7 +1940,7 @@ impl ChatView {
         echo_after_row: usize,
         cx: &mut Context<Self>,
     ) {
-        if steered_prompt_already_visible(&self.state, &text, created_at, echo_after_row) {
+        if submitted_prompt_already_visible(&self.state, &text, created_at, echo_after_row) {
             return;
         }
         let Some(turn_id) = self
@@ -1936,6 +1959,31 @@ impl ChatView {
                 text,
                 created_at,
                 false,
+            ),
+            cx,
+        );
+    }
+
+    fn append_started_prompt_if_missing(
+        &mut self,
+        thread_id: &str,
+        turn_id: &str,
+        text: String,
+        created_at: f64,
+        echo_after_row: usize,
+        cx: &mut Context<Self>,
+    ) {
+        if submitted_prompt_already_visible(&self.state, &text, created_at, echo_after_row) {
+            return;
+        }
+        self.apply_live_events(
+            optimistic_prompt_events(
+                thread_id,
+                turn_id,
+                format!("optimistic:{}", uuid::Uuid::new_v4()),
+                text,
+                created_at,
+                self.state.turn(turn_id).is_none(),
             ),
             cx,
         );
@@ -5977,7 +6025,7 @@ fn resolve_queue_submission(
     queue.items.insert(index, queued_turn);
 }
 
-fn steered_prompt_already_visible(
+fn submitted_prompt_already_visible(
     state: &ThreadState,
     text: &str,
     created_at: f64,
@@ -7975,7 +8023,7 @@ mod tests {
     }
 
     #[test]
-    fn steer_acknowledgement_only_echoes_when_no_canonical_prompt_arrived() {
+    fn submission_acknowledgement_only_echoes_when_no_canonical_prompt_arrived() {
         let mut state = ThreadState::default();
         for push in optimistic_prompt_events(
             "thread-1",
@@ -7988,7 +8036,7 @@ mod tests {
             state.apply_live(push.seq, push.event);
         }
         let echo_after_row = state.timeline_len();
-        assert!(!steered_prompt_already_visible(
+        assert!(!submitted_prompt_already_visible(
             &state,
             "Use this direction now",
             10_000.0,
@@ -8005,13 +8053,13 @@ mod tests {
         ) {
             state.apply_live(push.seq, push.event);
         }
-        assert!(steered_prompt_already_visible(
+        assert!(submitted_prompt_already_visible(
             &state,
             "Use this direction now",
             10_000.0,
             echo_after_row,
         ));
-        assert!(steered_prompt_already_visible(
+        assert!(submitted_prompt_already_visible(
             &state,
             "Use this direction now",
             10_000.0,

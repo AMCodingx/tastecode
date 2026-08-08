@@ -251,6 +251,7 @@ pub(crate) struct SendTurnRequest {
     pub(crate) effort: Option<String>,
     pub(crate) service_tier: Option<String>,
     pub(crate) steer_echo_after_row: Option<usize>,
+    pub(crate) started_echo_after_row: Option<usize>,
 }
 
 pub(crate) struct ReviewHunkRequest {
@@ -459,6 +460,7 @@ enum PendingRequest {
         restore_attachments: Vec<String>,
         optimistic_queue_id: Option<String>,
         steer_echo_after_row: Option<usize>,
+        started_echo_after_row: Option<usize>,
     },
     Steer {
         thread_id: String,
@@ -639,6 +641,14 @@ pub(crate) enum ChatUpdate {
         thread_id: String,
         optimistic_queue_id: Option<String>,
         queued_turn: Option<harness_protocol::QueuedTurn>,
+    },
+    RunningSubmissionStarted {
+        thread_id: String,
+        turn_id: String,
+        optimistic_queue_id: Option<String>,
+        text: String,
+        created_at: f64,
+        echo_after_row: usize,
     },
     SteerAccepted {
         thread_id: String,
@@ -1678,6 +1688,7 @@ impl ClientState {
     ) -> ClientUpdate {
         let steer = request.steer;
         let steer_echo_after_row = request.steer_echo_after_row;
+        let started_echo_after_row = request.started_echo_after_row;
         let restore_text = request.text.clone();
         let restore_attachments = request.attachments.clone();
         if self.send_request(
@@ -1690,6 +1701,7 @@ impl ClientState {
                 restore_attachments: restore_attachments.clone(),
                 optimistic_queue_id: optimistic_queue_id.clone(),
                 steer_echo_after_row,
+                started_echo_after_row,
             },
         ) {
             ClientUpdate::default()
@@ -3029,15 +3041,32 @@ impl ClientState {
                     restore_attachments,
                     optimistic_queue_id,
                     steer_echo_after_row,
+                    started_echo_after_row,
                 }) => match serde_json::from_value::<SendTurnResult>(result) {
-                    Ok(SendTurnResult::Started { queued: false, .. }) => optimistic_queue_id
-                        .map_or_else(ClientUpdate::default, |queue_id| {
-                            ClientUpdate::chat(ChatUpdate::QueueSubmissionResolved {
+                    Ok(SendTurnResult::Started {
+                        queued: false,
+                        turn_id,
+                    }) => match started_echo_after_row {
+                        Some(echo_after_row) => {
+                            ClientUpdate::chat(ChatUpdate::RunningSubmissionStarted {
                                 thread_id,
-                                optimistic_queue_id: Some(queue_id),
-                                queued_turn: None,
+                                turn_id,
+                                optimistic_queue_id,
+                                text: restore_text,
+                                created_at: unix_time_ms(),
+                                echo_after_row,
                             })
-                        }),
+                        }
+                        None => {
+                            optimistic_queue_id.map_or_else(ClientUpdate::default, |queue_id| {
+                                ClientUpdate::chat(ChatUpdate::QueueSubmissionResolved {
+                                    thread_id,
+                                    optimistic_queue_id: Some(queue_id),
+                                    queued_turn: None,
+                                })
+                            })
+                        }
+                    },
                     Ok(SendTurnResult::Queued {
                         queued: true,
                         queued_turn,
@@ -3566,6 +3595,7 @@ impl ClientState {
                 effort: request.effort,
                 service_tier: request.service_tier,
                 steer_echo_after_row: None,
+                started_echo_after_row: None,
             },
             None,
         );
@@ -5599,6 +5629,7 @@ mod tests {
                 effort: Some("high".into()),
                 service_tier: Some("priority".into()),
                 steer_echo_after_row: None,
+                started_echo_after_row: None,
             },
         );
 
@@ -5629,6 +5660,7 @@ mod tests {
                 effort: Some("high".into()),
                 service_tier: None,
                 steer_echo_after_row: None,
+                started_echo_after_row: None,
             },
             None,
         );
@@ -5658,6 +5690,7 @@ mod tests {
                 restore_attachments: Vec::new(),
                 optimistic_queue_id: Some("pending:1".into()),
                 steer_echo_after_row: None,
+                started_echo_after_row: None,
             },
         );
 
@@ -5683,6 +5716,48 @@ mod tests {
             }] if thread_id == "thread-1"
                 && optimistic_queue_id == "pending:1"
                 && queued_turn.id == "queued-1"
+        ));
+    }
+
+    #[test]
+    fn running_send_that_starts_immediately_echoes_the_returned_turn() {
+        let mut state = ClientState::new(true);
+        state.pending.insert(
+            "native-send".into(),
+            PendingRequest::SendTurn {
+                thread_id: "thread-1".into(),
+                steer: false,
+                restore_text: "Start this next".into(),
+                restore_attachments: Vec::new(),
+                optimistic_queue_id: Some("pending:1".into()),
+                steer_echo_after_row: None,
+                started_echo_after_row: Some(7),
+            },
+        );
+
+        let update = state.handle_response(Response::Success {
+            id: "native-send".into(),
+            result: json!({
+                "queued": false,
+                "turnId": "turn-2"
+            }),
+        });
+
+        assert!(matches!(
+            update.chat.as_slice(),
+            [ChatUpdate::RunningSubmissionStarted {
+                thread_id,
+                turn_id,
+                optimistic_queue_id: Some(optimistic_queue_id),
+                text,
+                created_at,
+                echo_after_row,
+            }] if thread_id == "thread-1"
+                && turn_id == "turn-2"
+                && optimistic_queue_id == "pending:1"
+                && text == "Start this next"
+                && *created_at > 0.0
+                && *echo_after_row == 7
         ));
     }
 
