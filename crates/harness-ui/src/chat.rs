@@ -4467,14 +4467,18 @@ impl ChatView {
                             .into_any_element()
                     } else {
                         let path = attachment.path.as_deref().unwrap_or_default();
+                        let name = attachment.name.clone();
                         let remove_group: SharedString =
                             format!("attachment-remove-{index}").into();
                         let file_icon_group: SharedString =
                             format!("attachment-file-icon-{index}").into();
-                        div()
+                        let chip = div()
                             .id(("attachment-chip", index))
+                            .absolute()
+                            .left(px(0.0))
+                            .right(px(0.0))
+                            .top(px(0.0))
                             .h(px(25.0))
-                            .max_w(px(220.0))
                             .flex()
                             .items_center()
                             .gap(px(6.0))
@@ -4484,24 +4488,35 @@ impl ChatView {
                             .bg(theme.surface_2.hsla())
                             .text_size(px(12.5))
                             .text_color(theme.text_2.hsla())
-                            .child(motion_icon(
-                                ("attachment-file-icon", index),
-                                if is_image_path(path) {
-                                    "icons/image.svg"
-                                } else {
-                                    "icons/file.svg"
-                                },
-                                13.0,
-                                file_icon_group,
-                                theme,
-                            ))
                             .child(
                                 div()
-                                    .min_w(px(0.0))
-                                    .flex_1()
-                                    .truncate()
-                                    .child(attachment.name.clone()),
+                                    .size(px(13.0))
+                                    .flex_none()
+                                    .child(
+                                        motion_icon(
+                                            ("attachment-file-icon", index),
+                                            if is_image_path(path) {
+                                                "icons/image.svg"
+                                            } else {
+                                                "icons/file.svg"
+                                            },
+                                            13.0,
+                                            file_icon_group,
+                                            theme,
+                                        )
+                                        .size_full(),
+                                    )
+                                    .with_animation(
+                                        ("attachment-file-icon-in", index),
+                                        Animation::new(theme.motion.fast)
+                                            .with_easing(crate::theme::web_ease_out),
+                                        |icon, delta| {
+                                            let scale = 0.98 + 0.02 * delta;
+                                            icon.size(px(13.0 * scale))
+                                        },
+                                    ),
                             )
+                            .child(div().min_w(px(0.0)).flex_1().truncate().child(name.clone()))
                             .child(
                                 div()
                                     .id(("attachment-remove", index))
@@ -4523,20 +4538,79 @@ impl ChatView {
                                             cx.notify();
                                         }
                                     }))
-                                    .child(motion_icon(
-                                        ("attachment-remove-icon", index),
-                                        "icons/x.svg",
-                                        10.0,
-                                        remove_group,
-                                        theme,
-                                    )),
+                                    .child(
+                                        div()
+                                            .size(px(10.0))
+                                            .child(
+                                                motion_icon(
+                                                    ("attachment-remove-icon", index),
+                                                    "icons/x.svg",
+                                                    10.0,
+                                                    remove_group,
+                                                    theme,
+                                                )
+                                                .size_full(),
+                                            )
+                                            .with_animation(
+                                                ("attachment-remove-icon-in", index),
+                                                Animation::new(theme.motion.fast)
+                                                    .with_easing(crate::theme::web_ease_out),
+                                                |icon, delta| {
+                                                    let scale = 0.98 + 0.02 * delta;
+                                                    icon.size(px(10.0 * scale))
+                                                },
+                                            ),
+                                    )
+                                    .with_animation(
+                                        ("attachment-remove-in", index),
+                                        Animation::new(theme.motion.fast)
+                                            .with_easing(crate::theme::web_ease_out),
+                                        |remove, delta| {
+                                            let scale = 0.98 + 0.02 * delta;
+                                            remove.size(px(17.0 * scale)).rounded(px(5.0 * scale))
+                                        },
+                                    ),
                             )
                             .with_animation(
                                 ("attachment-chip-in", index),
                                 Animation::new(theme.motion.fast)
                                     .with_easing(crate::theme::web_ease_out),
-                                |chip, delta| chip.opacity(delta),
+                                |chip, delta| {
+                                    let scale = 0.98 + 0.02 * delta;
+                                    let inset = (1.0 - scale) / 2.0;
+                                    chip.left(relative(inset))
+                                        .right(relative(inset))
+                                        .top(px((25.0 - 25.0 * scale) / 2.0 + 2.0 * (1.0 - delta)))
+                                        .h(px(25.0 * scale))
+                                        .gap(px(6.0 * scale))
+                                        .pl(px(7.0 * scale))
+                                        .pr(px(3.0 * scale))
+                                        .rounded(px(8.0 * scale))
+                                        .text_size(px(12.5 * scale))
+                                        .opacity(delta)
+                                },
+                            );
+                        div()
+                            .relative()
+                            .h(px(25.0))
+                            .max_w(px(220.0))
+                            .flex_none()
+                            .child(
+                                div()
+                                    .h(px(25.0))
+                                    .max_w(px(220.0))
+                                    .flex()
+                                    .items_center()
+                                    .gap(px(6.0))
+                                    .pl(px(7.0))
+                                    .pr(px(3.0))
+                                    .text_size(px(12.5))
+                                    .invisible()
+                                    .child(div().size(px(13.0)).flex_none())
+                                    .child(div().min_w(px(0.0)).flex_1().truncate().child(name))
+                                    .child(div().size(px(17.0)).flex_none()),
                             )
+                            .child(chip)
                             .into_any_element()
                     }
                 }))
