@@ -43,7 +43,7 @@ pub(crate) fn rail_background_with_opacity(theme: Theme, opacity: f32) -> Backgr
     let opacity = opacity.clamp(0.0, 1.0);
     match theme.mode {
         ThemeMode::Dark => theme.rail.hsla().opacity(opacity).into(),
-        ThemeMode::Light => {
+        ThemeMode::Light if theme.rail == Theme::light().rail => {
             let from: Hsla = gpui::rgb(0xffffff).into();
             let to: Hsla = gpui::rgb(0xfafafa).into();
             linear_gradient(
@@ -52,6 +52,7 @@ pub(crate) fn rail_background_with_opacity(theme: Theme, opacity: f32) -> Backgr
                 linear_color_stop(to.opacity(opacity), 1.0),
             )
         }
+        ThemeMode::Light => theme.rail.hsla().opacity(opacity).into(),
     }
 }
 
@@ -300,6 +301,7 @@ fn gradient(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::theme::{Accent, Backdrop};
 
     #[test]
     fn rail_background_matches_the_theme_specific_web_token() {
@@ -330,6 +332,25 @@ mod tests {
                 linear_color_stop(light_to.opacity(opacity), 1.0),
             )
         );
+    }
+
+    #[test]
+    fn custom_light_backdrops_replace_the_default_rail_gradient() {
+        for backdrop in [
+            Backdrop::Slate,
+            Backdrop::Mocha,
+            Backdrop::Forest,
+            Backdrop::Midnight,
+            Backdrop::Plum,
+        ] {
+            let theme = Theme::new(ThemeMode::Light, backdrop, Accent::Neutral);
+
+            assert_eq!(rail_background(theme), theme.rail.hsla().into());
+            assert_eq!(
+                rail_background_with_opacity(theme, 0.545),
+                theme.rail.hsla().opacity(0.545).into()
+            );
+        }
     }
 
     #[test]
