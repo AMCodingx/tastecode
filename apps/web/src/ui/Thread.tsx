@@ -679,6 +679,7 @@ function CompletionRail({
 }) {
   const label = `Worked for ${workedFor(elapsedMs)}`
   const visibleActivity = activity.filter(isVisibleWorkedItem)
+  const [expanded, setExpanded] = useState(false)
 
   if (visibleActivity.length === 0) {
     return (
@@ -689,26 +690,40 @@ function CompletionRail({
   }
 
   return (
-    <details className={`activity${settling ? ' is-settling' : ''}`}>
-      <summary className="activity__summary">
+    <div className={`activity${settling ? ' is-settling' : ''}`} data-expanded={expanded}>
+      <button
+        type="button"
+        className="activity__summary"
+        aria-expanded={expanded}
+        onClick={() => setExpanded((current) => !current)}
+      >
         <span>{label}</span>
         <ChevronRight size={15} strokeWidth={1.8} aria-hidden />
-      </summary>
-      <div className="activity__body">
-        {visibleActivity.map((item) =>
-          item.type === 'message' ? (
-            <div className="activity__message" key={item.id}>
-              <Markdown text={item.text ?? ''} />
-            </div>
-          ) : (
-            <div className="activity__file-change" key={item.id}>
-              <FilePenLine size={15} strokeWidth={1.8} aria-hidden />
-              <span>Edited files</span>
-            </div>
-          ),
-        )}
+      </button>
+      <div
+        className="activity__reveal"
+        data-open={expanded}
+        aria-hidden={!expanded}
+        inert={!expanded}
+      >
+        <div className="activity__reveal-clip">
+          <div className="activity__body">
+            {visibleActivity.map((item) =>
+              item.type === 'message' ? (
+                <div className="activity__message" key={item.id}>
+                  <Markdown text={item.text ?? ''} />
+                </div>
+              ) : (
+                <div className="activity__file-change" key={item.id}>
+                  <FilePenLine size={15} strokeWidth={1.8} aria-hidden />
+                  <span>Edited files</span>
+                </div>
+              ),
+            )}
+          </div>
+        </div>
       </div>
-    </details>
+    </div>
   )
 }
 
@@ -835,13 +850,22 @@ function duration(ms: number): string {
   return `${Math.floor(ms / 60_000)}m ${Math.round((ms % 60_000) / 1000)}s`
 }
 
-function workedFor(ms: number): string {
-  const seconds = Math.max(1, Math.round(ms / 1000))
-  if (seconds < 60) return `${seconds}s`
+export function workedFor(ms: number): string {
+  let remaining = Math.max(1, Math.round(ms / 1000))
+  const parts: string[] = []
 
-  const minutes = Math.floor(seconds / 60)
-  const remainder = seconds % 60
-  return remainder === 0 ? `${minutes}m` : `${minutes}m ${remainder}s`
+  for (const [unit, seconds] of [
+    ['d', 86_400],
+    ['h', 3_600],
+    ['m', 60],
+    ['s', 1],
+  ] as const) {
+    const value = Math.floor(remaining / seconds)
+    remaining %= seconds
+    if (value > 0) parts.push(`${value}${unit}`)
+  }
+
+  return parts.join(' ')
 }
 
 function glyph(item: Item) {

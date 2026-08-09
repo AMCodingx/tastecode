@@ -93,6 +93,74 @@ describe('design activity rows', () => {
   })
 })
 
+describe('completed activity disclosure', () => {
+  it('keeps the content mounted while toggling the animated reveal state', () => {
+    const items: Item[] = [
+      {
+        id: 'prompt-1',
+        turnId: 'turn-1',
+        type: 'message',
+        role: 'user',
+        status: 'completed',
+        text: 'Fix it',
+        createdAt: 1,
+      },
+      {
+        id: 'update-1',
+        turnId: 'turn-1',
+        type: 'message',
+        role: 'assistant',
+        status: 'completed',
+        text: 'I found the cause.',
+        createdAt: 1_001,
+      },
+      {
+        id: 'command-1',
+        turnId: 'turn-1',
+        type: 'command',
+        status: 'completed',
+        command: 'pnpm test',
+        createdAt: 2_001,
+      },
+      {
+        id: 'answer-1',
+        turnId: 'turn-1',
+        type: 'message',
+        role: 'assistant',
+        status: 'completed',
+        text: 'Fixed.',
+        createdAt: 3_001,
+      },
+    ]
+    const { container } = render(
+      <Thread
+        items={items}
+        running={false}
+        activeTurn={undefined}
+        plan={[]}
+        diff={undefined}
+        approvals={[]}
+        userInputs={[]}
+        reviews={[]}
+        onDecide={() => undefined}
+        onAnswerUserInput={() => undefined}
+      />,
+    )
+
+    const disclosure = screen.getByRole('button', { name: 'Worked for 3s' })
+    const reveal = container.querySelector('.activity__reveal')
+    expect(disclosure.getAttribute('aria-expanded')).toBe('false')
+    expect(reveal?.getAttribute('data-open')).toBe('false')
+    expect(reveal?.getAttribute('aria-hidden')).toBe('true')
+
+    fireEvent.click(disclosure)
+
+    expect(disclosure.getAttribute('aria-expanded')).toBe('true')
+    expect(reveal?.getAttribute('data-open')).toBe('true')
+    expect(reveal?.getAttribute('aria-hidden')).toBe('false')
+  })
+})
+
 describe('thread message actions', () => {
   it('copies the user prompt', async () => {
     const writeText = vi.fn(async () => undefined)
