@@ -53,6 +53,7 @@ const icons = [
   ['listChecks', 'list-checks'],
   ['loader', 'loader-circle'],
   ['lockKeyhole', 'lock-keyhole'],
+  ['lockOpen', 'lock-open'],
   ['messagesSquare', 'messages-square'],
   ['monitor', 'monitor'],
   ['monitorSmartphone', 'monitor-smartphone'],

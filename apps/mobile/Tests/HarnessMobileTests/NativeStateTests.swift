@@ -106,12 +106,40 @@ final class NativeStateTests: XCTestCase {
 
     XCTAssertEqual(preferences.composer.provider, .acp)
     XCTAssertEqual(preferences.composer.approval, .full)
+    XCTAssertFalse(preferences.composer.designMode)
     XCTAssertNil(preferences.composer.agentID)
 
     let encoded = try JSONSerialization.jsonObject(with: JSONEncoder().encode(preferences))
     let object = try XCTUnwrap(encoded as? [String: Any])
     XCTAssertNil(object["reconnectAutomatically"])
     XCTAssertNil(object["projectGrouping"])
+  }
+
+  func testPreferencesPersistDesignMode() throws {
+    let preferences = AppPreferences(composer: ComposerPreferences(designMode: true))
+
+    let restored = try JSONDecoder().decode(
+      AppPreferences.self,
+      from: JSONEncoder().encode(preferences)
+    )
+
+    XCTAssertTrue(restored.composer.designMode)
+  }
+
+  func testComposerSubmissionAddsDesignBriefAndPlanInstruction() {
+    XCTAssertEqual(
+      ComposerSubmission.attachments(["reference.png"], designMode: true),
+      ["reference.png", ComposerSubmission.designBriefAttachment]
+    )
+    XCTAssertEqual(
+      ComposerSubmission.attachments(
+        [ComposerSubmission.designBriefAttachment], designMode: true),
+      [ComposerSubmission.designBriefAttachment]
+    )
+    XCTAssertEqual(
+      ComposerSubmission.text("Build it", interaction: .plan),
+      "Plan this task first. Do not make changes until I approve the plan.\n\nBuild it"
+    )
   }
 
   func testEnvironmentAppearanceDefaultsAndRoundTrips() throws {

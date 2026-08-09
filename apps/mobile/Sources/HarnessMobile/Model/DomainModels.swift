@@ -286,6 +286,7 @@ struct ComposerPreferences: Codable, Equatable, Sendable {
   var approval: ApprovalMode = .full
   var interaction: InteractionMode = .standard
   var isolate = false
+  var designMode = false
 
   init(
     provider: ProviderID = .codex,
@@ -295,7 +296,8 @@ struct ComposerPreferences: Codable, Equatable, Sendable {
     serviceTier: String? = nil,
     approval: ApprovalMode = .full,
     interaction: InteractionMode = .standard,
-    isolate: Bool = false
+    isolate: Bool = false,
+    designMode: Bool = false
   ) {
     self.provider = provider
     self.agentID = agentID
@@ -305,10 +307,11 @@ struct ComposerPreferences: Codable, Equatable, Sendable {
     self.approval = approval
     self.interaction = interaction
     self.isolate = isolate
+    self.designMode = designMode
   }
 
   private enum CodingKeys: String, CodingKey {
-    case provider, agentID, modelID, effort, serviceTier, approval, interaction, isolate
+    case provider, agentID, modelID, effort, serviceTier, approval, interaction, isolate, designMode
   }
 
   init(from decoder: Decoder) throws {
@@ -322,6 +325,7 @@ struct ComposerPreferences: Codable, Equatable, Sendable {
     interaction =
       try container.decodeIfPresent(InteractionMode.self, forKey: .interaction) ?? .standard
     isolate = try container.decodeIfPresent(Bool.self, forKey: .isolate) ?? false
+    designMode = try container.decodeIfPresent(Bool.self, forKey: .designMode) ?? false
   }
 }
 

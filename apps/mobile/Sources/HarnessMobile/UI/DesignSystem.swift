@@ -4,6 +4,8 @@ import UIKit
 enum HarnessColor {
   static let background = Color(uiColor: .systemBackground)
   static let control = Color.white.opacity(0.11)
+  static let composerControl = Color.white.opacity(0.075)
+  static let composerControlBorder = Color.white.opacity(0.15)
   static let separator = Color.white.opacity(0.08)
   static let outline = Color.white.opacity(0.085)
   static let primary = Color.white.opacity(0.92)
@@ -12,6 +14,7 @@ enum HarnessColor {
   static let blue = Color(red: 0.05, green: 0.50, blue: 1.0)
   static let green = Color(red: 0.20, green: 0.84, blue: 0.62)
   static let red = Color(red: 1.0, green: 0.31, blue: 0.37)
+  static let composerDanger = Color(red: 0.996, green: 0.522, blue: 0.286)
 }
 
 enum HarnessMetrics {
@@ -74,6 +77,63 @@ struct GlassIconLabel: View {
       return .regular.tint(HarnessColor.blue).interactive()
     }
     return .regular.interactive()
+  }
+}
+
+struct ComposerIconLabel: View {
+  let icon: LucideIcon
+  var tint: Color = HarnessColor.primary
+
+  var body: some View {
+    LucideIconView(icon, size: 16)
+      .foregroundStyle(tint)
+      .frame(width: 34, height: 34)
+      .harnessComposerControl()
+      .frame(width: 44, height: 44)
+      .contentShape(.rect(cornerRadius: 10))
+  }
+}
+
+struct ComposerToolLabel<Icon: View>: View {
+  let title: String
+  let icon: Icon
+  var tint: Color
+  var showsChevron: Bool
+  var active: Bool
+
+  init(
+    title: String,
+    tint: Color = HarnessColor.primary,
+    showsChevron: Bool = false,
+    active: Bool = false,
+    @ViewBuilder icon: () -> Icon
+  ) {
+    self.title = title
+    self.icon = icon()
+    self.tint = tint
+    self.showsChevron = showsChevron
+    self.active = active
+  }
+
+  var body: some View {
+    HStack(spacing: 7) {
+      icon
+        .frame(width: 18, height: 18)
+      Text(title)
+        .font(.system(size: 15, weight: .semibold))
+        .lineLimit(1)
+      if showsChevron {
+        LucideIconView(.chevronDown, size: 9)
+          .foregroundStyle(tint.opacity(0.72))
+      }
+    }
+    .foregroundStyle(tint)
+    .padding(.horizontal, 12)
+    .frame(height: 34)
+    .harnessComposerControl(tint: tint, active: active)
+    .frame(minHeight: 44)
+    .contentShape(.rect(cornerRadius: 10))
+    .fixedSize(horizontal: true, vertical: false)
   }
 }
 
@@ -347,6 +407,38 @@ extension View {
     glassEffect(.regular.interactive(), in: .capsule)
       .frame(minHeight: minimumHitHeight)
       .contentShape(.capsule)
+  }
+
+  func harnessComposerControl(
+    tint: Color = HarnessColor.primary,
+    active: Bool = false
+  ) -> some View {
+    background(
+      active ? tint.opacity(0.16) : HarnessColor.composerControl,
+      in: RoundedRectangle(cornerRadius: 10, style: .continuous)
+    )
+    .overlay {
+      RoundedRectangle(cornerRadius: 10, style: .continuous)
+        .strokeBorder(
+          active ? tint.opacity(0.5) : HarnessColor.composerControlBorder,
+          lineWidth: 1
+        )
+        .allowsHitTesting(false)
+    }
+    .shadow(color: .black.opacity(0.2), radius: 2, y: 1)
+  }
+
+  func harnessComposerSurface() -> some View {
+    background(
+      Color.white.opacity(0.035),
+      in: RoundedRectangle(cornerRadius: 23, style: .continuous)
+    )
+    .overlay {
+      RoundedRectangle(cornerRadius: 23, style: .continuous)
+        .strokeBorder(HarnessColor.composerControlBorder, lineWidth: 1)
+        .allowsHitTesting(false)
+    }
+    .shadow(color: .black.opacity(0.24), radius: 5, y: 2)
   }
 
   func harnessSheetBackground() -> some View {

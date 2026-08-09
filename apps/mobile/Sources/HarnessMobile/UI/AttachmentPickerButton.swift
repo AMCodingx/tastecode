@@ -2,9 +2,15 @@ import PhotosUI
 import SwiftUI
 import UniformTypeIdentifiers
 
+enum AttachmentPickerStyle {
+  case glass
+  case composer
+}
+
 struct AttachmentPickerButton: View {
   @Binding var attachments: [AttachmentDraft]
   var size: CGFloat = 40
+  var style: AttachmentPickerStyle = .glass
 
   @State private var photoItem: PhotosPickerItem?
   @State private var importingFile = false
@@ -21,9 +27,7 @@ struct AttachmentPickerButton: View {
         LucideActionLabel(title: "File", icon: .file)
       }
     } label: {
-      GlassIconLabel(icon: .plus, size: size, iconSize: size * 0.38)
-        .frame(width: max(size, 44), height: max(size, 44))
-        .contentShape(.circle)
+      label
     }
     .buttonStyle(.plain)
     .accessibilityLabel("Add attachment")
@@ -52,6 +56,18 @@ struct AttachmentPickerButton: View {
       Button("OK", role: .cancel) { errorMessage = nil }
     } message: {
       Text(errorMessage ?? "")
+    }
+  }
+
+  @ViewBuilder
+  private var label: some View {
+    switch style {
+    case .glass:
+      GlassIconLabel(icon: .plus, size: size, iconSize: size * 0.38)
+        .frame(width: max(size, 44), height: max(size, 44))
+        .contentShape(.circle)
+    case .composer:
+      ComposerIconLabel(icon: .plus)
     }
   }
 
