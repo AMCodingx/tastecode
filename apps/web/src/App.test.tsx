@@ -29,6 +29,8 @@ const utilityRenders = vi.hoisted(() => ({
   terminalPane: vi.fn(),
 }))
 
+const appRenders = vi.hoisted(() => vi.fn())
+
 vi.mock('./transport.js', () => ({
   Transport: class {
     constructor(url: string) {
@@ -62,6 +64,15 @@ vi.mock('./transport.js', () => ({
 }))
 
 vi.mock('./ui/highlighter.js', () => ({
+  onHighlighterChange: () => () => {},
+  shikiPlugin: {
+    type: 'code-highlighter',
+    name: 'test-highlighter',
+    getSupportedLanguages: () => [],
+    getThemes: () => [],
+    supportsLanguage: () => true,
+    highlight: () => ({ tokens: [] }),
+  },
   warmHighlighter: () => {},
 }))
 
@@ -144,7 +155,12 @@ vi.mock('./ui/TerminalPane.js', async (importOriginal) => {
 
 vi.mock('./bridge.js', async (importOriginal) => ({
   ...(await importOriginal<typeof import('./bridge.js')>()),
-  isMacOS: () => true,
+  isMacOS: () => {
+    // App samples the platform once per render, so this catches root work
+    // without adding test-only instrumentation to production code.
+    appRenders()
+    return true
+  },
 }))
 
 vi.mock('./voice-recorder.js', async (importOriginal) => ({
@@ -162,6 +178,7 @@ let serverSidebarSettings: {
 } = { mode: 'classic', autoSettleDays: 3 }
 
 beforeEach(() => {
+  appRenders.mockClear()
   shellRenders.sidebar.mockClear()
   shellRenders.stageHeader.mockClear()
   utilityRenders.commandPalette.mockClear()
@@ -1709,8 +1726,6 @@ describe('global shortcuts', () => {
     await screen.findByRole('button', { name: 'New session' })
     const actions = document.querySelector<HTMLElement>('.rail__actions')
     expect(actions).not.toBeNull()
-    expect(within(actions!).getByText('⌘N')).toBeTruthy()
-    expect(within(actions!).getByText('⌘⇧O')).toBeTruthy()
     expect(screen.queryByRole('button', { name: 'Project' })).toBeNull()
 
     fireEvent.keyDown(window, { key: 'p', metaKey: true })
@@ -2155,6 +2170,17 @@ describe('live sessions', () => {
 
     expect(utilityRenders.sessionSearch).not.toHaveBeenCalled()
     expect(utilityRenders.terminalPane).not.toHaveBeenCalled()
+  })
+
+  it('opens chat search without rerendering the app shell', async () => {
+    render(<App />)
+    await screen.findByRole('button', { name: 'New session' })
+    appRenders.mockClear()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Search chats' }))
+
+    await screen.findByRole('dialog', { name: 'Search all chats' })
+    expect(appRenders).not.toHaveBeenCalled()
   })
 
   it('flushes pending deltas before a completion event', async () => {

@@ -410,6 +410,16 @@ describe('cross-session search', () => {
     expect(store.searchSessions({ query: 'private-thought-marker' }).results).toEqual([])
   })
 
+  it('ranks exact words ahead of prefixes and ignores punctuation-only queries', () => {
+    store.append('t1', message('testing the performance budget'))
+    store.append('t1', message('test the performance budget'))
+
+    const matches = store.searchSessions({ query: 'test perf' }).results
+    expect(matches).toHaveLength(2)
+    expect(matches[0]?.snippet.map((part) => part.text).join('')).toContain('test the')
+    expect(store.searchSessions({ query: '---' }).results).toEqual([])
+  })
+
   it('filters and paginates without repeating results', () => {
     store.addProject('/other', 'Other')
     store.addThread({

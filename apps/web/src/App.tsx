@@ -42,7 +42,7 @@ import { CheckoutDiscardDialog } from './ui/CheckoutDiscardDialog.js'
 import { Composer, type WorkspaceInfo } from './ui/Composer.js'
 import { getNextServiceTierForModel } from './ui/ModelSelector.js'
 import { RollbackDialog, type Checkpoint } from './ui/RollbackDialog.js'
-import { SessionSearch } from './ui/SessionSearch.js'
+import { SessionSearchHost, type SessionSearchHandle } from './ui/SessionSearchHost.js'
 import { Settings } from './ui/Settings.js'
 import { Sidebar, type Project } from './ui/Sidebar.js'
 import { StageHeader } from './ui/StageHeader.js'
@@ -253,8 +253,7 @@ export function App() {
   const [sidebarSettings, setSidebarSettings] = useState(DEFAULT_SIDEBAR_SETTINGS)
   const [paletteScope, setPaletteScope] = useState<CommandScope | null>(null)
   const [preferredNewThreadProject, setPreferredNewThreadProject] = useState<string>()
-  const [sessionSearchOpen, setSessionSearchOpen] = useState(false)
-  const [sessionSearchProject, setSessionSearchProject] = useState<string>()
+  const sessionSearch = useRef<SessionSearchHandle>(null)
   const [searchJump, setSearchJump] = useState<{
     threadId: string
     turnId: string
@@ -1841,8 +1840,7 @@ export function App() {
         event.preventDefault()
         setSettingsOpen(false)
         setPaletteScope(null)
-        setSessionSearchProject(undefined)
-        setSessionSearchOpen(true)
+        sessionSearch.current?.open()
         return
       }
       // The Settings sheet owns the keyboard. Without this, Ctrl+N started a
@@ -2023,18 +2021,19 @@ export function App() {
     [],
   )
   const openSidebarSearch = useCallback((projectPath?: string) => {
-    setSessionSearchProject(projectPath)
-    setSessionSearchOpen(true)
+    sessionSearch.current?.open(projectPath)
   }, [])
-  const closeSessionSearch = useCallback(() => setSessionSearchOpen(false), [])
   const selectSessionSearchResult = useCallback(
-    (threadId: string, turnId: string) => {
-      setSessionSearchOpen(false)
-      setSearchJump((current) => ({
-        threadId,
-        turnId,
-        request: (current?.request ?? 0) + 1,
-      }))
+    (threadId: string, turnId?: string) => {
+      setSearchJump((current) =>
+        turnId
+          ? {
+              threadId,
+              turnId,
+              request: (current?.request ?? 0) + 1,
+            }
+          : undefined,
+      )
       void selectSession(threadId)
     },
     [selectSession],
@@ -2092,12 +2091,11 @@ export function App() {
       {
         id: 'search-sessions',
         title: 'Search all chats',
-        detail: 'Messages and tool output across projects',
+        detail: 'Titles, messages, commands, and tool output across projects',
         group: 'Actions',
         shortcut: labels.searchSessions,
         run: () => {
-          setSessionSearchProject(undefined)
-          setSessionSearchOpen(true)
+          sessionSearch.current?.open()
         },
       },
       {
@@ -2385,15 +2383,12 @@ export function App() {
         />
       ) : null}
 
-      {sessionSearchOpen ? (
-        <SessionSearch
-          transport={transport}
-          projects={projects}
-          initialProjectPath={sessionSearchProject}
-          onSelect={selectSessionSearchResult}
-          onClose={closeSessionSearch}
-        />
-      ) : null}
+      <SessionSearchHost
+        ref={sessionSearch}
+        transport={transport}
+        projects={projects}
+        onSelect={selectSessionSearchResult}
+      />
 
       {rollbackOpen ? (
         <RollbackDialog
