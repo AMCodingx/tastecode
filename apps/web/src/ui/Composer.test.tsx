@@ -28,7 +28,64 @@ beforeEach(() => {
 
 afterEach(() => {
   cleanup()
+  vi.restoreAllMocks()
   vi.clearAllMocks()
+})
+
+describe('Composer docking motion', () => {
+  it('animates the bounded composer box with transform-only docking motion', () => {
+    let top = 700
+    vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockImplementation(
+      () =>
+        ({
+          x: 100,
+          y: top,
+          top,
+          right: 720,
+          bottom: top + 120,
+          left: 100,
+          width: 620,
+          height: 120,
+          toJSON: () => ({}),
+        }) as DOMRect,
+    )
+
+    const animation = {
+      id: '',
+      cancel: vi.fn(),
+      finished: new Promise<void>(() => undefined),
+    } as unknown as Animation
+    const animate = vi.fn(function (this: Element) {
+      return animation
+    })
+    const originalAnimate = Object.getOwnPropertyDescriptor(Element.prototype, 'animate')
+    Object.defineProperty(Element.prototype, 'animate', {
+      configurable: true,
+      writable: true,
+      value: animate,
+    })
+
+    try {
+      const view = renderComposer(vi.fn(), { newSession: false })
+      const box = document.querySelector('.composer__box')
+      top = 280
+
+      view.rerenderComposer({ newSession: true })
+
+      expect(animate).toHaveBeenCalledOnce()
+      expect(animate.mock.instances[0]).toBe(box)
+      expect(animate).toHaveBeenCalledWith(
+        [{ transform: 'translate3d(0px, 420px, 0)' }, { transform: 'translate3d(0, 0, 0)' }],
+        { duration: 320, easing: 'cubic-bezier(0.23, 1, 0.32, 1)' },
+      )
+    } finally {
+      if (originalAnimate) {
+        Object.defineProperty(Element.prototype, 'animate', originalAnimate)
+      } else {
+        Reflect.deleteProperty(Element.prototype, 'animate')
+      }
+    }
+  })
 })
 
 describe('Composer image paste', () => {
@@ -346,7 +403,8 @@ function renderComposer(
   onSend: (text: string, attachments: string[]) => void,
   overrides: Partial<Parameters<typeof Composer>[0]> = {},
 ) {
-  return render(
+  let currentOverrides = overrides
+  const composer = () => (
     <Composer
       projects={[{ path: '/work/harness', name: 'Harness', sessions: [] }]}
       projectPath="/work/harness"
@@ -386,7 +444,14 @@ function renderComposer(
       onDeleteQueuedTurn={vi.fn()}
       onMoveQueuedTurn={vi.fn()}
       onSteerQueuedTurn={vi.fn()}
-      {...overrides}
-    />,
+      {...currentOverrides}
+    />
   )
+  const view = render(composer())
+  return Object.assign(view, {
+    rerenderComposer(next: Partial<Parameters<typeof Composer>[0]>) {
+      currentOverrides = { ...currentOverrides, ...next }
+      view.rerender(composer())
+    },
+  })
 }

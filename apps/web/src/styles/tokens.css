@@ -33,9 +33,9 @@
   --surface-2: #222222;
   --surface-3: #2b2b2b;
   --control-hover: #222222;
-  --menu-bg: #222222;
-  --menu-hover: #2b2b2b;
-  --menu-line: #333333;
+  --menu-bg: var(--chrome-raised);
+  --menu-hover: var(--chrome-raised-hover);
+  --menu-line: var(--chrome-border);
 
   --line: #262626;
   --line-strong: #333333;
@@ -91,16 +91,12 @@
   --composer-design-beam-stroke-strength: 1;
   --composer-design-beam-inner-strength: 1;
   --composer-design-beam-bloom-strength: 1;
-  --model-picker-bg: var(--surface-2);
+  --model-picker-bg: var(--menu-bg);
   --model-picker-controls-bg: transparent;
-  --model-picker-title-bg: var(--surface-2);
-  --model-picker-selected-bg: linear-gradient(
-    180deg,
-    color-mix(in srgb, var(--surface-3) 92%, transparent),
-    color-mix(in srgb, var(--surface) 56%, transparent)
-  );
-  --model-picker-selected-shadow: inset 0 1px color-mix(in srgb, white 7%, transparent);
-  --model-picker-hover-bg: var(--surface-3);
+  --model-picker-title-bg: var(--model-picker-bg);
+  --model-picker-selected-bg: var(--menu-hover);
+  --model-picker-selected-shadow: inset 0 0 0 1px var(--chrome-border), var(--chrome-shadow);
+  --model-picker-hover-bg: var(--chrome-raised);
   --model-picker-fast-bg: linear-gradient(
     180deg,
     color-mix(in srgb, var(--surface-3) 78%, transparent),
@@ -172,11 +168,23 @@
   --t-xl: 20px;
   --t-2xl: 26px;
 
+  /* The 10px control shape is the visual anchor. Containers need larger
+     radii to carry the same perceived roundness across a larger footprint. */
+  --r-xs: 2px;
   --r-sm: 3px;
   --r-md: 5px;
   --r-lg: 8px;
   --r-xl: 10px;
   --r-2xl: 20px;
+  --r-card: 12px;
+  --r-panel: 16px;
+  --r-dialog: 20px;
+  /* Small floating surfaces stay tighter than dialogs. Their interactive
+     rows use the next radius down so nested corners read as one shape. */
+  --r-popup: var(--r-xl);
+  --r-popup-item: var(--r-lg);
+  --r-pill: 999px;
+  --r-circle: 50%;
 
   --rail-w: 248px;
   --chat-w: 808px;
@@ -283,7 +291,7 @@
   --control-hover: var(--chrome-raised-hover);
   --menu-bg: var(--chrome-raised);
   --menu-hover: var(--chrome-raised-hover);
-  --menu-line: #e6e6e9;
+  --menu-line: var(--chrome-border);
 
   --line: #ebebed;
   --line-strong: #dedee2;
@@ -327,7 +335,7 @@
   --model-picker-bg: var(--menu-bg);
   --model-picker-controls-bg: linear-gradient(180deg, #fafafa 0%, #f6f6f7 100%);
   --model-picker-title-bg: var(--model-picker-bg);
-  --model-picker-selected-bg: var(--chrome-raised-hover);
+  --model-picker-selected-bg: var(--menu-hover);
   --model-picker-selected-shadow: inset 0 0 0 1px var(--chrome-border), var(--chrome-shadow);
   --model-picker-hover-bg: var(--chrome-raised);
   --model-picker-fast-bg: var(--chrome-raised);
@@ -469,7 +477,7 @@ html.is-macos-font-smoothing {
   background: var(--surface-3);
   border: 3px solid transparent;
   background-clip: content-box;
-  border-radius: 99px;
+  border-radius: var(--r-pill);
 }
 ::-webkit-scrollbar-thumb:hover {
   /* Was a hardcoded near-black, which in the light theme jumped from a pale

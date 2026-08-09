@@ -96,8 +96,8 @@ const IMAGE_RE = /\.(png|jpe?g|gif|webp|bmp|svg)$/i
 const COMPOSER_MIN_HEIGHT = 68
 const COMPOSER_MAX_HEIGHT = 242
 const COMPOSER_DOCK_ANIMATION_ID = 'harness-composer-dock'
-const COMPOSER_DOCK_MOTION_MS = 180
-const COMPOSER_DOCK_EASING = 'cubic-bezier(0.4, 0, 0.2, 1)'
+const COMPOSER_DOCK_MOTION_MS = 320
+const COMPOSER_DOCK_EASING = 'cubic-bezier(0.23, 1, 0.32, 1)'
 const SEND_MOTION_MS = 180
 const PASTEABLE_IMAGE_TYPES = new Set([
   'image/png',
@@ -177,7 +177,6 @@ function ComposerComponent(props: {
   const previewUrls = useRef(new Set<string>())
   const resizeFrame = useRef<number | undefined>(undefined)
   const sendTimer = useRef<number | undefined>(undefined)
-  const transitionGroup = useRef<HTMLDivElement>(null)
   const composerAnchor = useRef<HTMLDivElement>(null)
   const previousNewSession = useRef(props.newSession)
   const previousComposerRect = useRef<DOMRect | null>(null)
@@ -206,8 +205,8 @@ function ComposerComponent(props: {
   // composer was before send, render it in the docked layout, then animate only
   // that positional delta. This keeps focus and textarea state on one DOM tree.
   useLayoutEffect(() => {
-    const group = transitionGroup.current
-    const nextRect = composerAnchor.current?.getBoundingClientRect() ?? null
+    const group = composerAnchor.current
+    const nextRect = group?.getBoundingClientRect() ?? null
     const stateChanged = previousNewSession.current !== props.newSession
     const reduceMotion = window.matchMedia?.('(prefers-reduced-motion: reduce)').matches ?? false
 
@@ -501,7 +500,7 @@ function ComposerComponent(props: {
 
   return (
     <>
-      <div className={`composer${props.newSession ? ' is-new-session' : ''}`} ref={transitionGroup}>
+      <div className={`composer${props.newSession ? ' is-new-session' : ''}`}>
         <div
           ref={composerAnchor}
           className={`composer__box ${dragging ? 'is-dropping' : ''}`}
@@ -669,7 +668,6 @@ function ComposerComponent(props: {
             brightness={1.7}
             duration={2.4}
             active={props.designMode}
-            borderRadius={20}
           >
             <div className="composer__prompt">
               <div className="chips">
@@ -833,7 +831,6 @@ function ComposerComponent(props: {
                   strength={0.58}
                   duration={2.4}
                   active={props.designMode}
-                  borderRadius={10}
                 >
                   <button
                     type="button"
@@ -895,7 +892,6 @@ function ComposerComponent(props: {
                     colorVariant="ocean"
                     strength={0.72}
                     active={showStop}
-                    borderRadius={15}
                   >
                     <button
                       className={`orb${showStop ? ' orb--stop' : ''}${sending ? ' is-sending' : ''}${
