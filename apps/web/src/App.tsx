@@ -18,6 +18,7 @@ import type {
   ModelConnection,
   ProviderId,
   ProviderStatus,
+  PullRequestListItem,
   QueuedTurn,
   ResultOf,
   SidebarSettings,
@@ -124,6 +125,11 @@ const RAIL_WIDTH_KEY = 'harness.rail.width'
 const DEFAULT_SIDEBAR_SETTINGS: SidebarSettings = { mode: 'inbox', autoSettleDays: 3 }
 const TerminalPane = lazy(() =>
   import('./ui/TerminalPane.js').then((module) => ({ default: module.TerminalPane })),
+)
+const PullRequestsView = lazy(() =>
+  import('./ui/pull-requests/PullRequestsView.js').then((module) => ({
+    default: module.PullRequestsView,
+  })),
 )
 
 /**
@@ -250,6 +256,7 @@ export function App() {
   const [account, setAccount] = useState<Account | undefined>()
   const [voiceAvailable, setVoiceAvailable] = useState(false)
   const [settingsOpen, setSettingsOpen] = useState(false)
+  const [surface, setSurface] = useState<'chat' | 'pull-requests'>('chat')
   const [sidebarSettings, setSidebarSettings] = useState(DEFAULT_SIDEBAR_SETTINGS)
   const [paletteScope, setPaletteScope] = useState<CommandScope | null>(null)
   const [preferredNewThreadProject, setPreferredNewThreadProject] = useState<string>()
@@ -1103,6 +1110,7 @@ export function App() {
 
   const beginSession = useCallback(
     (projectPath: string) => {
+      setSurface('chat')
       // A session nobody typed into is bookkeeping, not history. Pressing "new
       // session" twice should not leave a trail of empty ones.
       const untouched = projects
@@ -1495,6 +1503,7 @@ export function App() {
 
   const selectSession = useCallback(
     async (id: string) => {
+      setSurface('chat')
       const found = findSession(projects, id)
       if (found?.session.provider) {
         setProvider(found.session.provider)
@@ -1919,9 +1928,13 @@ export function App() {
     setRailWidth(width)
     writeSetting(RAIL_WIDTH_KEY, String(width))
   }, [])
-  const addSidebarProject = useCallback(() => void addProject(), [addProject])
+  const addSidebarProject = useCallback(() => {
+    setSurface('chat')
+    void addProject()
+  }, [addProject])
   const startSidebarSession = useCallback(
     (path?: string, chooseProject?: boolean) => {
+      setSurface('chat')
       if (chooseProject && projects.length > 1) {
         setPreferredNewThreadProject(path ?? activePath)
         setPaletteScope('new-thread')
@@ -1935,6 +1948,25 @@ export function App() {
     [projects, activePath, beginSession],
   )
   const selectSidebarSession = useCallback((id: string) => void selectSession(id), [selectSession])
+  const openPullRequests = useCallback(() => {
+    setSettingsOpen(false)
+    setPaletteScope(null)
+    setSurface('pull-requests')
+  }, [])
+  const openPullRequestChat = useCallback(
+    (pullRequest: PullRequestListItem) => {
+      if (!pullRequest.localProjectPath) return
+      beginSession(pullRequest.localProjectPath)
+      setComposerDraft((current) => ({
+        text:
+          `Review and help me manage ${pullRequest.url} (${pullRequest.title}). ` +
+          'Inspect its checks, review conversations, and local diff before making changes.',
+        request: (current?.request ?? 0) + 1,
+      }))
+      setComposerFocusRequest((request) => request + 1)
+    },
+    [beginSession],
+  )
   const renameSidebarProject = useCallback(
     (path: string, name: string) => {
       setProjects((current) =>
@@ -2211,7 +2243,8 @@ export function App() {
         <Sidebar
           projects={projects}
           activeProjectPath={activePath}
-          activeSessionId={activeId}
+          activeSessionId={surface === 'chat' ? activeId : undefined}
+          pullRequestsActive={surface === 'pull-requests'}
           providerName={providerName(provider, acpAgentName)}
           usageSummary={usageSummary}
           mode={sidebarSettings.mode}
@@ -2233,105 +2266,114 @@ export function App() {
           onArchiveProject={archiveSidebarProject}
           onReorderSession={reorderSidebarSession}
           onOpenSearch={openSidebarSearch}
+          onOpenPullRequests={openPullRequests}
           onOpenSettings={openSettings}
         />
 
         <main className="stage">
-          <StageHeader
-            title={active?.session.title}
-            checkpointCount={thread.running ? 0 : checkpoints.length}
-            worktreeBranch={active?.session.worktreeBranch}
-            terminalOpen={terminalOpen}
-            onOpenRollback={openRollback}
-            onToggleTerminal={toggleTerminal}
-          />
-
-          <div
-            className={`stage__body${activeId ? '' : ' is-new-session'}${active && terminalOpen ? ' has-terminal' : ''}`}
-          >
-            {activeId ? (
-              <Thread
-                items={thread.items}
-                running={thread.running}
-                searching={searching}
-                activeTurn={thread.activeTurn}
-                plan={thread.plan}
-                diff={thread.diff}
-                threadId={activeId}
-                transport={transport}
-                searchJump={searchJump?.threadId === activeId ? searchJump : undefined}
-                revealRequest={threadRevealRequest}
-                approvals={thread.approvals}
-                userInputs={thread.userInputs}
-                reviews={reviewList}
-                checkpoints={thread.running ? EMPTY_CHECKPOINTS : checkpoints}
-                onDecide={decideApproval}
-                onAnswerUserInput={answerUserInput}
-                onEditMessage={editMessage}
-                onRevertCheckpoint={revertCheckpoint}
+          {surface === 'pull-requests' ? (
+            <Suspense fallback={null}>
+              <PullRequestsView transport={transport} onOpenChat={openPullRequestChat} />
+            </Suspense>
+          ) : (
+            <>
+              <StageHeader
+                title={active?.session.title}
+                checkpointCount={thread.running ? 0 : checkpoints.length}
+                worktreeBranch={active?.session.worktreeBranch}
+                terminalOpen={terminalOpen}
+                onOpenRollback={openRollback}
+                onToggleTerminal={toggleTerminal}
               />
-            ) : (
-              <Empty projects={projects} activePath={activePath} loaded={projectsLoaded} />
-            )}
 
-            {active && terminalOpen ? (
-              <Suspense fallback={null}>
-                <TerminalPane
-                  key={activeId}
-                  transport={transport}
-                  threadId={active.session.id}
-                  height={terminalHeight}
-                  theme={theme}
-                  onHeightChange={setTerminalHeight}
-                  onClose={closeTerminal}
+              <div
+                className={`stage__body${activeId ? '' : ' is-new-session'}${active && terminalOpen ? ' has-terminal' : ''}`}
+              >
+                {activeId ? (
+                  <Thread
+                    items={thread.items}
+                    running={thread.running}
+                    searching={searching}
+                    activeTurn={thread.activeTurn}
+                    plan={thread.plan}
+                    diff={thread.diff}
+                    threadId={activeId}
+                    transport={transport}
+                    searchJump={searchJump?.threadId === activeId ? searchJump : undefined}
+                    revealRequest={threadRevealRequest}
+                    approvals={thread.approvals}
+                    userInputs={thread.userInputs}
+                    reviews={reviewList}
+                    checkpoints={thread.running ? EMPTY_CHECKPOINTS : checkpoints}
+                    onDecide={decideApproval}
+                    onAnswerUserInput={answerUserInput}
+                    onEditMessage={editMessage}
+                    onRevertCheckpoint={revertCheckpoint}
+                  />
+                ) : (
+                  <Empty projects={projects} activePath={activePath} loaded={projectsLoaded} />
+                )}
+
+                {active && terminalOpen ? (
+                  <Suspense fallback={null}>
+                    <TerminalPane
+                      key={activeId}
+                      transport={transport}
+                      threadId={active.session.id}
+                      height={terminalHeight}
+                      theme={theme}
+                      onHeightChange={setTerminalHeight}
+                      onClose={closeTerminal}
+                    />
+                  </Suspense>
+                ) : null}
+
+                <Composer
+                  projects={projects}
+                  projectPath={activePath}
+                  projectName={activeProject ? displayName(activeProject) : undefined}
+                  branch={active?.session.worktreeBranch ?? workspace?.branch ?? branches[0]}
+                  branches={branches}
+                  models={visibleModels}
+                  modelsLoaded={modelsLoaded}
+                  modelId={modelId}
+                  effort={effort}
+                  serviceTier={serviceTier}
+                  usage={thread.usage}
+                  approval={approval === 'auto-review' && !autoReviewSupported ? 'ask' : approval}
+                  autoReviewSupported={autoReviewSupported}
+                  voiceAvailable={isDesktop && provider === 'codex' && voiceAvailable}
+                  disabled={false}
+                  running={thread.running}
+                  newSession={!activeId}
+                  isolate={active?.session.worktreeBranch ? true : isolateSession}
+                  designMode={designMode}
+                  focusRequest={composerFocusRequest}
+                  draftRequest={composerDraft}
+                  queuedTurns={queuedTurns}
+                  canSteerQueue={canSteerQueue}
+                  onModelChange={selectModel}
+                  onEffortChange={setEffort}
+                  onServiceTierChange={setServiceTier}
+                  onApprovalChange={setApproval}
+                  onIsolateChange={setIsolateSession}
+                  onDesignModeChange={setDesignMode}
+                  onTranscribeVoice={transcribeVoice}
+                  onCancelVoice={cancelVoice}
+                  onProjectChange={selectProject}
+                  onBranchChange={changeBranch}
+                  onProjectRequired={requireProject}
+                  onSend={sendTurn}
+                  onSteer={steerTurn}
+                  onInterrupt={interrupt}
+                  stopping={stopping}
+                  onDeleteQueuedTurn={deleteQueuedTurn}
+                  onMoveQueuedTurn={moveQueuedTurn}
+                  onSteerQueuedTurn={steerQueuedTurn}
                 />
-              </Suspense>
-            ) : null}
-
-            <Composer
-              projects={projects}
-              projectPath={activePath}
-              projectName={activeProject ? displayName(activeProject) : undefined}
-              branch={active?.session.worktreeBranch ?? workspace?.branch ?? branches[0]}
-              branches={branches}
-              models={visibleModels}
-              modelsLoaded={modelsLoaded}
-              modelId={modelId}
-              effort={effort}
-              serviceTier={serviceTier}
-              usage={thread.usage}
-              approval={approval === 'auto-review' && !autoReviewSupported ? 'ask' : approval}
-              autoReviewSupported={autoReviewSupported}
-              voiceAvailable={isDesktop && provider === 'codex' && voiceAvailable}
-              disabled={false}
-              running={thread.running}
-              newSession={!activeId}
-              isolate={active?.session.worktreeBranch ? true : isolateSession}
-              designMode={designMode}
-              focusRequest={composerFocusRequest}
-              draftRequest={composerDraft}
-              queuedTurns={queuedTurns}
-              canSteerQueue={canSteerQueue}
-              onModelChange={selectModel}
-              onEffortChange={setEffort}
-              onServiceTierChange={setServiceTier}
-              onApprovalChange={setApproval}
-              onIsolateChange={setIsolateSession}
-              onDesignModeChange={setDesignMode}
-              onTranscribeVoice={transcribeVoice}
-              onCancelVoice={cancelVoice}
-              onProjectChange={selectProject}
-              onBranchChange={changeBranch}
-              onProjectRequired={requireProject}
-              onSend={sendTurn}
-              onSteer={steerTurn}
-              onInterrupt={interrupt}
-              stopping={stopping}
-              onDeleteQueuedTurn={deleteQueuedTurn}
-              onMoveQueuedTurn={moveQueuedTurn}
-              onSteerQueuedTurn={steerQueuedTurn}
-            />
-          </div>
+              </div>
+            </>
+          )}
         </main>
       </div>
 
