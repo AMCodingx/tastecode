@@ -31,10 +31,9 @@ import {
   Search,
   X,
 } from 'lucide-react'
-import { isDesktop, isMacOS, revealPath } from '../bridge.js'
-import { SHORTCUTS, shortcutAria, shortcutLabel } from '../shortcuts.js'
+import { isDesktop, revealPath } from '../bridge.js'
+import { SHORTCUTS, shortcutAria } from '../shortcuts.js'
 import { Menu, MenuItem } from './Menu.js'
-import { ShortcutHint } from './ShortcutHint.js'
 import { InboxSidebar, type InboxActions } from './InboxSidebar.js'
 
 /**
@@ -270,7 +269,6 @@ function SidebarComponent(props: {
     // eslint-disable-next-line react-hooks/exhaustive-deps -- the two schedulers are stable module-shape helpers
   }, [edgeRevealed, props.collapsed, props.width])
   const [scope, setScope] = useState('')
-  const macOS = isMacOS()
   const inbox = props.mode === 'inbox' && props.inbox !== undefined
   const limits = props.usageSummary?.limits ?? []
 
@@ -389,7 +387,7 @@ function SidebarComponent(props: {
             <div className="rail__actions">
               <div className="rail__row">
                 <button
-                  className="navitem"
+                  className="navitem rail__new-chat"
                   aria-keyshortcuts={shortcutAria(SHORTCUTS.newChat)}
                   onClick={() => {
                     const project =
@@ -405,14 +403,13 @@ function SidebarComponent(props: {
                 >
                   <Plus size={15} aria-hidden />
                   <span>New chat</span>
-                  <ShortcutHint>{shortcutLabel(SHORTCUTS.newChat, macOS)}</ShortcutHint>
                 </button>
                 <button
                   type="button"
                   className="rail__search"
                   onClick={() => props.onOpenSearch()}
                   aria-label="Search chats"
-                  title={`Search chats (${shortcutLabel(SHORTCUTS.searchSessions, macOS)})`}
+                  title="Search chats"
                   aria-keyshortcuts={shortcutAria(SHORTCUTS.searchSessions)}
                 >
                   <Search size={14} aria-hidden />
@@ -428,7 +425,6 @@ function SidebarComponent(props: {
               >
                 <FolderPen size={15} aria-hidden />
                 <span>New project</span>
-                <ShortcutHint>{shortcutLabel(SHORTCUTS.newProject, macOS)}</ShortcutHint>
               </button>
             </div>
 
@@ -538,7 +534,6 @@ function SidebarComponent(props: {
                 </div>
                 <MenuItem
                   title="Settings"
-                  shortcut={shortcutLabel(SHORTCUTS.settings, macOS)}
                   shortcutAria={shortcutAria(SHORTCUTS.settings)}
                   onClick={() => {
                     props.onOpenSettings()

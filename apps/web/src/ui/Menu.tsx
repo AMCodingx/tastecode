@@ -1,7 +1,6 @@
 import { useEffect, useLayoutEffect, useRef, useState, type ReactNode, type RefObject } from 'react'
 import { createPortal } from 'react-dom'
 import { Check } from 'lucide-react'
-import { ShortcutHint } from './ShortcutHint.js'
 
 type Drop = 'up' | 'down'
 
@@ -205,7 +204,6 @@ export function MenuItem(props: {
   detail?: string | undefined
   icon?: ReactNode
   className?: string
-  shortcut?: string
   shortcutAria?: string
 }) {
   return (
@@ -220,10 +218,11 @@ export function MenuItem(props: {
           {props.icon}
           <span>{props.title}</span>
         </span>
-        <span className="menu__meta">
-          {props.active ? <Check size={13} aria-hidden /> : null}
-          {props.shortcut ? <ShortcutHint>{props.shortcut}</ShortcutHint> : null}
-        </span>
+        {props.active ? (
+          <span className="menu__meta">
+            <Check size={13} aria-hidden />
+          </span>
+        ) : null}
       </span>
       {props.detail ? <span className="menu__desc">{props.detail}</span> : null}
     </button>
