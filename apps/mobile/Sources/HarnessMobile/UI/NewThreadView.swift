@@ -1,25 +1,19 @@
 import SwiftUI
+import UIKit
 
-struct NewThreadFlow: View {
+struct ProjectPickerFlow: View {
   @EnvironmentObject private var model: AppModel
   @Environment(\.dismiss) private var dismiss
-  let onCreated: (ProjectRecord, ThreadSummary) -> Void
+  let onSelected: (ProjectRecord) -> Void
 
-  @State private var selectedProject: ProjectRecord?
   @State private var browsingProjects = false
 
   var body: some View {
     Group {
-      if let selectedProject {
-        TaskComposerView(
-          project: selectedProject, onBack: { self.selectedProject = nil }, onCreated: onCreated)
-      } else if browsingProjects {
+      if browsingProjects {
         ProjectDirectoryBrowser(
           onBack: { browsingProjects = false },
-          onSelected: { project in
-            browsingProjects = false
-            selectedProject = project
-          }
+          onSelected: select
         )
       } else {
         projectChooser
@@ -48,7 +42,7 @@ struct NewThreadFlow: View {
           LazyVStack(spacing: 8) {
             ForEach(model.projects) { project in
               Button {
-                selectedProject = project
+                select(project)
               } label: {
                 HStack(spacing: 10) {
                   LucideIconView(.folder, size: 12)
@@ -91,12 +85,17 @@ struct NewThreadFlow: View {
       .refreshable { await model.refreshEverything() }
     }
   }
+
+  private func select(_ project: ProjectRecord) {
+    model.rememberProject(project)
+    onSelected(project)
+  }
 }
 
-private struct TaskComposerView: View {
+struct NewThreadView: View {
   @EnvironmentObject private var model: AppModel
+  @Environment(\.dismiss) private var dismiss
   let project: ProjectRecord
-  let onBack: () -> Void
   let onCreated: (ProjectRecord, ThreadSummary) -> Void
 
   @FocusState private var promptFocused: Bool
@@ -110,13 +109,18 @@ private struct TaskComposerView: View {
 
   var body: some View {
     VStack(spacing: 0) {
-      SheetHeader(
-        title: project.name.isEmpty ? HarnessFormat.projectName(project.path) : project.name,
-        leading: AnyView(
-          GlassIconButton(
-            icon: .arrowLeft, accessibilityLabel: "Choose another project",
-            action: onBack))
-      )
+      HStack(spacing: 9) {
+        GlassIconButton(icon: .arrowLeft, accessibilityLabel: "Back", size: 36) {
+          dismiss()
+        }
+        Text("New chat")
+          .font(.system(size: 14, weight: .semibold))
+          .lineLimit(1)
+        Spacer()
+      }
+      .padding(.horizontal, 12)
+      .padding(.vertical, 5)
+      Divider().overlay(HarnessColor.separator)
 
       ZStack(alignment: .topLeading) {
         TextEditor(text: $prompt)
@@ -144,6 +148,7 @@ private struct TaskComposerView: View {
     }
     .background(HarnessColor.background)
     .task {
+      model.rememberProject(project)
       promptFocused = true
       await loadWorkspace()
     }

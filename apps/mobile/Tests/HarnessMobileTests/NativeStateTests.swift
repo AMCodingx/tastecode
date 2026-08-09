@@ -107,11 +107,75 @@ final class NativeStateTests: XCTestCase {
     XCTAssertEqual(preferences.composer.provider, .acp)
     XCTAssertEqual(preferences.composer.approval, .full)
     XCTAssertNil(preferences.composer.agentID)
+    XCTAssertNil(preferences.lastProjectPath)
 
     let encoded = try JSONSerialization.jsonObject(with: JSONEncoder().encode(preferences))
     let object = try XCTUnwrap(encoded as? [String: Any])
     XCTAssertNil(object["reconnectAutomatically"])
     XCTAssertNil(object["projectGrouping"])
+  }
+
+  func testPreferencesPersistLastProject() throws {
+    let preferences = AppPreferences(lastProjectPath: "/repo")
+
+    let restored = try JSONDecoder().decode(
+      AppPreferences.self,
+      from: JSONEncoder().encode(preferences)
+    )
+
+    XCTAssertEqual(restored.lastProjectPath, "/repo")
+  }
+
+  func testProjectSelectionUsesRememberedProjectThenRecentProject() throws {
+    let olderThread = ThreadSummary(
+      id: "older",
+      title: "Older",
+      provider: .codex,
+      agent: nil,
+      createdAt: 1_000,
+      running: false,
+      status: nil,
+      unread: false,
+      lifecycle: nil,
+      closedAt: nil,
+      worktreeBranch: nil
+    )
+    let newerThread = ThreadSummary(
+      id: "newer",
+      title: "Newer",
+      provider: .codex,
+      agent: nil,
+      createdAt: 2_000,
+      running: false,
+      status: nil,
+      unread: false,
+      lifecycle: nil,
+      closedAt: nil,
+      worktreeBranch: nil
+    )
+    let older = ProjectRecord(
+      path: "/older", name: "Older", pinned: false, createdAt: 1, sessions: [olderThread])
+    let newer = ProjectRecord(
+      path: "/newer", name: "Newer", pinned: false, createdAt: 2, sessions: [newerThread])
+
+    XCTAssertEqual(
+      ProjectSelection.resolve(preferredPath: "/older", projects: [older, newer])?.path,
+      "/older"
+    )
+    XCTAssertEqual(
+      ProjectSelection.resolve(preferredPath: nil, projects: [older, newer])?.path,
+      "/newer"
+    )
+    XCTAssertNil(
+      ProjectSelection.resolve(
+        preferredPath: nil,
+        projects: [
+          ProjectRecord(
+            path: "/one", name: "One", pinned: false, createdAt: 1, sessions: []),
+          ProjectRecord(
+            path: "/two", name: "Two", pinned: false, createdAt: 2, sessions: []),
+        ]
+      ))
   }
 
   func testEnvironmentAppearanceDefaultsAndRoundTrips() throws {

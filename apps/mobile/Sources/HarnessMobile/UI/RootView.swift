@@ -42,21 +42,34 @@ private struct LaunchView: View {
 
 private struct MainShell: View {
   @EnvironmentObject private var model: AppModel
-  @State private var path: [ThreadRoute] = []
+  @State private var path: [MainRoute] = []
   @State private var settingsPresented = false
-  @State private var newThreadPresented = false
+  @State private var projectPickerPresented = false
 
   var body: some View {
     NavigationStack(path: $path) {
       ThreadListView(
         openThread: { project, thread in
-          path.append(ThreadRoute(project: project, thread: thread))
+          model.rememberProject(project)
+          path.append(.thread(ThreadRoute(project: project, thread: thread)))
         },
         openSettings: { settingsPresented = true },
-        newThread: { newThreadPresented = true }
+        newThread: beginNewThread
       )
-      .navigationDestination(for: ThreadRoute.self) { route in
-        ThreadView(project: route.project, thread: route.thread)
+      .navigationDestination(for: MainRoute.self) { route in
+        switch route {
+        case .newThread(let project):
+          NewThreadView(project: project) { project, thread in
+            let destination = MainRoute.thread(ThreadRoute(project: project, thread: thread))
+            if path.isEmpty {
+              path.append(destination)
+            } else {
+              path[path.count - 1] = destination
+            }
+          }
+        case .thread(let threadRoute):
+          ThreadView(project: threadRoute.project, thread: threadRoute.thread)
+        }
       }
     }
     .sheet(isPresented: $settingsPresented) {
@@ -64,10 +77,10 @@ private struct MainShell: View {
         .environmentObject(model)
         .harnessSheetBackground()
     }
-    .sheet(isPresented: $newThreadPresented) {
-      NewThreadFlow { project, thread in
-        newThreadPresented = false
-        path.append(ThreadRoute(project: project, thread: thread))
+    .sheet(isPresented: $projectPickerPresented) {
+      ProjectPickerFlow { project in
+        projectPickerPresented = false
+        path.append(.newThread(project))
       }
       .environmentObject(model)
       .harnessSheetBackground()
@@ -83,4 +96,18 @@ private struct MainShell: View {
         .harnessSheetBackground()
     }
   }
+
+  private func beginNewThread() {
+    if let project = model.preferredProject() {
+      model.rememberProject(project)
+      path.append(.newThread(project))
+    } else {
+      projectPickerPresented = true
+    }
+  }
+}
+
+private enum MainRoute: Hashable {
+  case newThread(ProjectRecord)
+  case thread(ThreadRoute)
 }
