@@ -77,6 +77,39 @@ describe('usage settings', () => {
     expect(screen.getByText('Aug 8, 2026')).toBeTruthy()
   })
 
+  it('plots each provider independently instead of attributing the stack total to the last one', async () => {
+    const result = historyResult('30d')
+    const codexTotals = usageTotals({ processedTokens: 100, estimatedCostUsd: 10 })
+    const grokTotals = usageTotals({ processedTokens: 20, estimatedCostUsd: 2 })
+    result.providers = [
+      { provider: 'codex', sessionCount: 1, totals: codexTotals },
+      { provider: 'grok', sessionCount: 1, totals: grokTotals },
+    ]
+    result.daily = [
+      {
+        date: '2026-08-08',
+        sessionCount: 2,
+        totals: usageTotals({ processedTokens: 120, estimatedCostUsd: 12 }),
+        providers: [
+          { provider: 'codex', tokens: 100, estimatedCostUsd: 10 },
+          { provider: 'grok', tokens: 20, estimatedCostUsd: 2 },
+        ],
+      },
+    ]
+    const transport = { request: vi.fn(async () => result) } as unknown as Transport
+    render(<UsageSettings transport={transport} />)
+    await screen.findByRole('heading', { name: 'Usage' })
+
+    fireEvent.click(screen.getByRole('radio', { name: 'Tokens' }))
+    const codexPath = document.querySelector(
+      ".usage-chart__series[data-provider='codex'] .usage-chart__line",
+    )
+    const grokPath = document.querySelector(
+      ".usage-chart__series[data-provider='grok'] .usage-chart__line",
+    )
+    expect(pathStartY(grokPath)).toBeGreaterThan(pathStartY(codexPath))
+  })
+
   it('keeps cached totals visible and updates when background indexing finishes', async () => {
     let call = 0
     const request = vi.fn(async () => {
@@ -192,4 +225,10 @@ function usageTotals(values: Partial<UsageHistoryTotals>): UsageHistoryTotals {
     unpricedTokens: 0,
     ...values,
   }
+}
+
+function pathStartY(path: Element | null): number {
+  const match = /^M [^ ]+ ([^ ]+)/.exec(path?.getAttribute('d') ?? '')
+  if (!match?.[1]) throw new Error('chart path has no starting point')
+  return Number(match[1])
 }
