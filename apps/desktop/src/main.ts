@@ -27,6 +27,7 @@ import { allowsMicrophoneRequest } from './media-permissions.js'
 import { allowsPreviewNavigation } from './preview-navigation.js'
 import { revealablePath } from './reveal-path.js'
 import { ServerSupervisor } from './server-supervisor.js'
+import { restoreMainWindowPresence } from './window-presence.js'
 import { windowThemeOptions, windowThemeSource } from './window-theme.js'
 import { isZoomAction, nextZoomFactor, type ZoomAction, zoomShortcut } from './zoom-shortcuts.js'
 
@@ -75,7 +76,10 @@ let tray: Tray | undefined
 let appIsQuitting = false
 let serverSupervisor: ServerSupervisor | undefined
 
-if (!ownsSingleInstance) app.quit()
+if (!ownsSingleInstance) {
+  console.error('[desktop] another Harness instance owns the single-instance lock')
+  app.quit()
+}
 
 /**
  * Outside development the shell owns its core server: without this a packaged
@@ -121,6 +125,9 @@ function createWindow(): void {
     height: 820,
     minWidth: 720,
     minHeight: 520,
+    focusable: true,
+    movable: true,
+    skipTaskbar: false,
     backgroundColor: initialTheme.backgroundColor,
     // Real glass, the way Codex does it: the OS draws its blur material
     // behind the window, and the renderer keeps every surface opaque except
@@ -153,6 +160,7 @@ function createWindow(): void {
     },
   })
   mainWindow = window
+  restoreMainWindowPresence(process.platform, app, window)
 
   window.on('close', (event) => {
     if (!shouldHideWindowOnClose(process.platform, appIsQuitting)) return
@@ -162,6 +170,8 @@ function createWindow(): void {
   window.on('closed', () => {
     if (mainWindow === window) mainWindow = undefined
   })
+  window.on('focus', () => restoreMainWindowPresence(process.platform, app, window))
+  window.on('show', () => restoreMainWindowPresence(process.platform, app, window))
   window.on('unresponsive', () => {
     console.error('[desktop] main window renderer became unresponsive')
   })
@@ -175,7 +185,7 @@ function createWindow(): void {
   })
 
   // Avoid the white flash before React paints.
-  window.once('ready-to-show', () => window.show())
+  window.once('ready-to-show', showMainWindow)
 
   // Nothing in this app should ever open a second window, and any external
   // link belongs in the user's browser, not in a chromeless Electron window.
@@ -229,6 +239,7 @@ function showMainWindow(): void {
     createWindow()
     return
   }
+  restoreMainWindowPresence(process.platform, app, window)
   if (window.isMinimized()) window.restore()
   window.show()
   window.focus()
@@ -473,6 +484,14 @@ if (ownsSingleInstance) {
     createWindow()
     createBackgroundTray()
     app.on('activate', showMainWindow)
+    if (process.platform === 'darwin') {
+      app.on('did-become-active', () => {
+        const window = mainWindow
+        if (window && !window.isDestroyed()) {
+          restoreMainWindowPresence(process.platform, app, window)
+        }
+      })
+    }
   })
 }
 
