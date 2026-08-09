@@ -15,6 +15,15 @@ import {
   ProviderStatusSchema,
   UsageSchema,
 } from './domain.js'
+import {
+  GitHubRepositoryNameSchema,
+  PullRequestActionResultSchema,
+  PullRequestActionSchema,
+  PullRequestDetailSchema,
+  PullRequestFilesResultSchema,
+  PullRequestListResultSchema,
+  PullRequestMetadataOptionsSchema,
+} from './pull-requests.js'
 
 /**
  * The wire protocol between any client (desktop renderer, web, later mobile)
@@ -731,6 +740,42 @@ export const methods = {
       results: z.array(SessionSearchResultSchema),
       nextCursor: z.string().min(1).nullable(),
     }),
+  },
+  'pullRequests.list': {
+    params: z.object({ refresh: z.boolean().optional() }),
+    result: PullRequestListResultSchema,
+  },
+  'pullRequests.detail': {
+    params: z.object({
+      repository: GitHubRepositoryNameSchema,
+      number: z.number().int().positive(),
+      refresh: z.boolean().optional(),
+    }),
+    result: PullRequestDetailSchema,
+  },
+  'pullRequests.files': {
+    params: z.object({
+      repository: GitHubRepositoryNameSchema,
+      number: z.number().int().positive(),
+      page: z.number().int().min(1).max(100).optional(),
+      refresh: z.boolean().optional(),
+    }),
+    result: PullRequestFilesResultSchema,
+  },
+  'pullRequests.metadataOptions': {
+    params: z.object({
+      repository: GitHubRepositoryNameSchema,
+      refresh: z.boolean().optional(),
+    }),
+    result: PullRequestMetadataOptionsSchema,
+  },
+  'pullRequests.action': {
+    params: z.object({
+      repository: GitHubRepositoryNameSchema,
+      number: z.number().int().positive(),
+      action: PullRequestActionSchema,
+    }),
+    result: PullRequestActionResultSchema,
   },
   'auth.status': {
     params: z.object({ provider: ProviderIdSchema, agent: z.string().min(1).optional() }),
