@@ -242,6 +242,25 @@ describe('reply style', () => {
   )
 })
 
+describe('workspace paths', () => {
+  it('expands a home-relative project before starting Grok and taking checkpoints', async () => {
+    const projectPath = ['~', 'Developer', 'harness'].join(path.sep)
+    const resolvedPath = path.join(os.homedir(), 'Developer', 'harness')
+    const { orchestrator, startedIn, store } = harness()
+    const snapshot = vi
+      .spyOn(checkpoint, 'takeSnapshot')
+      .mockResolvedValueOnce({ commit: 'checkpoint', clean: true })
+
+    const thread = await orchestrator.startThread('grok', projectPath)
+    await orchestrator.sendTurn(thread.id, 'hello')
+
+    expect(startedIn).toEqual([resolvedPath])
+    expect(snapshot).toHaveBeenCalledWith(resolvedPath)
+    expect(store.thread(thread.id)?.projectPath).toBe(projectPath)
+    orchestrator.disposeAll()
+  })
+})
+
 describe('provider-neutral design briefing', () => {
   it.each(ProviderIdSchema.options)(
     'runs the same adaptive question loop with %s',

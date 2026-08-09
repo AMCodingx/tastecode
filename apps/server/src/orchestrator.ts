@@ -125,6 +125,14 @@ type DesignFlow = {
   review?: VisualReview
 }
 
+function resolveWorkspacePath(workspacePath: string): string {
+  if (workspacePath === '~') return os.homedir()
+  if (workspacePath.startsWith('~/') || workspacePath.startsWith('~\\')) {
+    return path.join(os.homedir(), workspacePath.slice(2))
+  }
+  return workspacePath
+}
+
 function parseStoredDesignFlow(value: unknown, workspacePath: string): DesignFlow | undefined {
   if (typeof value !== 'object' || value === null || Array.isArray(value)) return undefined
   const stored = value as Record<string, unknown>
@@ -805,8 +813,9 @@ export class Orchestrator {
     // The id has to exist before the worktree, and the worktree before the
     // agent — it is the directory the agent will be spawned in.
     const threadId = `${provider}-${crypto.randomUUID()}`
+    const resolvedWorkspacePath = resolveWorkspacePath(workspacePath)
     const worktree = options.isolate
-      ? await createWorktree(workspacePath, threadId, this.#worktreeRoot)
+      ? await createWorktree(resolvedWorkspacePath, threadId, this.#worktreeRoot)
       : undefined
 
     const runtime =
@@ -820,7 +829,7 @@ export class Orchestrator {
     }
     let started
     try {
-      started = await runtime.start(worktree?.path ?? workspacePath, runtimeOptions)
+      started = await runtime.start(worktree?.path ?? resolvedWorkspacePath, runtimeOptions)
     } catch (error) {
       // A worktree for a session that never started is litter, and the next
       // attempt would trip over it.
@@ -1263,7 +1272,7 @@ export class Orchestrator {
   #repoPath(threadId: string): string {
     const stored = this.#store.thread(threadId)
     if (!stored) throw new Error(`no such thread: ${threadId}`)
-    return stored.worktreePath ?? stored.projectPath
+    return stored.worktreePath ?? resolveWorkspacePath(stored.projectPath)
   }
 
   #diffRepoPath(threadId: string): string {
@@ -1350,7 +1359,7 @@ export class Orchestrator {
   async #checkpoint(threadId: string, label: string): Promise<void> {
     const stored = this.#store.thread(threadId)
     if (!stored) return
-    const repoPath = stored.worktreePath ?? stored.projectPath
+    const repoPath = this.#repoPath(threadId)
 
     try {
       const snapshot = await takeSnapshot(repoPath)
@@ -1384,7 +1393,7 @@ export class Orchestrator {
       throw new Error('no such checkpoint')
     }
 
-    const repoPath = stored.worktreePath ?? stored.projectPath
+    const repoPath = this.#repoPath(threadId)
     const replaced = await restoreSnapshot(repoPath, checkpoint.commit)
 
     // Rolling the files back without this would leave the transcript
@@ -1405,7 +1414,7 @@ export class Orchestrator {
     const undo = this.#store.restoreUndo(threadId, token)
     if (!stored || !undo) throw new Error('restore can no longer be undone')
 
-    const repoPath = stored.worktreePath ?? stored.projectPath
+    const repoPath = this.#repoPath(threadId)
     const replaced = await restoreSnapshot(repoPath, undo.commit)
     try {
       this.#store.applyRestoreUndo(threadId, token)
@@ -1421,9 +1430,7 @@ export class Orchestrator {
     const stored = this.#store.thread(threadId)
     const checkpoint = this.#store.checkpoint(checkpointId)
     if (!stored || !checkpoint || checkpoint.threadId !== threadId) return []
-    return changedSince(stored.worktreePath ?? stored.projectPath, checkpoint.commit).catch(
-      () => [],
-    )
+    return changedSince(this.#repoPath(threadId), checkpoint.commit).catch(() => [])
   }
 
   respondToApproval(threadId: string, approvalId: string, decision: ApprovalDecision): void {
@@ -1591,7 +1598,11 @@ export class Orchestrator {
     this.#terminals.closeThread(threadId)
 
     await removeWorktree(
-      { path: stored.worktreePath, branch: stored.worktreeBranch, repoPath: stored.projectPath },
+      {
+        path: stored.worktreePath,
+        branch: stored.worktreeBranch,
+        repoPath: resolveWorkspacePath(stored.projectPath),
+      },
       force,
     )
     this.#store.forgetWorktree(threadId)
@@ -1607,7 +1618,9 @@ export class Orchestrator {
    * forgotten; anything still on disk may hold work.
    */
   async recoverWorktrees(): Promise<void> {
-    const repos = new Set(this.#store.worktrees().map((entry) => entry.repoPath))
+    const repos = new Set(
+      this.#store.worktrees().map((entry) => resolveWorkspacePath(entry.repoPath)),
+    )
     for (const repo of repos) {
       await pruneWorktrees(repo).catch(() => undefined)
     }
@@ -1675,7 +1688,7 @@ export class Orchestrator {
     if (!runtime.resume) {
       throw new Error(`${stored.provider} sessions cannot resume after Harness restarts yet`)
     }
-    const workspacePath = stored.worktreePath ?? stored.projectPath
+    const workspacePath = stored.worktreePath ?? resolveWorkspacePath(stored.projectPath)
     const result = await runtime.resume(threadId, workspacePath, {
       ...(stored.agent ? { agent: stored.agent } : {}),
       ...this.#mcpRuntimeOptions(stored.provider, stored.projectPath),
