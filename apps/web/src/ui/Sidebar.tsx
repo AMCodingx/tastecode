@@ -29,6 +29,8 @@ import {
   PinOff,
   Plus,
   Search,
+  Settings,
+  UserRound,
   X,
 } from 'lucide-react'
 import { isDesktop, isMacOS, revealPath } from '../bridge.js'
@@ -129,7 +131,7 @@ function SidebarComponent(props: {
     position: DropPosition,
   ) => void
   onOpenSearch: (projectPath?: string) => void
-  onOpenSettings: () => void
+  onOpenSettings: (section?: 'profile') => void
 }) {
   const [edgeRevealed, setEdgeRevealed] = useState(false)
   const slotRef = useRef<HTMLDivElement>(null)
@@ -537,7 +539,17 @@ function SidebarComponent(props: {
                   )}
                 </div>
                 <MenuItem
+                  title="Profile"
+                  icon={<UserRound size={14} aria-hidden />}
+                  onClick={() => {
+                    props.onOpenSettings('profile')
+                    closeOnNarrowViewport()
+                    close()
+                  }}
+                />
+                <MenuItem
                   title="Settings"
+                  icon={<Settings size={14} aria-hidden />}
                   shortcut={shortcutLabel(SHORTCUTS.settings, macOS)}
                   shortcutAria={shortcutAria(SHORTCUTS.settings)}
                   onClick={() => {

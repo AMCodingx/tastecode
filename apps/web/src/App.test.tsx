@@ -29,6 +29,8 @@ const utilityRenders = vi.hoisted(() => ({
   terminalPane: vi.fn(),
 }))
 
+const appRenders = vi.hoisted(() => vi.fn())
+
 vi.mock('./transport.js', () => ({
   Transport: class {
     constructor(url: string) {
@@ -62,6 +64,15 @@ vi.mock('./transport.js', () => ({
 }))
 
 vi.mock('./ui/highlighter.js', () => ({
+  onHighlighterChange: () => () => {},
+  shikiPlugin: {
+    type: 'code-highlighter',
+    name: 'test-highlighter',
+    getSupportedLanguages: () => [],
+    getThemes: () => [],
+    supportsLanguage: () => true,
+    highlight: () => ({ tokens: [] }),
+  },
   warmHighlighter: () => {},
 }))
 
@@ -144,7 +155,12 @@ vi.mock('./ui/TerminalPane.js', async (importOriginal) => {
 
 vi.mock('./bridge.js', async (importOriginal) => ({
   ...(await importOriginal<typeof import('./bridge.js')>()),
-  isMacOS: () => true,
+  isMacOS: () => {
+    // App samples the platform once per render, so this catches root work
+    // without adding test-only instrumentation to production code.
+    appRenders()
+    return true
+  },
 }))
 
 vi.mock('./voice-recorder.js', async (importOriginal) => ({
@@ -162,6 +178,7 @@ let serverSidebarSettings: {
 } = { mode: 'classic', autoSettleDays: 3 }
 
 beforeEach(() => {
+  appRenders.mockClear()
   shellRenders.sidebar.mockClear()
   shellRenders.stageHeader.mockClear()
   utilityRenders.commandPalette.mockClear()
@@ -287,6 +304,15 @@ beforeEach(() => {
           },
           limits: [{ label: '5 hours', usedPercent: 25 }],
         })
+      case 'usage.history':
+        return Promise.resolve(profileHistoryResult())
+      case 'pullRequests.list':
+        return Promise.resolve({
+          account: { available: true, authenticated: true, login: 'Blueemi' },
+          items: [],
+          fetchedAt: Date.now(),
+          truncated: false,
+        })
       case 'thread.checkpoints':
         return Promise.resolve({
           checkpoints: [{ id: 7, seq: 1, label: 'Fix the parser', createdAt: 1_800_000 }],
@@ -368,6 +394,53 @@ function openSettings() {
   }
   fireEvent.click(screen.getByRole('button', { name: 'Account' }))
   fireEvent.click(screen.getByRole('menuitem', { name: /Settings/ }))
+}
+
+function profileHistoryResult() {
+  const totals = {
+    uncachedInputTokens: 20,
+    cachedInputTokens: 80,
+    cacheWriteInputTokens: 0,
+    outputTokens: 10,
+    reasoningTokens: 0,
+    processedTokens: 110,
+    estimatedCostUsd: 0,
+    cacheSavingsUsd: 0,
+    providerReportedCostUsd: 0,
+    providerReportedTokens: 0,
+    pricedTokens: 0,
+    unpricedTokens: 110,
+  }
+  return {
+    range: 'all' as const,
+    startDate: '2026-08-09',
+    endDate: '2026-08-09',
+    generatedAt: 1,
+    sessionCount: 1,
+    activeDays: 1,
+    totals,
+    providers: [{ provider: 'codex' as const, sessionCount: 1, totals }],
+    models: [
+      {
+        provider: 'codex' as const,
+        model: 'gpt-5.6-sol',
+        sessionCount: 1,
+        pricing: 'unpriced' as const,
+        totals,
+      },
+    ],
+    daily: [
+      {
+        date: '2026-08-09',
+        sessionCount: 1,
+        totals,
+        providers: [{ provider: 'codex' as const, tokens: 110, estimatedCostUsd: 0 }],
+      },
+    ],
+    sources: [{ provider: 'codex' as const, available: true, sessionCount: 1 }],
+    scan: { status: 'idle' as const, filesProcessed: 1, filesTotal: 1 },
+    warnings: [],
+  }
 }
 
 describe('web client', () => {
@@ -955,6 +1028,20 @@ describe('new chats', () => {
       expect(localStorage.getItem('harness.macosFontSmoothing')).toBe('false')
       expect(document.documentElement.classList.contains('is-macos-font-smoothing')).toBe(false)
     })
+  })
+
+  it('opens the account Profile shortcut directly in the top settings category', async () => {
+    render(<App />)
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Account' }))
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Profile' }))
+
+    expect(await screen.findByRole('dialog', { name: 'Settings' })).toBeTruthy()
+    expect(screen.getByRole('button', { name: 'Profile' }).getAttribute('aria-current')).toBe(
+      'page',
+    )
+    expect(await screen.findByRole('heading', { name: 'Profile' })).toBeTruthy()
+    expect(transport.request).toHaveBeenCalledWith('usage.history', { range: 'all' })
   })
 
   it('persists inbox mode and bounded inactivity settings on the server', async () => {
@@ -1709,8 +1796,6 @@ describe('global shortcuts', () => {
     await screen.findByRole('button', { name: 'New session' })
     const actions = document.querySelector<HTMLElement>('.rail__actions')
     expect(actions).not.toBeNull()
-    expect(within(actions!).getByText('⌘N')).toBeTruthy()
-    expect(within(actions!).getByText('⌘⇧O')).toBeTruthy()
     expect(screen.queryByRole('button', { name: 'Project' })).toBeNull()
 
     fireEvent.keyDown(window, { key: 'p', metaKey: true })

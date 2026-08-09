@@ -27,10 +27,13 @@ import {
   ArrowLeft,
   BarChart3,
   Bug,
+  CircleUserRound,
   CircleAlert,
   Blocks,
   ChevronDown,
   Database,
+  Eye,
+  EyeOff,
   Info,
   LogOut,
   Boxes,
@@ -74,6 +77,7 @@ import { Menu, MenuItem } from './Menu.js'
 import { ModelSearchField } from './ModelSearchField.js'
 import { SkillsSettings } from './SkillsSettings.js'
 import { ProviderIcon } from './ProviderIcon.js'
+import { ProfileSettings } from './ProfileSettings.js'
 import { renderQrSvg } from './qr-code.js'
 import { UsageSettings } from './UsageSettings.js'
 
@@ -81,7 +85,8 @@ const InstallTerminal = lazy(() =>
   import('./InstallTerminal.js').then((module) => ({ default: module.InstallTerminal })),
 )
 
-type SettingsSection =
+export type SettingsSection =
+  | 'profile'
   | 'providers'
   | 'models'
   | 'mcp'
@@ -172,10 +177,15 @@ function SettingsComponent(props: {
   macOSFontSmoothing: boolean
   onMacOSFontSmoothingChange: (enabled: boolean) => void
   onAccountChange: (provider: ProviderId, account: Account) => void
+  initialSection?: SettingsSection | undefined
   onReset: () => void
   onClose: () => void
 }) {
-  const [section, setSection] = useState<SettingsSection>('providers')
+  const [section, setSection] = useState<SettingsSection>(props.initialSection ?? 'providers')
+
+  useEffect(() => {
+    setSection(props.initialSection ?? 'providers')
+  }, [props.initialSection])
 
   // A dialog owns the keyboard: focus moves into it on open (Tab must not
   // walk the app hidden underneath), and Escape closes it.
@@ -213,6 +223,12 @@ function SettingsComponent(props: {
 
         <p className="settings__nav-label">Settings</p>
         <nav className="settings__nav" aria-label="Settings categories">
+          <SettingsNavItem
+            active={section === 'profile'}
+            icon={<CircleUserRound size={15} aria-hidden />}
+            label="Profile"
+            onClick={() => setSection('profile')}
+          />
           <SettingsNavItem
             active={section === 'providers'}
             icon={<UserRound size={15} aria-hidden />}
@@ -284,8 +300,15 @@ function SettingsComponent(props: {
 
       <main className="settings__main">
         <div
-          className={`settings__content${section === 'usage' ? ' settings__content--usage' : ''}`}
+          className={`settings__content${section === 'profile' ? ' settings__content--profile' : ''}${section === 'usage' ? ' settings__content--usage' : ''}`}
         >
+          {section === 'profile' ? (
+            <ProfileSettings
+              transport={props.transport}
+              account={props.account}
+              providerName={props.providerName}
+            />
+          ) : null}
           {section === 'providers' ? <ProviderSettings {...props} /> : null}
           {section === 'models' ? <ModelSettings {...props} /> : null}
           {section === 'mcp' ? <McpSettings {...props} /> : null}
@@ -1548,21 +1571,38 @@ function ProviderTerminal(props: { transport: Transport; installKey: string }) {
 function maskEmail(email: string): string {
   const at = email.indexOf('@')
   if (at <= 1) return email
-  return `${email[0]}…${email.slice(at)}`
+  return `${email[0]}${'*'.repeat(at - 1)}${email.slice(at)}`
 }
 
 /**
- * Privacy by default: the address shows masked until pointed at or focused.
+ * Privacy by default: the address stays masked until explicitly revealed.
  * Both forms render stacked in one grid cell so the row never shifts when
  * the longer full address appears.
  */
 function AccountEmail(props: { email: string }) {
+  const [revealed, setRevealed] = useState(false)
+
   return (
-    <span className="settings__email" tabIndex={0} aria-label={'Account email, hover to reveal'}>
-      <span className="settings__email-masked" aria-hidden>
-        {maskEmail(props.email)}
+    <span className={`settings__email${revealed ? ' is-revealed' : ''}`}>
+      <span
+        className="settings__email-toggle"
+        aria-label={revealed ? 'Hide account email' : 'Show account email'}
+        tabIndex={0}
+        onMouseEnter={() => setRevealed(true)}
+        onMouseLeave={() => setRevealed(false)}
+        onFocus={() => setRevealed(true)}
+        onBlur={() => setRevealed(false)}
+      >
+        {revealed ? <EyeOff size={12} aria-hidden /> : <Eye size={12} aria-hidden />}
       </span>
-      <span className="settings__email-full">{props.email}</span>
+      <span className="settings__email-value" aria-live="polite">
+        <span className="settings__email-masked" aria-hidden={revealed}>
+          {maskEmail(props.email)}
+        </span>
+        <span className="settings__email-full" aria-hidden={!revealed}>
+          {props.email}
+        </span>
+      </span>
     </span>
   )
 }
