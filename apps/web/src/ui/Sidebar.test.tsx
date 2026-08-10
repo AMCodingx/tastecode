@@ -88,8 +88,17 @@ describe('Sidebar chat actions', () => {
     const limitBar = screen.getByRole('progressbar', { name: '7 days left' })
     expect(limitBar.getAttribute('aria-valuenow')).toBe('15')
     expect((limitBar.firstElementChild as HTMLElement).style.width).toBe('15%')
+
+    const accountItems = screen.getAllByRole('menuitem')
+    expect(accountItems.map((item) => item.textContent)).toEqual(['Profile', 'Settings'])
+    for (const item of accountItems) expect(item.querySelector('svg')).not.toBeNull()
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Profile' }))
+    expect(onOpenSettings).toHaveBeenCalledWith('profile')
+
+    fireEvent.click(screen.getByRole('button', { name: 'Account' }))
     fireEvent.click(screen.getByRole('menuitem', { name: /Settings/ }))
-    expect(onOpenSettings).toHaveBeenCalledOnce()
+    expect(onOpenSettings).toHaveBeenCalledTimes(2)
+    expect(onOpenSettings).toHaveBeenLastCalledWith()
   })
 
   it('shows direct Lucide rename and archive actions for each chat', () => {
