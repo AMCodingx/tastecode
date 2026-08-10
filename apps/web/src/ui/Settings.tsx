@@ -851,9 +851,11 @@ function MobileAccessSettings(props: { transport: Transport }) {
   const [status, setStatus] = useState<ConnectionsStatus>()
   const [pairing, setPairing] = useState<ResultOf<'connections.startPairing'>>()
   const [qrSvg, setQrSvg] = useState<string>()
+  const [consoleQrSvg, setConsoleQrSvg] = useState<string>()
   const [error, setError] = useState<string>()
   const [busy, setBusy] = useState<'pair' | 'stop' | string>()
   const [copiedPairingUri, setCopiedPairingUri] = useState<string>()
+  const [copiedConsoleUrl, setCopiedConsoleUrl] = useState<string>()
   const [now, setNow] = useState(Date.now)
 
   const refresh = useCallback(async () => {
@@ -891,6 +893,26 @@ function MobileAccessSettings(props: { transport: Transport }) {
       cancelled = true
     }
   }, [pairing])
+
+  const primaryConsoleUrl = status?.consoleUrls?.[0]
+  useEffect(() => {
+    if (!primaryConsoleUrl) {
+      setConsoleQrSvg(undefined)
+      return
+    }
+    let cancelled = false
+    void renderQrSvg(primaryConsoleUrl)
+      .then((svg) => {
+        if (!cancelled) setConsoleQrSvg(svg)
+      })
+      .catch(() => {
+        // QR rendering is a convenience; a broken one must not block the panel.
+        if (!cancelled) setConsoleQrSvg(undefined)
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [primaryConsoleUrl])
 
   const startPairing = async () => {
     setBusy('pair')
@@ -944,6 +966,18 @@ function MobileAccessSettings(props: { transport: Transport }) {
     }
   }
 
+  const copyConsoleUrl = async (url: string) => {
+    try {
+      await writeClipboardText(url)
+      setCopiedConsoleUrl(url)
+      setError(undefined)
+    } catch (cause) {
+      setCopiedConsoleUrl(undefined)
+      const message = cause instanceof Error ? cause.message : String(cause)
+      setError(`Could not copy console link: ${message}`)
+    }
+  }
+
   const activePairing = pairing && pairing.expiresAt > now ? pairing : undefined
 
   return (
@@ -953,13 +987,41 @@ function MobileAccessSettings(props: { transport: Transport }) {
         note={
           status?.enabled
             ? `${status.serverName} is listening on port ${status.port}.`
-            : 'Generate a one-time code to start the private listener and pair a device.'
+            : 'Generate a one-time code to accept the native app again. The web console stays available.'
         }
       >
         <span className={`settings__status${status?.enabled ? ' is-on' : ''}`}>
           {status?.enabled ? 'On' : 'Off'}
         </span>
       </SettingsRow>
+
+      {(status?.consoleUrls?.length ?? 0) > 0 ? (
+        <div className="settings__mobile-block">
+          <p className="settings__row-title">Web console — bookmark this</p>
+          <p className="settings__row-note">
+            The URL stays the same across restarts. Open it on your phone to see, copy, manage and
+            revoke connections. Scan the QR to open it now.
+          </p>
+          <div className="settings__console-urls">
+            {status?.consoleUrls.map((url) => (
+              <ConsoleUrlRow
+                url={url}
+                key={url}
+                copied={copiedConsoleUrl === url}
+                onCopy={() => void copyConsoleUrl(url)}
+              />
+            ))}
+          </div>
+          {consoleQrSvg ? (
+            <div
+              className="settings__qr"
+              role="img"
+              aria-label="Web console QR code"
+              dangerouslySetInnerHTML={{ __html: consoleQrSvg }}
+            />
+          ) : null}
+        </div>
+      ) : null}
 
       {status?.addresses.length ? (
         <div className="settings__mobile-block">
@@ -991,7 +1053,7 @@ function MobileAccessSettings(props: { transport: Transport }) {
             disabled={busy !== undefined}
             onClick={() => void stop()}
           >
-            {busy === 'stop' ? 'Stopping...' : 'Stop mobile access'}
+            {busy === 'stop' ? 'Stopping...' : 'Stop accepting connections'}
           </button>
         ) : null}
       </div>
@@ -1053,6 +1115,19 @@ function MobileAccessSettings(props: { transport: Transport }) {
         <p className="settings__mobile-empty">No paired devices.</p>
       )}
     </SettingsPanel>
+  )
+}
+
+function ConsoleUrlRow(props: { url: string; copied: boolean; onCopy: () => void }) {
+  return (
+    <div className="settings__console-url">
+      <code className="settings__console-url-code" title={props.url}>
+        {props.url}
+      </code>
+      <button className="settings__action" type="button" onClick={props.onCopy}>
+        {props.copied ? 'Copied' : 'Copy'}
+      </button>
+    </div>
   )
 }
 

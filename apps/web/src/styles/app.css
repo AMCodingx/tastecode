@@ -9268,6 +9268,54 @@
     font-size: 16px;
   }
 
+  /* On a phone the tools row cannot hold the model picker, context usage,
+     voice and send as one readable line. Keep the actions (attach,
+     permission, design, usage, voice, send) on one line and give the model
+     picker its own full-width line below: the picker stays a single line at
+     any phone width, its name never truncates, and the send orb stays
+     pinned to the right edge of the actions line. */
+  .tools {
+    flex-wrap: wrap;
+    row-gap: 6px;
+  }
+
+  .tools__spacer {
+    display: none;
+  }
+
+  .composer__send-beam {
+    margin-left: auto;
+  }
+
+  .tools .menutrigger--model-selector {
+    order: 99;
+    flex: 1 1 100%;
+    max-width: none;
+  }
+
+  .model-selector__trigger {
+    flex: 1;
+    min-width: 0;
+  }
+
+  .model-selector__trigger-chevron {
+    margin-left: auto;
+  }
+
+  /* The near-full-width panel must not inherit the desktop -28px offset,
+     which would shove its left edge off a phone screen. */
+  .model-selector__menu {
+    translate: none;
+  }
+
+  /* On short viewports (landscape phones) the fixed 246px catalog plus the
+     controls would exceed the panel's max-height and clip. Let the list
+     shrink instead — it scrolls. */
+  .model-selector__catalog {
+    height: min(246px, 42vh);
+    height: min(246px, 42dvh);
+  }
+
   .sessrow .sess__actions,
   .inbox-card__quick,
   .inbox-shelf__row > .menuwrap,
@@ -9581,4 +9629,32 @@
   color: var(--text);
   font-family: var(--font-mono);
   font-size: var(--t-xs);
+}
+
+/* Web console rows in Mobile access settings: the bookmarkable, restart-stable
+   URL with a copy action. The URL is long, so the code truncates and the
+   button stays pinned to the right. */
+.settings__console-urls {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+
+.settings__console-url {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+}
+
+.settings__console-url-code {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: var(--font-mono);
+  font-size: var(--t-xs);
+  color: var(--text-2);
 }
