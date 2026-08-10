@@ -24,6 +24,7 @@ const INTERFACES = {
 }
 
 const CONSOLE_TOKEN = 'console-token-for-tests'
+const WEB_TOKEN = 'web-token-for-tests'
 
 const previousDataDir = process.env['HARNESS_DATA_DIR']
 
@@ -49,6 +50,8 @@ describe('server mobile trust boundary', () => {
       mobileNetworkInterfaces: () => INTERFACES,
       resolveTailscaleAddresses: async () => new Set(['100.101.22.33']),
       consoleToken: CONSOLE_TOKEN,
+      webToken: WEB_TOKEN,
+      webRoot: await fixtureWebApp(),
       projectBrowserHome: canonicalProjectBrowserHome,
     })
     const sockets = new Set<WebSocket>()
@@ -65,6 +68,28 @@ describe('server mobile trust boundary', () => {
       expect(offer.consoleUrls).toEqual([
         `http://100.101.22.33:${offer.port}/console?token=${CONSOLE_TOKEN}`,
       ])
+      expect(offer.webUrls).toEqual([
+        `http://100.101.22.33:${offer.port}/#access_token=${WEB_TOKEN}`,
+      ])
+
+      // The web app (the full harness UI on a phone) is served at the root
+      // without a token gate — the token lives in the hash and gates the socket.
+      const appPage = await fetch(`http://127.0.0.1:${offer.port}/`)
+      expect(appPage.status).toBe(200)
+      expect(await appPage.text()).toContain('fixture-app-marker')
+
+      // Its socket authenticates as a full admin client.
+      const webClient = await openSocket(
+        sockets,
+        `ws://127.0.0.1:${offer.port}/ws?token=${encodeURIComponent(WEB_TOKEN)}`,
+      )
+      await expect(request(webClient, 'projects', 'projects.list', {})).resolves.toEqual({
+        projects: [],
+      })
+      const statusAsAdmin = methods['connections.status'].result.parse(
+        await request(webClient, 'status', 'connections.status', {}),
+      )
+      expect(statusAsAdmin.webUrls.length).toBe(1)
 
       // The web console can manage connections but nothing else.
       const consoleSocket = await openSocket(
@@ -153,6 +178,8 @@ describe('server mobile trust boundary', () => {
       mobileNetworkInterfaces: () => INTERFACES,
       resolveTailscaleAddresses: async () => new Set(['100.101.22.33']),
       consoleToken: CONSOLE_TOKEN,
+      webToken: WEB_TOKEN,
+      webRoot: await fixtureWebApp(),
     })
     const sockets = new Set<WebSocket>()
     let firstServerClosed = false
@@ -191,6 +218,8 @@ describe('server mobile trust boundary', () => {
         mobileNetworkInterfaces: () => INTERFACES,
         resolveTailscaleAddresses: async () => new Set(['100.101.22.33']),
         consoleToken: CONSOLE_TOKEN,
+        webToken: WEB_TOKEN,
+        webRoot: await fixtureWebApp(),
       })
       await waitForPort(offer.port)
       const restored = await openSocket(
@@ -212,6 +241,9 @@ describe('server mobile trust boundary', () => {
       )
       expect(statusAfterRestart.consoleUrls).toEqual([
         `http://100.101.22.33:${offer.port}/console?token=${CONSOLE_TOKEN}`,
+      ])
+      expect(statusAfterRestart.webUrls).toEqual([
+        `http://100.101.22.33:${offer.port}/#access_token=${WEB_TOKEN}`,
       ])
       expect(statusAfterRestart.devices.map((device) => device.name)).toEqual(['Persistent phone'])
     } finally {

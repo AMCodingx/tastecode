@@ -163,6 +163,8 @@ export function startServer(
     port: mobilePort,
     onConnection: (socket, request, access) => acceptConnection(socket, request, access),
     consoleToken,
+    webToken,
+    webRoot,
     ...(options.mobileNetworkInterfaces
       ? { networkInterfaces: options.mobileNetworkInterfaces }
       : {}),
