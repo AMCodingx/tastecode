@@ -24,6 +24,7 @@ import { checkForUpdates } from './update-check.js'
 import { PushBus } from './push-bus.js'
 import { PreviewCaptureCoordinator } from './preview-capture.js'
 import { browseProjectDirectory } from './project-directory-browser.js'
+import { PullRequestService } from './pull-requests.js'
 import { DEFAULT_PORT } from './server-config.js'
 import { Store } from './store.js'
 import { imageFileName, materializeAttachment } from './uploaded-attachment.js'
@@ -105,6 +106,7 @@ export function startServer(
     cacheFile: path.join(path.dirname(databasePath), 'usage-history.json'),
     harnessUsage: () => store.usageEvents(),
   })
+  const pullRequests = new PullRequestService()
   void usageHistory.startBackgroundRefresh()
   const orchestrator = new Orchestrator(store, {
     onEvent: (threadId, event, seq) => push.broadcast('thread.event', { threadId, event, seq }),
@@ -309,6 +311,39 @@ export function startServer(
             limit?: number
           },
         )
+
+      case 'pullRequests.list': {
+        const p = params as ParamsOf<'pullRequests.list'>
+        return pullRequests.list(
+          store.projects().map((project) => project.path),
+          p.refresh ?? false,
+        )
+      }
+
+      case 'pullRequests.detail': {
+        const p = params as ParamsOf<'pullRequests.detail'>
+        return pullRequests.detail(
+          p.repository,
+          p.number,
+          store.projects().map((project) => project.path),
+          p.refresh ?? false,
+        )
+      }
+
+      case 'pullRequests.files': {
+        const p = params as ParamsOf<'pullRequests.files'>
+        return pullRequests.files(p.repository, p.number, p.page ?? 1, p.refresh ?? false)
+      }
+
+      case 'pullRequests.metadataOptions': {
+        const p = params as ParamsOf<'pullRequests.metadataOptions'>
+        return pullRequests.metadataOptions(p.repository, p.refresh ?? false)
+      }
+
+      case 'pullRequests.action': {
+        const p = params as ParamsOf<'pullRequests.action'>
+        return pullRequests.action(p.repository, p.number, p.action)
+      }
 
       case 'providers.list':
         return { providers: await detectProviders() }
