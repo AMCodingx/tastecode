@@ -338,6 +338,7 @@ describe('provider settings', () => {
                 lastSeenAt: Date.now(),
               },
             ],
+            webUrls: ['http://100.101.2.3:4312/#access_token=test-web-token'],
           }
         }
         if (method === 'connections.revoke') return {}
@@ -350,6 +351,7 @@ describe('provider settings', () => {
               { kind: 'tailscale', label: 'Tailscale 100.101.2.3', url: 'ws://100.101.2.3:4312' },
             ],
             devices: [],
+            webUrls: ['http://100.101.2.3:4312/#access_token=test-web-token'],
             pairingUri: 'harness://pair?payload=test-ticket',
             expiresAt: Date.now() + 300_000,
           }
@@ -495,6 +497,17 @@ describe('provider settings', () => {
 
     fireEvent.click(screen.getByRole('button', { name: 'Mobile access' }))
     await waitFor(() => expect(transport.request).toHaveBeenCalledWith('connections.status', {}))
+
+    // The full web app for a phone is the primary link, with copy and a QR.
+    const webUrl = 'http://100.101.2.3:4312/#access_token=test-web-token'
+    const webRow = screen.getByText(webUrl).closest<HTMLElement>('.settings__console-url')
+    if (!webRow) throw new Error('web app URL row missing')
+    expect(webRow).toBeTruthy()
+    await waitFor(() => expect(screen.getByRole('img', { name: 'App QR code' })).toBeTruthy())
+    fireEvent.click(within(webRow).getByRole('button', { name: 'Copy' }))
+    await waitFor(() => expect(writeText).toHaveBeenCalledWith(webUrl))
+    expect(within(webRow).getByRole('button', { name: 'Copied' })).toBeTruthy()
+
     const phoneRow = screen.getByText('Blueemi’s iPhone').closest<HTMLElement>('.settings__row')
     if (!phoneRow) throw new Error('paired phone row missing')
     fireEvent.click(within(phoneRow).getByRole('button', { name: 'Disconnect' }))
@@ -510,7 +523,9 @@ describe('provider settings', () => {
     await waitFor(() =>
       expect(writeText).toHaveBeenCalledWith('harness://pair?payload=test-ticket'),
     )
-    expect(screen.getByRole('button', { name: 'Copied' })).toBeTruthy()
+    const pairingPanel = document.querySelector('.settings__pairing')
+    if (!pairingPanel) throw new Error('pairing panel missing')
+    expect(within(pairingPanel as HTMLElement).getByRole('button', { name: 'Copied' })).toBeTruthy()
   })
 
   it('runs installs in the background and refreshes once the install exits cleanly', async () => {

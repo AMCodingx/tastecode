@@ -9268,6 +9268,37 @@
     font-size: 16px;
   }
 
+  /* On a phone every composer control shares one line — attach, permission,
+     design, the model picker, voice and send. The picker shrinks first (its
+     name truncates) and the send orb stays pinned to the right edge, so the
+     rail never wraps at any phone width. */
+  .tools {
+    flex-wrap: nowrap;
+  }
+
+  .tools__spacer {
+    display: none;
+  }
+
+  .composer__send-beam {
+    flex: none;
+    margin-left: auto;
+  }
+
+  /* The near-full-width panel must not inherit the desktop -28px offset,
+     which would shove its left edge off a phone screen. */
+  .model-selector__menu {
+    translate: none;
+  }
+
+  /* On short viewports (landscape phones) the fixed 246px catalog plus the
+     controls would exceed the panel's max-height and clip. Let the list
+     shrink instead — it scrolls. */
+  .model-selector__catalog {
+    height: min(246px, 42vh);
+    height: min(246px, 42dvh);
+  }
+
   .sessrow .sess__actions,
   .inbox-card__quick,
   .inbox-shelf__row > .menuwrap,
@@ -9388,6 +9419,18 @@
   .appearance-picker,
   .appearance-picker--accent {
     grid-template-columns: 1fr;
+  }
+
+  /* Below this width the pill labels cannot sit next to the model picker
+     and still fit one line. Keep the icons (their aria-labels stay intact)
+     so the whole rail reads left to right at any phone width. */
+  .tools .composer__permission .tool > span,
+  .tools .composer__design > span {
+    display: none;
+  }
+
+  .tools :is(.composer__permission, .composer__design) {
+    padding: 5px 9px;
   }
 }
 
@@ -9581,4 +9624,32 @@
   color: var(--text);
   font-family: var(--font-mono);
   font-size: var(--t-xs);
+}
+
+/* Web console rows in Mobile access settings: the bookmarkable, restart-stable
+   URL with a copy action. The URL is long, so the code truncates and the
+   button stays pinned to the right. */
+.settings__console-urls {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+
+.settings__console-url {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+}
+
+.settings__console-url-code {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: var(--font-mono);
+  font-size: var(--t-xs);
+  color: var(--text-2);
 }

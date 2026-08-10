@@ -74,11 +74,16 @@ export const PairedDeviceSchema = z.object({
 export type PairedDevice = z.infer<typeof PairedDeviceSchema>
 
 export const ConnectionsStatusSchema = z.object({
+  /** Whether the listener currently accepts native-app connections. */
   enabled: z.boolean(),
   serverName: z.string().min(1),
   port: z.number().int().min(0).max(65_535),
   addresses: z.array(ConnectionAddressSchema),
   devices: z.array(PairedDeviceSchema),
+  /** Stable, bookmarkable URLs for the full web app on a phone (one per
+   * reachable address, Tailscale first). Each carries the long-lived web
+   * token in the hash. Admin-only: never returned to devices. */
+  webUrls: z.array(z.string().regex(/^https?:\/\//i, 'expected an HTTP app URL')),
 })
 export type ConnectionsStatus = z.infer<typeof ConnectionsStatusSchema>
 
@@ -835,7 +840,8 @@ export const methods = {
     params: z.object({ provider: ProviderIdSchema, agent: z.string().min(1).optional() }),
     result: z.object({ models: z.array(ModelSchema) }),
   },
-  /** Reports the separate listener used by paired native clients. */
+  /** Reports the mobile listener: native-app acceptance, reachable routes and
+   * the stable web-app URLs. */
   'connections.status': {
     params: z.object({}),
     result: ConnectionsStatusSchema,

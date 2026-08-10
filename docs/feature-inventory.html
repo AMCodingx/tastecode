@@ -250,6 +250,7 @@
         <a href="#settings">Settings</a>
         <a href="#shell">Desktop shell and security</a>
         <a href="#mobile">Native mobile</a>
+        <a href="#web-access">Web access</a>
       </div>
 
       <section id="providers">
@@ -1323,6 +1324,61 @@
               ><input type="checkbox" /><span
                 >Stream transcripts, answer approvals, steer queued turns, interrupt and review
                 diffs</span
+              ></label
+            >
+          </li>
+        </ul>
+      </section>
+
+      <section id="web-access">
+        <header>
+          <h2>Web access</h2>
+          <span class="count"></span>
+        </header>
+        <ul class="check">
+          <li>
+            <label
+              ><input type="checkbox" /><span
+                >The full harness web app on a phone — same UI as the desktop, served by the server
+                from the built web client at <code>/</code> on the mobile port
+                <span class="d">no Vite needed, works in packaged builds too</span></span
+              ></label
+            >
+          </li>
+          <li>
+            <label
+              ><input type="checkbox" /><span
+                >Stable, bookmarkable app URL — long-lived admin token in the OS credential store,
+                unchanged across restarts
+                <span class="d"
+                  >fixed port + Tailscale address + persistent token in the hash</span
+                ></span
+              ></label
+            >
+          </li>
+          <li>
+            <label
+              ><input type="checkbox" /><span
+                >The phone page derives its WebSocket from its own origin
+                (<code>ws://&lt;host&gt;/ws</code>); loopback stays on
+                <code>ws://127.0.0.1:4311</code></span
+              ></label
+            >
+          </li>
+          <li>
+            <label
+              ><input type="checkbox" /><span
+                >Web surfaces reachable whenever the server runs; native-app access toggled
+                separately</span
+              ></label
+            >
+          </li>
+          <li>
+            <label
+              ><input type="checkbox" /><span
+                >The desktop app is the management console: Settings → Mobile access shows the app
+                URL with copy actions and a scan QR, generates pairing codes, lists paired devices
+                and revokes them</span
               ></label
             >
           </li>

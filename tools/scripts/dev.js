@@ -6,6 +6,7 @@
  */
 import { execFile, spawn } from 'node:child_process'
 import { createHash, randomBytes } from 'node:crypto'
+import { existsSync, readdirSync, statSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import { promisify } from 'node:util'
 import path from 'node:path'
@@ -363,6 +364,48 @@ async function stopChild(child) {
   await waitForProcessGroupToExit(child.pid, 2_000)
 }
 
+async function webDistIsStale() {
+  const webRoot = path.join(root, 'apps/web')
+  const distIndex = path.join(webRoot, 'dist/index.html')
+  if (!existsSync(distIndex)) return true
+  const newestSource = await newestMtime(path.join(webRoot, 'src'))
+  if (newestSource === undefined) return false
+  return statSync(distIndex).mtimeMs < newestSource
+}
+
+async function newestMtime(dir) {
+  let newest
+  for (const entry of readdirSync(dir, { withFileTypes: true })) {
+    const full = path.join(dir, entry.name)
+    if (entry.isDirectory()) {
+      const inner = await newestMtime(full)
+      if (inner !== undefined && (newest === undefined || inner > newest)) newest = inner
+    } else if (entry.isFile()) {
+      const mtime = statSync(full).mtimeMs
+      if (newest === undefined || mtime > newest) newest = mtime
+    }
+  }
+  return newest
+}
+
+async function runToCompletion(name, packageDir, args) {
+  await new Promise((resolve, reject) => {
+    const child = isWin
+      ? spawn('cmd.exe', ['/d', '/s', '/c', 'pnpm', ...args], {
+          cwd: path.join(root, packageDir),
+          stdio: 'inherit',
+        })
+      : spawn('pnpm', args, {
+          cwd: path.join(root, packageDir),
+          stdio: 'inherit',
+        })
+    child.once('error', reject)
+    child.once('exit', (code) =>
+      code === 0 ? resolve() : reject(new Error(`${name} build failed (${code})`)),
+    )
+  })
+}
+
 async function shutdown(exitCode = 0) {
   if (shuttingDown) return
   shuttingDown = true
@@ -374,6 +417,14 @@ process.on('SIGINT', () => void shutdown(0))
 process.on('SIGTERM', () => void shutdown(0))
 
 await claimLauncher()
+
+// The server serves the built web app to phones on the mobile port, so a
+// stale apps/web/dist would silently hand the phone an old UI. Rebuild when
+// the sources are newer than the last build; skip the work when fresh.
+if (await webDistIsStale()) {
+  console.log('[dev] web app build is stale — rebuilding so phones get the current UI')
+  await runToCompletion('web', 'apps/web', ['run', 'build'])
+}
 
 if (mobile) {
   const host = await tailscaleIPv4()

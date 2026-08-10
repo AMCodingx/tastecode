@@ -319,6 +319,7 @@ describe('protocol envelopes', () => {
         },
       ],
       devices: [],
+      webUrls: ['http://100.101.22.33:4312/#access_token=stable-web-token'],
       pairingUri: 'harness://pair?payload=short-lived-ticket',
       expiresAt: Date.now() + 300_000,
     })
@@ -332,6 +333,30 @@ describe('protocol envelopes', () => {
         error: { code: ErrorCode.FORBIDDEN, message: 'This device cannot perform that action' },
       }),
     ).toMatchObject({ error: { code: 'forbidden' } })
+  })
+
+  it('only exposes the web-app URLs on the admin status surface', () => {
+    const status = methods['connections.status'].result.parse({
+      enabled: true,
+      serverName: 'Studio Mac',
+      port: 4312,
+      addresses: [{ kind: 'lan', label: 'en0 192.168.1.44', url: 'ws://192.168.1.44:4312' }],
+      devices: [],
+      webUrls: ['http://192.168.1.44:4312/#access_token=stable-web-token'],
+    })
+    expect(status.webUrls[0]).toBe('http://192.168.1.44:4312/#access_token=stable-web-token')
+
+    // The device-facing shape deliberately carries no app URLs: a paired
+    // device must not learn the long-lived web token.
+    expect(
+      methods['connections.deviceStatus'].result.parse({
+        serverName: 'Studio Mac',
+        addresses: [{ kind: 'lan', label: 'en0 192.168.1.44', url: 'ws://192.168.1.44:4312' }],
+      }),
+    ).toEqual({
+      serverName: 'Studio Mac',
+      addresses: [{ kind: 'lan', label: 'en0 192.168.1.44', url: 'ws://192.168.1.44:4312' }],
+    })
   })
 
   it('validates remote attachment materialization requests', () => {
