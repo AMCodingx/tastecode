@@ -6,12 +6,15 @@ import {
   type KeyboardEvent,
   type PointerEvent,
 } from 'react'
-import { Check, ChevronDown, Zap } from 'lucide-react'
+import { Check, ChevronDown, Plus, Zap } from 'lucide-react'
+import type { ProviderId } from '@harness/contracts'
 import {
   filterModelChoicesByQuery,
   resolveReasoningEffort,
+  type CustomModelInput,
   type ModelChoice,
 } from '../model-catalog.js'
+import { CustomModelForm } from './CustomModelForm.js'
 import { DitherSlider } from './dither-kit/DitherSlider.js'
 import { Menu } from './Menu.js'
 import { ModelSearchField } from './ModelSearchField.js'
@@ -28,9 +31,12 @@ type ModelSelectorProps = {
   effort: string | undefined
   serviceTier: string | undefined
   disabled: boolean
+  /** Engines a custom model can be attached to. */
+  providers: { id: ProviderId; name: string }[]
   onModelChange: (id: string) => void
   onEffortChange: (value: string) => void
   onServiceTierChange: (value: string | undefined) => void
+  onCustomModelAdd: (input: CustomModelInput) => void
 }
 
 export function getCompactModelName(displayName: string | undefined): string {
@@ -425,6 +431,7 @@ function DitherChoiceRow(props: {
 
 export function ModelSelector(props: ModelSelectorProps) {
   const [previewEffortIndex, setPreviewEffortIndex] = useState<number | null>(null)
+  const [customFormOpen, setCustomFormOpen] = useState(false)
   const choice = getSelectedChoice(props.models, props.modelId)
   const model = choice?.model
   const selectedEffort = getSelectedEffort(model, props.effort)
@@ -453,6 +460,10 @@ export function ModelSelector(props: ModelSelectorProps) {
       props.onModelChange(nextChoice.key)
     }
   }
+  const customFormDefaultProvider =
+    choice && choice.provider !== 'api' && choice.provider !== 'acp'
+      ? choice.provider
+      : props.providers[0]?.id
 
   return (
     <Menu
@@ -491,6 +502,29 @@ export function ModelSelector(props: ModelSelectorProps) {
             selectedChoice={choice}
             onModelSelect={handleModelSelect}
           />
+
+          <div className="model-selector__custom">
+            {customFormOpen ? (
+              <CustomModelForm
+                providers={props.providers}
+                defaultProvider={customFormDefaultProvider}
+                onAdd={(input) => {
+                  props.onCustomModelAdd(input)
+                  setCustomFormOpen(false)
+                }}
+                onCancel={() => setCustomFormOpen(false)}
+              />
+            ) : (
+              <button
+                type="button"
+                className="model-selector__custom-add"
+                onClick={() => setCustomFormOpen(true)}
+              >
+                <Plus size={14} aria-hidden />
+                <span>Add custom model</span>
+              </button>
+            )}
+          </div>
 
           <div className="model-selector__controls">
             <div className="model-selector__controls-head">

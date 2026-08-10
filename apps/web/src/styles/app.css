@@ -3071,6 +3071,99 @@
   text-align: center;
 }
 
+.model-settings__custom {
+  display: grid;
+  gap: 10px;
+  padding: 14px 16px;
+  background: var(--bg-rail);
+  border: 1px solid var(--chrome-border);
+  border-radius: var(--r-card);
+  box-shadow: var(--chrome-shadow);
+}
+
+.model-settings__custom-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.model-settings__custom-head h3 {
+  margin: 0;
+  color: var(--text);
+  font-size: var(--t-md);
+  font-weight: 540;
+  line-height: 1.3;
+}
+
+.model-settings__custom-list {
+  display: grid;
+  gap: 4px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.model-settings__custom-row {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto auto auto;
+  align-items: center;
+  gap: 10px;
+  min-height: 38px;
+  padding: 5px 8px;
+  border-radius: var(--r-md);
+}
+
+.model-settings__custom-row:hover {
+  background: var(--surface-2);
+}
+
+.model-settings__custom-name {
+  overflow: hidden;
+  color: var(--text);
+  font-size: var(--t-sm);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.model-settings__custom-id {
+  color: var(--text-3);
+  font-size: var(--t-xs);
+}
+
+.model-settings__custom-provider {
+  color: var(--text-3);
+  font-size: var(--t-xs);
+}
+
+.model-settings__custom-remove {
+  display: grid;
+  width: 26px;
+  height: 26px;
+  place-items: center;
+  padding: 0;
+  background: none;
+  border: 0;
+  border-radius: var(--r-circle);
+  color: var(--text-3);
+  cursor: pointer;
+  transition:
+    background var(--dur-fast) var(--ease-out),
+    color var(--dur-fast) var(--ease-out);
+}
+
+.model-settings__custom-remove:hover {
+  background: color-mix(in srgb, var(--error) 14%, transparent);
+  color: var(--error);
+}
+
+.model-settings__custom-empty {
+  margin: 0;
+  color: var(--text-3);
+  font-size: var(--t-sm);
+  line-height: 1.45;
+}
+
 /* Errors never grow a second line: a red dot next to the row's control
    opens a bubble with the message and a tip on hover or focus. */
 .row-issue {
@@ -8599,6 +8692,130 @@
   color: var(--text-3);
   font-size: var(--t-sm);
   text-align: center;
+}
+
+.model-selector__custom {
+  padding: 8px;
+  background: var(--surface);
+  border-top: 1px solid var(--menu-line);
+}
+
+.model-selector__custom-add {
+  display: flex;
+  width: 100%;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  min-height: 32px;
+  padding: 5px 8px;
+  background: none;
+  border: 0;
+  border-radius: var(--r-popup-item);
+  color: var(--text-2);
+  cursor: pointer;
+  font: inherit;
+  font-size: var(--t-sm);
+  transition:
+    background var(--dur-fast) var(--ease-out),
+    color var(--dur-fast) var(--ease-out);
+}
+
+.model-selector__custom-add:hover {
+  background: var(--model-picker-hover-bg);
+  color: var(--text);
+}
+
+.custom-model-form {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 8px;
+}
+
+.custom-model-form__field {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+}
+
+.custom-model-form__field--wide {
+  grid-column: 1 / -1;
+}
+
+.custom-model-form__label {
+  color: var(--text-3);
+  font-size: var(--t-xs);
+}
+
+.custom-model-form select,
+.custom-model-form input {
+  width: 100%;
+  min-width: 0;
+  height: 30px;
+  padding: 0 8px;
+  appearance: none;
+  background: var(--chrome-recessed);
+  border: 1px solid var(--chrome-border);
+  border-radius: var(--r-md);
+  box-shadow: var(--chrome-inset-shadow);
+  color: var(--text);
+  font: inherit;
+  font-size: var(--t-sm);
+}
+
+.custom-model-form select:focus-visible,
+.custom-model-form input:focus-visible {
+  outline: 1px solid var(--text-2);
+  outline-offset: 1px;
+}
+
+.custom-model-form select {
+  cursor: pointer;
+}
+
+.custom-model-form__actions {
+  display: flex;
+  grid-column: 1 / -1;
+  justify-content: flex-end;
+  gap: 6px;
+}
+
+.custom-model-form__submit,
+.custom-model-form__cancel {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  min-height: 30px;
+  padding: 4px 12px;
+  border-radius: var(--r-md);
+  cursor: pointer;
+  font: inherit;
+  font-size: var(--t-sm);
+}
+
+.custom-model-form__submit {
+  background: var(--light);
+  border: 0;
+  color: var(--on-light);
+  font-weight: 540;
+}
+
+.custom-model-form__cancel {
+  background: none;
+  border: 1px solid var(--chrome-border);
+  color: var(--text-2);
+}
+
+.custom-model-form__cancel:hover {
+  color: var(--text);
+  background: var(--surface-3);
+}
+
+.custom-model-form__error {
+  grid-column: 1 / -1;
+  margin: 0;
+  color: var(--error);
+  font-size: var(--t-xs);
 }
 
 @media (hover: hover) and (pointer: fine) {

@@ -43,13 +43,17 @@ import {
   PanelLeft,
   RotateCcw,
   Smartphone,
+  Trash2,
   UserRound,
 } from 'lucide-react'
 import {
   agentMark,
   connectionMark,
   filterModelChoicesByQuery,
+  isCustomModelChoice,
   providerMark,
+  providerDisplayName,
+  type CustomModelInput,
   type ModelChoice,
   type ProviderMark,
 } from '../model-catalog.js'
@@ -75,6 +79,7 @@ import type {
 import { McpSettings } from './McpSettings.js'
 import { Menu, MenuItem } from './Menu.js'
 import { ModelSearchField } from './ModelSearchField.js'
+import { CustomModelForm } from './CustomModelForm.js'
 import { SkillsSettings } from './SkillsSettings.js'
 import { ProviderIcon } from './ProviderIcon.js'
 import { ProfileSettings } from './ProfileSettings.js'
@@ -159,6 +164,10 @@ function SettingsComponent(props: {
   models: ModelChoice[]
   hiddenModels: Set<string>
   onModelVisibilityChange: (key: string, visible: boolean) => void
+  /** Engines a custom model can be attached to. */
+  providers: { id: ProviderId; name: string }[]
+  onCustomModelAdd: (input: CustomModelInput) => void
+  onCustomModelRemove: (key: string) => void
   onConnectionsChanged: () => void
   projectCount: number
   sidebarSettings: SidebarSettings
@@ -622,23 +631,30 @@ function ModelSettings(props: {
   models: ModelChoice[]
   hiddenModels: Set<string>
   onModelVisibilityChange: (key: string, visible: boolean) => void
+  providers: { id: ProviderId; name: string }[]
+  onCustomModelAdd: (input: CustomModelInput) => void
+  onCustomModelRemove: (key: string) => void
 }) {
-  const sources = props.models.reduce((groups, choice) => {
+  // Custom models get their own management section below; the provider
+  // groups above only ever hold what the engines themselves enumerated.
+  const catalogModels = props.models.filter((choice) => !isCustomModelChoice(choice))
+  const customModels = props.models.filter(isCustomModelChoice)
+  const sources = catalogModels.reduce((groups, choice) => {
     const group = groups.get(choice.sourceName) ?? []
     group.push(choice)
     groups.set(choice.sourceName, group)
     return groups
   }, new Map<string, ModelChoice[]>())
-  const visibleModelCount = props.models.filter(
+  const visibleModelCount = catalogModels.filter(
     (choice) => !props.hiddenModels.has(choice.key),
   ).length
 
   return (
     <SettingsPanel title="Models" groupClassName="settings__group--plain model-settings">
-      {props.models.length > 0 ? (
+      {catalogModels.length > 0 ? (
         <div className="model-settings__summary">
           <span>
-            {visibleModelCount} of {props.models.length} visible
+            {visibleModelCount} of {catalogModels.length} visible
           </span>
         </div>
       ) : null}
@@ -661,7 +677,62 @@ function ModelSettings(props: {
           <p>No models are available from your connected providers yet.</p>
         </div>
       )}
+
+      <CustomModelsSection
+        models={customModels}
+        providers={props.providers}
+        onCustomModelAdd={props.onCustomModelAdd}
+        onCustomModelRemove={props.onCustomModelRemove}
+      />
     </SettingsPanel>
+  )
+}
+
+function CustomModelsSection(props: {
+  models: ModelChoice[]
+  providers: { id: ProviderId; name: string }[]
+  onCustomModelAdd: (input: CustomModelInput) => void
+  onCustomModelRemove: (key: string) => void
+}) {
+  return (
+    <section className="model-settings__custom" aria-label="Custom models">
+      <header className="model-settings__custom-head">
+        <h3>Custom models</h3>
+        <span className="settings__status">{props.models.length}</span>
+      </header>
+      {props.models.length > 0 ? (
+        <ul className="model-settings__custom-list">
+          {props.models.map((choice) => (
+            <li key={choice.key} className="model-settings__custom-row">
+              <ProviderIcon mark={choice.mark} size={16} />
+              <span className="model-settings__custom-name">{choice.model.displayName}</span>
+              <code className="model-settings__custom-id">{choice.model.id}</code>
+              <span className="model-settings__custom-provider">
+                {providerDisplayName(choice.provider)}
+              </span>
+              <button
+                type="button"
+                className="model-settings__custom-remove"
+                aria-label={`Remove ${choice.model.displayName}`}
+                onClick={() => props.onCustomModelRemove(choice.key)}
+              >
+                <Trash2 size={14} aria-hidden />
+              </button>
+            </li>
+          ))}
+        </ul>
+      ) : (
+        <p className="model-settings__custom-empty">
+          Add a model id your provider accepts but does not list here — for example a Chinese model
+          running through Codex.
+        </p>
+      )}
+      <CustomModelForm
+        providers={props.providers}
+        defaultProvider={props.models[0]?.provider ?? props.providers[0]?.id}
+        onAdd={props.onCustomModelAdd}
+      />
+    </section>
   )
 }
 
