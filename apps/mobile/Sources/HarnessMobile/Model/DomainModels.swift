@@ -327,30 +327,34 @@ struct ComposerPreferences: Codable, Equatable, Sendable {
 
 struct AppPreferences: Codable, Equatable, Sendable {
   var activeEnvironmentID: String?
+  var lastProjectPath: String?
   var showSettledThreads = true
   var hapticsEnabled = true
   var composer = ComposerPreferences()
 
   init(
     activeEnvironmentID: String? = nil,
+    lastProjectPath: String? = nil,
     showSettledThreads: Bool = true,
     hapticsEnabled: Bool = true,
     composer: ComposerPreferences = ComposerPreferences()
   ) {
     self.activeEnvironmentID = activeEnvironmentID
+    self.lastProjectPath = lastProjectPath
     self.showSettledThreads = showSettledThreads
     self.hapticsEnabled = hapticsEnabled
     self.composer = composer
   }
 
   private enum CodingKeys: String, CodingKey {
-    case activeEnvironmentID, showSettledThreads, hapticsEnabled
+    case activeEnvironmentID, lastProjectPath, showSettledThreads, hapticsEnabled
     case composer
   }
 
   init(from decoder: Decoder) throws {
     let container = try decoder.container(keyedBy: CodingKeys.self)
     activeEnvironmentID = try container.decodeIfPresent(String.self, forKey: .activeEnvironmentID)
+    lastProjectPath = try container.decodeIfPresent(String.self, forKey: .lastProjectPath)
     showSettledThreads =
       try container.decodeIfPresent(Bool.self, forKey: .showSettledThreads) ?? true
     hapticsEnabled = try container.decodeIfPresent(Bool.self, forKey: .hapticsEnabled) ?? true

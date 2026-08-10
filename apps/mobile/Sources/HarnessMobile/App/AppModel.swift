@@ -220,7 +220,17 @@ final class AppModel: ObservableObject {
     } else {
       projects.append(project)
     }
+    rememberProject(project)
     return project
+  }
+
+  func rememberProject(_ project: ProjectRecord) {
+    guard preferences.lastProjectPath != project.path else { return }
+    updatePreferences { $0.lastProjectPath = project.path }
+  }
+
+  func preferredProject() -> ProjectRecord? {
+    ProjectSelection.resolve(preferredPath: preferences.lastProjectPath, projects: projects)
   }
 
   func applyThreadLifecycle(_ lifecycle: ThreadLifecycle, to threadID: String) {
@@ -434,6 +444,22 @@ final class AppModel: ObservableObject {
         value.composer.approval = .auto
       }
     }
+  }
+}
+
+enum ProjectSelection {
+  static func resolve(preferredPath: String?, projects: [ProjectRecord]) -> ProjectRecord? {
+    if let preferredPath, let preferred = projects.first(where: { $0.path == preferredPath }) {
+      return preferred
+    }
+    if projects.count == 1 { return projects[0] }
+    return projects.max { left, right in
+      latestThreadDate(in: left) < latestThreadDate(in: right)
+    }.flatMap { latestThreadDate(in: $0) > 0 ? $0 : nil }
+  }
+
+  private static func latestThreadDate(in project: ProjectRecord) -> Double {
+    project.sessions.map(\.createdAt).max() ?? 0
   }
 }
 
