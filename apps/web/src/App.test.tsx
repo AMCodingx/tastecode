@@ -472,6 +472,84 @@ describe('web client', () => {
     expect(transport.request).toHaveBeenCalledWith('pullRequests.list', { refresh: false })
   })
 
+  it('starts a new chat about a pull request from the Chat button', async () => {
+    const request = transport.request.getMockImplementation()
+    if (!request) throw new Error('missing request mock')
+    const pullRequest = {
+      id: 'PR_1',
+      repository: 'Blueemi/harness',
+      number: 1,
+      title: 'Add the parser',
+      url: 'https://github.com/Blueemi/harness/pull/1',
+      author: { login: 'Blueemi', isBot: false },
+      updatedAt: '2026-08-09T12:00:00Z',
+      isDraft: false,
+      state: 'OPEN',
+      additions: 12,
+      deletions: 3,
+      commentsCount: 0,
+      headRefName: 'feature/parser',
+      baseRefName: 'main',
+      relationship: 'authored',
+      localProjectPath: '/work/project',
+    }
+    const detail = {
+      ...pullRequest,
+      body: '',
+      createdAt: '2026-08-09T11:00:00Z',
+      headRefOid: 'head-oid',
+      baseRefOid: 'base-oid',
+      changedFiles: 1,
+      mergeable: 'MERGEABLE',
+      maintainerCanModify: true,
+      reviewers: [],
+      requestedReviewers: [],
+      assignees: [],
+      labels: [],
+      checks: [],
+      comments: [],
+      reviews: [],
+      reviewThreads: [],
+      reviewThreadsTruncated: false,
+      permissions: { canPush: true, canAdmin: false },
+      mergeMethods: { merge: true, rebase: true, squash: true, deleteBranchOnMerge: false },
+    }
+    transport.request.mockImplementation((method: string, params: unknown) => {
+      if (method === 'pullRequests.list') {
+        return Promise.resolve({
+          account: { available: true, authenticated: true, login: 'Blueemi' },
+          items: [pullRequest],
+          fetchedAt: Date.now(),
+          truncated: false,
+        })
+      }
+      if (method === 'pullRequests.detail') {
+        return Promise.resolve(detail)
+      }
+      return request(method, params)
+    })
+
+    await import('./ui/pull-requests/PullRequestsView.js')
+    render(<App />)
+
+    await waitFor(() => {
+      expect(transport.request).toHaveBeenCalledWith('projects.list', {})
+    })
+    fireEvent.click(await screen.findByRole('button', { name: 'Pull requests' }))
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Chat' }))
+
+    // Back on the chat surface, starting a new session with the PR link drafted.
+    expect(screen.queryByRole('region', { name: 'Pull requests' })).toBeNull()
+    const composer = await screen.findByPlaceholderText('Do anything')
+    await waitFor(() => {
+      expect((composer as HTMLTextAreaElement).value).toContain(
+        'https://github.com/Blueemi/harness/pull/1',
+      )
+    })
+    expect((composer as HTMLTextAreaElement).value).toContain('Add the parser')
+  })
+
   it('restores the selected model immediately on the first cache-enabled launch', () => {
     const request = transport.request.getMockImplementation()
     if (!request) throw new Error('missing request mock')
