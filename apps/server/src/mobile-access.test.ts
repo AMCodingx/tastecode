@@ -1,7 +1,10 @@
 import { Buffer } from 'node:buffer'
 import { once } from 'node:events'
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import type { IncomingMessage } from 'node:http'
 import net from 'node:net'
+import { tmpdir } from 'node:os'
+import path from 'node:path'
 import { describe, expect, it, vi } from 'vitest'
 import { WebSocket } from 'ws'
 import {
@@ -132,8 +135,9 @@ describe('mobile access', () => {
       expect(ok.headers.get('cache-control')).toBe('no-store')
       expect(await ok.text()).toContain('Harness console')
 
-      const root = await fetch(`${base}/?token=stable-console-token`)
-      expect(root.status).toBe(200)
+      // Without a web-app build, the root offers nothing.
+      const root = await fetch(`${base}/`)
+      expect(root.status).toBe(404)
 
       const missing = await fetch(`${base}/console`)
       expect(missing.status).toBe(401)
@@ -146,6 +150,88 @@ describe('mobile access', () => {
         `http://100.101.22.33:${port}/console?token=stable-console-token`,
         `http://192.168.1.44:${port}/console?token=stable-console-token`,
       ])
+    } finally {
+      await access.stop()
+      store.close()
+    }
+  })
+
+  it('serves the full web app at the root without a token gate', async () => {
+    const store = new Store(':memory:')
+    const webRoot = await fixtureWebApp()
+    const access = createAccess(store, {
+      consoleToken: 'stable-console-token',
+      webToken: 'stable-web-token',
+      webRoot,
+    })
+    await access.start()
+    const port = access.status().port
+    const base = `http://127.0.0.1:${port}`
+    try {
+      const page = await fetch(`${base}/`)
+      expect(page.status).toBe(200)
+      expect(page.headers.get('cache-control')).toBe('no-store')
+      expect(await page.text()).toContain('fixture-app-marker')
+
+      const asset = await fetch(`${base}/assets/app.js`)
+      expect(asset.status).toBe(200)
+      expect(asset.headers.get('content-type')).toContain('text/javascript')
+      expect(await asset.text()).toContain('fixture-bundle')
+
+      const head = await fetch(`${base}/`, { method: 'HEAD' })
+      expect(head.status).toBe(200)
+
+      // Unknown routes fall back to the app shell.
+      const deep = await fetch(`${base}/some/client/route`)
+      expect(deep.status).toBe(200)
+      expect(await deep.text()).toContain('fixture-app-marker')
+
+      // Percent-encoded traversal stays inside the root: the request resolves
+      // to a literal name that does not exist, so the shell is served instead
+      // of anything outside the build directory.
+      const escaped = await fetch(`${base}/%2e%2e%2fharness-secret.txt`)
+      expect(escaped.status).toBe(200)
+      expect(await escaped.text()).not.toContain('TOP-SECRET')
+
+      // The console coexists on the same listener.
+      const consolePage = await fetch(`${base}/console?token=stable-console-token`)
+      expect(consolePage.status).toBe(200)
+
+      expect(access.status().webUrls).toEqual([
+        `http://100.101.22.33:${port}/#access_token=stable-web-token`,
+        `http://192.168.1.44:${port}/#access_token=stable-web-token`,
+      ])
+    } finally {
+      await access.stop()
+      store.close()
+      rmSync(webRoot, { recursive: true, force: true })
+    }
+  })
+
+  it('admits the web app socket as an admin client', async () => {
+    const store = new Store(':memory:')
+    const connections: MobileConnectionAccess[] = []
+    const access = createAccess(store, {
+      consoleToken: 'stable-console-token',
+      webToken: 'stable-web-token',
+      onConnection: (_socket, _request, connection) => connections.push(connection),
+    })
+    await access.start()
+    const port = access.status().port
+    try {
+      const socket = new WebSocket(
+        `ws://127.0.0.1:${port}/ws?token=${encodeURIComponent('stable-web-token')}`,
+      )
+      await once(socket, 'open')
+      expect(connections.some((connection) => connection.kind === 'admin')).toBe(true)
+      socket.close()
+      await once(socket, 'close')
+
+      // A device token that happens to equal nothing still fails; only the
+      // exact web token grants admin.
+      const refused = new WebSocket(`ws://127.0.0.1:${port}/ws?token=wrong-token`)
+      const [refusedCode] = (await once(refused, 'close')) as [number, Buffer]
+      expect(refusedCode).toBe(1008)
     } finally {
       await access.stop()
       store.close()
@@ -202,22 +288,34 @@ describe('mobile access', () => {
     }
   })
 
-  it('keeps the console URL byte-identical across restarts', async () => {
+  it('keeps the web-app URL byte-identical across restarts', async () => {
     const store = new Store(':memory:')
+    const webRoot = await fixtureWebApp()
     const port = await availablePort()
-    const first = createAccess(store, { consoleToken: 'stable-console-token', port })
+    const first = createAccess(store, {
+      consoleToken: 'stable-console-token',
+      webToken: 'stable-web-token',
+      webRoot,
+      port,
+    })
     await first.start()
-    const firstUrls = first.status().consoleUrls
+    const firstUrls = first.status().webUrls
     await first.stop()
 
-    const second = createAccess(store, { consoleToken: 'stable-console-token', port })
+    const second = createAccess(store, {
+      consoleToken: 'stable-console-token',
+      webToken: 'stable-web-token',
+      webRoot,
+      port,
+    })
     await second.start()
     try {
-      expect(second.status().consoleUrls).toEqual(firstUrls)
+      expect(second.status().webUrls).toEqual(firstUrls)
       expect(second.status().port).toBe(port)
     } finally {
       await second.stop()
       store.close()
+      rmSync(webRoot, { recursive: true, force: true })
     }
   })
 })
@@ -226,6 +324,8 @@ function createAccess(
   store: Store,
   options: {
     consoleToken?: string
+    webToken?: string
+    webRoot?: string
     port?: number
     onConnection?: (
       socket: WebSocket,
@@ -241,8 +341,23 @@ function createAccess(
     networkInterfaces: () => INTERFACES,
     resolveTailscaleAddresses: async () => new Set(['100.101.22.33']),
     consoleToken: options.consoleToken,
+    webToken: options.webToken,
+    webRoot: options.webRoot,
     onConnection: options.onConnection ?? (() => undefined),
   })
+}
+
+async function fixtureWebApp(): Promise<string> {
+  const dir = mkdtempSync(path.join(tmpdir(), 'harness-web-app-'))
+  mkdirSync(path.join(dir, 'assets'), { recursive: true })
+  writeFileSync(
+    path.join(dir, 'index.html'),
+    '<!doctype html><html><head></head><body>fixture-app-marker<script src="./assets/app.js"></script></body></html>',
+  )
+  writeFileSync(path.join(dir, 'assets', 'app.js'), '// fixture-bundle\n')
+  // A file outside the build directory that must never leak.
+  writeFileSync(path.join(dir, '..', 'harness-secret.txt'), 'TOP-SECRET')
+  return dir
 }
 
 async function availablePort(): Promise<number> {

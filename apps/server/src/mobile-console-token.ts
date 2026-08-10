@@ -10,26 +10,50 @@ import { hasCredential, readCredential, removeCredential, writeCredential } from
  * rather than in memory or in the database (the DB holds no credentials by
  * policy). The user bookmarks the URL once and it keeps working.
  */
-const REFERENCE = 'mobile-console-token'
+const CONSOLE_REFERENCE = 'mobile-console-token'
+const WEB_REFERENCE = 'mobile-web-token'
 
 export function loadOrCreateConsoleToken(): string {
+  return loadOrCreateStableToken(CONSOLE_REFERENCE)
+}
+
+/**
+ * The long-lived token that authenticates the full web app on a phone
+ * (`http://<address>:<port>/#access_token=<this>`). Separate from the console
+ * token on purpose: this one grants full admin access, so it must not be the
+ * same credential that a quick device-management page carries.
+ */
+export function loadOrCreateWebClientToken(): string {
+  return loadOrCreateStableToken(WEB_REFERENCE)
+}
+
+function loadOrCreateStableToken(reference: string): string {
   try {
-    return readCredential(REFERENCE)
+    return readCredential(reference)
   } catch {
     // First run, or the credential was removed — create one below.
   }
   const token = randomBytes(32).toString('base64url')
   try {
-    writeCredential(REFERENCE, token)
+    writeCredential(reference, token)
   } catch {
-    // No keychain (unusual for the desktop hosts). The console is simply not
+    // No keychain (unusual for the desktop hosts). The surface is simply not
     // offered; the caller logs the degradation.
     return ''
   }
   return token
 }
 
-/** Testing and reset support: forget the stored token so a new one is minted. */
+/** Testing and reset support: forget a stored token so a new one is minted. */
 export function clearConsoleToken(): void {
-  if (hasCredential(REFERENCE)) removeCredential(REFERENCE)
+  clearStableToken(CONSOLE_REFERENCE)
+}
+
+/** Testing and reset support: forget a stored token so a new one is minted. */
+export function clearWebClientToken(): void {
+  clearStableToken(WEB_REFERENCE)
+}
+
+function clearStableToken(reference: string): void {
+  if (hasCredential(reference)) removeCredential(reference)
 }

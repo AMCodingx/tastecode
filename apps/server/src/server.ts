@@ -1,5 +1,7 @@
 import os, { type NetworkInterfaceInfo } from 'node:os'
 import path from 'node:path'
+import { existsSync } from 'node:fs'
+import { fileURLToPath } from 'node:url'
 import { timingSafeEqual } from 'node:crypto'
 import { isIPv4 } from 'node:net'
 import { WebSocketServer, type WebSocket } from 'ws'
@@ -22,7 +24,7 @@ import { Orchestrator } from './orchestrator.js'
 import { detectProviders, installCommandFor, launchCommandFor } from './providers.js'
 import { checkForUpdates } from './update-check.js'
 import { PushBus } from './push-bus.js'
-import { loadOrCreateConsoleToken } from './mobile-console-token.js'
+import { loadOrCreateConsoleToken, loadOrCreateWebClientToken } from './mobile-console-token.js'
 import { PreviewCaptureCoordinator } from './preview-capture.js'
 import { browseProjectDirectory } from './project-directory-browser.js'
 import { PullRequestService } from './pull-requests.js'
@@ -75,6 +77,11 @@ export function startServer(
     resolveTailscaleAddresses?: () => Promise<ReadonlySet<string>>
     /** Long-lived web-console token. Defaults to the OS credential store. */
     consoleToken?: string
+    /** Long-lived token for the full web app on a phone. Defaults to the OS
+     * credential store. */
+    webToken?: string
+    /** Directory containing the built web app. Defaults to apps/web/dist. */
+    webRoot?: string
     projectBrowserHome?: string
   } = {},
 ) {
@@ -84,6 +91,18 @@ export function startServer(
   const consoleToken = options.consoleToken ?? loadOrCreateConsoleToken()
   if (options.consoleToken === undefined && consoleToken === '') {
     console.warn('[server] no OS credential store available — the mobile web console is disabled')
+  }
+  const webToken = options.webToken ?? loadOrCreateWebClientToken()
+  if (options.webToken === undefined && webToken === '') {
+    console.warn('[server] no OS credential store available — the mobile web app is disabled')
+  }
+  const webRoot = resolveWebRoot(options.webRoot)
+  if (webRoot) {
+    console.log(`[server] serving the web app for phones from ${webRoot}`)
+  } else {
+    console.warn(
+      '[server] web app build not found (apps/web/dist) — the phone will only get the console page',
+    )
   }
   assertSafeBind(host, options.accessToken)
   const wss = new WebSocketServer({ port, host })
@@ -1089,6 +1108,17 @@ function methodAllowed(access: ConnectionAccess, method: MethodName): boolean {
 
 function messageOf(error: unknown): string {
   return error instanceof Error ? error.message : String(error)
+}
+
+/**
+ * Where the built web app lives. Defaults to apps/web/dist beside this
+ * package; HARNESS_WEB_DIST overrides it (tests, packaging).
+ */
+function resolveWebRoot(option: string | undefined): string | undefined {
+  const candidate = option ?? process.env['HARNESS_WEB_DIST']
+  if (candidate) return candidate
+  const relative = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../web/dist')
+  return existsSync(relative) ? relative : undefined
 }
 
 export function hasAccess(requestUrl: string | undefined, expected: string | undefined): boolean {

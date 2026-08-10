@@ -1,6 +1,6 @@
 import { Buffer } from 'node:buffer'
 import { once } from 'node:events'
-import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
 import net from 'node:net'
 import os from 'node:os'
 import path from 'node:path'
@@ -290,6 +290,16 @@ function pairingTicket(uri: string): string {
   if (!encoded) throw new Error('missing pairing payload')
   const payload = JSON.parse(Buffer.from(encoded, 'base64url').toString()) as { ticket: string }
   return payload.ticket
+}
+
+async function fixtureWebApp(): Promise<string> {
+  const dir = mkdtempSync(path.join(os.tmpdir(), 'harness-web-app-'))
+  mkdirSync(path.join(dir, 'assets'), { recursive: true })
+  writeFileSync(
+    path.join(dir, 'index.html'),
+    '<!doctype html><html><head></head><body>fixture-app-marker</body></html>',
+  )
+  return dir
 }
 
 function asText(raw: unknown): string {

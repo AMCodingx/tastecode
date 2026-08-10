@@ -1,4 +1,5 @@
 import { createHash, randomBytes, timingSafeEqual } from 'node:crypto'
+import { existsSync, readFileSync, statSync } from 'node:fs'
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http'
 import { isIPv4, type AddressInfo } from 'node:net'
 import os, { type NetworkInterfaceInfo } from 'node:os'
@@ -15,6 +16,7 @@ export type MobileConnectionAccess =
   | { kind: 'pairing'; ticketHash: string }
   | { kind: 'device'; deviceId: string }
   | { kind: 'console' }
+  | { kind: 'admin' }
 
 type ConnectionHandler = (
   socket: WebSocket,
@@ -31,21 +33,25 @@ const UNAUTHORIZED_PAGE = `<!doctype html>
 `
 
 /**
- * The mobile listener: one port, two surfaces.
+ * The mobile listener: one port, three surfaces.
  *
- * - **Web console** — the Tailscale-web-style management page, served over
- *   HTTP at `/console?token=…`. The token is long-lived and stored in the OS
- *   credential store, so the URL is stable across restarts and can be
- *   bookmarked. The console can read status, copy routes, generate pairing
- *   codes, and revoke devices.
+ * - **Web app** — the full harness UI, served over HTTP at `/`. The phone
+ *   loads it from `http://<address>:<port>/#access_token=…` and the page
+ *   derives its WebSocket from its own origin, so nothing needs to be baked
+ *   per machine. The long-lived web token (OS credential store) keeps the
+ *   URL stable across restarts, and grants full admin access — this is the
+ *   desktop app on a phone.
+ * - **Web console** — a lightweight Tailscale-web-style management page at
+ *   `/console?token=…`, management-only (status, pairing codes, revoke). Its
+ *   token is separate from the web app's on purpose.
  * - **Native-app protocol** — the existing WebSocket surface at `/` (and
  *   `/ws` for browser clients) that paired native apps and the pairing
  *   bootstrap speak. Its scheme is unchanged.
  *
- * The listener binds whenever the server runs, so the console is reachable
+ * The listener binds whenever the server runs, so all three stay reachable
  * even when native-app connections are switched off ("mobile access" off
- * means the device tokens stop being accepted, not that the management page
- * disappears).
+ * means the device tokens stop being accepted, not that the web surfaces
+ * disappear).
  */
 export class MobileAccess {
   #store: Store
@@ -63,6 +69,8 @@ export class MobileAccess {
   #tickets = new Map<string, number>()
   #protocolEnabled = false
   #consoleToken: string
+  #webToken: string
+  #webRoot: string | undefined
 
   constructor(options: {
     store: Store
@@ -74,6 +82,12 @@ export class MobileAccess {
     /** Long-lived token that keeps the console URL stable across restarts.
      * Empty disables the console surface entirely. */
     consoleToken?: string
+    /** Long-lived token that authenticates the full web app on a phone.
+     * Empty disables the web-app surface. */
+    webToken?: string
+    /** Directory containing the built web app (`index.html` at its root).
+     * When absent, `/` serves nothing and only the console page is offered. */
+    webRoot?: string
   }) {
     this.#store = options.store
     this.#configuredPort = options.port
@@ -82,6 +96,8 @@ export class MobileAccess {
     this.#interfaces = options.networkInterfaces ?? os.networkInterfaces
     this.#resolveTailscaleAddresses = options.resolveTailscaleAddresses ?? detectTailscaleAddresses
     this.#consoleToken = options.consoleToken ?? ''
+    this.#webToken = options.webToken ?? ''
+    this.#webRoot = options.webRoot ? path.resolve(options.webRoot) : undefined
   }
 
   status(): ConnectionsStatus {
@@ -99,6 +115,10 @@ export class MobileAccess {
       consoleUrls:
         listening && this.#consoleToken
           ? addresses.map((address) => consoleUrlFor(address.url, this.#consoleToken))
+          : [],
+      webUrls:
+        listening && this.#webToken && this.#webRoot
+          ? addresses.map((address) => webUrlFor(address.url, this.#webToken))
           : [],
     }
   }
@@ -192,6 +212,11 @@ export class MobileAccess {
 
     const deviceToken = url.searchParams.get('token')
     if (!deviceToken) return undefined
+    // The web app (served from this listener) authenticates with the long-lived
+    // web token and is a full admin client, exactly like the desktop renderer.
+    if (this.#webToken && safeEqual(deviceToken, this.#webToken)) {
+      return { kind: 'admin' }
+    }
     const device = this.#store.pairedDeviceForTokenHash(digest(deviceToken))
     if (!device) return undefined
     this.#store.touchPairedDevice(device.id)
@@ -305,25 +330,38 @@ export class MobileAccess {
 
   #handleHttp(request: IncomingMessage, response: ServerResponse): void {
     const url = new URL(request.url ?? '/', 'http://harness.local')
-    if (url.pathname !== '/' && url.pathname !== '/console') {
-      response.writeHead(404, { 'Content-Type': 'text/plain; charset=utf-8' })
-      response.end('Not found')
+    const pathname = url.pathname
+
+    if (pathname === '/console') {
+      const supplied = url.searchParams.get('token') ?? ''
+      if (!this.#consoleToken || !safeEqual(supplied, this.#consoleToken)) {
+        this.#respondHtml(response, 401, UNAUTHORIZED_PAGE)
+        return
+      }
+      // The URL carries a long-lived credential, so it must never be cached,
+      // referrer-leaked, or framed.
+      this.#respondHtml(response, 200, CONSOLE_PAGE)
       return
     }
-    const supplied = url.searchParams.get('token') ?? ''
-    if (!this.#consoleToken || !safeEqual(supplied, this.#consoleToken)) {
-      response.writeHead(401, {
-        'Content-Type': 'text/html; charset=utf-8',
-        'Cache-Control': 'no-store',
-        'Referrer-Policy': 'no-referrer',
-        'X-Content-Type-Options': 'nosniff',
-      })
-      response.end(UNAUTHORIZED_PAGE)
+
+    if (!this.#webRoot) {
+      this.#respondHtml(response, 404, '<!doctype html><html><body>Not found</body></html>')
       return
     }
-    // The URL carries a long-lived credential, so it must never be cached,
-    // referrer-leaked, or framed.
-    response.writeHead(200, {
+
+    // Everything else serves the built web app. The page is static and
+    // carries no data, so it needs no token gate — the WebSocket it opens is
+    // where the token matters (and it never leaves the client-side hash).
+    if (request.method !== 'GET' && request.method !== 'HEAD') {
+      response.writeHead(405, { 'Content-Type': 'text/plain; charset=utf-8' })
+      response.end('Method not allowed')
+      return
+    }
+    this.#serveWebApp(pathname, response)
+  }
+
+  #respondHtml(response: ServerResponse, status: number, html: string): void {
+    response.writeHead(status, {
       'Content-Type': 'text/html; charset=utf-8',
       'Cache-Control': 'no-store',
       'Referrer-Policy': 'no-referrer',
@@ -332,7 +370,60 @@ export class MobileAccess {
         "default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; " +
         "connect-src 'self' ws: wss:; base-uri 'none'; form-action 'none'; frame-ancestors 'none'",
     })
-    response.end(CONSOLE_PAGE)
+    response.end(html)
+  }
+
+  /**
+   * Serves the built web app from `#webRoot`. `url.pathname` keeps `..` and
+   * percent-encoding literal, so a resolved path can only escape the root via
+   * a real `..` segment — which the prefix check below rejects.
+   */
+  #serveWebApp(pathname: string, response: ServerResponse): void {
+    const webRoot = this.#webRoot
+    if (!webRoot) {
+      response.writeHead(404, { 'Content-Type': 'text/plain; charset=utf-8' })
+      response.end('Not found')
+      return
+    }
+    if (pathname.includes('\0')) {
+      response.writeHead(400, { 'Content-Type': 'text/plain; charset=utf-8' })
+      response.end('Bad request')
+      return
+    }
+    const relative = pathname === '/' ? 'index.html' : pathname.slice(1)
+    const resolved = path.resolve(webRoot, relative)
+    const withinRoot = resolved === webRoot || resolved.startsWith(webRoot + path.sep)
+    if (!withinRoot) {
+      response.writeHead(403, { 'Content-Type': 'text/plain; charset=utf-8' })
+      response.end('Forbidden')
+      return
+    }
+
+    let file = resolved
+    if (existsSync(file) && statSync(file).isDirectory()) {
+      file = path.join(file, 'index.html')
+    }
+    if (!existsSync(file) || !statSync(file).isFile()) {
+      // SPA fallback: unknown routes render the app shell.
+      file = path.join(webRoot, 'index.html')
+    }
+
+    let body: Buffer
+    try {
+      body = readFileSync(file)
+    } catch {
+      response.writeHead(404, { 'Content-Type': 'text/plain; charset=utf-8' })
+      response.end('Not found')
+      return
+    }
+    const isHtml = file.endsWith('.html')
+    response.writeHead(200, {
+      'Content-Type': contentTypeFor(file),
+      'Cache-Control': isHtml ? 'no-store' : 'no-cache',
+      'Referrer-Policy': 'no-referrer',
+      'X-Content-Type-Options': 'nosniff',
+    })
+    response.end(body)
   }
 
   #pruneTickets(): void {
@@ -373,6 +464,36 @@ function cleanDeviceName(name: string): string {
 export function consoleUrlFor(wsUrl: string, token: string): string {
   const base = wsUrl.replace(/^wss?/i, 'http')
   return `${base}/console?token=${encodeURIComponent(token)}`
+}
+
+/** The bookmarkable URL that opens the full web app on a phone. */
+export function webUrlFor(wsUrl: string, token: string): string {
+  const base = wsUrl.replace(/^wss?/i, 'http')
+  return `${base}/#access_token=${encodeURIComponent(token)}`
+}
+
+const CONTENT_TYPES: Record<string, string> = {
+  '.html': 'text/html; charset=utf-8',
+  '.js': 'text/javascript; charset=utf-8',
+  '.mjs': 'text/javascript; charset=utf-8',
+  '.css': 'text/css; charset=utf-8',
+  '.json': 'application/json; charset=utf-8',
+  '.svg': 'image/svg+xml',
+  '.png': 'image/png',
+  '.jpg': 'image/jpeg',
+  '.jpeg': 'image/jpeg',
+  '.gif': 'image/gif',
+  '.webp': 'image/webp',
+  '.ico': 'image/x-icon',
+  '.woff': 'font/woff',
+  '.woff2': 'font/woff2',
+  '.ttf': 'font/ttf',
+  '.map': 'application/json; charset=utf-8',
+  '.txt': 'text/plain; charset=utf-8',
+}
+
+function contentTypeFor(file: string): string {
+  return CONTENT_TYPES[path.extname(file).toLowerCase()] ?? 'application/octet-stream'
 }
 
 export function connectionAddresses(
