@@ -99,6 +99,7 @@ type SearchCursor = { score: number; createdAt: number; rowid: number }
 const SNIPPET_START = '\u0001'
 const SNIPPET_END = '\u0002'
 const SEARCH_INDEX_VERSION = 'session_search_v1'
+const SEARCH_TOKEN = /[\p{L}\p{N}][\p{L}\p{N}\p{M}_]*/gu
 
 const SCHEMA = `
 CREATE TABLE IF NOT EXISTS projects (
@@ -693,9 +694,11 @@ export class Store {
     const limit = Number.isSafeInteger(requestedLimit)
       ? Math.min(Math.max(requestedLimit, 1), 100)
       : 25
+    const ftsQuery = toFtsQuery(options.query)
+    if (!ftsQuery) return { results: [], nextCursor: null }
     const cursor = decodeCursor(options.cursor)
     const clauses = ['session_search MATCH ?']
-    const parameters: Array<string | number> = [toFtsQuery(options.query)]
+    const parameters: Array<string | number> = [ftsQuery]
 
     if (options.projectPath) {
       clauses.push('threads.project_path = ?')
@@ -1127,10 +1130,11 @@ function searchableEntry(
   return { turnId: item.turnId, createdAt: item.createdAt, text }
 }
 
-function toFtsQuery(query: string): string {
-  const terms = query.trim().split(/\s+/).filter(Boolean)
-  if (terms.length === 0) throw new Error('search query cannot be empty')
-  return terms.map((term) => `"${term.replaceAll('"', '""')}"`).join(' ')
+function toFtsQuery(query: string): string | undefined {
+  const terms = query.normalize('NFKC').toLowerCase().match(SEARCH_TOKEN) ?? []
+  const uniqueTerms = [...new Set(terms)]
+  if (uniqueTerms.length === 0) return undefined
+  return uniqueTerms.map((term) => `("${term}" OR "${term}"*)`).join(' AND ')
 }
 
 function encodeCursor(cursor: SearchCursor): string {

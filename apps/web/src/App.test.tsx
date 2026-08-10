@@ -2244,6 +2244,17 @@ describe('live sessions', () => {
     expect(utilityRenders.terminalPane).not.toHaveBeenCalled()
   })
 
+  it('opens chat search without rerendering the app shell', async () => {
+    render(<App />)
+    await screen.findByRole('button', { name: 'New session' })
+    appRenders.mockClear()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Search chats' }))
+
+    await screen.findByRole('dialog', { name: 'Search all chats' })
+    expect(appRenders).not.toHaveBeenCalled()
+  })
+
   it('flushes pending deltas before a completion event', async () => {
     render(<App />)
     fireEvent.click(await screen.findByRole('button', { name: 'New session' }))
