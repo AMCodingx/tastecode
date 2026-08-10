@@ -24,7 +24,7 @@ import type {
   SidebarSettings,
 } from '@harness/contracts'
 import { isDesktop, isMacOS, pickFolder, setDesktopTheme } from './bridge.js'
-import { isEditableTarget, matchesShortcut, SHORTCUTS, shortcutLabel } from './shortcuts.js'
+import { isEditableTarget, matchesShortcut, SHORTCUTS } from './shortcuts.js'
 import { warmHighlighter } from './ui/highlighter.js'
 import { Transport } from './transport.js'
 import {
@@ -2115,22 +2115,12 @@ export function App() {
   )
   const commands = useMemo<PaletteCommand[]>(() => {
     if (!paletteScope) return EMPTY_PALETTE_COMMANDS
-    const labels = {
-      newChat: shortcutLabel(SHORTCUTS.newChat, macOS),
-      switchProject: shortcutLabel(SHORTCUTS.switchProject, macOS),
-      newProject: shortcutLabel(SHORTCUTS.newProject, macOS),
-      settings: shortcutLabel(SHORTCUTS.settings, macOS),
-      searchSessions: shortcutLabel(SHORTCUTS.searchSessions, macOS),
-      focusComposer: shortcutLabel(SHORTCUTS.focusComposer, macOS),
-      toggleSidebar: shortcutLabel(SHORTCUTS.toggleSidebar, macOS),
-    }
     return [
       {
         id: 'search-sessions',
         title: 'Search all chats',
         detail: 'Titles, messages, commands, and tool output across projects',
         group: 'Actions',
-        shortcut: labels.searchSessions,
         run: () => {
           sessionSearch.current?.open()
         },
@@ -2141,7 +2131,6 @@ export function App() {
         detail: activePath ? `Start in ${basename(activePath)}` : 'Choose a project folder',
         group: 'Actions',
         keywords: 'session conversation',
-        shortcut: labels.newChat,
         run: startNewChat,
       },
       {
@@ -2150,7 +2139,6 @@ export function App() {
         detail: 'Choose another workspace',
         group: 'Actions',
         keywords: 'folder workspace',
-        shortcut: labels.switchProject,
         run: () => setPaletteScope('projects'),
       },
       {
@@ -2159,7 +2147,6 @@ export function App() {
         detail: 'Add a folder to the sidebar',
         group: 'Actions',
         keywords: 'add open folder workspace',
-        shortcut: labels.newProject,
         projectCommand: true,
         run: () => void addProject(),
       },
@@ -2171,7 +2158,6 @@ export function App() {
               detail: 'Move the cursor to your prompt',
               group: 'Actions' as const,
               keywords: 'prompt message type',
-              shortcut: labels.focusComposer,
               run: () => setComposerFocusRequest((request) => request + 1),
             },
           ]
@@ -2181,7 +2167,6 @@ export function App() {
         title: collapsed ? 'Show sidebar' : 'Hide sidebar',
         group: 'Actions',
         keywords: 'rail navigation',
-        shortcut: labels.toggleSidebar,
         run: () => setCollapsed((current) => !current),
       },
       {
@@ -2189,7 +2174,6 @@ export function App() {
         title: 'Settings',
         detail: 'Providers, appearance, storage',
         group: 'Actions',
-        shortcut: labels.settings,
         run: () => openSettings(),
       },
       ...projects.map((project): PaletteCommand => ({
@@ -2223,7 +2207,6 @@ export function App() {
     ]
   }, [
     paletteScope,
-    macOS,
     activePath,
     startNewChat,
     addProject,

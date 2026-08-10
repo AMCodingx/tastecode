@@ -1775,6 +1775,7 @@ describe('global shortcuts', () => {
     const search = screen.getByRole('textbox', { name: 'Search commands' })
     expect(document.activeElement).toBe(search)
     expect(screen.getByRole('option', { name: /Settings/ })).toBeTruthy()
+    expect(document.querySelector('.shortcut')).toBeNull()
     expect(
       screen.getByRole('option', { name: /^Another Project \/work\/another-project$/ }),
     ).toBeTruthy()
@@ -1812,6 +1813,8 @@ describe('global shortcuts', () => {
     await screen.findByRole('button', { name: 'New session' })
     const actions = document.querySelector<HTMLElement>('.rail__actions')
     expect(actions).not.toBeNull()
+    expect(within(actions!).queryByText('⌘N')).toBeNull()
+    expect(within(actions!).queryByText('⌘⇧O')).toBeNull()
     expect(screen.queryByRole('button', { name: 'Project' })).toBeNull()
 
     fireEvent.keyDown(window, { key: 'p', metaKey: true })
