@@ -7,16 +7,12 @@ import path from 'node:path'
 import { runCli } from '@harness/proc'
 import { WebSocketServer, type WebSocket, type WebSocketServer as WebSocketServerType } from 'ws'
 import type { ConnectionAddress, ConnectionsStatus } from '@harness/contracts'
-import { CONSOLE_PAGE } from './mobile-console.js'
 import type { Store } from './store.js'
 
 const PAIRING_TTL_MS = 5 * 60 * 1_000
 
 export type MobileConnectionAccess =
-  | { kind: 'pairing'; ticketHash: string }
-  | { kind: 'device'; deviceId: string }
-  | { kind: 'console' }
-  | { kind: 'admin' }
+  { kind: 'pairing'; ticketHash: string } | { kind: 'device'; deviceId: string } | { kind: 'admin' }
 
 type ConnectionHandler = (
   socket: WebSocket,
@@ -24,16 +20,8 @@ type ConnectionHandler = (
   access: MobileConnectionAccess,
 ) => void
 
-const UNAUTHORIZED_PAGE = `<!doctype html>
-<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Harness console</title><style>body{background:#0f0f0f;color:#ededed;font:15px system-ui,sans-serif;display:flex;min-height:100vh;align-items:center;justify-content:center;margin:0}main{max-width:30rem;padding:2rem;text-align:center}h1{font-size:1.05rem}</style>
-</head><body><main><h1>This console link is not authorized</h1>
-<p style="color:#a3a3a3">Open the console URL from Harness on your computer — it carries the access token.</p>
-</main></body></html>
-`
-
 /**
- * The mobile listener: one port, three surfaces.
+ * The mobile listener: one port, two surfaces.
  *
  * - **Web app** — the full harness UI, served over HTTP at `/`. The phone
  *   loads it from `http://<address>:<port>/#access_token=…` and the page
@@ -41,17 +29,15 @@ const UNAUTHORIZED_PAGE = `<!doctype html>
  *   per machine. The long-lived web token (OS credential store) keeps the
  *   URL stable across restarts, and grants full admin access — this is the
  *   desktop app on a phone.
- * - **Web console** — a lightweight Tailscale-web-style management page at
- *   `/console?token=…`, management-only (status, pairing codes, revoke). Its
- *   token is separate from the web app's on purpose.
  * - **Native-app protocol** — the existing WebSocket surface at `/` (and
  *   `/ws` for browser clients) that paired native apps and the pairing
  *   bootstrap speak. Its scheme is unchanged.
  *
- * The listener binds whenever the server runs, so all three stay reachable
+ * The listener binds whenever the server runs, so both stay reachable
  * even when native-app connections are switched off ("mobile access" off
  * means the device tokens stop being accepted, not that the web surfaces
- * disappear).
+ * disappear). Device management itself lives in the desktop app's Settings,
+ * never in a separate web page.
  */
 export class MobileAccess {
   #store: Store
@@ -68,7 +54,6 @@ export class MobileAccess {
   #listeningPort: number | undefined
   #tickets = new Map<string, number>()
   #protocolEnabled = false
-  #consoleToken: string
   #webToken: string
   #webRoot: string | undefined
 
@@ -79,15 +64,12 @@ export class MobileAccess {
     serverName?: string
     networkInterfaces?: () => NodeJS.Dict<NetworkInterfaceInfo[]>
     resolveTailscaleAddresses?: () => Promise<ReadonlySet<string>>
-    /** Long-lived token that keeps the console URL stable across restarts.
-     * Empty disables the console surface entirely. */
-    consoleToken?: string
     /** Long-lived token that authenticates the full web app on a phone.
      * Empty disables the web-app surface. */
     webToken?: string
     /** Directory containing the built web app (`index.html` at its root).
-     * When absent, `/` serves nothing and only the console page is offered. */
-    webRoot?: string
+     * When absent, `/` serves nothing and the phone web app is disabled. */
+    webRoot?: string | undefined
   }) {
     this.#store = options.store
     this.#configuredPort = options.port
@@ -95,7 +77,6 @@ export class MobileAccess {
     this.#serverName = options.serverName ?? os.hostname()
     this.#interfaces = options.networkInterfaces ?? os.networkInterfaces
     this.#resolveTailscaleAddresses = options.resolveTailscaleAddresses ?? detectTailscaleAddresses
-    this.#consoleToken = options.consoleToken ?? ''
     this.#webToken = options.webToken ?? ''
     this.#webRoot = options.webRoot ? path.resolve(options.webRoot) : undefined
   }
@@ -112,10 +93,6 @@ export class MobileAccess {
       port,
       addresses,
       devices: this.#store.pairedDevices(),
-      consoleUrls:
-        listening && this.#consoleToken
-          ? addresses.map((address) => consoleUrlFor(address.url, this.#consoleToken))
-          : [],
       webUrls:
         listening && this.#webToken && this.#webRoot
           ? addresses.map((address) => webUrlFor(address.url, this.#webToken))
@@ -149,8 +126,8 @@ export class MobileAccess {
 
   /**
    * Whether the native-app protocol (device tokens, new pairings) is
-   * accepted. The web console is unaffected. Persisted via the store so it
-   * survives restarts.
+   * accepted. The web-app surface is unaffected. Persisted via the store so
+   * it survives restarts.
    */
   setProtocolEnabled(enabled: boolean): void {
     this.#protocolEnabled = enabled
@@ -203,11 +180,6 @@ export class MobileAccess {
     if (pairingTicket) {
       const ticketHash = digest(pairingTicket)
       if (this.#tickets.has(ticketHash)) return { kind: 'pairing', ticketHash }
-    }
-
-    const consoleToken = url.searchParams.get('console_token')
-    if (consoleToken && this.#consoleToken && safeEqual(consoleToken, this.#consoleToken)) {
-      return { kind: 'console' }
     }
 
     const deviceToken = url.searchParams.get('token')
@@ -294,7 +266,7 @@ export class MobileAccess {
         return
       }
       // `/` keeps the native app's existing URL scheme (`ws://ip:port/?token=…`);
-      // `/ws` is what the browser console uses.
+      // `/ws` is what the browser web app uses.
       if (pathname !== '/' && pathname !== '/ws') {
         socket.destroy()
         return
@@ -331,18 +303,6 @@ export class MobileAccess {
   #handleHttp(request: IncomingMessage, response: ServerResponse): void {
     const url = new URL(request.url ?? '/', 'http://harness.local')
     const pathname = url.pathname
-
-    if (pathname === '/console') {
-      const supplied = url.searchParams.get('token') ?? ''
-      if (!this.#consoleToken || !safeEqual(supplied, this.#consoleToken)) {
-        this.#respondHtml(response, 401, UNAUTHORIZED_PAGE)
-        return
-      }
-      // The URL carries a long-lived credential, so it must never be cached,
-      // referrer-leaked, or framed.
-      this.#respondHtml(response, 200, CONSOLE_PAGE)
-      return
-    }
 
     if (!this.#webRoot) {
       this.#respondHtml(response, 404, '<!doctype html><html><body>Not found</body></html>')
@@ -458,12 +418,6 @@ function safeEqual(left: string, right: string): boolean {
 
 function cleanDeviceName(name: string): string {
   return name.trim().replace(/\s+/g, ' ').slice(0, 80) || 'Mobile device'
-}
-
-/** The bookmarkable browser URL for the web console at the given route. */
-export function consoleUrlFor(wsUrl: string, token: string): string {
-  const base = wsUrl.replace(/^wss?/i, 'http')
-  return `${base}/console?token=${encodeURIComponent(token)}`
 }
 
 /** The bookmarkable URL that opens the full web app on a phone. */

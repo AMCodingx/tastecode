@@ -250,7 +250,7 @@
         <a href="#settings">Settings</a>
         <a href="#shell">Desktop shell and security</a>
         <a href="#mobile">Native mobile</a>
-        <a href="#web-console">Web access</a>
+        <a href="#web-access">Web access</a>
       </div>
 
       <section id="providers">
@@ -1330,7 +1330,7 @@
         </ul>
       </section>
 
-      <section id="web-console">
+      <section id="web-access">
         <header>
           <h2>Web access</h2>
           <span class="count"></span>
@@ -1348,9 +1348,11 @@
           <li>
             <label
               ><input type="checkbox" /><span
-                >Stable, bookmarkable app URL — long-lived admin token in the OS credential store
-                (separate from the console token), unchanged across restarts
-                <span class="d">fixed port + Tailscale address + persistent token in the hash</span></span
+                >Stable, bookmarkable app URL — long-lived admin token in the OS credential store,
+                unchanged across restarts
+                <span class="d"
+                  >fixed port + Tailscale address + persistent token in the hash</span
+                ></span
               ></label
             >
           </li>
@@ -1366,23 +1368,6 @@
           <li>
             <label
               ><input type="checkbox" /><span
-                >Mobile-first Tailscale-style management console at
-                <code>/console?token=…</code>: see paired devices, copy URLs, copy pairing codes,
-                revoke devices</span
-              ></label
-            >
-          </li>
-          <li>
-            <label
-              ><input type="checkbox" /><span
-                >Console access is management-only: connections.status, startPairing, stop and
-                revoke — nothing else</span
-              ></label
-            >
-          </li>
-          <li>
-            <label
-              ><input type="checkbox" /><span
                 >Web surfaces reachable whenever the server runs; native-app access toggled
                 separately</span
               ></label
@@ -1391,8 +1376,9 @@
           <li>
             <label
               ><input type="checkbox" /><span
-                >Desktop Settings shows the app URL with copy actions and a scan QR, plus the
-                console link underneath</span
+                >The desktop app is the management console: Settings → Mobile access shows the app
+                URL with copy actions and a scan QR, generates pairing codes, lists paired devices
+                and revokes them</span
               ></label
             >
           </li>

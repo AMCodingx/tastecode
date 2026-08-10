@@ -319,7 +319,6 @@ describe('protocol envelopes', () => {
         },
       ],
       devices: [],
-      consoleUrls: ['http://100.101.22.33:4312/console?token=stable-console-token'],
       webUrls: ['http://100.101.22.33:4312/#access_token=stable-web-token'],
       pairingUri: 'harness://pair?payload=short-lived-ticket',
       expiresAt: Date.now() + 300_000,
@@ -336,23 +335,19 @@ describe('protocol envelopes', () => {
     ).toMatchObject({ error: { code: 'forbidden' } })
   })
 
-  it('only exposes web-console URLs on the admin status surface', () => {
+  it('only exposes the web-app URLs on the admin status surface', () => {
     const status = methods['connections.status'].result.parse({
       enabled: true,
       serverName: 'Studio Mac',
       port: 4312,
       addresses: [{ kind: 'lan', label: 'en0 192.168.1.44', url: 'ws://192.168.1.44:4312' }],
       devices: [],
-      consoleUrls: ['http://192.168.1.44:4312/console?token=stable-console-token'],
       webUrls: ['http://192.168.1.44:4312/#access_token=stable-web-token'],
     })
-    expect(status.consoleUrls[0]).toBe(
-      'http://192.168.1.44:4312/console?token=stable-console-token',
-    )
     expect(status.webUrls[0]).toBe('http://192.168.1.44:4312/#access_token=stable-web-token')
 
-    // The device-facing shape deliberately carries no console URLs: a paired
-    // device must not learn the long-lived console token.
+    // The device-facing shape deliberately carries no app URLs: a paired
+    // device must not learn the long-lived web token.
     expect(
       methods['connections.deviceStatus'].result.parse({
         serverName: 'Studio Mac',

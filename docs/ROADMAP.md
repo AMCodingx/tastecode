@@ -125,9 +125,9 @@ end-to-end encrypted.
 harness desktop, served by the server from the built web client at
 `http://<tailscale-ip>:4312/#access_token=…` (stable across restarts, bookmarked once).
 The page derives its socket from its own origin, so no per-machine URL is baked in. A
-lightweight management console also lives at `http://<tailscale-ip>:4312/console?token=…`
-(management-only: see devices, copy URLs and pairing codes, revoke). Both stay reachable
-while the server runs; native-app access toggles separately.
+management console is deliberately not a web page — device management (see devices, copy
+URLs and pairing codes, revoke) lives in the desktop app's Settings under Mobile access.
+The web surface stays reachable while the server runs; native-app access toggles separately.
 
 ---
 
@@ -152,6 +152,7 @@ while the server runs; native-app access toggles separately.
 3. **Any commercial intent, ever?** Decides the license, and it's irreversible once outside
    contributors arrive.
 4. **What is the final TasteSkill v2 runtime contract?** M4 depends on it.
-5. **Web / self-host surface at launch?** The management console is shipped (stable URL,
-   device management over Tailscale/LAN). Full app hosting — serving the whole UI to any
-   browser — still nearly free architecturally, but doubles the support and security surface.
+5. **Web / self-host surface at launch?** The web app for phones is shipped (stable URL,
+   full harness UI over Tailscale/LAN); device management lives in the desktop app, not on
+   a web page. Full app hosting — serving the whole UI to any browser — still nearly free
+   architecturally, but doubles the support and security surface.

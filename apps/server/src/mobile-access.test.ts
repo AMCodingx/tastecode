@@ -123,44 +123,10 @@ describe('mobile access', () => {
     }
   })
 
-  it('serves the web console over HTTP only to the stable token', async () => {
-    const store = new Store(':memory:')
-    const access = createAccess(store, { consoleToken: 'stable-console-token' })
-    await access.start()
-    const port = access.status().port
-    const base = `http://127.0.0.1:${port}`
-    try {
-      const ok = await fetch(`${base}/console?token=stable-console-token`)
-      expect(ok.status).toBe(200)
-      expect(ok.headers.get('cache-control')).toBe('no-store')
-      expect(await ok.text()).toContain('Harness console')
-
-      // Without a web-app build, the root offers nothing.
-      const root = await fetch(`${base}/`)
-      expect(root.status).toBe(404)
-
-      const missing = await fetch(`${base}/console`)
-      expect(missing.status).toBe(401)
-      const wrong = await fetch(`${base}/console?token=wrong-token`)
-      expect(wrong.status).toBe(401)
-      const unknown = await fetch(`${base}/nope?token=stable-console-token`)
-      expect(unknown.status).toBe(404)
-
-      expect(access.status().consoleUrls).toEqual([
-        `http://100.101.22.33:${port}/console?token=stable-console-token`,
-        `http://192.168.1.44:${port}/console?token=stable-console-token`,
-      ])
-    } finally {
-      await access.stop()
-      store.close()
-    }
-  })
-
   it('serves the full web app at the root without a token gate', async () => {
     const store = new Store(':memory:')
     const webRoot = await fixtureWebApp()
     const access = createAccess(store, {
-      consoleToken: 'stable-console-token',
       webToken: 'stable-web-token',
       webRoot,
     })
@@ -193,10 +159,6 @@ describe('mobile access', () => {
       expect(escaped.status).toBe(200)
       expect(await escaped.text()).not.toContain('TOP-SECRET')
 
-      // The console coexists on the same listener.
-      const consolePage = await fetch(`${base}/console?token=stable-console-token`)
-      expect(consolePage.status).toBe(200)
-
       expect(access.status().webUrls).toEqual([
         `http://100.101.22.33:${port}/#access_token=stable-web-token`,
         `http://192.168.1.44:${port}/#access_token=stable-web-token`,
@@ -212,7 +174,6 @@ describe('mobile access', () => {
     const store = new Store(':memory:')
     const connections: MobileConnectionAccess[] = []
     const access = createAccess(store, {
-      consoleToken: 'stable-console-token',
       webToken: 'stable-web-token',
       onConnection: (_socket, _request, connection) => connections.push(connection),
     })
@@ -238,11 +199,11 @@ describe('mobile access', () => {
     }
   })
 
-  it('accepts console sockets while devices are refused when access is off', async () => {
+  it('keeps the web-app socket reachable while devices are refused when access is off', async () => {
     const store = new Store(':memory:')
     const connections: MobileConnectionAccess[] = []
     const access = createAccess(store, {
-      consoleToken: 'stable-console-token',
+      webToken: 'stable-web-token',
       onConnection: (_socket, _request, connection) => connections.push(connection),
     })
     await access.start()
@@ -265,7 +226,6 @@ describe('mobile access', () => {
 
       access.setProtocolEnabled(false)
       expect(access.status().enabled).toBe(false)
-      expect(access.status().consoleUrls.length).toBe(2)
 
       // After stopping, the same device token is refused with 1008.
       const refused = new WebSocket(
@@ -274,14 +234,14 @@ describe('mobile access', () => {
       const [refusedCode] = (await once(refused, 'close')) as [number, Buffer]
       expect(refusedCode).toBe(1008)
 
-      // The console socket is unaffected.
-      const consoleSocket = new WebSocket(
-        `ws://127.0.0.1:${port}/ws?console_token=${encodeURIComponent('stable-console-token')}`,
+      // The web-app (admin) socket is unaffected.
+      const adminSocket = new WebSocket(
+        `ws://127.0.0.1:${port}/ws?token=${encodeURIComponent('stable-web-token')}`,
       )
-      await once(consoleSocket, 'open')
-      expect(connections.some((connection) => connection.kind === 'console')).toBe(true)
-      consoleSocket.close()
-      await once(consoleSocket, 'close')
+      await once(adminSocket, 'open')
+      expect(connections.some((connection) => connection.kind === 'admin')).toBe(true)
+      adminSocket.close()
+      await once(adminSocket, 'close')
     } finally {
       await access.stop()
       store.close()
@@ -293,7 +253,6 @@ describe('mobile access', () => {
     const webRoot = await fixtureWebApp()
     const port = await availablePort()
     const first = createAccess(store, {
-      consoleToken: 'stable-console-token',
       webToken: 'stable-web-token',
       webRoot,
       port,
@@ -303,7 +262,6 @@ describe('mobile access', () => {
     await first.stop()
 
     const second = createAccess(store, {
-      consoleToken: 'stable-console-token',
       webToken: 'stable-web-token',
       webRoot,
       port,
@@ -323,7 +281,6 @@ describe('mobile access', () => {
 function createAccess(
   store: Store,
   options: {
-    consoleToken?: string
     webToken?: string
     webRoot?: string
     port?: number
@@ -340,7 +297,6 @@ function createAccess(
     serverName: 'Test computer',
     networkInterfaces: () => INTERFACES,
     resolveTailscaleAddresses: async () => new Set(['100.101.22.33']),
-    consoleToken: options.consoleToken,
     webToken: options.webToken,
     webRoot: options.webRoot,
     onConnection: options.onConnection ?? (() => undefined),

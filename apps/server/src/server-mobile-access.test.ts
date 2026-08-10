@@ -23,7 +23,6 @@ const INTERFACES = {
   ],
 }
 
-const CONSOLE_TOKEN = 'console-token-for-tests'
 const WEB_TOKEN = 'web-token-for-tests'
 
 const previousDataDir = process.env['HARNESS_DATA_DIR']
@@ -49,7 +48,6 @@ describe('server mobile trust boundary', () => {
       mobilePort: 0,
       mobileNetworkInterfaces: () => INTERFACES,
       resolveTailscaleAddresses: async () => new Set(['100.101.22.33']),
-      consoleToken: CONSOLE_TOKEN,
       webToken: WEB_TOKEN,
       webRoot: await fixtureWebApp(),
       projectBrowserHome: canonicalProjectBrowserHome,
@@ -65,9 +63,6 @@ describe('server mobile trust boundary', () => {
       const offer = methods['connections.startPairing'].result.parse(
         await request(admin, 'pair', 'connections.startPairing', {}),
       )
-      expect(offer.consoleUrls).toEqual([
-        `http://100.101.22.33:${offer.port}/console?token=${CONSOLE_TOKEN}`,
-      ])
       expect(offer.webUrls).toEqual([
         `http://100.101.22.33:${offer.port}/#access_token=${WEB_TOKEN}`,
       ])
@@ -90,20 +85,6 @@ describe('server mobile trust boundary', () => {
         await request(webClient, 'status', 'connections.status', {}),
       )
       expect(statusAsAdmin.webUrls.length).toBe(1)
-
-      // The web console can manage connections but nothing else.
-      const consoleSocket = await openSocket(
-        sockets,
-        `ws://127.0.0.1:${offer.port}/ws?console_token=${encodeURIComponent(CONSOLE_TOKEN)}`,
-      )
-      const consoleStatus = methods['connections.status'].result.parse(
-        await request(consoleSocket, 'console-status', 'connections.status', {}),
-      )
-      expect(consoleStatus.enabled).toBe(true)
-      expect(consoleStatus.consoleUrls.length).toBe(1)
-      await expect(request(consoleSocket, 'admin', 'projects.list', {})).rejects.toThrow(
-        '[forbidden]',
-      )
 
       const bootstrap = await openSocket(
         sockets,
@@ -153,12 +134,6 @@ describe('server mobile trust boundary', () => {
       await request(admin, 'revoke', 'connections.revoke', { deviceId: claimed.deviceId })
       const [code] = (await closed) as [number, Buffer]
       expect(code).toBe(1006)
-
-      // The console survives a revoked device and reports it gone.
-      const afterRevoke = methods['connections.status'].result.parse(
-        await request(consoleSocket, 'status-after-revoke', 'connections.status', {}),
-      )
-      expect(afterRevoke.devices).toEqual([])
     } finally {
       for (const socket of sockets) socket.terminate()
       await server.close()
@@ -177,7 +152,6 @@ describe('server mobile trust boundary', () => {
       mobilePort: 0,
       mobileNetworkInterfaces: () => INTERFACES,
       resolveTailscaleAddresses: async () => new Set(['100.101.22.33']),
-      consoleToken: CONSOLE_TOKEN,
       webToken: WEB_TOKEN,
       webRoot: await fixtureWebApp(),
     })
@@ -217,7 +191,6 @@ describe('server mobile trust boundary', () => {
         mobilePort: offer.port,
         mobileNetworkInterfaces: () => INTERFACES,
         resolveTailscaleAddresses: async () => new Set(['100.101.22.33']),
-        consoleToken: CONSOLE_TOKEN,
         webToken: WEB_TOKEN,
         webRoot: await fixtureWebApp(),
       })
@@ -231,7 +204,7 @@ describe('server mobile trust boundary', () => {
         projects: [],
       })
 
-      // The bookmarked console URL is byte-identical after the restart.
+      // The bookmarked web-app URL is byte-identical after the restart.
       const admin2 = await openSocket(
         sockets,
         `ws://127.0.0.1:${port}/?token=${encodeURIComponent('desktop-admin')}`,
@@ -239,9 +212,6 @@ describe('server mobile trust boundary', () => {
       const statusAfterRestart = methods['connections.status'].result.parse(
         await request(admin2, 'status-after-restart', 'connections.status', {}),
       )
-      expect(statusAfterRestart.consoleUrls).toEqual([
-        `http://100.101.22.33:${offer.port}/console?token=${CONSOLE_TOKEN}`,
-      ])
       expect(statusAfterRestart.webUrls).toEqual([
         `http://100.101.22.33:${offer.port}/#access_token=${WEB_TOKEN}`,
       ])

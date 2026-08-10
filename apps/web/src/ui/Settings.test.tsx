@@ -338,7 +338,6 @@ describe('provider settings', () => {
                 lastSeenAt: Date.now(),
               },
             ],
-            consoleUrls: ['http://100.101.2.3:4312/console?token=test-console-token'],
             webUrls: ['http://100.101.2.3:4312/#access_token=test-web-token'],
           }
         }
@@ -352,7 +351,6 @@ describe('provider settings', () => {
               { kind: 'tailscale', label: 'Tailscale 100.101.2.3', url: 'ws://100.101.2.3:4312' },
             ],
             devices: [],
-            consoleUrls: ['http://100.101.2.3:4312/console?token=test-console-token'],
             webUrls: ['http://100.101.2.3:4312/#access_token=test-web-token'],
             pairingUri: 'harness://pair?payload=test-ticket',
             expiresAt: Date.now() + 300_000,
@@ -509,18 +507,6 @@ describe('provider settings', () => {
     fireEvent.click(within(webRow).getByRole('button', { name: 'Copy' }))
     await waitFor(() => expect(writeText).toHaveBeenCalledWith(webUrl))
     expect(within(webRow).getByRole('button', { name: 'Copied' })).toBeTruthy()
-
-    // The stable management console is shown as the secondary link.
-    const consoleUrl = 'http://100.101.2.3:4312/console?token=test-console-token'
-    const consoleRow = screen.getByText(consoleUrl).closest<HTMLElement>('.settings__console-url')
-    if (!consoleRow) throw new Error('console URL row missing')
-    expect(consoleRow).toBeTruthy()
-    await waitFor(() =>
-      expect(screen.getByRole('img', { name: 'Web console QR code' })).toBeTruthy(),
-    )
-    fireEvent.click(within(consoleRow).getByRole('button', { name: 'Copy' }))
-    await waitFor(() => expect(writeText).toHaveBeenCalledWith(consoleUrl))
-    expect(within(consoleRow).getByRole('button', { name: 'Copied' })).toBeTruthy()
 
     const phoneRow = screen.getByText('Blueemi’s iPhone').closest<HTMLElement>('.settings__row')
     if (!phoneRow) throw new Error('paired phone row missing')

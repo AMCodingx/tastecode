@@ -74,17 +74,12 @@ export const PairedDeviceSchema = z.object({
 export type PairedDevice = z.infer<typeof PairedDeviceSchema>
 
 export const ConnectionsStatusSchema = z.object({
-  /** Whether the listener currently accepts native-app connections. The web
-   * console stays reachable even when this is false. */
+  /** Whether the listener currently accepts native-app connections. */
   enabled: z.boolean(),
   serverName: z.string().min(1),
   port: z.number().int().min(0).max(65_535),
   addresses: z.array(ConnectionAddressSchema),
   devices: z.array(PairedDeviceSchema),
-  /** Stable, bookmarkable web-console URLs (one per reachable address,
-   * Tailscale first). Each carries the long-lived console token, so the URL
-   * survives restarts unchanged. Admin-only: never returned to devices. */
-  consoleUrls: z.array(z.string().regex(/^https?:\/\//i, 'expected an HTTP console URL')),
   /** Stable, bookmarkable URLs for the full web app on a phone (one per
    * reachable address, Tailscale first). Each carries the long-lived web
    * token in the hash. Admin-only: never returned to devices. */
@@ -846,7 +841,7 @@ export const methods = {
     result: z.object({ models: z.array(ModelSchema) }),
   },
   /** Reports the mobile listener: native-app acceptance, reachable routes and
-   * the stable web-console URLs. */
+   * the stable web-app URLs. */
   'connections.status': {
     params: z.object({}),
     result: ConnectionsStatusSchema,
