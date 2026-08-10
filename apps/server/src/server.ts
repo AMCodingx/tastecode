@@ -164,7 +164,7 @@ export function startServer(
   }
 
   wss.on('connection', (socket, request) => {
-    if (!allowedOrigin(request.headers.origin)) {
+    if (!allowedOrigin(request.headers.origin, options.accessToken)) {
       socket.close(1008, 'Origin not allowed')
       return
     }
@@ -1012,15 +1012,24 @@ export function startServer(
  * gate straight back to the attacker it exists to stop. If a renderer of ours
  * ever reports an opaque origin, the answer is an access token for that
  * surface, not a hole here.
+ *
+ * When the server binds beyond loopback — a Tailscale or LAN address so a
+ * phone can reach the web UI — an access token is mandatory (see
+ * assertSafeBind), and that token becomes the trust boundary: any origin may
+ * attempt the handshake, but only a connection carrying the token is admitted.
+ * The dev:mobile flow serves the page from the same host, so its origin would
+ * otherwise be bounced here before the token was ever checked.
  */
-export function allowedOrigin(origin: string | undefined): boolean {
+export function allowedOrigin(origin: string | undefined, accessToken?: string): boolean {
   if (!origin || origin === 'file://') return true
+  if (origin === 'null') return false
   let hostname: string
   try {
     ;({ hostname } = new URL(origin))
   } catch {
     return false
   }
+  if (accessToken) return true
   return (
     hostname === 'localhost' ||
     hostname === '::1' ||
