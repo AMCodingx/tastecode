@@ -1958,9 +1958,7 @@ export function App() {
       if (!pullRequest.localProjectPath) return
       beginSession(pullRequest.localProjectPath)
       setComposerDraft((current) => ({
-        text:
-          `Review and help me manage ${pullRequest.url} (${pullRequest.title}). ` +
-          'Inspect its checks, review conversations, and local diff before making changes.',
+        text: `I wanted to work on ${pullRequest.url} (${pullRequest.title}).`,
         request: (current?.request ?? 0) + 1,
       }))
       setComposerFocusRequest((request) => request + 1)

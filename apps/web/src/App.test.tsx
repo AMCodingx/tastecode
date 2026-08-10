@@ -543,11 +543,10 @@ describe('web client', () => {
     expect(screen.queryByRole('region', { name: 'Pull requests' })).toBeNull()
     const composer = await screen.findByPlaceholderText('Do anything')
     await waitFor(() => {
-      expect((composer as HTMLTextAreaElement).value).toContain(
-        'https://github.com/Blueemi/harness/pull/1',
+      expect((composer as HTMLTextAreaElement).value).toBe(
+        'I wanted to work on https://github.com/Blueemi/harness/pull/1 (Add the parser).',
       )
     })
-    expect((composer as HTMLTextAreaElement).value).toContain('Add the parser')
   })
 
   it('restores the selected model immediately on the first cache-enabled launch', () => {
