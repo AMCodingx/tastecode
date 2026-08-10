@@ -110,6 +110,9 @@ describe('model settings', () => {
       />,
     )
 
+    const categories = screen.getByRole('navigation', { name: 'Settings categories' })
+    expect(within(categories).getAllByRole('button')[0]?.textContent).toBe('Profile')
+
     fireEvent.click(screen.getByRole('button', { name: 'Models' }))
     const search = screen.getByRole('searchbox', { name: 'Search OpenCode models' })
     fireEvent.change(search, { target: { value: 'qwen 3.8' } })
@@ -130,7 +133,7 @@ describe('model settings', () => {
 describe('provider settings', () => {
   it('shows one account action per provider and runs that provider flow', async () => {
     const accounts: Record<string, Account> = {
-      codex: { signedIn: true, plan: 'pro' },
+      codex: { signedIn: true, email: 'private@example.com', plan: 'pro' },
       'claude-code': { signedIn: true, plan: 'pro' },
       grok: { signedIn: false },
     }
@@ -278,6 +281,20 @@ describe('provider settings', () => {
 
     await waitFor(() => expect(screen.getAllByRole('button', { name: 'Sign out' })).toHaveLength(2))
     expect(screen.getAllByText('Codex')).toHaveLength(1)
+
+    const codexRow = screen.getByText('Codex').closest<HTMLElement>('.settings__row')
+    if (!codexRow) throw new Error('Codex provider row missing')
+    expect(within(codexRow).getByText('p******@example.com')).toBeTruthy()
+    const email = within(codexRow).getByText('private@example.com')
+    expect(email.getAttribute('aria-hidden')).toBe('true')
+    const eye = within(codexRow).getByLabelText('Show account email')
+    fireEvent.click(eye)
+    expect(email.getAttribute('aria-hidden')).toBe('true')
+    fireEvent.mouseEnter(eye)
+    expect(email.getAttribute('aria-hidden')).toBe('false')
+    expect(within(codexRow).getByLabelText('Hide account email')).toBeTruthy()
+    fireEvent.mouseLeave(eye)
+    expect(email.getAttribute('aria-hidden')).toBe('true')
 
     // Beta scope: agent rows and the API-connection form stay out entirely,
     // even when the server still reports agents.

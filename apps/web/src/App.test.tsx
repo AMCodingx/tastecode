@@ -1046,6 +1046,20 @@ describe('new chats', () => {
     })
   })
 
+  it('opens the account Profile shortcut directly in the top settings category', async () => {
+    render(<App />)
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Account' }))
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Profile' }))
+
+    expect(await screen.findByRole('dialog', { name: 'Settings' })).toBeTruthy()
+    expect(screen.getByRole('button', { name: 'Profile' }).getAttribute('aria-current')).toBe(
+      'page',
+    )
+    expect(await screen.findByRole('heading', { name: 'Profile' })).toBeTruthy()
+    expect(transport.request).toHaveBeenCalledWith('usage.history', { range: 'all' })
+  })
+
   it('persists inbox mode and bounded inactivity settings on the server', async () => {
     serverSidebarSettings.mode = 'inbox'
     render(<App />)

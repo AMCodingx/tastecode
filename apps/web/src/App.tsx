@@ -44,7 +44,7 @@ import { Composer, type WorkspaceInfo } from './ui/Composer.js'
 import { getNextServiceTierForModel } from './ui/ModelSelector.js'
 import { RollbackDialog, type Checkpoint } from './ui/RollbackDialog.js'
 import { SessionSearchHost, type SessionSearchHandle } from './ui/SessionSearchHost.js'
-import { Settings } from './ui/Settings.js'
+import { Settings, type SettingsSection } from './ui/Settings.js'
 import { Sidebar, type Project } from './ui/Sidebar.js'
 import { StageHeader } from './ui/StageHeader.js'
 import { Thread } from './ui/Thread.js'
@@ -257,6 +257,7 @@ export function App() {
   const [voiceAvailable, setVoiceAvailable] = useState(false)
   const [settingsOpen, setSettingsOpen] = useState(false)
   const [surface, setSurface] = useState<'chat' | 'pull-requests'>('chat')
+  const [settingsSection, setSettingsSection] = useState<SettingsSection>('providers')
   const [sidebarSettings, setSidebarSettings] = useState(DEFAULT_SIDEBAR_SETTINGS)
   const [paletteScope, setPaletteScope] = useState<CommandScope | null>(null)
   const [preferredNewThreadProject, setPreferredNewThreadProject] = useState<string>()
@@ -1857,7 +1858,7 @@ export function App() {
       if (settingsOpen) {
         if (matchesShortcut(event, SHORTCUTS.settings)) {
           event.preventDefault()
-          setSettingsOpen((open) => !open)
+          setSettingsOpen(false)
         }
         return
       }
@@ -1888,7 +1889,8 @@ export function App() {
       if (matchesShortcut(event, SHORTCUTS.settings)) {
         event.preventDefault()
         setPaletteScope(null)
-        setSettingsOpen((open) => !open)
+        setSettingsSection('providers')
+        setSettingsOpen(true)
         return
       }
       if (matchesShortcut(event, SHORTCUTS.focusComposer) && activePath) {
@@ -2070,7 +2072,10 @@ export function App() {
     },
     [selectSession],
   )
-  const openSettings = useCallback(() => setSettingsOpen(true), [])
+  const openSettings = useCallback((section: SettingsSection = 'providers') => {
+    setSettingsSection(section)
+    setSettingsOpen(true)
+  }, [])
   const closeSettings = useCallback(() => setSettingsOpen(false), [])
   const resetSettings = useCallback(() => {
     localStorage.clear()
@@ -2185,7 +2190,7 @@ export function App() {
         detail: 'Providers, appearance, storage',
         group: 'Actions',
         shortcut: labels.settings,
-        run: () => setSettingsOpen(true),
+        run: () => openSettings(),
       },
       ...projects.map((project): PaletteCommand => ({
         id: `project-${encodeURIComponent(project.path)}`,
@@ -2222,6 +2227,7 @@ export function App() {
     activePath,
     startNewChat,
     addProject,
+    openSettings,
     collapsed,
     projects,
     selectProject,
@@ -2377,6 +2383,7 @@ export function App() {
 
       {settingsOpen ? (
         <Settings
+          initialSection={settingsSection}
           provider={provider}
           providerName={providerName(provider, acpAgentName)}
           transport={transport}
