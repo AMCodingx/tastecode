@@ -11,6 +11,7 @@ import {
   connectionAddresses,
   listenerAddressAllowed,
   MobileAccess,
+  probeDevServer,
   type MobileConnectionAccess,
 } from './mobile-access.js'
 import { Store } from './store.js'
@@ -228,6 +229,64 @@ describe('mobile access', () => {
     }
   })
 
+  it('auto-detects the Vite dev server at a reachable loopback URL', async () => {
+    const devServer = createServer((_request, response) => {
+      response.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' })
+      response.end('<!doctype html><html><body>vite</body></html>')
+    })
+    await new Promise<void>((resolve, reject) => {
+      devServer.once('error', reject)
+      devServer.listen(0, '127.0.0.1', resolve)
+    })
+    const devAddress = devServer.address()
+    if (!devAddress || typeof devAddress === 'string') throw new Error('could not start dev server')
+    const target = `http://127.0.0.1:${devAddress.port}`
+    try {
+      await expect(probeDevServer(target)).resolves.toBe(new URL(target).toString())
+    } finally {
+      await new Promise<void>((resolve) => devServer.close(() => resolve()))
+    }
+  })
+
+  it('does not auto-detect a dev server that is not listening', async () => {
+    const port = await availablePort()
+    await expect(probeDevServer(`http://127.0.0.1:${port}`)).resolves.toBeUndefined()
+  })
+
+  it('auto-detects a running dev server and proxies the web surface to it', async () => {
+    const store = new Store(':memory:')
+    const devServer = createServer((_request, response) => {
+      response.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' })
+      response.end('<!doctype html><html><body>auto-detect-marker</body></html>')
+    })
+    await new Promise<void>((resolve, reject) => {
+      devServer.once('error', reject)
+      devServer.listen(0, '127.0.0.1', resolve)
+    })
+    const devAddress = devServer.address()
+    if (!devAddress || typeof devAddress === 'string') throw new Error('could not start dev server')
+
+    const access = createAccess(store, {
+      webToken: 'stable-web-token',
+      webDevServerProbeUrl: `http://127.0.0.1:${devAddress.port}`,
+    })
+    await access.start()
+    const port = access.status().port
+    try {
+      const page = await fetch(`http://127.0.0.1:${port}/`)
+      expect(page.status).toBe(200)
+      expect(await page.text()).toContain('auto-detect-marker')
+      expect(access.status().webUrls).toEqual([
+        `http://100.101.22.33:${port}/#access_token=stable-web-token`,
+        `http://192.168.1.44:${port}/#access_token=stable-web-token`,
+      ])
+    } finally {
+      await access.stop()
+      store.close()
+      await new Promise<void>((resolve) => devServer.close(() => resolve()))
+    }
+  })
+
   it('admits the web app socket as an admin client', async () => {
     const store = new Store(':memory:')
     const connections: MobileConnectionAccess[] = []
@@ -342,6 +401,7 @@ function createAccess(
     webToken?: string
     webRoot?: string
     webDevServerUrl?: string
+    webDevServerProbeUrl?: string | false
     port?: number
     onConnection?: (
       socket: WebSocket,
@@ -359,6 +419,7 @@ function createAccess(
     webToken: options.webToken,
     webRoot: options.webRoot,
     webDevServerUrl: options.webDevServerUrl,
+    webDevServerProbeUrl: options.webDevServerProbeUrl ?? false,
     onConnection: options.onConnection ?? (() => undefined),
   })
 }

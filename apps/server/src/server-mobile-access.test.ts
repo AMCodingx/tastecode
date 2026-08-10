@@ -50,6 +50,7 @@ describe('server mobile trust boundary', () => {
       resolveTailscaleAddresses: async () => new Set(['100.101.22.33']),
       webToken: WEB_TOKEN,
       webRoot: await fixtureWebApp(),
+      webDevServerProbeUrl: false,
       projectBrowserHome: canonicalProjectBrowserHome,
     })
     const sockets = new Set<WebSocket>()
@@ -154,6 +155,7 @@ describe('server mobile trust boundary', () => {
       resolveTailscaleAddresses: async () => new Set(['100.101.22.33']),
       webToken: WEB_TOKEN,
       webRoot: await fixtureWebApp(),
+      webDevServerProbeUrl: false,
     })
     const sockets = new Set<WebSocket>()
     let firstServerClosed = false
@@ -193,6 +195,7 @@ describe('server mobile trust boundary', () => {
         resolveTailscaleAddresses: async () => new Set(['100.101.22.33']),
         webToken: WEB_TOKEN,
         webRoot: await fixtureWebApp(),
+        webDevServerProbeUrl: false,
       })
       await waitForPort(offer.port)
       const restored = await openSocket(

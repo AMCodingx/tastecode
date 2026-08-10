@@ -82,6 +82,8 @@ export function startServer(
     webRoot?: string
     /** Vite dev server the mobile web-app surface proxies to in dev. */
     webDevServerUrl?: string
+    /** Where to probe for a live Vite dev server; `false` disables the probe. */
+    webDevServerProbeUrl?: string | false
     projectBrowserHome?: string
   } = {},
 ) {
@@ -161,6 +163,9 @@ export function startServer(
     webToken,
     webRoot,
     webDevServerUrl: options.webDevServerUrl,
+    ...(options.webDevServerProbeUrl !== undefined
+      ? { webDevServerProbeUrl: options.webDevServerProbeUrl }
+      : {}),
     ...(options.mobileNetworkInterfaces
       ? { networkInterfaces: options.mobileNetworkInterfaces }
       : {}),

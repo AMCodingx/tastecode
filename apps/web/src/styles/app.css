@@ -1388,6 +1388,27 @@
     font-size: var(--t-xl);
   }
 
+  /* Five wide columns cannot fit a phone screen and the card scrolled
+     sideways, clipping the trailing stats. Wrap into a two-up grid so the
+     whole card reads in place; the hairlines have to be rebuilt for the wrap
+     because the desktop rule only borders the right-hand neighbour. */
+  .profile-stats {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    overflow: visible;
+  }
+
+  .profile-stats > div + div {
+    border-left: 0;
+  }
+
+  .profile-stats > div:nth-child(2n) {
+    border-left: 1px solid var(--line);
+  }
+
+  .profile-stats > div:nth-child(n + 3) {
+    border-top: 1px solid var(--line);
+  }
+
   .profile-stats {
     margin-bottom: 36px;
   }
@@ -9190,6 +9211,15 @@
 }
 
 @media (max-width: 700px) {
+  .shell {
+    /* The touch target needs a taller bar than the desktop chrome token, so
+       the titlebar grows to 44px. Grid rows still read --titlebar-h: keeping
+       the token at 34px would let the bar overflow its row and slide the
+       sidebar drawer up underneath it, clipping its corner and overlapping
+       the reveal toggle. */
+    --titlebar-h: 44px;
+  }
+
   .shell__body {
     grid-template-columns: 0 minmax(0, 1fr);
   }
@@ -9325,12 +9355,57 @@
     padding: 12px;
   }
 
+  /* A phone has no room for a rail column beside the settings content — the
+     fixed 136px sidebar starved the panel to under half the screen. Collapse
+     the dialog to a single column: the sidebar becomes a horizontal strip of
+     categories under the titlebar and the content takes the full width. */
   .settings {
-    grid-template-columns: minmax(148px, 34vw) minmax(0, 1fr);
+    grid-template-columns: 1fr;
+    grid-template-rows: auto minmax(0, 1fr);
+  }
+
+  .settings__sidebar {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: calc(var(--titlebar-h) + 8px) 10px 8px;
+    border-right: 0;
+    border-bottom: 1px solid var(--line);
+    box-shadow: none;
+  }
+
+  .settings__back {
+    flex: none;
+    width: auto;
+    white-space: nowrap;
+  }
+
+  .settings__nav-label {
+    display: none;
+  }
+
+  .settings__nav {
+    flex: 1;
+    min-width: 0;
+    flex-direction: row;
+    gap: 4px;
+    overflow-x: auto;
+    overscroll-behavior-inline: contain;
+    scrollbar-width: none;
+  }
+
+  .settings__nav::-webkit-scrollbar {
+    display: none;
+  }
+
+  .settings__nav-item {
+    flex: none;
+    width: auto;
+    white-space: nowrap;
   }
 
   .settings__content {
-    padding: calc(var(--titlebar-h) + 36px) 24px 48px;
+    padding: 28px 18px 48px;
   }
 
   .settings__title {
@@ -9368,15 +9443,16 @@
 
 @media (max-width: 520px) {
   .settings {
-    grid-template-columns: 136px minmax(0, 1fr);
+    grid-template-columns: 1fr;
+    grid-template-rows: auto minmax(0, 1fr);
   }
 
   .settings__sidebar {
-    padding-inline: 6px;
+    padding-inline: 8px;
   }
 
   .settings__content {
-    padding-inline: 14px;
+    padding-inline: 16px;
   }
 
   .settings__row {
