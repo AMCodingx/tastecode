@@ -250,6 +250,7 @@
         <a href="#settings">Settings</a>
         <a href="#shell">Desktop shell and security</a>
         <a href="#mobile">Native mobile</a>
+        <a href="#web-console">Web console</a>
       </div>
 
       <section id="providers">
@@ -1323,6 +1324,55 @@
               ><input type="checkbox" /><span
                 >Stream transcripts, answer approvals, steer queued turns, interrupt and review
                 diffs</span
+              ></label
+            >
+          </li>
+        </ul>
+      </section>
+
+      <section id="web-console">
+        <header>
+          <h2>Web console</h2>
+          <span class="count"></span>
+        </header>
+        <ul class="check">
+          <li>
+            <label
+              ><input type="checkbox" /><span
+                >Stable, bookmarkable console URL — long-lived token in the OS credential store,
+                unchanged across restarts
+                <span class="d">fixed port + Tailscale address + persistent token</span></span
+              ></label
+            >
+          </li>
+          <li>
+            <label
+              ><input type="checkbox" /><span
+                >Mobile-first Tailscale-style page served by the server: see paired devices, copy
+                console URLs, copy pairing codes, revoke devices</span
+              ></label
+            >
+          </li>
+          <li>
+            <label
+              ><input type="checkbox" /><span
+                >Console access is management-only: connections.status, startPairing, stop and
+                revoke — nothing else</span
+              ></label
+            >
+          </li>
+          <li>
+            <label
+              ><input type="checkbox" /><span
+                >Console reachable whenever the server runs; native-app access toggled
+                separately</span
+              ></label
+            >
+          </li>
+          <li>
+            <label
+              ><input type="checkbox" /><span
+                >Desktop Settings shows the console link with copy actions and a scan QR</span
               ></label
             >
           </li>
