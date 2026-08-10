@@ -1299,6 +1299,19 @@ export const methods = {
     params: z.object({ threadId: z.string() }),
     result: z.object({}),
   },
+  /**
+   * Change the access level of a live thread. Adapters that keep approval
+   * state mutable honour it for pending and future permission requests;
+   * engines that map the mode onto launch switches keep the sandbox they
+   * started with.
+   */
+  'thread.setApproval': {
+    params: z.object({
+      threadId: z.string(),
+      approval: ApprovalModeSchema,
+    }),
+    result: z.object({}),
+  },
   'thread.close': {
     params: z.object({ threadId: z.string() }),
     result: z.object({}),
