@@ -106,6 +106,7 @@ function renderVoiceComposer(overrides: Partial<ComponentProps<typeof Composer>>
       modelId={undefined}
       effort={undefined}
       serviceTier={undefined}
+      providers={[{ id: 'codex', name: 'Codex' }]}
       approval="ask"
       autoReviewSupported={false}
       voiceAvailable
@@ -120,6 +121,7 @@ function renderVoiceComposer(overrides: Partial<ComponentProps<typeof Composer>>
       onModelChange={vi.fn()}
       onEffortChange={vi.fn()}
       onServiceTierChange={vi.fn()}
+      onCustomModelAdd={vi.fn()}
       onApprovalChange={vi.fn()}
       onIsolateChange={vi.fn()}
       onDesignModeChange={vi.fn()}

@@ -3,7 +3,11 @@ import type { Model } from '@harness/contracts'
 import {
   agentMark,
   choicesFor,
+  customModelChoice,
+  customModelKey,
   filterModelChoicesByQuery,
+  isCustomModelChoice,
+  providerDisplayName,
   resolveReasoningEffort,
 } from './model-catalog.js'
 
@@ -24,6 +28,50 @@ function reasoningModel(reasoningEfforts: string[], defaultReasoningEffort?: str
 }
 
 describe('model catalog', () => {
+  it('gives custom models their own source bucket and choice shape', () => {
+    const choice = customModelChoice(
+      { provider: 'codex', modelId: 'qwen-max', displayName: 'Qwen Max' },
+      'Codex',
+      'openai',
+    )
+    expect(choice.key).toBe(
+      customModelKey({ provider: 'codex', modelId: 'qwen-max', displayName: 'Qwen Max' }),
+    )
+    expect(choice.key.startsWith('custom:codex:')).toBe(true)
+    expect(choice.provider).toBe('codex')
+    expect(choice.sourceName).toBe('Codex')
+    expect(choice.mark).toBe('openai')
+    expect(choice.model).toMatchObject({
+      id: 'qwen-max',
+      displayName: 'Qwen Max',
+      reasoningEfforts: [],
+      serviceTiers: [],
+    })
+    expect(isCustomModelChoice(choice)).toBe(true)
+    expect(
+      isCustomModelChoice(
+        choicesFor({ provider: 'codex', sourceName: 'Codex', mark: 'openai' }, [model])[0]!,
+      ),
+    ).toBe(false)
+  })
+
+  it('falls back to the model id for the display name and keeps provider buckets distinct', () => {
+    const codex = customModelChoice(
+      { provider: 'codex', modelId: 'qwen-max', displayName: '' },
+      'Codex',
+      'openai',
+    )
+    const opencode = customModelChoice(
+      { provider: 'opencode', modelId: 'qwen-max', displayName: 'Qwen Max' },
+      'OpenCode',
+      'opencode',
+    )
+    expect(codex.model.displayName).toBe('qwen-max')
+    expect(codex.key).not.toBe(opencode.key)
+    expect(providerDisplayName('codex')).toBe('Codex')
+    expect(providerDisplayName('claude-code')).toBe('Claude Code')
+  })
+
   it('keeps matching model ids separate across connections', () => {
     const first = choicesFor(
       { provider: 'api', connectionId: 'work', sourceName: 'Work', mark: 'openai' },

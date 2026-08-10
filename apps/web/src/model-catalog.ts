@@ -26,6 +26,15 @@ export type ModelChoice = {
   model: Model
 }
 
+/** A user-defined model the provider may accept without listing it. */
+export type CustomModelInput = {
+  provider: ProviderId
+  /** The exact id the adapter hands to the engine, e.g. `qwen-max`. */
+  modelId: string
+  /** Shown in the picker; falls back to the model id when empty. */
+  displayName: string
+}
+
 const MODEL_SEARCH_WHITESPACE = /\s+/
 
 export function filterModelChoicesByQuery(choices: ModelChoice[], query: string): ModelChoice[] {
@@ -146,6 +155,57 @@ export function providerMark(provider: ProviderId): ProviderMark {
   if (provider === 'claude-code') return 'anthropic'
   if (provider === 'api') return 'custom'
   return provider
+}
+
+const PROVIDER_DISPLAY_NAMES: Record<string, string> = {
+  codex: 'Codex',
+  'claude-code': 'Claude Code',
+  grok: 'Grok',
+  cursor: 'Cursor',
+  opencode: 'OpenCode',
+  antigravity: 'Antigravity',
+}
+
+export function providerDisplayName(id: ProviderId): string {
+  return PROVIDER_DISPLAY_NAMES[id] ?? id
+}
+
+/**
+ * Source bucket for custom models. It is deliberately distinct from the
+ * provider's own source key: a custom id may already exist in the provider's
+ * catalog, and the two must never share a choice key.
+ */
+export function customModelSource(provider: ProviderId): string {
+  return `custom:${provider}`
+}
+
+export function customModelKey(input: CustomModelInput): string {
+  return modelChoiceKey(customModelSource(input.provider), input.modelId)
+}
+
+export function customModelChoice(
+  input: CustomModelInput,
+  sourceName: string,
+  mark: ProviderMark,
+): ModelChoice {
+  return {
+    provider: input.provider,
+    sourceName,
+    mark,
+    model: {
+      id: input.modelId,
+      displayName: input.displayName.trim() || input.modelId,
+      description: 'Custom model',
+      isDefault: false,
+      reasoningEfforts: [],
+      serviceTiers: [],
+    },
+    key: customModelKey(input),
+  }
+}
+
+export function isCustomModelChoice(choice: ModelChoice): boolean {
+  return choice.key.startsWith('custom:')
 }
 
 export function connectionMark(preset: ModelConnectionPreset): ProviderMark {

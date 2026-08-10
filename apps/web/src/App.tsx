@@ -57,10 +57,14 @@ import {
   agentMark,
   choicesFor,
   connectionMark,
+  customModelChoice,
+  customModelKey,
   modelChoiceKey,
+  providerDisplayName,
   providerMark,
   resolveReasoningEffort,
   sourceKey,
+  type CustomModelInput,
   type ModelChoice,
 } from './model-catalog.js'
 import { parseModelCatalogCache, serializeModelCatalogCache } from './model-catalog-cache.js'
@@ -101,6 +105,9 @@ const PROVIDER_IDS = [
   'acp',
   'api',
 ] as const satisfies readonly ProviderId[]
+/** Engines a custom model can be attached to — ACP agents and API
+ *  connections carry their own roster concepts and stay out of this list. */
+const DIRECT_PROVIDER_IDS = PROVIDER_IDS.filter((id) => id !== 'acp' && id !== 'api')
 /** Which ACP agent was chosen. Meaningless unless the provider is `acp`. */
 const AGENT_KEY = 'harness.acpAgent'
 const AGENT_NAME_KEY = 'harness.acpAgentName'
@@ -108,6 +115,7 @@ const PROJECTS_KEY = 'harness.projects'
 const SESSION_ORDER_KEY = 'harness.sessionOrder'
 const MODEL_KEY = 'harness.model'
 const MODEL_CATALOG_KEY = 'harness.modelCatalog.v1'
+const CUSTOM_MODELS_KEY = 'harness.customModels.v1'
 /** Last model/effort/tier used per source, so returning to a provider
  *  restores the exact working setup instead of a best-guess translation. */
 const MODEL_BY_SOURCE_KEY = 'harness.modelBySource'
@@ -148,6 +156,50 @@ function takeLegacyProjects(): Array<{ path: string; name?: string }> {
   } catch {
     return []
   }
+}
+
+type CustomModel = {
+  provider: ProviderId
+  modelId: string
+  displayName: string
+}
+
+function readCustomModels(): CustomModel[] {
+  try {
+    const raw = readSetting(CUSTOM_MODELS_KEY)
+    if (!raw) return []
+    const parsed = JSON.parse(raw) as unknown
+    if (!Array.isArray(parsed)) return []
+    const direct = new Set<string>(DIRECT_PROVIDER_IDS)
+    const models: CustomModel[] = []
+    for (const entry of parsed) {
+      if (typeof entry !== 'object' || entry === null) continue
+      const candidate = entry as Record<string, unknown>
+      if (typeof candidate.provider !== 'string' || !direct.has(candidate.provider)) continue
+      if (typeof candidate.modelId !== 'string' || candidate.modelId.trim().length === 0) continue
+      models.push({
+        provider: candidate.provider as ProviderId,
+        modelId: candidate.modelId.trim(),
+        displayName: typeof candidate.displayName === 'string' ? candidate.displayName.trim() : '',
+      })
+    }
+    return models
+  } catch {
+    return []
+  }
+}
+
+/** Custom entries append to the provider catalog, so they sit at the bottom
+ *  of their provider's group and can never shadow an enumerated model. The
+ *  keyed drop covers a cache-miss restore that already carried a custom
+ *  choice, so the same model can never appear twice. */
+function mergeCustomModels(catalog: ModelChoice[], custom: CustomModel[]): ModelChoice[] {
+  if (custom.length === 0) return catalog
+  const customChoices = custom.map((entry) =>
+    customModelChoice(entry, providerDisplayName(entry.provider), providerMark(entry.provider)),
+  )
+  const customKeys = new Set(customChoices.map((choice) => choice.key))
+  return [...catalog.filter((choice) => !customKeys.has(choice.key)), ...customChoices]
 }
 
 export function App() {
@@ -198,12 +250,15 @@ export function App() {
   >(undefined)
   const [queuedTurns, setQueuedTurns] = useState<QueuedTurn[]>([])
   const [canSteerQueue, setCanSteerQueue] = useState(false)
-  const [{ models, loaded: modelsLoaded }, setModelCatalog] = useState<{
+  const [customModels, setCustomModels] = useState<CustomModel[]>(readCustomModels)
+  const customModelsRef = useRef(customModels)
+  customModelsRef.current = customModels
+  const [{ models: catalogModels, loaded: modelsLoaded }, setModelCatalog] = useState<{
     models: ModelChoice[]
     loaded: boolean
   }>(() => {
     const cached = parseModelCatalogCache(readSetting(MODEL_CATALOG_KEY))
-    const restored = cached === undefined ? readStoredModelChoice() : undefined
+    const restored = cached === undefined ? readStoredModelChoice(customModels) : undefined
     return {
       models: cached ?? (restored ? [restored] : []),
       loaded: cached !== undefined || restored !== undefined,
@@ -299,6 +354,17 @@ export function App() {
   )
   const [terminalOpen, setTerminalOpen] = useState(() => readSetting(TERMINAL_OPEN_KEY) === 'true')
   const [terminalHeight, setTerminalHeight] = useState(readTerminalHeight)
+  /** The live catalog with user-defined models appended. Everything below
+   *  reads this merged list; the cache only ever stores the server catalog. */
+  const models = useMemo(
+    () => mergeCustomModels(catalogModels, customModels),
+    [catalogModels, customModels],
+  )
+  /** The fixed direct roster with human names, for the custom-model form. */
+  const customModelProviders = useMemo(
+    () => DIRECT_PROVIDER_IDS.map((id) => ({ id, name: providerDisplayName(id) })),
+    [],
+  )
   const visibleModels = useMemo(
     () => models.filter((choice) => !hiddenModels.has(choice.key)),
     [models, hiddenModels],
@@ -610,11 +676,15 @@ export function App() {
       // choice still wins — hiding is about the list, not about revoking a
       // selection the user made themselves.
       const hidden = hiddenModelsRef.current
-      const visible = catalog.filter((choice) => !hidden.has(choice.key))
-      const pool = visible.length > 0 ? visible : catalog
+      const customPool = customModelsRef.current.map((entry) =>
+        customModelChoice(entry, providerDisplayName(entry.provider), providerMark(entry.provider)),
+      )
+      const all = [...catalog, ...customPool]
+      const visible = all.filter((choice) => !hidden.has(choice.key))
+      const pool = visible.length > 0 ? visible : all
       const selected =
-        catalog.find((choice) => choice.key === stored) ??
-        catalog.find((choice) => choice.model.id === stored) ??
+        all.find((choice) => choice.key === stored) ??
+        all.find((choice) => choice.model.id === stored) ??
         pool.find((choice) => choice.model.isDefault) ??
         pool[0]
       if (!selected) return
@@ -934,10 +1004,11 @@ export function App() {
     writeSetting(APPROVAL_KEY, approval)
   }, [approval])
 
-  const selectModel = useCallback(
-    (id: string) => {
-      const selected = models.find((model) => model.key === id)
-      if (!selected) return
+  // Shared tail of every model switch: persist the whole selection together,
+  // then restore the effort/tier that source was last used with — or translate
+  // the current setup onto the new model's ladder.
+  const commitModelChoice = useCallback(
+    (selected: ModelChoice) => {
       setModelId(selected.key)
       setProvider(selected.provider)
       setAcpAgent(selected.agent?.id)
@@ -995,7 +1066,60 @@ export function App() {
         }),
       )
     },
-    [models, selectedModelChoice],
+    [selectedModelChoice],
+  )
+
+  const selectModel = useCallback(
+    (id: string) => {
+      const selected = models.find((model) => model.key === id)
+      if (!selected) return
+      commitModelChoice(selected)
+    },
+    [models, commitModelChoice],
+  )
+
+  const addCustomModel = useCallback(
+    (input: CustomModelInput) => {
+      const entry: CustomModel = {
+        provider: input.provider,
+        modelId: input.modelId.trim(),
+        displayName: input.displayName.trim(),
+      }
+      if (!entry.modelId) return
+      // Adding the same id twice is an edit, not a duplicate: the last entry
+      // for a provider+id wins, so the displayed name can be corrected.
+      const next = [
+        ...customModelsRef.current.filter(
+          (existing) =>
+            !(existing.provider === entry.provider && existing.modelId === entry.modelId),
+        ),
+        entry,
+      ]
+      setCustomModels(next)
+      writeSetting(CUSTOM_MODELS_KEY, JSON.stringify(next))
+      // Selecting it immediately is the point: the custom id is now what the
+      // next turn runs through.
+      commitModelChoice(
+        customModelChoice(entry, providerDisplayName(entry.provider), providerMark(entry.provider)),
+      )
+    },
+    [commitModelChoice],
+  )
+
+  const removeCustomModel = useCallback(
+    (key: string) => {
+      const next = customModelsRef.current.filter((entry) => customModelKey(entry) !== key)
+      if (next.length === customModelsRef.current.length) return
+      setCustomModels(next)
+      writeSetting(CUSTOM_MODELS_KEY, JSON.stringify(next))
+      // The removed model was selected: fall back to the next available choice
+      // so the composer never points at a model id that no longer exists.
+      if (modelId === key) {
+        const fallback = models.find((choice) => choice.key !== key)
+        if (fallback) selectModel(fallback.key)
+      }
+    },
+    [modelId, models, selectModel],
   )
 
   const addProject = useCallback(async () => {
@@ -2340,6 +2464,7 @@ export function App() {
                   modelId={modelId}
                   effort={effort}
                   serviceTier={serviceTier}
+                  providers={customModelProviders}
                   usage={thread.usage}
                   approval={approval === 'auto-review' && !autoReviewSupported ? 'ask' : approval}
                   autoReviewSupported={autoReviewSupported}
@@ -2356,6 +2481,7 @@ export function App() {
                   onModelChange={selectModel}
                   onEffortChange={setEffort}
                   onServiceTierChange={setServiceTier}
+                  onCustomModelAdd={addCustomModel}
                   onApprovalChange={changeApproval}
                   onIsolateChange={setIsolateSession}
                   onDesignModeChange={setDesignMode}
@@ -2393,6 +2519,9 @@ export function App() {
           models={models}
           hiddenModels={hiddenModels}
           onModelVisibilityChange={changeModelVisibility}
+          providers={customModelProviders}
+          onCustomModelAdd={addCustomModel}
+          onCustomModelRemove={removeCustomModel}
           onConnectionsChanged={refreshCatalog}
           projectCount={projects.length}
           sidebarSettings={sidebarSettings}
@@ -2531,20 +2660,7 @@ function providerName(id: ProviderId, acpAgentName?: string): string {
   // ACP is how we talk to the agent, not who the agent is. Showing "ACP" would
   // name our plumbing instead of the thing the user chose.
   if (id === 'acp') return acpAgentName ?? 'ACP agent'
-  switch (id) {
-    case 'codex':
-      return 'Codex'
-    case 'claude-code':
-      return 'Claude Code'
-    case 'cursor':
-      return 'Cursor'
-    case 'opencode':
-      return 'OpenCode'
-    case 'antigravity':
-      return 'Antigravity'
-    default:
-      return id
-  }
+  return providerDisplayName(id)
 }
 
 function findSession(projects: Project[], id: string | undefined) {
@@ -2746,12 +2862,23 @@ function readSourceSelections(): Record<string, SourceSelection> {
  * that upgrade launch is instant too; the full validated catalog replaces it
  * as soon as discovery finishes.
  */
-function readStoredModelChoice(): ModelChoice | undefined {
+function readStoredModelChoice(customModels: CustomModel[] = []): ModelChoice | undefined {
   const storedProvider = readSetting(SETUP_KEY)
   const provider = PROVIDER_IDS.find((id) => id === storedProvider)
   if (!provider) return undefined
   const storedKey = readSetting(MODEL_KEY)
   if (!storedKey) return undefined
+  // A custom selection survives a cache miss: rebuild its choice straight
+  // from the stored entry instead of treating the key as a raw model id.
+  if (storedKey.startsWith('custom:')) {
+    const custom = customModels.find((entry) => customModelKey(entry) === storedKey)
+    if (!custom) return undefined
+    return customModelChoice(
+      custom,
+      providerDisplayName(custom.provider),
+      providerMark(custom.provider),
+    )
+  }
   const agentId = provider === 'acp' ? (readSetting(AGENT_KEY) ?? undefined) : undefined
   if (provider === 'acp' && !agentId) return undefined
   const agentName = agentId ? (readSetting(AGENT_NAME_KEY) ?? agentId) : undefined
