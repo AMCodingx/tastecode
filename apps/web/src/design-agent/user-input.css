@@ -48,7 +48,7 @@
   gap: 9px;
   padding: 7px 10px;
   border: 1px solid color-mix(in srgb, var(--line-strong) 68%, transparent);
-  border-radius: var(--r-md);
+  border-radius: var(--r-popup-item);
   background: linear-gradient(
     180deg,
     color-mix(in srgb, var(--surface-3) 50%, transparent),
@@ -77,6 +77,16 @@
     );
     color: var(--text);
   }
+}
+
+.brief-input__option:focus-within {
+  border-color: var(--line-strong);
+  background: linear-gradient(
+    180deg,
+    color-mix(in srgb, var(--surface-3) 72%, transparent),
+    color-mix(in srgb, var(--surface-2) 50%, transparent)
+  );
+  color: var(--text);
 }
 
 .brief-input__option:active {
@@ -243,7 +253,7 @@
   height: 14px;
   border: 2px solid var(--line-strong);
   border-top-color: var(--text);
-  border-radius: 50%;
+  border-radius: var(--r-circle);
   animation: brief-spin 700ms linear infinite;
 }
 
