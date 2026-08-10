@@ -25,6 +25,20 @@ describe('websocket origin gate', () => {
     expect(allowedOrigin('http://localhost.evil.example')).toBe(false)
     expect(allowedOrigin('not a url')).toBe(false)
   })
+
+  it('admits an external page only when the access token is the boundary', () => {
+    // The dev:mobile flow binds to a Tailscale/LAN host and protects it with a
+    // token, so the phone page served from that same host must pass the gate.
+    expect(allowedOrigin('http://100.101.169.28:5183', 'secret')).toBe(true)
+    expect(allowedOrigin('http://192.168.1.20:5183', 'secret')).toBe(true)
+    // Without a token the external surface stays closed.
+    expect(allowedOrigin('http://100.101.169.28:5183')).toBe(false)
+    // The opaque origin stays forbidden even behind a token: any page can mint
+    // one, and no surface of ours ever reports it.
+    expect(allowedOrigin('null', 'secret')).toBe(false)
+    // Malformed origins stay refused regardless of the token.
+    expect(allowedOrigin('not a url', 'secret')).toBe(false)
+  })
 })
 
 describe('server access token', () => {
