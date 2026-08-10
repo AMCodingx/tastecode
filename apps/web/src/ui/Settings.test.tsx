@@ -2,7 +2,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import type { Account, ProviderId } from '@harness/contracts'
-import type { ModelChoice } from '../model-catalog.js'
+import { customModelChoice, type ModelChoice } from '../model-catalog.js'
 import { resetInstalls } from '../provider-install.js'
 import type { Transport } from '../transport.js'
 import { formatDeviceNote, Settings } from './Settings.js'
@@ -87,6 +87,12 @@ describe('model settings', () => {
         models={models}
         hiddenModels={new Set(['opencode:ling'])}
         onModelVisibilityChange={onModelVisibilityChange}
+        providers={[
+          { id: 'codex', name: 'Codex' },
+          { id: 'opencode', name: 'OpenCode' },
+        ]}
+        onCustomModelAdd={() => {}}
+        onCustomModelRemove={() => {}}
         onConnectionsChanged={() => {}}
         projectCount={0}
         sidebarSettings={{ mode: 'classic', autoSettleDays: 3 }}
@@ -127,6 +133,86 @@ describe('model settings', () => {
 
     fireEvent.click(screen.getByRole('button', { name: 'Clear Search OpenCode models' }))
     expect(screen.getByText('OpenCode Zen · Ling-3.0-tiny Free')).toBeTruthy()
+  })
+
+  it('lists custom models in their own section and reports add/remove', () => {
+    const custom = customModelChoice(
+      { provider: 'codex', modelId: 'qwen-max', displayName: 'Qwen Max' },
+      'Codex',
+      'openai',
+    )
+    const onCustomModelAdd = vi.fn()
+    const onCustomModelRemove = vi.fn()
+    const transport = {
+      request: vi.fn(),
+      on: vi.fn(() => () => {}),
+    } as unknown as Transport
+
+    render(
+      <Settings
+        provider="codex"
+        providerName="Codex"
+        transport={transport}
+        projectPath={undefined}
+        projectName={undefined}
+        account={undefined}
+        providerStatuses={[]}
+        acpAgents={[]}
+        modelConnections={[]}
+        models={[custom]}
+        hiddenModels={new Set()}
+        onModelVisibilityChange={() => {}}
+        providers={[{ id: 'codex', name: 'Codex' }]}
+        onCustomModelAdd={onCustomModelAdd}
+        onCustomModelRemove={onCustomModelRemove}
+        onConnectionsChanged={() => {}}
+        projectCount={0}
+        sidebarSettings={{ mode: 'classic', autoSettleDays: 3 }}
+        onSidebarSettingsChange={() => {}}
+        themePreference="system"
+        onThemePreferenceChange={() => {}}
+        fontPreference="geist"
+        onFontPreferenceChange={() => {}}
+        accentPreference="neutral"
+        onAccentPreferenceChange={() => {}}
+        backdropPreference="default"
+        onBackdropPreferenceChange={() => {}}
+        sidebarGlass={0}
+        onSidebarGlassChange={() => {}}
+        showMacOSFontSmoothing={false}
+        macOSFontSmoothing={true}
+        onMacOSFontSmoothingChange={() => {}}
+        onAccountChange={() => {}}
+        onReset={() => {}}
+        onClose={() => {}}
+      />,
+    )
+
+    fireEvent.click(screen.getByRole('button', { name: 'Models' }))
+
+    const section = screen.getByRole('region', { name: 'Custom models' })
+    expect(within(section).getByText('Qwen Max')).toBeTruthy()
+    expect(within(section).getByText('qwen-max')).toBeTruthy()
+    const row = within(section).getByText('Qwen Max').closest('li')
+    if (!row) throw new Error('custom model row missing')
+    expect(within(row).getByText('Codex')).toBeTruthy()
+
+    // The custom entry does not leak into a provider visibility group.
+    expect(screen.queryByRole('switch', { name: 'Show Qwen Max' })).toBeNull()
+
+    fireEvent.click(within(section).getByRole('button', { name: 'Remove Qwen Max' }))
+    expect(onCustomModelRemove).toHaveBeenCalledWith(custom.key)
+
+    fireEvent.change(screen.getByLabelText('Model id'), { target: { value: 'deepseek-v3' } })
+    fireEvent.change(screen.getByLabelText('Display name'), {
+      target: { value: 'DeepSeek V3' },
+    })
+    fireEvent.click(screen.getByRole('button', { name: 'Add model' }))
+    expect(onCustomModelAdd).toHaveBeenCalledWith({
+      provider: 'codex',
+      modelId: 'deepseek-v3',
+      displayName: 'DeepSeek V3',
+    })
   })
 })
 
@@ -256,6 +342,9 @@ describe('provider settings', () => {
         models={[]}
         hiddenModels={new Set()}
         onModelVisibilityChange={() => {}}
+        providers={[{ id: 'codex', name: 'Codex' }]}
+        onCustomModelAdd={() => {}}
+        onCustomModelRemove={() => {}}
         onConnectionsChanged={() => {}}
         projectCount={0}
         sidebarSettings={{ mode: 'classic', autoSettleDays: 3 }}
@@ -380,6 +469,9 @@ describe('provider settings', () => {
         models={[]}
         hiddenModels={new Set()}
         onModelVisibilityChange={() => {}}
+        providers={[{ id: 'codex', name: 'Codex' }]}
+        onCustomModelAdd={() => {}}
+        onCustomModelRemove={() => {}}
         onConnectionsChanged={onChanged}
         projectCount={0}
         sidebarSettings={{ mode: 'classic', autoSettleDays: 3 }}
@@ -488,6 +580,9 @@ describe('provider settings', () => {
         models={[]}
         hiddenModels={new Set()}
         onModelVisibilityChange={() => {}}
+        providers={[{ id: 'codex', name: 'Codex' }]}
+        onCustomModelAdd={() => {}}
+        onCustomModelRemove={() => {}}
         onConnectionsChanged={onConnectionsChanged}
         projectCount={0}
         sidebarSettings={{ mode: 'classic', autoSettleDays: 3 }}

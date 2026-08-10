@@ -425,6 +425,7 @@ function renderComposer(
       modelId={undefined}
       effort={undefined}
       serviceTier={undefined}
+      providers={[{ id: 'codex', name: 'Codex' }]}
       approval="ask"
       autoReviewSupported={false}
       voiceAvailable={false}
@@ -439,6 +440,7 @@ function renderComposer(
       onModelChange={vi.fn()}
       onEffortChange={vi.fn()}
       onServiceTierChange={vi.fn()}
+      onCustomModelAdd={vi.fn()}
       onApprovalChange={vi.fn()}
       onIsolateChange={vi.fn()}
       onDesignModeChange={vi.fn()}
