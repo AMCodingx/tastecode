@@ -34,11 +34,18 @@ function run(name, packageDir, args, env = {}) {
         cwd: path.join(root, packageDir),
         env: { ...process.env, ...env },
         stdio: 'pipe',
+        // The wrapper leads a process group so shutdown reaches tsx, Vite,
+        // Electron, and their descendants instead of orphaning them.
+        detached: true,
       })
 
   const prefix = `[${name}]`
-  child.stdout.on('data', (d) => process.stdout.write(prefixLines(prefix, d.toString())))
-  child.stderr.on('data', (d) => process.stderr.write(prefixLines(prefix, d.toString())))
+  child.stdout.on('data', (d) => {
+    if (!shuttingDown) process.stdout.write(prefixLines(prefix, d.toString()))
+  })
+  child.stderr.on('data', (d) => {
+    if (!shuttingDown) process.stderr.write(prefixLines(prefix, d.toString()))
+  })
   child.on('exit', (code, signal) => {
     if (shuttingDown) return
     const reason = code === null ? `signal ${signal ?? 'unknown'}` : `code ${code}`
@@ -131,6 +138,33 @@ function processExists(pid) {
     if (error?.code === 'EPERM') return true
     throw error
   }
+}
+
+function processGroupExists(groupId) {
+  try {
+    process.kill(-groupId, 0)
+    return true
+  } catch (error) {
+    if (error?.code === 'ESRCH') return false
+    if (error?.code === 'EPERM') return true
+    throw error
+  }
+}
+
+function signalProcessGroup(groupId, signal) {
+  try {
+    process.kill(-groupId, signal)
+  } catch (error) {
+    if (error?.code !== 'ESRCH') throw error
+  }
+}
+
+async function waitForProcessGroupToExit(groupId, timeoutMs) {
+  const deadline = Date.now() + timeoutMs
+  while (processGroupExists(groupId) && Date.now() < deadline) {
+    await new Promise((resolve) => setTimeout(resolve, 50))
+  }
+  return !processGroupExists(groupId)
 }
 
 async function stopPortOwner(pid, force = false) {
@@ -299,30 +333,34 @@ async function tailscaleIPv4() {
   )
 }
 
-function stopChild(child) {
-  if (!child.pid || child.exitCode !== null || child.signalCode !== null) return Promise.resolve()
+async function stopChild(child) {
+  if (!child.pid) return
 
-  return new Promise((resolve) => {
-    let settled = false
-    const finish = () => {
-      if (settled) return
-      settled = true
-      resolve()
-    }
-    child.once('exit', finish)
-
-    if (isWin) {
+  if (isWin) {
+    if (child.exitCode !== null || child.signalCode !== null) return
+    await new Promise((resolve) => {
+      let settled = false
+      const finish = () => {
+        if (settled) return
+        settled = true
+        resolve()
+      }
       const killer = spawn('taskkill.exe', ['/pid', String(child.pid), '/T', '/F'], {
         stdio: 'ignore',
         windowsHide: true,
       })
       killer.once('error', finish)
       killer.once('exit', finish)
-    } else {
-      child.kill()
-    }
-    setTimeout(finish, 5_000).unref()
-  })
+      setTimeout(finish, 5_000).unref()
+    })
+    return
+  }
+
+  signalProcessGroup(child.pid, 'SIGTERM')
+  if (await waitForProcessGroupToExit(child.pid, 3_000)) return
+
+  signalProcessGroup(child.pid, 'SIGKILL')
+  await waitForProcessGroupToExit(child.pid, 2_000)
 }
 
 async function shutdown(exitCode = 0) {
