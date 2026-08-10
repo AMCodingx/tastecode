@@ -804,11 +804,6 @@
   line-height: 1.25;
 }
 
-.pr-summary-title h2.is-editable,
-.pr-description-preview.is-editable {
-  cursor: text;
-}
-
 .pr-title-editor {
   display: block;
   width: 100%;
@@ -2202,10 +2197,28 @@
 }
 
 .pr-diffs-annotation .pr-inline-editor {
-  padding: 10px;
-  background: var(--surface);
+  padding: 10px 12px 12px;
+  background: var(--bg-prompt);
   border: 1px solid var(--line);
-  border-radius: var(--r-lg);
+  border-radius: var(--r-2xl);
+  box-shadow: var(--composer-shadow);
+  transition: border-color var(--dur-fast) var(--ease-out);
+}
+
+.pr-diffs-annotation .pr-inline-editor:focus-within {
+  border-color: var(--line-strong);
+}
+
+.pr-diffs-annotation .pr-inline-editor textarea {
+  background: none;
+  border: 0;
+  border-radius: 0;
+  box-shadow: none;
+  padding: 8px 2px 10px;
+}
+
+.pr-diffs-annotation .pr-inline-editor textarea::placeholder {
+  color: var(--composer-placeholder);
 }
 
 .pr-inline-editor {
