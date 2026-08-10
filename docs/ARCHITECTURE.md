@@ -39,52 +39,55 @@ to a TypeScript client).
 
 ---
 
-## Desktop shell: Electron, not Tauri
+## Desktop client: Rust and GPUI
 
-Tauri wins on size — ~10MB vs ~150MB, and much lower idle memory. We choose Electron anyway.
+**The primary desktop client is a single Rust + GPUI application on macOS and Windows.** GPUI
+draws the same retained element tree through Metal and DirectX, so both platforms share one
+layout, text and motion implementation without shipping Chromium or accepting two operating
+system webviews. Exact colors, geometry, typography and timings are Rust design tokens rather
+than a second design system invented during the port.
 
-**The reason is rendering.** Tauri uses the OS webview: Chromium on Windows, WebKit on
-macOS, WebKitGTK on Linux. CSS and font rendering diverge. For most apps that's an
-annoyance; for an app whose entire pitch is visual craft it's fatal. Two developers cannot
-hold pixel and motion parity across three engines — the Windows dev would ship something
-beautiful that the macOS dev sees rendered subtly wrong, every time. The 150MB is what buys
-never having that conversation.
+The server/client boundary above remains load-bearing. The native client first speaks the
+existing protocol v2 to the Node server; persistence, orchestration, PTY support and adapters
+then move to Rust behind that stable boundary. The Electron/React app remains the visual and
+behavioral oracle during migration and is removed only after native parity. This order keeps
+every screen testable against working product behavior instead of coupling a renderer rewrite
+to an adapter rewrite.
 
-Supporting reasons: the whole product is process orchestration and every vendor SDK here is
-JS/TS first · `node-pty` (ConPTY) is the only real PTY option and its Electron friction is
-solved and documented · `electron-builder` gives us NSIS, differential updates and a working
-Azure Trusted Signing path · T3 Code is Electron, and Conductor is native macOS which is
-exactly why it will never run on Windows.
+GPUI is pre-1.0, so the workspace pins an exact release and wraps framework-facing primitives
+inside `harness-ui`. A GPUI update is an intentional compatibility change, not a floating
+dependency update. macOS and Windows builds and screenshots are separate release gates;
+source-level platform support is not evidence that font rasterization, title bars or input
+behavior match on both systems.
 
-**What we accept:** ~150MB installs, and a weaker security default than Tauri. The second
-one is non-negotiable to fix, in the scaffold from day one — `contextIsolation: true`,
-`nodeIntegration: false`, `sandbox: true`, strict CSP, a narrow typed `contextBridge`,
-deny-by-default external navigation. The renderer never spawns a process, touches the
-filesystem, or reads a credential.
-
-_Rejected:_ Tauri v2 (above) · native per-platform (two codebases for two developers means
-Windows is permanently the worse one) · web-only as primary (no PTY, no filesystem, no
-credential store — but we'll ship it as a secondary surface since it's nearly free) ·
-Wails/Neutralino (same webview divergence, smaller ecosystem).
+_Superseded:_ Electron bought one Chromium renderer across platforms, but its install size,
+idle footprint and per-frame JavaScript/DOM work conflict with the native performance goal.
+_Rejected:_ Tauri/Wails/Neutralino retain divergent OS webviews · separate AppKit and WinUI
+clients create two permanent UI implementations · a web-only primary cannot own the native
+terminal, filesystem and credential-store surface.
 
 ---
 
-## Stack
+## Target stack
+
+The TypeScript workspace remains beside this target during migration. It is reference code,
+not a second implementation to maintain after native parity.
 
 |                    |                                             |                                                                                                                                     |
 | ------------------ | ------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------- |
-| Language / runtime | TypeScript strict, Node 24 LTS              | Not Bun — native modules and Windows maturity still lag                                                                             |
-| Monorepo           | pnpm workspaces + Turborepo + Vite          | pnpm's store makes worktree-heavy work cheap                                                                                        |
-| UI                 | React 19                                    | The two load-bearing libraries below are React                                                                                      |
-| Chat list          | TanStack Virtual, `anchorTo: 'end'`         | Purpose-built for streaming AI chat                                                                                                 |
-| Markdown           | Streamdown + Shiki in a worker              | Handles unterminated markdown mid-stream                                                                                            |
-| Styling            | Tailwind v4 + our own token layer           | Tokens generated from the design system                                                                                             |
-| Components         | Radix / Base UI primitives, our own visuals | **No component kit adopted wholesale** — shadcn-default styling is the most recognizable AI-app look and would undercut the premise |
-| Motion             | Motion                                      | Spring physics, used sparingly                                                                                                      |
-| State              | Zustand + event-derived store               | Selector discipline matters more than the library                                                                                   |
-| DB                 | SQLite (`better-sqlite3`), WAL, FTS5        | Native module — needs prebuilds on both OSes in CI                                                                                  |
-| PTY                | `node-pty` (ConPTY)                         | Windows 10 1809+ required                                                                                                           |
-| Tests              | Vitest; Playwright for Electron             | Adapter contract tests run the real binaries                                                                                        |
+| Language / runtime | Rust stable, pinned by the workspace       | One native runtime for the client, server and adapters                                                                              |
+| Monorepo           | Cargo workspace                            | Crates keep protocol, UI, orchestration and adapters independently testable                                                         |
+| UI                 | GPUI 0.2.2, exact pin                      | One GPU-rendered element tree through Metal and DirectX                                                                             |
+| Chat list          | Custom end-anchored virtual GPUI element   | Variable-height streaming rows need stable keys, cached measurement and explicit anchor control                                     |
+| Markdown           | Incremental parser + native highlighter    | Incomplete streamed blocks stay cheap; completed blocks become immutable                                                            |
+| Styling            | Typed Harness tokens                      | The current CSS values are migrated exactly, including every theme and density state                                                 |
+| Components         | Harness-owned GPUI primitives              | Focus, menus, sheets and inputs preserve current behavior without importing another visual language                                 |
+| Motion             | GPUI frame animations                     | Existing easing and durations are the contract; reduced motion remains first-class                                                   |
+| State              | GPUI entities + event-derived read models | Deltas update the live tail without invalidating the whole application tree                                                          |
+| DB                 | SQLite, WAL, FTS5                          | Append-only events and rebuildable read models remain unchanged                                                                     |
+| PTY                | Rust ConPTY / Unix PTY abstraction         | Process-tree termination and intentional-exit semantics remain cross-platform requirements                                           |
+| Terminal state     | `alacritty_terminal` 0.26.0                | ANSI parsing mutates a bounded cell grid incrementally, while Harness retains ownership of PTY lifecycle and transport               |
+| Tests              | Rust unit, protocol fixture and render tests | Real provider captures and platform screenshots remain the final contract                                                          |
 
 **On Effect-TS:** T3 Code uses it throughout and it genuinely fits this problem. We don't
 adopt it for v1 — the learning curve colors every signature and with two developers the
@@ -295,3 +298,4 @@ registry entry, which is deliberately a good first outside contribution.
 | 2026-08-01 | Defined ownership and precedence for project-scoped MCP configuration. |
 | 2026-08-02 | Added Codex-backed voice dictation.                                    |
 | 2026-08-03 | Added the provider-neutral direct API runtime decision.                |
+| 2026-08-06 | Replaced the Electron target with a staged Rust + GPUI migration.       |
