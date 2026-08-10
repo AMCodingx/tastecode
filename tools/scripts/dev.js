@@ -436,6 +436,9 @@ if (mobile) {
   run('server', 'apps/server', ['run', 'dev'], {
     HARNESS_HOST: host,
     HARNESS_ACCESS_TOKEN: accessToken,
+    // The phone's web-app surface (mobile listener) serves the live Vite
+    // source in dev, not a stale build.
+    HARNESS_WEB_DEV_SERVER: `http://${host}:5183`,
   })
   run('web', 'apps/web', ['run', 'dev', '--host', host], {
     VITE_HARNESS_SERVER_URL: serverUrl,
@@ -445,7 +448,11 @@ if (mobile) {
   console.log(`\nOpen on your Tailscale-connected phone:\n${webUrl}\n`)
 } else {
   await reclaimOccupiedPorts('127.0.0.1')
-  run('server', 'apps/server', ['run', 'dev'])
+  run('server', 'apps/server', ['run', 'dev'], {
+    // Same as the --mobile flow: the phone web app served by this dev stack
+    // proxies to Vite so it tracks source edits without rebuilding dist.
+    HARNESS_WEB_DEV_SERVER: VITE_URL,
+  })
   run('web', 'apps/web', ['run', 'dev'])
 
   // Electron must not load before Vite is serving, or it shows a blank window

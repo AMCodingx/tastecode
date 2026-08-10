@@ -1,6 +1,11 @@
 import { createHash, randomBytes, timingSafeEqual } from 'node:crypto'
 import { existsSync, readFileSync, statSync } from 'node:fs'
-import { createServer, type IncomingMessage, type ServerResponse } from 'node:http'
+import {
+  createServer,
+  request as httpRequest,
+  type IncomingMessage,
+  type ServerResponse,
+} from 'node:http'
 import { isIPv4, type AddressInfo } from 'node:net'
 import os, { type NetworkInterfaceInfo } from 'node:os'
 import path from 'node:path'
@@ -56,6 +61,7 @@ export class MobileAccess {
   #protocolEnabled = false
   #webToken: string
   #webRoot: string | undefined
+  #webDevServerUrl: string | undefined
 
   constructor(options: {
     store: Store
@@ -70,6 +76,10 @@ export class MobileAccess {
     /** Directory containing the built web app (`index.html` at its root).
      * When absent, `/` serves nothing and the phone web app is disabled. */
     webRoot?: string | undefined
+    /** Vite dev server to proxy the web-app surface to (dev only). When set,
+     * the phone loads the live source through this listener instead of the
+     * built `webRoot`, so edits show up without a rebuild. */
+    webDevServerUrl?: string | undefined
   }) {
     this.#store = options.store
     this.#configuredPort = options.port
@@ -79,6 +89,7 @@ export class MobileAccess {
     this.#resolveTailscaleAddresses = options.resolveTailscaleAddresses ?? detectTailscaleAddresses
     this.#webToken = options.webToken ?? ''
     this.#webRoot = options.webRoot ? path.resolve(options.webRoot) : undefined
+    this.#webDevServerUrl = options.webDevServerUrl
   }
 
   status(): ConnectionsStatus {
@@ -94,7 +105,7 @@ export class MobileAccess {
       addresses,
       devices: this.#store.pairedDevices(),
       webUrls:
-        listening && this.#webToken && this.#webRoot
+        listening && this.#webToken && (this.#webRoot || this.#webDevServerUrl)
           ? addresses.map((address) => webUrlFor(address.url, this.#webToken))
           : [],
     }
@@ -304,7 +315,7 @@ export class MobileAccess {
     const url = new URL(request.url ?? '/', 'http://harness.local')
     const pathname = url.pathname
 
-    if (!this.#webRoot) {
+    if (!this.#webRoot && !this.#webDevServerUrl) {
       this.#respondHtml(response, 404, '<!doctype html><html><body>Not found</body></html>')
       return
     }
@@ -317,7 +328,52 @@ export class MobileAccess {
       response.end('Method not allowed')
       return
     }
+    if (this.#webDevServerUrl) {
+      this.#proxyWebApp(request, response, url)
+      return
+    }
     this.#serveWebApp(pathname, response)
+  }
+
+  /**
+   * Dev only: forwards the phone's page and asset requests to the Vite dev
+   * server (loopback), so the mobile surface serves the same live source the
+   * desktop window loads. The page's WebSocket is derived from its own origin
+   * and still lands on this listener, so the token gate is untouched.
+   */
+  #proxyWebApp(request: IncomingMessage, response: ServerResponse, url: URL): void {
+    const devServer = this.#webDevServerUrl
+    if (!devServer) {
+      response.writeHead(404, { 'Content-Type': 'text/plain; charset=utf-8' })
+      response.end('Not found')
+      return
+    }
+    const target = new URL(devServer)
+    target.pathname = url.pathname
+    target.search = url.search
+    const proxy = httpRequest(
+      target,
+      {
+        method: request.method,
+        headers: {
+          ...request.headers,
+          host: target.host,
+          // Serve uncompressed through the listener; the phone's browser
+          // negotiates with Vite directly where it matters.
+          'accept-encoding': 'identity',
+        },
+      },
+      (upstream) => {
+        response.writeHead(upstream.statusCode ?? 502, upstream.headers)
+        upstream.pipe(response)
+      },
+    )
+    proxy.on('error', () => {
+      response.writeHead(502, { 'Content-Type': 'text/plain; charset=utf-8' })
+      response.end('Dev server unavailable')
+    })
+    request.on('error', () => proxy.destroy())
+    request.pipe(proxy)
   }
 
   #respondHtml(response: ServerResponse, status: number, html: string): void {
