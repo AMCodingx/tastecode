@@ -213,6 +213,9 @@ describe('protocol envelopes', () => {
         },
       }),
     ).toBeTruthy()
+    expect(
+      methods['thread.setApproval'].params.parse({ threadId: 'th1', approval: 'full' }),
+    ).toEqual({ threadId: 'th1', approval: 'full' })
     expect(methods['thread.queue'].result.parse({ items: [], canSteer: true })).toEqual({
       items: [],
       canSteer: true,

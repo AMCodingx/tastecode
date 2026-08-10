@@ -79,7 +79,6 @@ export function PullRequestDetailPane(props: {
   const [notice, setNotice] = useState<{ kind: 'success' | 'error'; text: string }>()
   const [pendingKeys, setPendingKeys] = useState<ReadonlySet<string>>(() => new Set())
   const [tab, setTab] = useState<DetailTab>('summary')
-  const [inlineEditRequest, setInlineEditRequest] = useState(0)
   const [confirmation, setConfirmation] = useState<Confirmation>()
   const request = useRef(0)
   const detailRef = useRef<PullRequestDetail | undefined>(undefined)
@@ -273,19 +272,6 @@ export function PullRequestDetailPane(props: {
               })
             }
           />
-          <button
-            type="button"
-            className="pr-icon-button"
-            aria-label="Edit title and description"
-            title="Edit title and description"
-            disabled={pendingKeys.has('edit')}
-            onClick={() => {
-              setTab('summary')
-              setInlineEditRequest((current) => current + 1)
-            }}
-          >
-            <Pencil size={14} aria-hidden />
-          </button>
           {detail.state === 'OPEN' || detail.state === 'CLOSED' ? (
             <MoreMenu
               detail={detail}
@@ -322,7 +308,6 @@ export function PullRequestDetailPane(props: {
             transport={props.transport}
             pendingKeys={pendingKeys}
             conversationBusy={conversationBusy}
-            editRequest={inlineEditRequest}
             onAction={runAction}
             onConfirm={setConfirmation}
           />
@@ -373,7 +358,6 @@ function PullRequestSummary(props: {
   transport: Transport
   pendingKeys: ReadonlySet<string>
   conversationBusy: boolean
-  editRequest: number
   onAction: RunPullRequestAction
   onConfirm: (confirmation: Confirmation) => void
 }) {
@@ -383,7 +367,6 @@ function PullRequestSummary(props: {
   const [descriptionOpen, setDescriptionOpen] = useState(true)
   const [titleEditing, setTitleEditing] = useState(false)
   const [descriptionEditing, setDescriptionEditing] = useState(false)
-  const [clickToEdit, setClickToEdit] = useState(false)
   const [editFocus, setEditFocus] = useState<'title' | 'description'>('title')
   const [metadataOptions, setMetadataOptions] = useState<PullRequestMetadataOptions>()
   const [metadataOptionsLoading, setMetadataOptionsLoading] = useState(false)
@@ -394,12 +377,6 @@ function PullRequestSummary(props: {
     detail.relationship === 'authored' ||
     detail.relationship === 'both' ||
     detail.permissions.canPush
-
-  useEffect(() => {
-    if (props.editRequest === 0) return
-    setClickToEdit(true)
-    setDescriptionOpen(true)
-  }, [props.editRequest])
 
   const beginTitleEditing = () => {
     setEditFocus('title')
@@ -518,12 +495,7 @@ function PullRequestSummary(props: {
               />
             ) : (
               <div>
-                <h2
-                  className={clickToEdit ? 'is-editable' : undefined}
-                  onClick={clickToEdit ? beginTitleEditing : undefined}
-                >
-                  {detail.title}
-                </h2>
+                <h2>{detail.title}</h2>
                 <button
                   type="button"
                   className="pr-inline-icon"
@@ -817,10 +789,7 @@ function PullRequestSummary(props: {
                 }}
               />
             ) : detail.body.trim() ? (
-              <div
-                className={`pr-description-preview${clickToEdit ? ' is-editable' : ''}`}
-                onClick={clickToEdit ? beginDescriptionEditing : undefined}
-              >
+              <div className="pr-description-preview">
                 <Markdown text={detail.body} />
               </div>
             ) : (

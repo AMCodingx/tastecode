@@ -1437,6 +1437,18 @@ export class Orchestrator {
     this.#get(threadId).session.respondToApproval(approvalId, decision)
   }
 
+  /**
+   * Change the access level of a live thread. The mode is recorded for the
+   * design-flow note and pushed to sessions that keep approval state
+   * mutable; engines that mapped the mode onto launch switches keep the
+   * sandbox they started with.
+   */
+  setThreadApproval(threadId: string, approval: ApprovalMode): void {
+    const session = this.#get(threadId).session
+    this.#threadApprovals.set(threadId, approval)
+    session.setApproval?.(approval)
+  }
+
   respondToUserInput(threadId: string, requestId: string, answers: Record<string, string[]>): void {
     const designInput = this.#designInputs.get(requestId)
     if (designInput?.threadId === threadId) {

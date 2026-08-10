@@ -166,6 +166,36 @@ describe('OpenCode adapter', () => {
     adapter.dispose()
   })
 
+  it('auto-approves permissions after setApproval flips the live mode to full', async () => {
+    const mock = await serveOpenCode()
+    const adapter = new OpenCodeAdapter({ baseUrl: mock.baseUrl })
+    const thread = await adapter.resumeThread('opencode-session-1', 'C:\\repo')
+    const requested: string[] = []
+    adapter.on('event', (event) => {
+      if (event.type === 'approval.requested') requested.push(event.request.id)
+    })
+
+    adapter.setApproval('full')
+    await adapter.sendTurn(thread.id, 'Run a command')
+    mock.broadcast({
+      type: 'permission.updated',
+      properties: {
+        id: 'permission-1',
+        type: 'bash',
+        sessionID: 'session-1',
+        messageID: 'message-1',
+        title: 'npm test',
+        metadata: {},
+        time: { created: 200 },
+      },
+    })
+    const permission = await mock.waitFor('/session/session-1/permissions/permission-1')
+
+    expect(permission.body).toEqual({ response: 'always' })
+    expect(requested).toEqual([])
+    adapter.dispose()
+  })
+
   it('reads model-specific variants from both OpenCode catalog shapes', () => {
     expect(
       openCodeReasoningEfforts({

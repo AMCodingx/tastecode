@@ -153,26 +153,12 @@ describe('PullRequestDetailPane inline editing', () => {
     )
   })
 
-  it('uses a direct toolbar edit action instead of a merged pull request overflow menu', async () => {
+  it('shows no overflow menu or toolbar edit shortcut for a merged pull request', async () => {
     setup({ ...detail, state: 'MERGED', isDraft: false, body: 'Original description' })
 
     await screen.findByText('Editable pull request')
     expect(screen.queryByRole('button', { name: 'More pull request actions' })).toBeNull()
-
-    fireEvent.click(screen.getByRole('button', { name: 'Edit title and description' }))
-
-    expect(screen.queryByRole('dialog', { name: 'Edit pull request' })).toBeNull()
-    expect(screen.queryByRole('textbox', { name: 'Pull request title' })).toBeNull()
-    expect(screen.queryByRole('textbox', { name: 'Pull request description' })).toBeNull()
-    expect(screen.queryByRole('button', { name: 'Save title' })).toBeNull()
-    expect(screen.queryByRole('button', { name: 'Save description' })).toBeNull()
-
-    fireEvent.click(screen.getByText('Editable pull request'))
-    const title = screen.getByRole('textbox', { name: 'Pull request title' })
-    fireEvent.keyDown(title, { key: 'Escape' })
-
-    fireEvent.click(screen.getByText('Original description'))
-    expect(screen.getByRole('textbox', { name: 'Pull request description' })).toBeTruthy()
+    expect(screen.queryByRole('button', { name: 'Edit title and description' })).toBeNull()
   })
 
   it('edits the title in the summary header without opening a dialog', async () => {

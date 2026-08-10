@@ -1,6 +1,7 @@
 import { EventEmitter } from 'node:events'
 import type {
   ApprovalDecision,
+  ApprovalMode,
   ApprovalRequest,
   Capabilities,
   DomainEvent,
@@ -57,6 +58,7 @@ export class ApiAgentSession extends EventEmitter<Events> {
   readonly #tools: readonly ApiTool[]
   readonly #executeTool: (call: ApiToolCall, signal: AbortSignal) => Promise<ApiToolResult>
   readonly #reviewTool: (call: ApiToolCall) => Omit<ApprovalRequest, 'id' | 'createdAt'> | undefined
+  readonly #onSetApproval: ((approval: ApprovalMode) => void) | undefined
   readonly #maxToolCalls: number
   readonly #secrets: readonly string[]
   readonly #instructions: string | undefined
@@ -74,6 +76,8 @@ export class ApiAgentSession extends EventEmitter<Events> {
     tools?: readonly ApiTool[]
     executeTool?: (call: ApiToolCall, signal: AbortSignal) => Promise<ApiToolResult>
     reviewTool?: (call: ApiToolCall) => Omit<ApprovalRequest, 'id' | 'createdAt'> | undefined
+    /** Live access-level change; the owner swaps the review policy behind it. */
+    setApproval?: (approval: ApprovalMode) => void
     maxToolCalls?: number
     secrets?: readonly string[]
     instructions?: string
@@ -86,6 +90,7 @@ export class ApiAgentSession extends EventEmitter<Events> {
       options.executeTool ??
       (async () => ({ content: 'Tool execution is unavailable.', isError: true }))
     this.#reviewTool = options.reviewTool ?? (() => undefined)
+    this.#onSetApproval = options.setApproval
     this.#maxToolCalls = options.maxToolCalls ?? 32
     if (!Number.isInteger(this.#maxToolCalls) || this.#maxToolCalls < 1) {
       throw new Error('maxToolCalls must be a positive integer')
@@ -154,6 +159,10 @@ export class ApiAgentSession extends EventEmitter<Events> {
   respondToApproval(approvalId: string, decision: ApprovalDecision): void {
     if (this.#approval?.id !== approvalId) return
     this.#approval.resolve(decision)
+  }
+
+  setApproval(approval: ApprovalMode): void {
+    this.#onSetApproval?.(approval)
   }
 
   dispose(): void {

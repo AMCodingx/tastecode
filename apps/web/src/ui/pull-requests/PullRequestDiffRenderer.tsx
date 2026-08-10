@@ -29,6 +29,7 @@ const HARNESS_DIFF_CSS = `
     --diffs-addition-color: var(--success);
     --diffs-deletion-color: var(--error);
     --diffs-modified-color: var(--attention);
+    --diffs-selection-base: var(--surface-2);
     --diffs-bg-context-override: var(--chrome-recessed);
     --diffs-bg-context-gutter-override: color-mix(in srgb, var(--surface-2) 72%, var(--chrome-recessed));
     --diffs-bg-separator-override: var(--surface-2);
@@ -47,17 +48,39 @@ const HARNESS_DIFF_CSS = `
     --diffs-annotation-bg: var(--bg);
   }
 
-  [data-utility-button] {
-    background: var(--chrome-raised);
-    border: 1px solid var(--chrome-border);
-    border-radius: var(--r-sm);
-    box-shadow: var(--chrome-shadow);
-    color: var(--text-2);
+  [data-gutter-utility-slot] {
+    align-items: center;
+    justify-content: flex-start;
+    left: 0;
+    right: auto;
+    padding-left: 7px;
   }
 
-  [data-utility-button]:hover {
-    background: var(--chrome-raised-hover);
+  [data-utility-button] {
+    width: 20px;
+    height: 20px;
+    margin: 0;
+    background: color-mix(in srgb, var(--surface-2) 82%, transparent);
+    border: 1px solid var(--line-strong);
+    border-radius: var(--r-md);
+    box-shadow: none;
+    color: var(--text-2);
+    transition:
+      background var(--dur-fast) var(--ease-out),
+      border-color var(--dur-fast) var(--ease-out),
+      color var(--dur-fast) var(--ease-out);
+  }
+
+  [data-utility-button]:hover,
+  [data-utility-button]:focus-visible {
+    background: var(--surface-3);
+    border-color: var(--line-strong);
     color: var(--text);
+  }
+
+  [data-utility-button]:focus-visible {
+    outline: 1px solid var(--line-strong);
+    outline-offset: 1px;
   }
 `
 
@@ -106,6 +129,8 @@ export function PullRequestDiffRenderer(props: {
     <FileDiff<PullRequestReviewAnnotation>
       fileDiff={fileDiff}
       options={options}
+      // Own the selection so the gutter "+" never stays pinned after a click.
+      selectedLines={null}
       lineAnnotations={props.annotations}
       renderAnnotation={props.renderAnnotation}
       className="pr-diffs-renderer"

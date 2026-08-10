@@ -788,7 +788,6 @@ function ComposerComponent(props: {
 
                 <Menu
                   label="Permissions"
-                  disabled={props.running}
                   triggerClassName="composer__permission"
                   trigger={() => (
                     <span

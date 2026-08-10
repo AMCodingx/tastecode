@@ -1588,6 +1588,22 @@ export function App() {
     },
     [transport],
   )
+  /**
+   * The permission chip is the one control for the access level, so it has to
+   * do both jobs at once: it is the default every new session starts with,
+   * and picking a different mode inside a live chat changes that chat now.
+   */
+  const changeApproval = useCallback(
+    (mode: ApprovalMode) => {
+      setApproval(mode)
+      const threadId = activeIdRef.current
+      if (!threadId || threadId.startsWith('pending:')) return
+      void transport
+        .request('thread.setApproval', { threadId, approval: mode })
+        .catch((error) => setNotice(error instanceof Error ? error.message : String(error)))
+    },
+    [transport],
+  )
   const answerUserInput = useCallback(
     (requestId: string, answers: Record<string, string[]>) => {
       const threadId = activeIdRef.current
@@ -1958,9 +1974,7 @@ export function App() {
       if (!pullRequest.localProjectPath) return
       beginSession(pullRequest.localProjectPath)
       setComposerDraft((current) => ({
-        text:
-          `Review and help me manage ${pullRequest.url} (${pullRequest.title}). ` +
-          'Inspect its checks, review conversations, and local diff before making changes.',
+        text: `I wanted to work on ${pullRequest.url} (${pullRequest.title}).`,
         request: (current?.request ?? 0) + 1,
       }))
       setComposerFocusRequest((request) => request + 1)
@@ -2342,7 +2356,7 @@ export function App() {
                   onModelChange={selectModel}
                   onEffortChange={setEffort}
                   onServiceTierChange={setServiceTier}
-                  onApprovalChange={setApproval}
+                  onApprovalChange={changeApproval}
                   onIsolateChange={setIsolateSession}
                   onDesignModeChange={setDesignMode}
                   onTranscribeVoice={transcribeVoice}

@@ -217,6 +217,11 @@ export class AcpAdapter extends EventEmitter<AcpAdapterEvents> {
     if (decision === 'abort') void this.interrupt()
   }
 
+  /** Live access-level change; read again for every permission request. */
+  setApproval(approval: ApprovalMode | undefined): void {
+    this.#setApproval(approval)
+  }
+
   async listModels(): Promise<Model[]> {
     return discoverAgentModels(this.#spec.id)
   }
