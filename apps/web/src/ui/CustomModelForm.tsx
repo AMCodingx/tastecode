@@ -10,11 +10,14 @@ import { type CustomModelInput } from '../model-catalog.js'
 export function CustomModelForm(props: {
   providers: { id: ProviderId; name: string }[]
   defaultProvider?: ProviderId | undefined
+  /** Hide the provider select and pin the entry to this engine. Used by the
+   *  per-provider add rows in Settings, where the provider is already known. */
+  fixedProvider?: ProviderId | undefined
   onAdd: (input: CustomModelInput) => void
   onCancel?: (() => void) | undefined
 }) {
   const [provider, setProvider] = useState<ProviderId>(
-    props.defaultProvider ?? props.providers[0]?.id ?? 'codex',
+    props.fixedProvider ?? props.defaultProvider ?? props.providers[0]?.id ?? 'codex',
   )
   const [modelId, setModelId] = useState('')
   const [displayName, setDisplayName] = useState('')
@@ -35,20 +38,24 @@ export function CustomModelForm(props: {
 
   return (
     <form className="custom-model-form" onSubmit={submit}>
-      <label className="custom-model-form__field">
-        <span className="custom-model-form__label">Provider</span>
-        <select
-          value={provider}
-          onChange={(event) => setProvider(event.target.value as ProviderId)}
-        >
-          {props.providers.map((entry) => (
-            <option key={entry.id} value={entry.id}>
-              {entry.name}
-            </option>
-          ))}
-        </select>
-      </label>
-      <label className="custom-model-form__field">
+      {props.fixedProvider ? null : (
+        <label className="custom-model-form__field">
+          <span className="custom-model-form__label">Provider</span>
+          <select
+            value={provider}
+            onChange={(event) => setProvider(event.target.value as ProviderId)}
+          >
+            {props.providers.map((entry) => (
+              <option key={entry.id} value={entry.id}>
+                {entry.name}
+              </option>
+            ))}
+          </select>
+        </label>
+      )}
+      <label
+        className={`custom-model-form__field${props.fixedProvider ? ' custom-model-form__field--wide' : ''}`}
+      >
         <span className="custom-model-form__label">Model id</span>
         <input
           value={modelId}

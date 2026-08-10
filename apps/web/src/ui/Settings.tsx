@@ -41,6 +41,7 @@ import {
   Network,
   Palette,
   PanelLeft,
+  Plus,
   RotateCcw,
   Smartphone,
   Trash2,
@@ -668,6 +669,8 @@ function ModelSettings(props: {
               choices={choices}
               hiddenModels={props.hiddenModels}
               onModelVisibilityChange={props.onModelVisibilityChange}
+              providers={props.providers}
+              onCustomModelAdd={props.onCustomModelAdd}
             />
           ))}
         </div>
@@ -741,12 +744,17 @@ function ModelVisibilityGroup(props: {
   choices: ModelChoice[]
   hiddenModels: Set<string>
   onModelVisibilityChange: (key: string, visible: boolean) => void
+  providers: { id: ProviderId; name: string }[]
+  onCustomModelAdd: (input: CustomModelInput) => void
 }) {
   const [query, setQuery] = useState('')
   const deferredQuery = useDeferredValue(query)
+  const [addingCustom, setAddingCustom] = useState(false)
   const visibleCount = props.choices.filter((choice) => !props.hiddenModels.has(choice.key)).length
   const anyVisible = visibleCount > 0
   const filteredChoices = filterModelChoicesByQuery(props.choices, deferredQuery)
+  const provider = props.choices[0]?.provider
+  const canAddCustom = provider !== undefined && provider !== 'acp' && provider !== 'api'
 
   return (
     <section className="model-visibility" aria-label={props.source}>
@@ -810,6 +818,30 @@ function ModelVisibilityGroup(props: {
             No matching models.
           </p>
         )}
+        {canAddCustom ? (
+          <div className="model-visibility__custom">
+            {addingCustom ? (
+              <CustomModelForm
+                fixedProvider={provider}
+                providers={props.providers}
+                onAdd={(input) => {
+                  props.onCustomModelAdd(input)
+                  setAddingCustom(false)
+                }}
+                onCancel={() => setAddingCustom(false)}
+              />
+            ) : (
+              <button
+                type="button"
+                className="model-visibility__custom-add"
+                onClick={() => setAddingCustom(true)}
+              >
+                <Plus size={14} aria-hidden />
+                <span>Add custom model</span>
+              </button>
+            )}
+          </div>
+        ) : null}
       </div>
     </section>
   )

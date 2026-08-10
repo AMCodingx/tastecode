@@ -214,6 +214,93 @@ describe('model settings', () => {
       displayName: 'DeepSeek V3',
     })
   })
+
+  it('adds a custom model from the bottom of a provider list', () => {
+    const models: ModelChoice[] = [
+      {
+        key: 'opencode:ling',
+        provider: 'opencode',
+        sourceName: 'OpenCode',
+        mark: 'opencode',
+        model: {
+          id: 'zen/ling-3.0-tiny',
+          displayName: 'OpenCode Zen · Ling-3.0-tiny Free',
+          description: '',
+          isDefault: false,
+          reasoningEfforts: [],
+          serviceTiers: [],
+        },
+      },
+    ]
+    const onCustomModelAdd = vi.fn()
+    const transport = {
+      request: vi.fn(),
+      on: vi.fn(() => () => {}),
+    } as unknown as Transport
+
+    render(
+      <Settings
+        provider="codex"
+        providerName="Codex"
+        transport={transport}
+        projectPath={undefined}
+        projectName={undefined}
+        account={undefined}
+        providerStatuses={[]}
+        acpAgents={[]}
+        modelConnections={[]}
+        models={models}
+        hiddenModels={new Set()}
+        onModelVisibilityChange={() => {}}
+        providers={[
+          { id: 'codex', name: 'Codex' },
+          { id: 'opencode', name: 'OpenCode' },
+        ]}
+        onCustomModelAdd={onCustomModelAdd}
+        onCustomModelRemove={() => {}}
+        onConnectionsChanged={() => {}}
+        projectCount={0}
+        sidebarSettings={{ mode: 'classic', autoSettleDays: 3 }}
+        onSidebarSettingsChange={() => {}}
+        themePreference="system"
+        onThemePreferenceChange={() => {}}
+        fontPreference="geist"
+        onFontPreferenceChange={() => {}}
+        accentPreference="neutral"
+        onAccentPreferenceChange={() => {}}
+        backdropPreference="default"
+        onBackdropPreferenceChange={() => {}}
+        sidebarGlass={0}
+        onSidebarGlassChange={() => {}}
+        showMacOSFontSmoothing={false}
+        macOSFontSmoothing={true}
+        onMacOSFontSmoothingChange={() => {}}
+        onAccountChange={() => {}}
+        onReset={() => {}}
+        onClose={() => {}}
+      />,
+    )
+
+    fireEvent.click(screen.getByRole('button', { name: 'Models' }))
+    const group = screen.getByRole('region', { name: 'OpenCode' })
+    fireEvent.click(within(group).getByRole('button', { name: 'Add custom model' }))
+
+    // Pinned to the group's engine: no provider select, id + name only.
+    expect(within(group).queryByLabelText('Provider')).toBeNull()
+    fireEvent.change(within(group).getByLabelText('Model id'), {
+      target: { value: 'qwen-max' },
+    })
+    fireEvent.change(within(group).getByLabelText('Display name'), {
+      target: { value: 'Qwen Max' },
+    })
+    fireEvent.click(within(group).getByRole('button', { name: 'Add model' }))
+
+    expect(onCustomModelAdd).toHaveBeenCalledWith({
+      provider: 'opencode',
+      modelId: 'qwen-max',
+      displayName: 'Qwen Max',
+    })
+  })
 })
 
 describe('provider settings', () => {
