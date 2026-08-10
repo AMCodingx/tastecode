@@ -9190,6 +9190,15 @@
 }
 
 @media (max-width: 700px) {
+  .shell {
+    /* The touch target needs a taller bar than the desktop chrome token, so
+       the titlebar grows to 44px. Grid rows still read --titlebar-h: keeping
+       the token at 34px would let the bar overflow its row and slide the
+       sidebar drawer up underneath it, clipping its corner and overlapping
+       the reveal toggle. */
+    --titlebar-h: 44px;
+  }
+
   .shell__body {
     grid-template-columns: 0 minmax(0, 1fr);
   }
