@@ -106,6 +106,7 @@ final class NativeStateTests: XCTestCase {
 
     XCTAssertEqual(preferences.composer.provider, .acp)
     XCTAssertEqual(preferences.composer.approval, .full)
+    XCTAssertFalse(preferences.composer.designMode)
     XCTAssertNil(preferences.composer.agentID)
     XCTAssertNil(preferences.lastProjectPath)
 
@@ -115,8 +116,11 @@ final class NativeStateTests: XCTestCase {
     XCTAssertNil(object["projectGrouping"])
   }
 
-  func testPreferencesPersistLastProject() throws {
-    let preferences = AppPreferences(lastProjectPath: "/repo")
+  func testPreferencesPersistLastProjectAndDesignMode() throws {
+    let preferences = AppPreferences(
+      lastProjectPath: "/repo",
+      composer: ComposerPreferences(designMode: true)
+    )
 
     let restored = try JSONDecoder().decode(
       AppPreferences.self,
@@ -124,6 +128,7 @@ final class NativeStateTests: XCTestCase {
     )
 
     XCTAssertEqual(restored.lastProjectPath, "/repo")
+    XCTAssertTrue(restored.composer.designMode)
   }
 
   func testProjectSelectionUsesRememberedProjectThenRecentProject() throws {
@@ -176,6 +181,22 @@ final class NativeStateTests: XCTestCase {
             path: "/two", name: "Two", pinned: false, createdAt: 2, sessions: []),
         ]
       ))
+  }
+
+  func testComposerSubmissionAddsDesignBriefAndPlanInstruction() {
+    XCTAssertEqual(
+      ComposerSubmission.attachments(["reference.png"], designMode: true),
+      ["reference.png", ComposerSubmission.designBriefAttachment]
+    )
+    XCTAssertEqual(
+      ComposerSubmission.attachments(
+        [ComposerSubmission.designBriefAttachment], designMode: true),
+      [ComposerSubmission.designBriefAttachment]
+    )
+    XCTAssertEqual(
+      ComposerSubmission.text("Build it", interaction: .plan),
+      "Plan this task first. Do not make changes until I approve the plan.\n\nBuild it"
+    )
   }
 
   func testEnvironmentAppearanceDefaultsAndRoundTrips() throws {

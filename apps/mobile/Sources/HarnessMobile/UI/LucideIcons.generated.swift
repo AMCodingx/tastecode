@@ -52,6 +52,7 @@ enum LucideIcon: String, CaseIterable, Sendable {
   case listChecks = "LucideListChecks"
   case loader = "LucideLoader"
   case lockKeyhole = "LucideLockKeyhole"
+  case lockOpen = "LucideLockOpen"
   case messagesSquare = "LucideMessagesSquare"
   case monitor = "LucideMonitor"
   case monitorSmartphone = "LucideMonitorSmartphone"

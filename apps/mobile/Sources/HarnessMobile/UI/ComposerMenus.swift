@@ -1,5 +1,20 @@
 import SwiftUI
 
+enum ComposerSubmission {
+  static let designBriefAttachment = "personal-harness://design-brief-v1"
+
+  static func text(_ text: String, interaction: InteractionMode) -> String {
+    interaction == .plan
+      ? "Plan this task first. Do not make changes until I approve the plan.\n\n\(text)"
+      : text
+  }
+
+  static func attachments(_ paths: [String], designMode: Bool) -> [String] {
+    guard designMode, !paths.contains(designBriefAttachment) else { return paths }
+    return paths + [designBriefAttachment]
+  }
+}
+
 enum ComposerMenuSelection {
   static func apply(
     provider: ProviderID,
@@ -33,7 +48,7 @@ struct ModelMenu: View {
         }
       }
     } label: {
-      ComposerMenuLabel(title: selected?.displayName ?? providerName) {
+      ComposerToolLabel(title: selected?.displayName ?? providerName, showsChevron: true) {
         ProviderGlyph(provider: model.preferences.composer.provider, size: 18)
       }
     }
@@ -144,9 +159,86 @@ struct ACPAgentMenu: View {
     )
   }
   private var menuLabel: some View {
-    ComposerMenuLabel(title: selected?.name ?? "ACP agent") {
+    ComposerToolLabel(title: selected?.name ?? "ACP agent", showsChevron: true) {
       AgentGlyph(agentID: selected?.id, size: 15)
     }
+  }
+}
+
+struct ApprovalMenu: View {
+  @EnvironmentObject private var model: AppModel
+  var onSelection: () -> Void = {}
+
+  var body: some View {
+    Menu {
+      ForEach(runtimeModes) { mode in
+        Button {
+          model.updatePreferences { $0.composer.approval = mode }
+          onSelection()
+        } label: {
+          LucideActionLabel(title: mode.label, icon: icon(for: mode))
+        }
+      }
+    } label: {
+      ComposerToolLabel(title: selection.label, tint: tint) {
+        LucideIconView(icon(for: selection), size: 14)
+      }
+    }
+    .buttonStyle(.plain)
+    .menuOrder(.fixed)
+    .accessibilityLabel("Permissions")
+  }
+
+  private var selection: ApprovalMode { model.preferences.composer.approval }
+  private var runtimeModes: [ApprovalMode] {
+    let provider = model.providers.first { $0.id == model.preferences.composer.provider }
+    return ApprovalMode.allCases.filter {
+      $0 != .autoReview || provider?.capabilities?.autoReview == true
+    }
+  }
+  private var tint: Color {
+    switch selection {
+    case .ask: HarnessColor.primary
+    case .auto: HarnessColor.green
+    case .autoReview: HarnessColor.blue
+    case .full: HarnessColor.composerDanger
+    }
+  }
+  private func icon(for mode: ApprovalMode) -> LucideIcon {
+    switch mode {
+    case .ask: .shieldAlert
+    case .auto, .autoReview: .shieldCheck
+    case .full: .lockOpen
+    }
+  }
+}
+
+struct DesignModeButton: View {
+  @EnvironmentObject private var model: AppModel
+  var onSelection: () -> Void = {}
+
+  var body: some View {
+    Button {
+      model.updatePreferences { $0.composer.designMode.toggle() }
+      onSelection()
+    } label: {
+      ComposerToolLabel(
+        title: "Design",
+        tint: model.preferences.composer.designMode ? designTint : HarnessColor.primary,
+        active: model.preferences.composer.designMode
+      ) {
+        LucideIconView(.palette, size: 14)
+      }
+    }
+    .buttonStyle(.plain)
+    .accessibilityLabel(
+      model.preferences.composer.designMode ? "Turn off Design mode" : "Turn on Design mode"
+    )
+    .accessibilityValue(model.preferences.composer.designMode ? "On" : "Off")
+  }
+
+  private var designTint: Color {
+    Color(red: 0.72, green: 0.64, blue: 1)
   }
 }
 
@@ -159,19 +251,18 @@ struct AgentSettingsMenu: View {
       Section {
         reasoningControl
         serviceTierControl
-        runtimeControl
       }
       Section {
         interactionControl
       }
     } label: {
-      ComposerMenuLabel(title: settingsSummary) {
+      ComposerToolLabel(title: settingsSummary, showsChevron: true) {
         LucideIconView(.settings, size: 14)
       }
     }
     .buttonStyle(.plain)
     .menuOrder(.fixed)
-    .accessibilityLabel("Reasoning, service tier, runtime, and interaction")
+    .accessibilityLabel("Reasoning, service tier, and interaction")
   }
 
   @ViewBuilder
@@ -202,17 +293,6 @@ struct AgentSettingsMenu: View {
     .pickerStyle(.menu)
   }
 
-  private var runtimeControl: some View {
-    Picker(selection: approvalSelection) {
-      ForEach(runtimeModes) { mode in
-        Text(mode.label).tag(mode)
-      }
-    } label: {
-      LucideActionLabel(title: "Runtime", icon: .squareTerminal)
-    }
-    .pickerStyle(.menu)
-  }
-
   private var interactionControl: some View {
     Picker(selection: interactionSelection) {
       ForEach(InteractionMode.allCases) { interaction in
@@ -235,12 +315,6 @@ struct AgentSettingsMenu: View {
   private var nonDefaultTiers: [ServiceTier] {
     selectedModel?.serviceTiers.filter { $0.id != defaultTierID } ?? []
   }
-  private var runtimeModes: [ApprovalMode] {
-    let provider = model.providers.first { $0.id == model.preferences.composer.provider }
-    return ApprovalMode.allCases.filter {
-      $0 != .autoReview || provider?.capabilities?.autoReview == true
-    }
-  }
   private var effortSelection: Binding<String> {
     Binding(
       get: { model.preferences.composer.effort ?? efforts[0] },
@@ -256,15 +330,6 @@ struct AgentSettingsMenu: View {
       get: { model.preferences.composer.serviceTier ?? defaultTierID },
       set: { tier in
         model.updatePreferences { $0.composer.serviceTier = tier }
-        onSelection()
-      }
-    )
-  }
-  private var approvalSelection: Binding<ApprovalMode> {
-    Binding(
-      get: { model.preferences.composer.approval },
-      set: { approval in
-        model.updatePreferences { $0.composer.approval = approval }
         onSelection()
       }
     )
@@ -320,13 +385,12 @@ struct CheckoutMenu: View {
         .pickerStyle(.menu)
       }
     } label: {
-      ComposerMenuLabel(title: checkoutSummary) {
-        LucideIconView(.gitBranch, size: 14)
-      }
+      ComposerIconLabel(icon: .gitBranch)
     }
     .buttonStyle(.plain)
     .menuOrder(.fixed)
     .accessibilityLabel("Checkout mode and branch")
+    .accessibilityValue(checkoutSummary)
   }
 
   private var isolationSelection: Binding<Bool> {
@@ -351,32 +415,5 @@ struct CheckoutMenu: View {
   private var checkoutSummary: String {
     if model.preferences.composer.isolate { return "New worktree" }
     return selectedBranch ?? currentBranch ?? "Current checkout"
-  }
-}
-
-private struct ComposerMenuLabel<Icon: View>: View {
-  let title: String
-  let icon: Icon
-
-  init(title: String, @ViewBuilder icon: () -> Icon) {
-    self.title = title
-    self.icon = icon()
-  }
-
-  var body: some View {
-    HStack(spacing: 7) {
-      icon
-        .frame(width: 21, height: 21)
-      Text(title)
-        .font(.system(size: 15, weight: .semibold))
-        .lineLimit(1)
-      Spacer(minLength: 2)
-      LucideIconView(.chevronDown, size: 9)
-        .foregroundStyle(HarnessColor.secondary)
-    }
-    .padding(.horizontal, 12)
-    .frame(maxWidth: .infinity)
-    .frame(height: 36)
-    .harnessGlassCapsule()
   }
 }

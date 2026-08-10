@@ -76,22 +76,13 @@ struct ThreadView: View {
       GlassIconButton(icon: .arrowLeft, accessibilityLabel: "Back", size: 36) {
         dismiss()
       }
-      VStack(alignment: .leading, spacing: 2) {
-        Text(thread.title)
-          .font(.system(size: 14, weight: .semibold))
-          .lineLimit(1)
-        Text(
-          "\(project.name.isEmpty ? HarnessFormat.projectName(project.path) : project.name) · \(model.activeEnvironment?.displayName ?? "Harness")"
-        )
-        .font(.caption2)
-        .foregroundStyle(HarnessColor.secondary)
+      Text(thread.title)
+        .font(.system(size: 14, weight: .semibold))
         .lineLimit(1)
-      }
-      .frame(maxWidth: .infinity, alignment: .leading)
+        .frame(maxWidth: .infinity, alignment: .leading)
       HStack(spacing: 2) {
         HeaderAction(icon: .squareTerminal, label: "Terminal") { terminalPresented = true }
         HeaderAction(icon: .fileDiff, label: "Changes") { workspacePresented = true }
-        HeaderAction(icon: .gitBranch, label: "Checkout") { branchPresented = true }
       }
       .padding(.horizontal, 4)
       .frame(height: 36)
@@ -201,44 +192,71 @@ struct ThreadView: View {
   }
 
   private var composerBar: some View {
-    GlassEffectContainer(spacing: 7) {
-      HStack(alignment: .bottom, spacing: 7) {
-        AttachmentPickerButton(attachments: $attachments, size: 40)
-        HStack(alignment: .bottom, spacing: 6) {
-          TextField("Ask the repo agent, or run a command…", text: $composer, axis: .vertical)
-            .font(.system(size: 14))
-            .textFieldStyle(.plain)
-            .lineLimit(1...6)
-            .focused($composerFocused)
-            .padding(.leading, 14)
-            .padding(.vertical, 11)
-            .frame(minHeight: 44)
-          GlassIconButton(
-            icon: actionIcon,
-            accessibilityLabel: actionLabel,
-            size: 35,
-            prominent: !composer.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
-            disabled: sending
-              || (!timeline.running
-                && composer.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-          ) {
-            Task {
-              if timeline.running
-                && composer.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-              {
-                await interrupt()
-              } else {
-                await send()
-              }
+    VStack(spacing: 0) {
+      TextField("Do anything", text: $composer, axis: .vertical)
+        .font(.system(size: 15))
+        .textFieldStyle(.plain)
+        .lineLimit(1...8)
+        .focused($composerFocused)
+        .padding(.horizontal, 14)
+        .padding(.top, 13)
+        .padding(.bottom, 7)
+        .frame(minHeight: 54, alignment: .top)
+
+      HStack(alignment: .center, spacing: 4) {
+        ScrollView(.horizontal) {
+          HStack(spacing: 6) {
+            AttachmentPickerButton(attachments: $attachments, style: .composer)
+            ApprovalMenu(onSelection: keepComposerFocused)
+              .disabled(timeline.running)
+            Button {
+              branchPresented = true
+            } label: {
+              ComposerIconLabel(icon: .gitBranch)
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel("Show branch and worktree")
+            .accessibilityValue(thread.worktreeBranch ?? "Current checkout")
+            DesignModeButton(onSelection: keepComposerFocused)
+            ModelMenu(onSelection: keepComposerFocused)
+              .disabled(timeline.running)
+            ACPAgentMenu(onSelection: keepComposerFocused)
+              .disabled(timeline.running)
+            AgentSettingsMenu(onSelection: keepComposerFocused)
+              .disabled(timeline.running)
+          }
+        }
+        .scrollIndicators(.hidden)
+        .scrollBounceBehavior(.basedOnSize, axes: .horizontal)
+        .frame(maxWidth: .infinity)
+
+        GlassIconButton(
+          icon: actionIcon,
+          accessibilityLabel: actionLabel,
+          size: 38,
+          prominent: !composer.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+          disabled: sending
+            || (!timeline.running
+              && composer.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+        ) {
+          Task {
+            if timeline.running
+              && composer.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            {
+              await interrupt()
+            } else {
+              await send()
             }
           }
-          .padding(.trailing, 3)
         }
-        .glassEffect(.regular, in: .rect(cornerRadius: 20))
       }
-      .padding(.horizontal, 10)
-      .padding(.vertical, 6)
+      .padding(.leading, 5)
+      .padding(.trailing, 3)
+      .padding(.bottom, 4)
     }
+    .harnessComposerSurface()
+    .padding(.horizontal, 10)
+    .padding(.bottom, 6)
     .background(HarnessColor.background.opacity(0.94))
   }
 
@@ -252,6 +270,13 @@ struct ThreadView: View {
 
   private var actionLabel: String {
     timeline.running && composer.isEmpty ? "Stop turn" : "Send"
+  }
+
+  private func keepComposerFocused() {
+    Task { @MainActor in
+      await Task.yield()
+      composerFocused = true
+    }
   }
 
   private func load() async {
@@ -342,9 +367,10 @@ struct ThreadView: View {
       var uploaded: [String] = []
       for attachment in attachments { uploaded.append(try await model.upload(attachment)) }
       let settings = model.preferences.composer
+      uploaded = ComposerSubmission.attachments(uploaded, designMode: settings.designMode)
       var params: [String: JSONValue] = [
         "threadId": .string(thread.id),
-        "text": .string(text),
+        "text": .string(ComposerSubmission.text(text, interaction: settings.interaction)),
         "approval": .string(settings.approval.rawValue),
       ]
       if !uploaded.isEmpty { params["attachments"] = .array(uploaded.map(JSONValue.string)) }

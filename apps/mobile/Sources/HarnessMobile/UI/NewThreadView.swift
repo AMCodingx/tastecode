@@ -109,51 +109,25 @@ struct NewThreadView: View {
 
   var body: some View {
     VStack(spacing: 0) {
-      HStack(spacing: 9) {
-        GlassIconButton(icon: .arrowLeft, accessibilityLabel: "Back", size: 36) {
-          dismiss()
-        }
-        Text("New chat")
-          .font(.system(size: 14, weight: .semibold))
-          .lineLimit(1)
-        Spacer()
-      }
-      .padding(.horizontal, 12)
-      .padding(.vertical, 5)
+      header
       Divider().overlay(HarnessColor.separator)
-
-      ZStack(alignment: .topLeading) {
-        TextEditor(text: $prompt)
-          .font(.system(size: 16))
-          .scrollContentBackground(.hidden)
-          .focused($promptFocused)
-          .padding(.horizontal, 14)
-          .padding(.top, 7)
-        if prompt.isEmpty {
-          Text(
-            "Describe a coding task in \(project.name.isEmpty ? HarnessFormat.projectName(project.path) : project.name)"
-          )
-          .font(.system(size: 16))
-          .foregroundStyle(HarnessColor.secondary)
-          .padding(.horizontal, 19)
-          .padding(.top, 15)
-          .allowsHitTesting(false)
-        }
-      }
-
+      Color.clear
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .contentShape(.rect)
+        .onTapGesture { promptFocused = false }
       AttachmentStrip(attachments: $attachments)
-        .padding(.bottom, attachments.isEmpty ? 0 : 8)
-
-      composerControls
+        .padding(.bottom, attachments.isEmpty ? 0 : 4)
+      composer
     }
-    .background(HarnessColor.background)
+    .background(HarnessColor.background.ignoresSafeArea())
+    .toolbar(.hidden, for: .navigationBar)
     .task {
       model.rememberProject(project)
       promptFocused = true
       await loadWorkspace()
     }
     .alert(
-      "Couldn’t start task",
+      "Couldn’t start chat",
       isPresented: Binding(
         get: { errorMessage != nil },
         set: { if !$0 { errorMessage = nil } }
@@ -165,48 +139,74 @@ struct NewThreadView: View {
     }
   }
 
-  private var composerControls: some View {
-    VStack(spacing: 4) {
-      Divider().overlay(HarnessColor.separator)
-      GlassEffectContainer(spacing: 7) {
-        HStack(spacing: 7) {
-          AttachmentPickerButton(attachments: $attachments)
-          ScrollView(.horizontal) {
-            HStack(spacing: 7) {
-              ModelMenu(onSelection: keepPromptFocused)
-                .containerRelativeFrame(.horizontal, count: 2, span: 1, spacing: 7)
-              ACPAgentMenu(onSelection: keepPromptFocused)
-                .containerRelativeFrame(.horizontal, count: 2, span: 1, spacing: 7)
-              AgentSettingsMenu(onSelection: keepPromptFocused)
-                .containerRelativeFrame(.horizontal, count: 2, span: 1, spacing: 7)
-              CheckoutMenu(
-                currentBranch: currentBranch,
-                selectedBranch: $selectedBranch,
-                branches: branches,
-                onSelection: keepPromptFocused
-              )
-              .containerRelativeFrame(.horizontal, count: 2, span: 1, spacing: 7)
-            }
-          }
-          .scrollIndicators(.hidden)
-          .scrollBounceBehavior(.basedOnSize, axes: .horizontal)
-          .scrollEdgeEffectStyle(.hard, for: .trailing)
-          .frame(maxWidth: .infinity)
-          .padding(.trailing, 5)
-          GlassIconButton(
-            icon: sending ? .loader : .arrowUp,
-            accessibilityLabel: "Start task",
-            prominent: !prompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
-            disabled: prompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || sending
-          ) {
-            Task { await send() }
+  private var header: some View {
+    HStack(spacing: 9) {
+      GlassIconButton(icon: .arrowLeft, accessibilityLabel: "Back", size: 36) {
+        dismiss()
+      }
+      Text("New chat")
+        .font(.system(size: 14, weight: .semibold))
+        .lineLimit(1)
+      Spacer()
+    }
+    .padding(.horizontal, 12)
+    .padding(.vertical, 5)
+  }
+
+  private var composer: some View {
+    VStack(spacing: 0) {
+      TextField("Do anything", text: $prompt, axis: .vertical)
+        .font(.system(size: 15))
+        .textFieldStyle(.plain)
+        .lineLimit(1...8)
+        .focused($promptFocused)
+        .padding(.horizontal, 14)
+        .padding(.top, 13)
+        .padding(.bottom, 7)
+        .frame(minHeight: 54, alignment: .top)
+
+      HStack(alignment: .center, spacing: 4) {
+        ScrollView(.horizontal) {
+          HStack(spacing: 6) {
+            AttachmentPickerButton(attachments: $attachments, style: .composer)
+            ApprovalMenu(onSelection: keepPromptFocused)
+            CheckoutMenu(
+              currentBranch: currentBranch,
+              selectedBranch: $selectedBranch,
+              branches: branches,
+              onSelection: keepPromptFocused
+            )
+            DesignModeButton(onSelection: keepPromptFocused)
+            ModelMenu(onSelection: keepPromptFocused)
+            ACPAgentMenu(onSelection: keepPromptFocused)
+            AgentSettingsMenu(onSelection: keepPromptFocused)
           }
         }
-        .padding(.horizontal, 10)
+        .scrollIndicators(.hidden)
+        .scrollBounceBehavior(.basedOnSize, axes: .horizontal)
+        .frame(maxWidth: .infinity)
+
+        GlassIconButton(
+          icon: sending ? .loader : .arrowUp,
+          accessibilityLabel: "Start chat",
+          size: 38,
+          prominent: !trimmedPrompt.isEmpty,
+          disabled: trimmedPrompt.isEmpty || sending
+        ) {
+          Task { await send() }
+        }
       }
+      .padding(.leading, 5)
+      .padding(.trailing, 3)
       .padding(.bottom, 4)
     }
-    .background(HarnessColor.background.opacity(0.95))
+    .harnessComposerSurface()
+    .padding(.horizontal, 10)
+    .padding(.bottom, 6)
+  }
+
+  private var trimmedPrompt: String {
+    prompt.trimmingCharacters(in: .whitespacesAndNewlines)
   }
 
   private func loadWorkspace() async {
@@ -240,8 +240,7 @@ struct NewThreadView: View {
   }
 
   private func send() async {
-    let trimmed = prompt.trimmingCharacters(in: .whitespacesAndNewlines)
-    guard !trimmed.isEmpty, !sending else { return }
+    guard !trimmedPrompt.isEmpty, !sending else { return }
     sending = true
     defer { sending = false }
     do {
@@ -262,6 +261,7 @@ struct NewThreadView: View {
       for attachment in attachments {
         uploaded.append(try await model.upload(attachment))
       }
+      uploaded = ComposerSubmission.attachments(uploaded, designMode: settings.designMode)
 
       var startParams: [String: JSONValue] = [
         "provider": .string(settings.provider.rawValue),
@@ -280,20 +280,16 @@ struct NewThreadView: View {
         throw RPCFailure(message: "Harness didn’t return a thread identifier.", detail: nil)
       }
 
-      let title = HarnessFormat.taskTitle(trimmed)
+      let title = HarnessFormat.taskTitle(trimmedPrompt)
       _ = try? await model.request(
         "thread.rename",
         params: .object([
           "threadId": .string(threadID),
           "title": .string(title),
         ]))
-      let deliveredPrompt =
-        settings.interaction == .plan
-        ? "Plan this task first. Do not make changes until I approve the plan.\n\n\(trimmed)"
-        : trimmed
       var turnParams: [String: JSONValue] = [
         "threadId": .string(threadID),
-        "text": .string(deliveredPrompt),
+        "text": .string(ComposerSubmission.text(trimmedPrompt, interaction: settings.interaction)),
         "approval": .string(settings.approval.rawValue),
       ]
       if !uploaded.isEmpty { turnParams["attachments"] = .array(uploaded.map(JSONValue.string)) }
