@@ -686,37 +686,28 @@ const CHART_BOTTOM = 252
 const CHART_PLOT_WIDTH = CHART_RIGHT - CHART_LEFT
 
 function buildChart(data: ResultOf<'usage.history'>, mode: 'cost' | 'tokens') {
-  const running = data.daily.map(() => 0)
   const series = data.providers.map((provider) => {
-    const lowerValues = [...running]
     const values = smoothChartValues(
       data.daily.map((day) => {
         const providerDay = day.providers.find((entry) => entry.provider === provider.provider)
         return mode === 'cost' ? (providerDay?.estimatedCostUsd ?? 0) : (providerDay?.tokens ?? 0)
       }),
     )
-    values.forEach((value, index) => {
-      running[index] = (running[index] ?? 0) + value
-    })
-    return { provider: provider.provider, lowerValues, upperValues: [...running] }
+    return { provider: provider.provider, values }
   })
-  const max = niceMaximum(Math.max(...running, 0))
+  const max = niceMaximum(Math.max(...series.flatMap((entry) => entry.values), 0))
   const plotHeight = CHART_BOTTOM - CHART_TOP
   const pointFor = (value: number, index: number, length: number) => ({
     x: length <= 1 ? CHART_LEFT : CHART_LEFT + (index / Math.max(length - 1, 1)) * CHART_PLOT_WIDTH,
     y: CHART_BOTTOM - (value / max) * plotHeight,
   })
   const paths = series.map((entry) => {
-    const upperPoints = entry.upperValues.map((value, index) =>
-      pointFor(value, index, entry.upperValues.length),
-    )
-    const lowerPoints = entry.lowerValues.map((value, index) =>
-      pointFor(value, index, entry.lowerValues.length),
-    )
+    const points = entry.values.map((value, index) => pointFor(value, index, entry.values.length))
+    const baselinePoints = entry.values.map((_, index) => pointFor(0, index, entry.values.length))
     return {
       provider: entry.provider,
-      linePath: smoothPath(upperPoints),
-      areaPath: stackedAreaPath(upperPoints, lowerPoints),
+      linePath: smoothPath(points),
+      areaPath: filledAreaPath(points, baselinePoints),
     }
   })
   const ticks = [0, 0.5, 1].map((ratio) => ({
@@ -752,7 +743,7 @@ function smoothPath(points: ReadonlyArray<{ x: number; y: number }>): string {
   return path
 }
 
-function stackedAreaPath(
+function filledAreaPath(
   upperPoints: ReadonlyArray<{ x: number; y: number }>,
   lowerPoints: ReadonlyArray<{ x: number; y: number }>,
 ): string {
