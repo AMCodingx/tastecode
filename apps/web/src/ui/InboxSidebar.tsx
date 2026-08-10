@@ -17,6 +17,7 @@ import {
   Ellipsis,
   FolderPlus,
   GitBranch,
+  GitPullRequest,
   Pin,
   PinOff,
   Search,
@@ -55,6 +56,8 @@ export function InboxSidebar(props: {
   onToggleSessionPin?: (id: string) => void
   onArchiveSession: (id: string) => void
   onArchiveSessions?: ((ids: string[]) => void) | undefined
+  pullRequestsActive?: boolean | undefined
+  onOpenPullRequests?: (() => void) | undefined
 }) {
   const [query, setQuery] = useState('')
   const [snoozedOpen, setSnoozedOpen] = useState(false)
@@ -235,6 +238,17 @@ export function InboxSidebar(props: {
             <span>Add Project</span>
           </button>
         </div>
+        {props.onOpenPullRequests ? (
+          <button
+            type="button"
+            className={`inbox-toolbar__pulls${props.pullRequestsActive ? ' is-active' : ''}`}
+            aria-current={props.pullRequestsActive ? 'page' : undefined}
+            onClick={props.onOpenPullRequests}
+          >
+            <GitPullRequest size={14} aria-hidden />
+            <span>Pull requests</span>
+          </button>
+        ) : null}
       </div>
 
       <div className="rail__body inbox__body">

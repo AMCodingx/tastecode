@@ -23,6 +23,7 @@ import {
   FolderOpen,
   FolderPen,
   Gauge,
+  GitPullRequest,
   PanelLeftClose,
   Pencil,
   Pin,
@@ -129,6 +130,8 @@ function SidebarComponent(props: {
     position: DropPosition,
   ) => void
   onOpenSearch: (projectPath?: string) => void
+  pullRequestsActive?: boolean | undefined
+  onOpenPullRequests?: (() => void) | undefined
   onOpenSettings: () => void
 }) {
   const [edgeRevealed, setEdgeRevealed] = useState(false)
@@ -288,6 +291,11 @@ function SidebarComponent(props: {
     closeOnNarrowViewport()
   }
 
+  const openPullRequests = () => {
+    props.onOpenPullRequests?.()
+    closeOnNarrowViewport()
+  }
+
   useEffect(() => {
     if (props.collapsed) return
     // Opening from the temporary reveal must dock in place: the flyout and
@@ -383,6 +391,8 @@ function SidebarComponent(props: {
             onToggleSessionPin={(id) => props.onToggleSessionPin?.(id)}
             onArchiveSession={props.onDeleteSession}
             onArchiveSessions={props.onArchiveProject}
+            pullRequestsActive={props.pullRequestsActive}
+            onOpenPullRequests={props.onOpenPullRequests ? openPullRequests : undefined}
           />
         ) : (
           <>
@@ -430,6 +440,17 @@ function SidebarComponent(props: {
                 <span>New project</span>
                 <ShortcutHint>{shortcutLabel(SHORTCUTS.newProject, macOS)}</ShortcutHint>
               </button>
+              {props.onOpenPullRequests ? (
+                <button
+                  type="button"
+                  className={`navitem rail__pull-requests${props.pullRequestsActive ? ' is-active' : ''}`}
+                  aria-current={props.pullRequestsActive ? 'page' : undefined}
+                  onClick={openPullRequests}
+                >
+                  <GitPullRequest size={15} aria-hidden />
+                  <span>Pull requests</span>
+                </button>
+              ) : null}
             </div>
 
             <div className="rail__body">
