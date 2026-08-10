@@ -1,6 +1,15 @@
 import { Buffer } from 'node:buffer'
+import { once } from 'node:events'
+import type { IncomingMessage } from 'node:http'
+import net from 'node:net'
 import { describe, expect, it, vi } from 'vitest'
-import { connectionAddresses, listenerAddressAllowed, MobileAccess } from './mobile-access.js'
+import { WebSocket } from 'ws'
+import {
+  connectionAddresses,
+  listenerAddressAllowed,
+  MobileAccess,
+  type MobileConnectionAccess,
+} from './mobile-access.js'
 import { Store } from './store.js'
 
 const INTERFACES = {
@@ -110,17 +119,142 @@ describe('mobile access', () => {
       store.close()
     }
   })
+
+  it('serves the web console over HTTP only to the stable token', async () => {
+    const store = new Store(':memory:')
+    const access = createAccess(store, { consoleToken: 'stable-console-token' })
+    await access.start()
+    const port = access.status().port
+    const base = `http://127.0.0.1:${port}`
+    try {
+      const ok = await fetch(`${base}/console?token=stable-console-token`)
+      expect(ok.status).toBe(200)
+      expect(ok.headers.get('cache-control')).toBe('no-store')
+      expect(await ok.text()).toContain('Harness console')
+
+      const root = await fetch(`${base}/?token=stable-console-token`)
+      expect(root.status).toBe(200)
+
+      const missing = await fetch(`${base}/console`)
+      expect(missing.status).toBe(401)
+      const wrong = await fetch(`${base}/console?token=wrong-token`)
+      expect(wrong.status).toBe(401)
+      const unknown = await fetch(`${base}/nope?token=stable-console-token`)
+      expect(unknown.status).toBe(404)
+
+      expect(access.status().consoleUrls).toEqual([
+        `http://100.101.22.33:${port}/console?token=stable-console-token`,
+        `http://192.168.1.44:${port}/console?token=stable-console-token`,
+      ])
+    } finally {
+      await access.stop()
+      store.close()
+    }
+  })
+
+  it('accepts console sockets while devices are refused when access is off', async () => {
+    const store = new Store(':memory:')
+    const connections: MobileConnectionAccess[] = []
+    const access = createAccess(store, {
+      consoleToken: 'stable-console-token',
+      onConnection: (_socket, _request, connection) => connections.push(connection),
+    })
+    await access.start()
+    const port = access.status().port
+    try {
+      const offer = await access.startPairing()
+      expect(offer.enabled).toBe(true)
+      const claimed = access.claim(
+        access.authorize(`/?pairing_ticket=${pairingTicket(offer.pairingUri)}`)!,
+        'Phone',
+      )
+
+      // While enabled, a device token is accepted.
+      const device = new WebSocket(
+        `ws://127.0.0.1:${port}/?token=${encodeURIComponent(claimed.deviceToken)}`,
+      )
+      await once(device, 'open')
+      device.close()
+      await once(device, 'close')
+
+      access.setProtocolEnabled(false)
+      expect(access.status().enabled).toBe(false)
+      expect(access.status().consoleUrls.length).toBe(2)
+
+      // After stopping, the same device token is refused with 1008.
+      const refused = new WebSocket(
+        `ws://127.0.0.1:${port}/?token=${encodeURIComponent(claimed.deviceToken)}`,
+      )
+      const [refusedCode] = (await once(refused, 'close')) as [number, Buffer]
+      expect(refusedCode).toBe(1008)
+
+      // The console socket is unaffected.
+      const consoleSocket = new WebSocket(
+        `ws://127.0.0.1:${port}/ws?console_token=${encodeURIComponent('stable-console-token')}`,
+      )
+      await once(consoleSocket, 'open')
+      expect(connections.some((connection) => connection.kind === 'console')).toBe(true)
+      consoleSocket.close()
+      await once(consoleSocket, 'close')
+    } finally {
+      await access.stop()
+      store.close()
+    }
+  })
+
+  it('keeps the console URL byte-identical across restarts', async () => {
+    const store = new Store(':memory:')
+    const port = await availablePort()
+    const first = createAccess(store, { consoleToken: 'stable-console-token', port })
+    await first.start()
+    const firstUrls = first.status().consoleUrls
+    await first.stop()
+
+    const second = createAccess(store, { consoleToken: 'stable-console-token', port })
+    await second.start()
+    try {
+      expect(second.status().consoleUrls).toEqual(firstUrls)
+      expect(second.status().port).toBe(port)
+    } finally {
+      await second.stop()
+      store.close()
+    }
+  })
 })
 
-function createAccess(store: Store): MobileAccess {
+function createAccess(
+  store: Store,
+  options: {
+    consoleToken?: string
+    port?: number
+    onConnection?: (
+      socket: WebSocket,
+      request: IncomingMessage,
+      access: MobileConnectionAccess,
+    ) => void
+  } = {},
+): MobileAccess {
   return new MobileAccess({
     store,
-    port: 0,
+    port: options.port ?? 0,
     serverName: 'Test computer',
     networkInterfaces: () => INTERFACES,
     resolveTailscaleAddresses: async () => new Set(['100.101.22.33']),
-    onConnection: () => undefined,
+    consoleToken: options.consoleToken,
+    onConnection: options.onConnection ?? (() => undefined),
   })
+}
+
+async function availablePort(): Promise<number> {
+  const server = net.createServer()
+  await new Promise<void>((resolve, reject) => {
+    server.once('error', reject)
+    server.listen(0, '127.0.0.1', resolve)
+  })
+  const address = server.address()
+  if (!address || typeof address === 'string') throw new Error('could not reserve test port')
+  await new Promise<void>((resolve) => server.close(() => resolve()))
+  return address.port
 }
 
 function pairingTicket(uri: string): string {

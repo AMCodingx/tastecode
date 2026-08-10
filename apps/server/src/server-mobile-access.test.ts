@@ -23,6 +23,8 @@ const INTERFACES = {
   ],
 }
 
+const CONSOLE_TOKEN = 'console-token-for-tests'
+
 const previousDataDir = process.env['HARNESS_DATA_DIR']
 
 afterEach(() => {
@@ -46,6 +48,7 @@ describe('server mobile trust boundary', () => {
       mobilePort: 0,
       mobileNetworkInterfaces: () => INTERFACES,
       resolveTailscaleAddresses: async () => new Set(['100.101.22.33']),
+      consoleToken: CONSOLE_TOKEN,
       projectBrowserHome: canonicalProjectBrowserHome,
     })
     const sockets = new Set<WebSocket>()
@@ -59,6 +62,24 @@ describe('server mobile trust boundary', () => {
       const offer = methods['connections.startPairing'].result.parse(
         await request(admin, 'pair', 'connections.startPairing', {}),
       )
+      expect(offer.consoleUrls).toEqual([
+        `http://100.101.22.33:${offer.port}/console?token=${CONSOLE_TOKEN}`,
+      ])
+
+      // The web console can manage connections but nothing else.
+      const consoleSocket = await openSocket(
+        sockets,
+        `ws://127.0.0.1:${offer.port}/ws?console_token=${encodeURIComponent(CONSOLE_TOKEN)}`,
+      )
+      const consoleStatus = methods['connections.status'].result.parse(
+        await request(consoleSocket, 'console-status', 'connections.status', {}),
+      )
+      expect(consoleStatus.enabled).toBe(true)
+      expect(consoleStatus.consoleUrls.length).toBe(1)
+      await expect(request(consoleSocket, 'admin', 'projects.list', {})).rejects.toThrow(
+        '[forbidden]',
+      )
+
       const bootstrap = await openSocket(
         sockets,
         `ws://127.0.0.1:${offer.port}/?pairing_ticket=${encodeURIComponent(pairingTicket(offer.pairingUri))}`,
@@ -107,6 +128,12 @@ describe('server mobile trust boundary', () => {
       await request(admin, 'revoke', 'connections.revoke', { deviceId: claimed.deviceId })
       const [code] = (await closed) as [number, Buffer]
       expect(code).toBe(1006)
+
+      // The console survives a revoked device and reports it gone.
+      const afterRevoke = methods['connections.status'].result.parse(
+        await request(consoleSocket, 'status-after-revoke', 'connections.status', {}),
+      )
+      expect(afterRevoke.devices).toEqual([])
     } finally {
       for (const socket of sockets) socket.terminate()
       await server.close()
@@ -125,6 +152,7 @@ describe('server mobile trust boundary', () => {
       mobilePort: 0,
       mobileNetworkInterfaces: () => INTERFACES,
       resolveTailscaleAddresses: async () => new Set(['100.101.22.33']),
+      consoleToken: CONSOLE_TOKEN,
     })
     const sockets = new Set<WebSocket>()
     let firstServerClosed = false
@@ -162,6 +190,7 @@ describe('server mobile trust boundary', () => {
         mobilePort: offer.port,
         mobileNetworkInterfaces: () => INTERFACES,
         resolveTailscaleAddresses: async () => new Set(['100.101.22.33']),
+        consoleToken: CONSOLE_TOKEN,
       })
       await waitForPort(offer.port)
       const restored = await openSocket(
@@ -172,6 +201,19 @@ describe('server mobile trust boundary', () => {
       await expect(request(restored, 'projects', 'projects.list', {})).resolves.toEqual({
         projects: [],
       })
+
+      // The bookmarked console URL is byte-identical after the restart.
+      const admin2 = await openSocket(
+        sockets,
+        `ws://127.0.0.1:${port}/?token=${encodeURIComponent('desktop-admin')}`,
+      )
+      const statusAfterRestart = methods['connections.status'].result.parse(
+        await request(admin2, 'status-after-restart', 'connections.status', {}),
+      )
+      expect(statusAfterRestart.consoleUrls).toEqual([
+        `http://100.101.22.33:${offer.port}/console?token=${CONSOLE_TOKEN}`,
+      ])
+      expect(statusAfterRestart.devices.map((device) => device.name)).toEqual(['Persistent phone'])
     } finally {
       for (const socket of sockets) socket.terminate()
       if (secondServer) await secondServer.close()

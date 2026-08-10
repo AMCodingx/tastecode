@@ -22,6 +22,7 @@ import { Orchestrator } from './orchestrator.js'
 import { detectProviders, installCommandFor, launchCommandFor } from './providers.js'
 import { checkForUpdates } from './update-check.js'
 import { PushBus } from './push-bus.js'
+import { loadOrCreateConsoleToken } from './mobile-console-token.js'
 import { PreviewCaptureCoordinator } from './preview-capture.js'
 import { browseProjectDirectory } from './project-directory-browser.js'
 import { PullRequestService } from './pull-requests.js'
@@ -72,12 +73,18 @@ export function startServer(
     mobilePort?: number
     mobileNetworkInterfaces?: () => NodeJS.Dict<NetworkInterfaceInfo[]>
     resolveTailscaleAddresses?: () => Promise<ReadonlySet<string>>
+    /** Long-lived web-console token. Defaults to the OS credential store. */
+    consoleToken?: string
     projectBrowserHome?: string
   } = {},
 ) {
   const port = options.port ?? DEFAULT_PORT
   const host = options.host ?? '127.0.0.1'
   const mobilePort = options.mobilePort ?? (port === 0 ? 0 : port + 1)
+  const consoleToken = options.consoleToken ?? loadOrCreateConsoleToken()
+  if (options.consoleToken === undefined && consoleToken === '') {
+    console.warn('[server] no OS credential store available — the mobile web console is disabled')
+  }
   assertSafeBind(host, options.accessToken)
   const wss = new WebSocketServer({ port, host })
   const push = new PushBus()
@@ -136,6 +143,7 @@ export function startServer(
     store,
     port: mobilePort,
     onConnection: (socket, request, access) => acceptConnection(socket, request, access),
+    consoleToken,
     ...(options.mobileNetworkInterfaces
       ? { networkInterfaces: options.mobileNetworkInterfaces }
       : {}),
@@ -149,18 +157,18 @@ export function startServer(
   // starts instead of failing with a message about our own leftovers.
   void orchestrator.recoverWorktrees().catch(() => undefined)
 
+  // The web console is part of the running server: reachable on every launch
+  // so the bookmarked URL keeps working. Native-app connections are restored
+  // separately from the persisted switch.
+  void mobileAccess
+    .start()
+    .catch((error) => console.error(`[server] could not start mobile access: ${messageOf(error)}`))
   if (store.mobileAccessEnabled()) {
-    void mobileAccess
-      .start()
-      .catch((error) =>
-        console.error(`[server] could not restore mobile access: ${messageOf(error)}`),
-      )
+    mobileAccess.setProtocolEnabled(true)
   }
 
   async function startPairing() {
-    const offer = await mobileAccess.startPairing()
-    store.setMobileAccessEnabled(true)
-    return offer
+    return mobileAccess.startPairing()
   }
 
   wss.on('connection', (socket, request) => {
@@ -398,7 +406,7 @@ export function startServer(
 
       case 'connections.stop':
         store.setMobileAccessEnabled(false)
-        await mobileAccess.stop()
+        mobileAccess.setProtocolEnabled(false)
         return {}
 
       case 'connections.revoke': {
@@ -1065,8 +1073,16 @@ const DEVICE_METHODS = new Set<MethodName>([
   'thread.steerQueuedTurn',
 ])
 
+const CONSOLE_METHODS = new Set<MethodName>([
+  'connections.status',
+  'connections.startPairing',
+  'connections.stop',
+  'connections.revoke',
+])
+
 function methodAllowed(access: ConnectionAccess, method: MethodName): boolean {
   if (access.kind === 'admin') return method !== 'connections.claim'
+  if (access.kind === 'console') return CONSOLE_METHODS.has(method)
   if (access.kind === 'pairing') return method === 'connections.claim'
   return DEVICE_METHODS.has(method)
 }
