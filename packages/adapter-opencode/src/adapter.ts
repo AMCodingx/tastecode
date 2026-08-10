@@ -380,6 +380,12 @@ export class OpenCodeAdapter extends EventEmitter<Events> {
     }
   }
 
+  /** Live access-level change; read again for every permission request. */
+  setApproval(approval: ApprovalMode): void {
+    this.#validateApproval(approval)
+    this.#approval = approval
+  }
+
   async listModels(): Promise<Model[]> {
     await this.start()
     if (this.#protocol === 'v2') return this.#listV2Models()

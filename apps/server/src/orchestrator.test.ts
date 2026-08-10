@@ -5,6 +5,7 @@ import path from 'node:path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { ProviderIdSchema } from '@harness/contracts'
 import type {
+  ApprovalMode,
   Capabilities,
   DomainEvent,
   McpServer,
@@ -65,6 +66,7 @@ class FakeSession implements AgentSession {
   sentOptions: Array<TurnOptions | undefined> = []
   steered: string[] = []
   userInputs: Array<{ requestId: string; answers: Record<string, string[]> }> = []
+  approvalModes: ApprovalMode[] = []
   mcpServers: McpServer[] = []
   /** Resolves the pending sendTurn, letting a test hold one open. */
   release: (() => void) | undefined
@@ -101,6 +103,9 @@ class FakeSession implements AgentSession {
   respondToApproval(): void {}
   respondToUserInput(requestId: string, answers: Record<string, string[]>): void {
     this.userInputs.push({ requestId, answers })
+  }
+  setApproval(approval: ApprovalMode): void {
+    this.approvalModes.push(approval)
   }
   dispose(): void {
     this.disposed = true
@@ -226,6 +231,23 @@ describe('structured user input', () => {
     expect(sessions[0]?.userInputs).toEqual([
       { requestId: 'brief-1', answers: { palette: ['Decide for me'] } },
     ])
+  })
+})
+
+describe('live access level', () => {
+  it('records the new mode and forwards it to the session', async () => {
+    const { orchestrator, sessions } = harness()
+    const thread = await orchestrator.startThread('codex', process.cwd(), { approval: 'ask' })
+
+    orchestrator.setThreadApproval(thread.id, 'full')
+
+    expect(sessions[0]?.approvalModes).toEqual(['full'])
+  })
+
+  it('throws for a thread it does not know', async () => {
+    const { orchestrator } = harness()
+
+    expect(() => orchestrator.setThreadApproval('missing-thread', 'auto')).toThrow(/no such thread/)
   })
 })
 

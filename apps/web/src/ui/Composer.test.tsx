@@ -287,6 +287,15 @@ describe('Composer permissions', () => {
       screen.getByRole('button', { name: 'Permissions' }).querySelector('.tool--danger'),
     ).toBeTruthy()
   })
+
+  it('stays usable while a session is running so the access level can change mid-chat', () => {
+    renderComposer(vi.fn(), { running: true })
+
+    fireEvent.click(screen.getByRole('button', { name: 'Permissions' }))
+
+    expect(screen.getByRole('menuitem', { name: /Full access/ })).toBeTruthy()
+    expect(screen.getByRole('menuitem', { name: /Ask first/ })).toBeTruthy()
+  })
 })
 
 describe('Composer Design mode', () => {

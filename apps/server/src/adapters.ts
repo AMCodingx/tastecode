@@ -143,6 +143,13 @@ export interface AgentSession {
   ): void
   respondToApproval(approvalId: string, decision: ApprovalDecision): void
   respondToUserInput?(requestId: string, answers: Record<string, string[]>): void
+  /**
+   * Live access-level change for a running thread. Providers that map the
+   * mode onto launch switches cannot change it mid-run and leave this
+   * undefined; the orchestrator then only records the new mode for the
+   * design-flow note and future turns.
+   */
+  setApproval?(approval: ApprovalMode): void
   dispose(): void
   on(event: 'event', listener: (event: DomainEvent) => void): void
   on(event: 'log', listener: (line: string) => void): void

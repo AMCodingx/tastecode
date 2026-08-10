@@ -1320,6 +1320,31 @@ describe('new chats', () => {
     })
   })
 
+  it('pushes a mid-chat access-level change to the live thread', async () => {
+    serverProjects = [
+      { path: '/work/project', name: 'project', pinned: false, createdAt: 0, sessions: [] },
+    ]
+    render(<App />)
+
+    await waitFor(() => {
+      expect(transport.request).toHaveBeenCalledWith('providers.list', {})
+    })
+    const composer = screen.getByPlaceholderText('Do anything')
+    fireEvent.change(composer, { target: { value: 'Start a chat' } })
+    fireEvent.keyDown(composer, { key: 'Enter' })
+    await waitFor(() => {
+      expect(transport.request).toHaveBeenCalledWith('thread.start', expect.anything())
+    })
+
+    fireEvent.click(screen.getByRole('button', { name: 'Permissions' }))
+    fireEvent.click(await screen.findByRole('menuitem', { name: /Full access/ }))
+
+    expect(transport.request).toHaveBeenCalledWith('thread.setApproval', {
+      threadId: 'thread-1',
+      approval: 'full',
+    })
+  })
+
   it('switches the new chat project from the prompt', async () => {
     serverProjects = [
       {
