@@ -851,10 +851,12 @@ function MobileAccessSettings(props: { transport: Transport }) {
   const [status, setStatus] = useState<ConnectionsStatus>()
   const [pairing, setPairing] = useState<ResultOf<'connections.startPairing'>>()
   const [qrSvg, setQrSvg] = useState<string>()
+  const [webQrSvg, setWebQrSvg] = useState<string>()
   const [consoleQrSvg, setConsoleQrSvg] = useState<string>()
   const [error, setError] = useState<string>()
   const [busy, setBusy] = useState<'pair' | 'stop' | string>()
   const [copiedPairingUri, setCopiedPairingUri] = useState<string>()
+  const [copiedWebUrl, setCopiedWebUrl] = useState<string>()
   const [copiedConsoleUrl, setCopiedConsoleUrl] = useState<string>()
   const [now, setNow] = useState(Date.now)
 
@@ -893,6 +895,26 @@ function MobileAccessSettings(props: { transport: Transport }) {
       cancelled = true
     }
   }, [pairing])
+
+  const primaryWebUrl = status?.webUrls?.[0]
+  useEffect(() => {
+    if (!primaryWebUrl) {
+      setWebQrSvg(undefined)
+      return
+    }
+    let cancelled = false
+    void renderQrSvg(primaryWebUrl)
+      .then((svg) => {
+        if (!cancelled) setWebQrSvg(svg)
+      })
+      .catch(() => {
+        // QR rendering is a convenience; a broken one must not block the panel.
+        if (!cancelled) setWebQrSvg(undefined)
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [primaryWebUrl])
 
   const primaryConsoleUrl = status?.consoleUrls?.[0]
   useEffect(() => {
@@ -966,6 +988,18 @@ function MobileAccessSettings(props: { transport: Transport }) {
     }
   }
 
+  const copyWebUrl = async (url: string) => {
+    try {
+      await writeClipboardText(url)
+      setCopiedWebUrl(url)
+      setError(undefined)
+    } catch (cause) {
+      setCopiedWebUrl(undefined)
+      const message = cause instanceof Error ? cause.message : String(cause)
+      setError(`Could not copy the app link: ${message}`)
+    }
+  }
+
   const copyConsoleUrl = async (url: string) => {
     try {
       await writeClipboardText(url)
@@ -987,7 +1021,7 @@ function MobileAccessSettings(props: { transport: Transport }) {
         note={
           status?.enabled
             ? `${status.serverName} is listening on port ${status.port}.`
-            : 'Generate a one-time code to accept the native app again. The web console stays available.'
+            : 'Generate a one-time code to accept the native app again. The web app stays available.'
         }
       >
         <span className={`settings__status${status?.enabled ? ' is-on' : ''}`}>
@@ -995,12 +1029,40 @@ function MobileAccessSettings(props: { transport: Transport }) {
         </span>
       </SettingsRow>
 
+      {(status?.webUrls?.length ?? 0) > 0 ? (
+        <div className="settings__mobile-block">
+          <p className="settings__row-title">App on your phone — bookmark this</p>
+          <p className="settings__row-note">
+            The URL stays the same across restarts. Open it on your phone to use the whole harness —
+            the same UI as this desktop. Scan the QR to open it now.
+          </p>
+          <div className="settings__console-urls">
+            {status?.webUrls.map((url) => (
+              <ConsoleUrlRow
+                url={url}
+                key={url}
+                copied={copiedWebUrl === url}
+                onCopy={() => void copyWebUrl(url)}
+              />
+            ))}
+          </div>
+          {webQrSvg ? (
+            <div
+              className="settings__qr"
+              role="img"
+              aria-label="App QR code"
+              dangerouslySetInnerHTML={{ __html: webQrSvg }}
+            />
+          ) : null}
+        </div>
+      ) : null}
+
       {(status?.consoleUrls?.length ?? 0) > 0 ? (
         <div className="settings__mobile-block">
-          <p className="settings__row-title">Web console — bookmark this</p>
+          <p className="settings__row-title">Management console</p>
           <p className="settings__row-note">
-            The URL stays the same across restarts. Open it on your phone to see, copy, manage and
-            revoke connections. Scan the QR to open it now.
+            A lighter page that can only inspect and manage mobile access — copy links, generate
+            pairing codes, revoke devices.
           </p>
           <div className="settings__console-urls">
             {status?.consoleUrls.map((url) => (

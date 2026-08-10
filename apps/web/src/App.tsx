@@ -50,7 +50,7 @@ import { StageHeader } from './ui/StageHeader.js'
 import { Thread } from './ui/Thread.js'
 import { TitleBar } from './ui/TitleBar.js'
 import { ZoomHud } from './ui/ZoomHud.js'
-import { serverUrl } from './server-url.js'
+import { serverBaseUrl, serverUrl } from './server-url.js'
 import { addDesignBriefing } from './design-agent/briefing.js'
 import { canCaptureVoice, type VoiceRecording } from './voice-recorder.js'
 import {
@@ -93,7 +93,7 @@ import {
   type FontPreference,
 } from './theme.js'
 
-const SERVER_BASE_URL = import.meta.env.VITE_HARNESS_SERVER_URL ?? 'ws://127.0.0.1:4311'
+const SERVER_BASE_URL = serverBaseUrl(import.meta.env.VITE_HARNESS_SERVER_URL)
 const SETUP_KEY = 'harness.provider'
 const PROVIDER_IDS = [
   'codex',

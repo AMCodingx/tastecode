@@ -339,6 +339,7 @@ describe('provider settings', () => {
               },
             ],
             consoleUrls: ['http://100.101.2.3:4312/console?token=test-console-token'],
+            webUrls: ['http://100.101.2.3:4312/#access_token=test-web-token'],
           }
         }
         if (method === 'connections.revoke') return {}
@@ -352,6 +353,7 @@ describe('provider settings', () => {
             ],
             devices: [],
             consoleUrls: ['http://100.101.2.3:4312/console?token=test-console-token'],
+            webUrls: ['http://100.101.2.3:4312/#access_token=test-web-token'],
             pairingUri: 'harness://pair?payload=test-ticket',
             expiresAt: Date.now() + 300_000,
           }
@@ -498,15 +500,27 @@ describe('provider settings', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Mobile access' }))
     await waitFor(() => expect(transport.request).toHaveBeenCalledWith('connections.status', {}))
 
-    // The stable web-console link is shown with a copy action and a QR.
+    // The full web app for a phone is the primary link, with copy and a QR.
+    const webUrl = 'http://100.101.2.3:4312/#access_token=test-web-token'
+    const webRow = screen.getByText(webUrl).closest<HTMLElement>('.settings__console-url')
+    if (!webRow) throw new Error('web app URL row missing')
+    expect(webRow).toBeTruthy()
+    await waitFor(() => expect(screen.getByRole('img', { name: 'App QR code' })).toBeTruthy())
+    fireEvent.click(within(webRow).getByRole('button', { name: 'Copy' }))
+    await waitFor(() => expect(writeText).toHaveBeenCalledWith(webUrl))
+    expect(within(webRow).getByRole('button', { name: 'Copied' })).toBeTruthy()
+
+    // The stable management console is shown as the secondary link.
     const consoleUrl = 'http://100.101.2.3:4312/console?token=test-console-token'
-    expect(screen.getByText(consoleUrl)).toBeTruthy()
+    const consoleRow = screen.getByText(consoleUrl).closest<HTMLElement>('.settings__console-url')
+    if (!consoleRow) throw new Error('console URL row missing')
+    expect(consoleRow).toBeTruthy()
     await waitFor(() =>
       expect(screen.getByRole('img', { name: 'Web console QR code' })).toBeTruthy(),
     )
-    fireEvent.click(screen.getByRole('button', { name: 'Copy' }))
+    fireEvent.click(within(consoleRow).getByRole('button', { name: 'Copy' }))
     await waitFor(() => expect(writeText).toHaveBeenCalledWith(consoleUrl))
-    expect(screen.getByRole('button', { name: 'Copied' })).toBeTruthy()
+    expect(within(consoleRow).getByRole('button', { name: 'Copied' })).toBeTruthy()
 
     const phoneRow = screen.getByText('Blueemi’s iPhone').closest<HTMLElement>('.settings__row')
     if (!phoneRow) throw new Error('paired phone row missing')
