@@ -1,7 +1,7 @@
 import { Buffer } from 'node:buffer'
 import { once } from 'node:events'
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
-import type { IncomingMessage } from 'node:http'
+import { createServer, type IncomingMessage } from 'node:http'
 import net from 'node:net'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
@@ -170,6 +170,64 @@ describe('mobile access', () => {
     }
   })
 
+  it('proxies the web-app surface to the Vite dev server in dev', async () => {
+    const store = new Store(':memory:')
+    const devServer = createServer((request, response) => {
+      if (request.url?.startsWith('/assets/')) {
+        response.writeHead(200, { 'Content-Type': 'text/javascript; charset=utf-8' })
+        response.end('// live-dev-bundle\n')
+        return
+      }
+      // Vite serves the app shell for unknown routes too; the proxy must not
+      // impose its own SPA fallback in front of a live dev server.
+      response.writeHead(200, {
+        'Content-Type': 'text/html; charset=utf-8',
+        'Cache-Control': 'no-cache',
+      })
+      response.end('<!doctype html><html><body>live-dev-marker</body></html>')
+    })
+    await new Promise<void>((resolve, reject) => {
+      devServer.once('error', reject)
+      devServer.listen(0, '127.0.0.1', resolve)
+    })
+    const devAddress = devServer.address()
+    if (!devAddress || typeof devAddress === 'string') throw new Error('could not start dev server')
+
+    const access = createAccess(store, {
+      webToken: 'stable-web-token',
+      webDevServerUrl: `http://127.0.0.1:${devAddress.port}`,
+    })
+    await access.start()
+    const port = access.status().port
+    const base = `http://127.0.0.1:${port}`
+    try {
+      const page = await fetch(`${base}/`)
+      expect(page.status).toBe(200)
+      expect(await page.text()).toContain('live-dev-marker')
+
+      const asset = await fetch(`${base}/assets/app.js`)
+      expect(asset.status).toBe(200)
+      expect(await asset.text()).toContain('live-dev-bundle')
+
+      const deep = await fetch(`${base}/some/client/route`)
+      expect(deep.status).toBe(200)
+      expect(await deep.text()).toContain('live-dev-marker')
+
+      const head = await fetch(`${base}/`, { method: 'HEAD' })
+      expect(head.status).toBe(200)
+
+      // The stable phone URL is still reported with no dist present.
+      expect(access.status().webUrls).toEqual([
+        `http://100.101.22.33:${port}/#access_token=stable-web-token`,
+        `http://192.168.1.44:${port}/#access_token=stable-web-token`,
+      ])
+    } finally {
+      await access.stop()
+      store.close()
+      await new Promise<void>((resolve) => devServer.close(() => resolve()))
+    }
+  })
+
   it('admits the web app socket as an admin client', async () => {
     const store = new Store(':memory:')
     const connections: MobileConnectionAccess[] = []
@@ -283,6 +341,7 @@ function createAccess(
   options: {
     webToken?: string
     webRoot?: string
+    webDevServerUrl?: string
     port?: number
     onConnection?: (
       socket: WebSocket,
@@ -299,6 +358,7 @@ function createAccess(
     resolveTailscaleAddresses: async () => new Set(['100.101.22.33']),
     webToken: options.webToken,
     webRoot: options.webRoot,
+    webDevServerUrl: options.webDevServerUrl,
     onConnection: options.onConnection ?? (() => undefined),
   })
 }

@@ -80,6 +80,8 @@ export function startServer(
     webToken?: string
     /** Directory containing the built web app. Defaults to apps/web/dist. */
     webRoot?: string
+    /** Vite dev server the mobile web-app surface proxies to in dev. */
+    webDevServerUrl?: string
     projectBrowserHome?: string
   } = {},
 ) {
@@ -91,7 +93,9 @@ export function startServer(
     console.warn('[server] no OS credential store available — the mobile web app is disabled')
   }
   const webRoot = resolveWebRoot(options.webRoot)
-  if (webRoot) {
+  if (options.webDevServerUrl) {
+    console.log(`[server] serving the web app for phones from ${options.webDevServerUrl}`)
+  } else if (webRoot) {
     console.log(`[server] serving the web app for phones from ${webRoot}`)
   } else {
     console.warn('[server] web app build not found (apps/web/dist) — the phone web app is disabled')
@@ -156,6 +160,7 @@ export function startServer(
     onConnection: (socket, request, access) => acceptConnection(socket, request, access),
     webToken,
     webRoot,
+    webDevServerUrl: options.webDevServerUrl,
     ...(options.mobileNetworkInterfaces
       ? { networkInterfaces: options.mobileNetworkInterfaces }
       : {}),
