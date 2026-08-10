@@ -9268,15 +9268,12 @@
     font-size: 16px;
   }
 
-  /* On a phone the tools row cannot hold the model picker, context usage,
-     voice and send as one readable line. Keep the actions (attach,
-     permission, design, usage, voice, send) on one line and give the model
-     picker its own full-width line below: the picker stays a single line at
-     any phone width, its name never truncates, and the send orb stays
-     pinned to the right edge of the actions line. */
+  /* On a phone every composer control shares one line — attach, permission,
+     design, the model picker, voice and send. The picker shrinks first (its
+     name truncates) and the send orb stays pinned to the right edge, so the
+     rail never wraps at any phone width. */
   .tools {
-    flex-wrap: wrap;
-    row-gap: 6px;
+    flex-wrap: nowrap;
   }
 
   .tools__spacer {
@@ -9284,21 +9281,7 @@
   }
 
   .composer__send-beam {
-    margin-left: auto;
-  }
-
-  .tools .menutrigger--model-selector {
-    order: 99;
-    flex: 1 1 100%;
-    max-width: none;
-  }
-
-  .model-selector__trigger {
-    flex: 1;
-    min-width: 0;
-  }
-
-  .model-selector__trigger-chevron {
+    flex: none;
     margin-left: auto;
   }
 
@@ -9436,6 +9419,18 @@
   .appearance-picker,
   .appearance-picker--accent {
     grid-template-columns: 1fr;
+  }
+
+  /* Below this width the pill labels cannot sit next to the model picker
+     and still fit one line. Keep the icons (their aria-labels stay intact)
+     so the whole rail reads left to right at any phone width. */
+  .tools .composer__permission .tool > span,
+  .tools .composer__design > span {
+    display: none;
+  }
+
+  .tools :is(.composer__permission, .composer__design) {
+    padding: 5px 9px;
   }
 }
 
