@@ -5468,22 +5468,34 @@
   bottom: 14px;
   left: 50%;
   transform: translateX(-50%);
-  background: var(--surface-2);
-  border: 1px solid var(--line-strong);
-  border-radius: var(--r-pill);
-  color: var(--text);
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 34px;
+  padding: 5px 12px;
+  /* Same chrome as the composer's Design button: shared tokens keep the two
+     optically identical across themes. */
+  background: var(--composer-action-bg);
+  border: 1px solid var(--composer-action-border);
+  border-radius: var(--r-xl);
+  box-shadow: var(--composer-action-shadow);
+  color: color-mix(in srgb, var(--text) 55%, var(--text-2));
   cursor: pointer;
   font: inherit;
-  font-size: var(--t-sm);
-  padding: 5px 13px;
-  box-shadow: var(--shadow-flyout);
+  font-size: var(--t-md);
   /* Its own keyframes, not menu-in: that one animates transform from a value
      with no translateX, so this button visibly slid in from the left edge
      every time it appeared — which is on every scroll-up during a stream. */
-  animation: jump-in var(--dur-fast) var(--ease-out);
+  animation: jump-in var(--dur-slow) var(--ease-out);
   transition:
     background var(--dur-fast) var(--ease-out),
-    border-color var(--dur-fast) var(--ease-out);
+    border-color var(--dur-fast) var(--ease-out),
+    box-shadow var(--dur-fast) var(--ease-out),
+    transform var(--dur-press) var(--ease-out);
+}
+
+.jump svg {
+  flex: none;
 }
 
 @keyframes jump-in {
@@ -5494,8 +5506,14 @@
 }
 
 .jump:hover {
-  background: var(--surface-3);
-  border-color: color-mix(in srgb, var(--text-3) 35%, var(--line-strong));
+  background: var(--composer-action-bg-hover);
+  border-color: var(--composer-action-border-hover);
+  box-shadow: var(--composer-action-shadow-hover);
+}
+
+.jump:active {
+  box-shadow: var(--composer-action-shadow-active);
+  transform: translateX(-50%) scale(0.97);
 }
 
 .aux__code {
@@ -5678,7 +5696,8 @@
     animation: none;
   }
 
-  .activity__reveal {
+  .activity__reveal,
+  .aux__reveal {
     transition: none;
   }
 }
@@ -6017,16 +6036,16 @@
   display: flex;
   align-items: center;
   gap: 8px;
+  width: 100%;
+  background: none;
+  border: 0;
   cursor: pointer;
-  list-style: none;
   color: var(--text-3);
+  font: inherit;
   font-size: var(--t-sm);
   padding: 1px 0;
+  text-align: left;
   transition: color var(--dur-fast) var(--ease-out);
-}
-
-.aux__row::-webkit-details-marker {
-  display: none;
 }
 
 .aux__row:hover {
@@ -6059,6 +6078,30 @@
   padding: 9px 11px;
   background: var(--surface);
   border-radius: var(--r-card);
+}
+
+/* The same animated disclosure as the completion rail: the grid row animates
+   to the output's real height while the mounted clip keeps closing smooth. */
+.aux__reveal {
+  display: grid;
+  grid-template-rows: 0fr;
+  opacity: 0;
+  transform: translateY(-4px);
+  transition:
+    grid-template-rows var(--dur-slow) var(--ease-out),
+    opacity var(--dur-fast) var(--ease-out),
+    transform var(--dur-slow) var(--ease-out);
+}
+
+.aux__reveal[data-open='true'] {
+  grid-template-rows: 1fr;
+  opacity: 1;
+  transform: translateY(0);
+}
+
+.aux__reveal-clip {
+  min-height: 0;
+  overflow: hidden;
 }
 
 .aux--live .aux__row {
@@ -7532,13 +7575,13 @@
 .context-usage__tooltip {
   position: absolute;
   right: 0;
-  bottom: calc(100% + 8px);
+  bottom: calc(100% + 4px);
   z-index: 40;
   display: grid;
   width: max-content;
-  max-width: 230px;
-  gap: 2px;
-  padding: 8px 10px;
+  max-width: 190px;
+  gap: 1px;
+  padding: 5px 8px;
   background: var(--surface-3);
   border: 1px solid var(--line-strong);
   border-radius: var(--r-card);

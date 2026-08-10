@@ -161,6 +161,60 @@ describe('completed activity disclosure', () => {
   })
 })
 
+describe('collapsed row disclosure', () => {
+  it('reveals a tool row through the animated disclosure', () => {
+    const items: Item[] = [
+      {
+        id: 'prompt-1',
+        turnId: 'turn-1',
+        type: 'message',
+        role: 'user',
+        status: 'completed',
+        text: 'Fix it',
+        createdAt: 1,
+      },
+      {
+        id: 'command-1',
+        turnId: 'turn-1',
+        type: 'command',
+        status: 'completed',
+        command: 'pnpm test',
+        text: '1 failed, 12 passed',
+        createdAt: 2_001,
+      },
+    ]
+    const { container } = render(
+      <Thread
+        items={items}
+        running={false}
+        activeTurn={undefined}
+        plan={[]}
+        diff={undefined}
+        approvals={[]}
+        userInputs={[]}
+        reviews={[]}
+        onDecide={() => undefined}
+        onAnswerUserInput={() => undefined}
+      />,
+    )
+
+    const disclosure = screen.getByRole('button', { name: 'pnpm test' })
+    const reveal = container.querySelector('.aux__reveal')
+    expect(disclosure.getAttribute('aria-expanded')).toBe('false')
+    expect(reveal?.getAttribute('data-open')).toBe('false')
+    expect(reveal?.getAttribute('aria-hidden')).toBe('true')
+    expect(reveal?.hasAttribute('inert')).toBe(true)
+    expect(container.querySelector('.aux__out')?.textContent).toBe('1 failed, 12 passed')
+
+    fireEvent.click(disclosure)
+
+    expect(disclosure.getAttribute('aria-expanded')).toBe('true')
+    expect(reveal?.getAttribute('data-open')).toBe('true')
+    expect(reveal?.getAttribute('aria-hidden')).toBe('false')
+    expect(reveal?.hasAttribute('inert')).toBe(false)
+  })
+})
+
 describe('thread message actions', () => {
   it('copies the user prompt', async () => {
     const writeText = vi.fn(async () => undefined)

@@ -10,6 +10,7 @@ import type {
 } from '@harness/contracts'
 import { ThinkingOrb } from 'thinking-orbs'
 import {
+  ArrowDownToLine,
   BookOpen,
   Brain,
   Check,
@@ -407,11 +408,20 @@ export function Thread(props: {
         <button
           className="jump"
           onClick={() => {
-            setMode('follow-end')
             const el = scroller.current
-            if (el) el.scrollTop = el.scrollHeight
+            if (!el) return
+            // Stay in free mode for the whole glide. Flipping to follow-end
+            // here unmounts the button, and the first mid-flight scroll event
+            // then flips it straight back — remounting it with its entrance
+            // animation — until the scroll lands. The onScroll handler hands
+            // over to follow-end once the glide actually reaches the bottom.
+            el.scrollTo({ top: el.scrollHeight - el.clientHeight, behavior: 'smooth' })
+            // Already at the bottom? Nothing animates and no scroll event
+            // comes, so there would be no handover — hide right away.
+            if (isAtBottom(el)) setMode('follow-end')
           }}
         >
+          <ArrowDownToLine size={13} aria-hidden />
           Jump to latest
         </button>
       ) : null}
@@ -635,9 +645,26 @@ const Row = memo(function Row({
     )
   }
 
+  return <AuxDisclosure item={item} live={live} />
+})
+
+/**
+ * One collapsed operational row — a command, reasoning, file edit or tool
+ * call. A controlled disclosure rather than <details>: keeping the output
+ * mounted lets the height transition play both ways, so closing is as smooth
+ * as opening, exactly like the completion rail below.
+ */
+function AuxDisclosure({ item, live }: { item: Item; live: boolean }) {
+  const [expanded, setExpanded] = useState(false)
+
   return (
-    <details className={`aux aux--${item.type} ${live ? 'aux--live' : ''}`}>
-      <summary className="aux__row">
+    <div className={`aux aux--${item.type} ${live ? 'aux--live' : ''}`} data-expanded={expanded}>
+      <button
+        type="button"
+        className="aux__row"
+        aria-expanded={expanded}
+        onClick={() => setExpanded((current) => !current)}
+      >
         <span className="aux__glyph" aria-hidden>
           {glyph(item)}
         </span>
@@ -652,14 +679,18 @@ const Row = memo(function Row({
         {!live && item.status === 'started' ? (
           <LoaderCircle className="spinner" aria-hidden />
         ) : null}
-      </summary>
+      </button>
       {/* Design markers have no output worth expanding — their text is the slug. */}
       {item.text && !(item.type === 'tool_call' && designPhaseLabel(toolText(item))) ? (
-        <pre className="aux__out">{item.text}</pre>
+        <div className="aux__reveal" data-open={expanded} aria-hidden={!expanded} inert={!expanded}>
+          <div className="aux__reveal-clip">
+            <pre className="aux__out">{item.text}</pre>
+          </div>
+        </div>
       ) : null}
-    </details>
+    </div>
   )
-})
+}
 
 function checkpointFor(item: Item, checkpoints: Checkpoint[]): Checkpoint | undefined {
   if (item.type !== 'message' || item.role !== 'user' || !item.text) return undefined
