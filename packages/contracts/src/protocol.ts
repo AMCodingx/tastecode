@@ -85,6 +85,10 @@ export const ConnectionsStatusSchema = z.object({
    * Tailscale first). Each carries the long-lived console token, so the URL
    * survives restarts unchanged. Admin-only: never returned to devices. */
   consoleUrls: z.array(z.string().regex(/^https?:\/\//i, 'expected an HTTP console URL')),
+  /** Stable, bookmarkable URLs for the full web app on a phone (one per
+   * reachable address, Tailscale first). Each carries the long-lived web
+   * token in the hash. Admin-only: never returned to devices. */
+  webUrls: z.array(z.string().regex(/^https?:\/\//i, 'expected an HTTP app URL')),
 })
 export type ConnectionsStatus = z.infer<typeof ConnectionsStatusSchema>
 
