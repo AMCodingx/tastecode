@@ -15,9 +15,31 @@ import type { ConnectionAddress, ConnectionsStatus } from '@harness/contracts'
 import type { Store } from './store.js'
 
 const PAIRING_TTL_MS = 5 * 60 * 1_000
+/** The Vite dev server the desktop stack runs on loopback. */
+const DEFAULT_WEB_DEV_SERVER_URL = 'http://127.0.0.1:5183'
 
 export type MobileConnectionAccess =
   { kind: 'pairing'; ticketHash: string } | { kind: 'device'; deviceId: string } | { kind: 'admin' }
+
+/**
+ * Whether the Vite dev server answers on `targetUrl` (dev convenience). The
+ * mobile web surface prefers the live source when a dev stack is running, and
+ * falls back to the built client when it is not — the explicit
+ * `webDevServerUrl` option overrides this probe.
+ */
+export async function probeDevServer(targetUrl: string): Promise<string | undefined> {
+  const target = new URL(targetUrl)
+  return new Promise((resolve) => {
+    const probe = httpRequest(target, { method: 'HEAD' }, (response) => {
+      response.resume()
+      resolve(response.statusCode === 200 ? target.toString() : undefined)
+    })
+    probe.setTimeout(500, () => probe.destroy())
+    probe.on('timeout', () => resolve(undefined))
+    probe.on('error', () => resolve(undefined))
+    probe.end()
+  })
+}
 
 type ConnectionHandler = (
   socket: WebSocket,
@@ -62,6 +84,7 @@ export class MobileAccess {
   #webToken: string
   #webRoot: string | undefined
   #webDevServerUrl: string | undefined
+  #webDevServerProbeUrl: string | false
 
   constructor(options: {
     store: Store
@@ -80,6 +103,9 @@ export class MobileAccess {
      * the phone loads the live source through this listener instead of the
      * built `webRoot`, so edits show up without a rebuild. */
     webDevServerUrl?: string | undefined
+    /** Where to probe for a live Vite dev server when `webDevServerUrl` is
+     * absent. `false` disables the probe (tests, explicit deployments). */
+    webDevServerProbeUrl?: string | false
   }) {
     this.#store = options.store
     this.#configuredPort = options.port
@@ -90,6 +116,7 @@ export class MobileAccess {
     this.#webToken = options.webToken ?? ''
     this.#webRoot = options.webRoot ? path.resolve(options.webRoot) : undefined
     this.#webDevServerUrl = options.webDevServerUrl
+    this.#webDevServerProbeUrl = options.webDevServerProbeUrl ?? DEFAULT_WEB_DEV_SERVER_URL
   }
 
   status(): ConnectionsStatus {
@@ -239,6 +266,13 @@ export class MobileAccess {
 
   async #startServer(): Promise<void> {
     await this.#loadTailscaleAddresses()
+    if (!this.#webDevServerUrl && this.#webDevServerProbeUrl !== false) {
+      const devServer = await probeDevServer(this.#webDevServerProbeUrl)
+      if (devServer) {
+        this.#webDevServerUrl = devServer
+        console.log(`[server] mobile web app proxying to Vite dev server at ${devServer}`)
+      }
+    }
     const server = createServer((request, response) => this.#handleHttp(request, response))
     const wss = new WebSocketServer({ noServer: true })
     this.#server = server
