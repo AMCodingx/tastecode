@@ -250,7 +250,7 @@
         <a href="#settings">Settings</a>
         <a href="#shell">Desktop shell and security</a>
         <a href="#mobile">Native mobile</a>
-        <a href="#web-console">Web console</a>
+        <a href="#web-console">Web access</a>
       </div>
 
       <section id="providers">
@@ -1332,24 +1332,43 @@
 
       <section id="web-console">
         <header>
-          <h2>Web console</h2>
+          <h2>Web access</h2>
           <span class="count"></span>
         </header>
         <ul class="check">
           <li>
             <label
               ><input type="checkbox" /><span
-                >Stable, bookmarkable console URL — long-lived token in the OS credential store,
-                unchanged across restarts
-                <span class="d">fixed port + Tailscale address + persistent token</span></span
+                >The full harness web app on a phone — same UI as the desktop, served by the server
+                from the built web client at <code>/</code> on the mobile port
+                <span class="d">no Vite needed, works in packaged builds too</span></span
               ></label
             >
           </li>
           <li>
             <label
               ><input type="checkbox" /><span
-                >Mobile-first Tailscale-style page served by the server: see paired devices, copy
-                console URLs, copy pairing codes, revoke devices</span
+                >Stable, bookmarkable app URL — long-lived admin token in the OS credential store
+                (separate from the console token), unchanged across restarts
+                <span class="d">fixed port + Tailscale address + persistent token in the hash</span></span
+              ></label
+            >
+          </li>
+          <li>
+            <label
+              ><input type="checkbox" /><span
+                >The phone page derives its WebSocket from its own origin
+                (<code>ws://&lt;host&gt;/ws</code>); loopback stays on
+                <code>ws://127.0.0.1:4311</code></span
+              ></label
+            >
+          </li>
+          <li>
+            <label
+              ><input type="checkbox" /><span
+                >Mobile-first Tailscale-style management console at
+                <code>/console?token=…</code>: see paired devices, copy URLs, copy pairing codes,
+                revoke devices</span
               ></label
             >
           </li>
@@ -1364,7 +1383,7 @@
           <li>
             <label
               ><input type="checkbox" /><span
-                >Console reachable whenever the server runs; native-app access toggled
+                >Web surfaces reachable whenever the server runs; native-app access toggled
                 separately</span
               ></label
             >
@@ -1372,7 +1391,8 @@
           <li>
             <label
               ><input type="checkbox" /><span
-                >Desktop Settings shows the console link with copy actions and a scan QR</span
+                >Desktop Settings shows the app URL with copy actions and a scan QR, plus the
+                console link underneath</span
               ></label
             >
           </li>

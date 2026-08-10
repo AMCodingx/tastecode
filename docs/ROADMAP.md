@@ -121,11 +121,13 @@ finish the milestone. Connection over Tailscale/LAN first — a relay only later
 end-to-end encrypted.
 → _Approve a diff from your phone._
 
-**Shipped ahead of the milestone:** a browser web console — a stable, bookmarkable URL
-(`http://<tailscale-ip>:4312/console?token=…`, unchanged across restarts) serving a
-mobile-first, Tailscale-web-style page where devices can be seen, URLs and pairing codes copied,
-and devices revoked. The console is always reachable while the server runs; native-app access
-toggles separately.
+**Shipped ahead of the milestone:** the full web app on a phone — the same UI as the
+harness desktop, served by the server from the built web client at
+`http://<tailscale-ip>:4312/#access_token=…` (stable across restarts, bookmarked once).
+The page derives its socket from its own origin, so no per-machine URL is baked in. A
+lightweight management console also lives at `http://<tailscale-ip>:4312/console?token=…`
+(management-only: see devices, copy URLs and pairing codes, revoke). Both stay reachable
+while the server runs; native-app access toggles separately.
 
 ---
 
