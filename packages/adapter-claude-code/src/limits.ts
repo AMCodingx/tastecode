@@ -102,7 +102,8 @@ async function readOauth(): Promise<
   try {
     const raw = JSON.parse(text) as Record<string, unknown>
     const oauth = raw['claudeAiOauth'] as ClaudeOauth | undefined
-    if (!oauth || typeof oauth.accessToken !== 'string' || !oauth.accessToken.trim()) return undefined
+    if (!oauth || typeof oauth.accessToken !== 'string' || !oauth.accessToken.trim())
+      return undefined
     return { oauth, raw }
   } catch {
     return undefined
