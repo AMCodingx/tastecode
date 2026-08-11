@@ -896,7 +896,10 @@ export function App() {
         .catch(() => undefined)
     }
     void refreshProjects().catch(() => undefined)
-    void transport.request('sidebar.settings', {}).then(setSidebarSettings).catch(() => undefined)
+    void transport
+      .request('sidebar.settings', {})
+      .then(setSidebarSettings)
+      .catch(() => undefined)
   }
 
   useEffect(() => {
