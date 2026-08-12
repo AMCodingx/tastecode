@@ -2765,6 +2765,7 @@
 }
 
 .settings__group--providers {
+  container-type: inline-size;
   overflow: visible;
 }
 
@@ -2850,6 +2851,48 @@
 
 .provider-row .settings__action.is-quiet {
   border-color: transparent;
+}
+
+@container (max-width: 514px) {
+  .provider-row {
+    grid-template-areas:
+      'mark identity issue'
+      'status status status'
+      'primary primary secondary';
+    grid-template-columns: 20px minmax(0, 1fr) 86px;
+    row-gap: 8px;
+  }
+
+  .provider-row__mark {
+    grid-area: mark;
+  }
+
+  .provider-row__identity {
+    grid-area: identity;
+  }
+
+  .provider-row__status {
+    grid-area: status;
+    text-align: left;
+  }
+
+  .provider-row__issue {
+    grid-area: issue;
+    justify-content: flex-end;
+  }
+
+  .provider-row__primary {
+    grid-area: primary;
+    justify-content: flex-end;
+  }
+
+  .provider-row__secondary {
+    grid-area: secondary;
+  }
+
+  .provider-row__primary .settings__action {
+    width: 136px;
+  }
 }
 
 .provider-settings__add {
@@ -9746,46 +9789,6 @@
   .settings__row {
     flex-direction: column;
     gap: 10px;
-  }
-
-  .provider-row {
-    grid-template-areas:
-      'mark identity issue'
-      'status status status'
-      'primary primary secondary';
-    grid-template-columns: 20px minmax(0, 1fr) 86px;
-    row-gap: 8px;
-  }
-
-  .provider-row__mark {
-    grid-area: mark;
-  }
-
-  .provider-row__identity {
-    grid-area: identity;
-  }
-
-  .provider-row__status {
-    grid-area: status;
-    text-align: left;
-  }
-
-  .provider-row__issue {
-    grid-area: issue;
-    justify-content: flex-end;
-  }
-
-  .provider-row__primary {
-    grid-area: primary;
-    justify-content: flex-end;
-  }
-
-  .provider-row__secondary {
-    grid-area: secondary;
-  }
-
-  .provider-row__primary .settings__action {
-    width: 136px;
   }
 
   .settings__row-control {

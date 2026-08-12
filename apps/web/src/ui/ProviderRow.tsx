@@ -92,7 +92,7 @@ function ProviderRowIssue(props: ProviderIssue) {
       <button
         type="button"
         className="row-issue__dot"
-        aria-label={`Problem: ${props.message}`}
+        aria-label="Problem details"
         aria-describedby={tooltipId}
       >
         <CircleAlert size={14} aria-hidden />
