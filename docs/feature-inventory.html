@@ -225,7 +225,7 @@
       <div class="topbar-inner">
         <h1>Feature Inventory</h1>
         <span class="total" id="total">0 checked</span>
-        <span class="meta">2026-08-12 11fd86c4</span>
+        <span class="meta">2026-08-12 342d8041</span>
       </div>
     </div>
 
@@ -566,6 +566,17 @@
 
         <h3>Provider management</h3>
         <ul class="check">
+          <li>
+            <label
+              ><input type="checkbox" /><span
+                >One fixed setup and account row grammar
+                <span class="d"
+                  >Codex, Claude Code, and Grok keep mark, identity, status, issue, and actions in
+                  stable slots across loading, ready, setup, busy, and failure states</span
+                ></span
+              ></label
+            >
+          </li>
           <li>
             <label
               ><input type="checkbox" /><span
@@ -1319,7 +1330,10 @@
             <label
               ><input type="checkbox" /><span
                 >Full keyboard dialog behavior
-                <span class="d">focus trapped, Escape closes</span></span
+                <span class="d"
+                  >focus trapped, nested controls retain handled keys, and Escape or Back closes
+                  before restoring the opener</span
+                ></span
               ></label
             >
           </li>
