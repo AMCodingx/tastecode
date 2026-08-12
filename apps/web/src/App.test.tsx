@@ -1,7 +1,7 @@
 // @vitest-environment happy-dom
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
-import type { DomainEvent } from '@harness/contracts'
+import type { DomainEvent, ResultOf } from '@harness/contracts'
 import type { ComponentProps } from 'react'
 import { App } from './App.js'
 import { DESIGN_BRIEF_ATTACHMENT } from './design-agent/briefing.js'
@@ -543,7 +543,10 @@ async function renderWithDeferredProjectProbes() {
   capture = true
   return probes
 }
-
+const rpcCount = (method: string) =>
+  transport.request.mock.calls.filter(([called]) => called === method).length
+const completeTurn = (threadId: string, turnId: string) =>
+  emitThreadEvent(threadId, { type: 'turn.completed', turnId, status: 'completed' })
 describe('web client', () => {
   it('opens the workspace directly on first launch', async () => {
     localStorage.removeItem('harness.provider')
@@ -1388,21 +1391,14 @@ describe('new chats', () => {
   it('starts workspace info and branch reads together', async () => {
     const request = transport.request.getMockImplementation()
     if (!request) throw new Error('missing request mock')
-    let resolveInfo!: (value: {
-      branch: string
-      added: number
-      removed: number
-      dirtyFiles: number
-    }) => void
+    let resolveInfo!: (value: ResultOf<'workspace.info'>) => void
     const info = new Promise<Parameters<typeof resolveInfo>[0]>((resolve) => {
       resolveInfo = resolve
     })
     transport.request.mockImplementation((method: string, params: unknown) =>
       method === 'workspace.info' ? info : request(method, params),
     )
-
     render(<App />)
-
     await waitFor(() => {
       expect(transport.request).toHaveBeenCalledWith('workspace.info', { path: '/work/project' })
       expect(transport.request).toHaveBeenCalledWith('workspace.branches', {
@@ -1432,53 +1428,27 @@ describe('new chats', () => {
         expect.objectContaining({ threadId: 'untouched-thread', text: 'Do the work' }),
       )
     })
-    expect(
-      transport.request.mock.calls.filter(([method]) => method === 'workspace.info'),
-    ).toHaveLength(0)
-    expect(
-      transport.request.mock.calls.filter(([method]) => method === 'workspace.branches'),
-    ).toHaveLength(0)
+    expect(rpcCount('workspace.info')).toBe(0)
 
-    emitThreadEvent('untouched-thread', {
-      type: 'turn.completed',
-      turnId: 'turn-1',
-      status: 'completed',
-    })
+    completeTurn('untouched-thread', 'turn-1')
     await waitFor(() => {
-      expect(
-        transport.request.mock.calls.filter(([method]) => method === 'workspace.info'),
-      ).toHaveLength(1)
-      expect(
-        transport.request.mock.calls.filter(([method]) => method === 'workspace.branches'),
-      ).toHaveLength(1)
+      expect(rpcCount('workspace.info')).toBe(1)
     })
   })
 
   it('coalesces overlapping completion probes before refreshing workspace metadata', async () => {
     const probes = await renderWithDeferredProjectProbes()
-
     for (const turnId of ['turn-1', 'turn-2', 'turn-3']) {
-      emitThreadEvent('untouched-thread', { type: 'turn.completed', turnId, status: 'completed' })
+      completeTurn('untouched-thread', turnId)
     }
     await waitFor(() => expect(probes).toHaveLength(1))
-    expect(
-      transport.request.mock.calls.filter(([method]) => method === 'projects.list'),
-    ).toHaveLength(1)
-
+    expect(rpcCount('projects.list')).toBe(1)
     await act(async () => probes[0]?.resolve(projectsSnapshot(true)))
     await waitFor(() => expect(probes).toHaveLength(2))
-    expect(
-      transport.request.mock.calls.filter(([method]) => method === 'projects.list'),
-    ).toHaveLength(2)
-
+    expect(rpcCount('projects.list')).toBe(2)
     await act(async () => probes[1]?.resolve(projectsSnapshot(false)))
     await waitFor(() => {
-      expect(
-        transport.request.mock.calls.filter(([method]) => method === 'workspace.info'),
-      ).toHaveLength(1)
-      expect(
-        transport.request.mock.calls.filter(([method]) => method === 'workspace.branches'),
-      ).toHaveLength(1)
+      expect(rpcCount('workspace.info')).toBe(1)
     })
   })
 
@@ -1486,23 +1456,19 @@ describe('new chats', () => {
     'settles workspace metadata when the probe sequence ends with %s',
     async (scenario) => {
       const probes = await renderWithDeferredProjectProbes()
-
-      emitThreadEvent('untouched-thread', {
-        type: 'turn.completed',
-        turnId: 'turn-1',
-        status: 'completed',
-      })
+      completeTurn('untouched-thread', 'turn-1')
       await waitFor(() => expect(probes).toHaveLength(1))
       if (scenario === 'sole reject') {
         await act(async () => probes[0]?.reject(new Error('probe failed')))
         await waitFor(() => expect(probes).toHaveLength(2))
         await act(async () => probes[1]?.resolve(projectsSnapshot(false)))
       } else {
-        emitThreadEvent('untouched-thread', {
-          type: 'turn.completed',
-          turnId: 'turn-2',
-          status: 'completed',
-        })
+        completeTurn('untouched-thread', 'turn-2')
+        if (scenario === 'submitted') {
+          const composer = screen.getByPlaceholderText('Do anything')
+          fireEvent.change(composer, { target: { value: 'Start again' } })
+          fireEvent.keyDown(composer, { key: 'Enter' })
+        }
         await act(async () => probes[0]?.resolve(projectsSnapshot(false)))
         await waitFor(() => expect(probes).toHaveLength(2))
         if (scenario === 'started') {
@@ -1510,32 +1476,39 @@ describe('new chats', () => {
             type: 'turn.started',
             turn: { id: 'turn-3', threadId: 'untouched-thread', status: 'running', createdAt: 1 },
           })
-        } else if (scenario === 'submitted') {
-          const composer = screen.getByPlaceholderText('Do anything')
-          fireEvent.change(composer, { target: { value: 'Start again' } })
-          fireEvent.keyDown(composer, { key: 'Enter' })
         }
         await act(async () => {
           if (scenario === 'missing') probes[1]?.resolve({ projects: [] })
+          else if (scenario === 'submitted') probes[1]?.resolve(projectsSnapshot(false))
           else probes[1]?.reject(new Error('probe failed'))
         })
       }
       if (scenario === 'started' || scenario === 'submitted') {
-        expect(
-          transport.request.mock.calls.filter(([method]) => method === 'workspace.info'),
-        ).toHaveLength(0)
+        await act(async () => new Promise((resolve) => window.setTimeout(resolve, 0)))
+        expect(rpcCount('workspace.info')).toBe(0)
         return
       }
       await waitFor(() => {
-        expect(
-          transport.request.mock.calls.filter(([method]) => method === 'workspace.info'),
-        ).toHaveLength(1)
-        expect(
-          transport.request.mock.calls.filter(([method]) => method === 'workspace.branches'),
-        ).toHaveLength(1)
+        expect(rpcCount('workspace.info')).toBe(1)
       })
     },
   )
+
+  it('abandons an active probe when the transport changes', async () => {
+    const probes = await renderWithDeferredProjectProbes()
+    completeTurn('untouched-thread', 'turn-1')
+    await waitFor(() => expect(probes).toHaveLength(1))
+    await act(async () => {
+      window.location.hash = '#access_token=reconnected'
+      window.dispatchEvent(new HashChangeEvent('hashchange'))
+    })
+    await waitFor(() => expect(probes).toHaveLength(2))
+    await act(async () => probes[0]?.reject(new Error('transport closed')))
+    expect(probes).toHaveLength(2)
+    await act(async () => probes[1]?.resolve(projectsSnapshot(false)))
+    completeTurn('untouched-thread', 'turn-2')
+    await waitFor(() => expect(probes).toHaveLength(3))
+  })
 
   it('refreshes workspace metadata after switching projects', async () => {
     serverProjects = [
@@ -3214,25 +3187,11 @@ describe('live sessions', () => {
         threadId: 'thread-2',
       })
     })
-    expect(
-      transport.request.mock.calls.filter(([method]) => method === 'workspace.info'),
-    ).toHaveLength(0)
-    expect(
-      transport.request.mock.calls.filter(([method]) => method === 'workspace.branches'),
-    ).toHaveLength(0)
+    expect(rpcCount('workspace.info')).toBe(0)
 
-    emitThreadEvent('thread-1', {
-      type: 'turn.completed',
-      turnId: 'turn-1',
-      status: 'completed',
-    })
+    completeTurn('thread-1', 'turn-1')
     await waitFor(() => {
-      expect(
-        transport.request.mock.calls.filter(([method]) => method === 'workspace.info'),
-      ).toHaveLength(1)
-      expect(
-        transport.request.mock.calls.filter(([method]) => method === 'workspace.branches'),
-      ).toHaveLength(1)
+      expect(rpcCount('workspace.info')).toBe(1)
     })
   })
 
