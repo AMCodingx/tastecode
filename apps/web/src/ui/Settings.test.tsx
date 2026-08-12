@@ -19,7 +19,7 @@ vi.mock('./InstallTerminal.js', () => ({
   ),
 }))
 
-function renderAppearanceSettings() {
+function renderAppearanceSettings(onClose = () => {}) {
   const transport = {
     request: vi.fn(),
     on: vi.fn(() => () => {}),
@@ -62,7 +62,7 @@ function renderAppearanceSettings() {
       onAccountChange={() => {}}
       initialSection="appearance"
       onReset={() => {}}
-      onClose={() => {}}
+      onClose={onClose}
     />,
   )
 }
@@ -96,6 +96,44 @@ describe('model picker layout setting', () => {
     act(() => writeModelPickerLayout('rail'))
 
     expect(toggle.getAttribute('aria-checked')).toBe('true')
+  })
+})
+
+describe('settings dialog keyboard behavior', () => {
+  it('contains forward and reverse Tab navigation inside the dialog', () => {
+    renderAppearanceSettings()
+    const dialog = screen.getByRole('dialog', { name: 'Settings' })
+    const first = screen.getByRole('button', { name: 'Back to app' })
+    const last = screen.getByRole('button', { name: 'Lavender' })
+
+    last.focus()
+    fireEvent.keyDown(last, { key: 'Tab' })
+    expect(document.activeElement).toBe(first)
+
+    first.focus()
+    fireEvent.keyDown(first, { key: 'Tab', shiftKey: true })
+    expect(document.activeElement).toBe(last)
+
+    dialog.focus()
+    fireEvent.keyDown(dialog, { key: 'Tab', shiftKey: true })
+    expect(document.activeElement).toBe(last)
+  })
+
+  it.each([
+    ['Escape', () => fireEvent.keyDown(window, { key: 'Escape' })],
+    ['Back', () => fireEvent.click(screen.getByRole('button', { name: 'Back to app' }))],
+  ])('closes with %s and restores focus to the opener', (_path, close) => {
+    const openerView = render(<button type="button">Open settings</button>)
+    const opener = screen.getByRole('button', { name: 'Open settings' })
+    opener.focus()
+    const onClose = vi.fn()
+    const settingsView = renderAppearanceSettings(onClose)
+
+    close()
+    expect(onClose).toHaveBeenCalledOnce()
+    settingsView.unmount()
+    expect(document.activeElement).toBe(opener)
+    openerView.unmount()
   })
 })
 
