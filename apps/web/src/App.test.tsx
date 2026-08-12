@@ -1361,128 +1361,11 @@ describe('new chats', () => {
   // prettier-ignore
   it('coalesces overlapping completion probes before refreshing workspace metadata', async () => { const probes = await renderWithDeferredProjectProbes(); for (const turnId of ['turn-1', 'turn-2', 'turn-3']) completeTurn('untouched-thread', turnId); await waitFor(() => expect(probes).toHaveLength(1)); expect(rpcCount('projects.list')).toBe(1); await act(async () => probes[0]?.resolve(projectsSnapshot(true))); await waitFor(() => expect(probes).toHaveLength(2)); expect(rpcCount('projects.list')).toBe(2); await act(async () => probes[1]?.resolve(projectsSnapshot(false))); await waitForWorkspace(1) })
   // prettier-ignore
-  it.each(['reject', 'missing', 'started', 'submitted', 'unrelated', 'sole reject', 'rejected before probe', 'rejected after probe', 'rejected after retained idle', 'switched reject'] as const)(
-    'settles workspace metadata when the probe sequence ends with %s',
-    async (scenario) => {
-      let rejectSend!: (reason: Error) => void
-      if (scenario.startsWith('rejected')) {
-        const request = transport.request.getMockImplementation()!
-        // prettier-ignore
-        transport.request.mockImplementation((method: string, params: unknown) => method === 'thread.sendTurn' ? new Promise((_, reject) => (rejectSend = reject)) : request(method, params))
-      }
-      if (scenario === 'switched reject') {
-        // prettier-ignore
-        serverProjects.push(serverProject('/work/another-project', 'Another Project', [{ id: 'background-thread', title: 'Background', running: false }]))
-        // prettier-ignore
-        ;(serverProjects[0] as { sessions: unknown[] }).sessions.push({ id: 'idle-thread', title: 'Idle work', running: false })
-      }
-      const submitted = scenario === 'submitted' || scenario === 'unrelated'
-      if (scenario === 'unrelated') {
-        ;(serverProjects[0] as { sessions: unknown[] }).sessions.push({ id: 'background-thread', running: false })
-      }
-      const probes = await renderWithDeferredProjectProbes()
-      if (scenario === 'switched reject') {
-        // prettier-ignore
-        startTurn('untouched-thread', 'turn-1'); transport.request.mockClear()
-        fireEvent.click(screen.getByRole('button', { name: /^Idle work,/ })); expect(rpcCount('workspace.info')).toBe(0)
-      }
-      completeTurn('untouched-thread', 'turn-1'); await waitFor(() => expect(probes).toHaveLength(1))
-      if (scenario.startsWith('rejected')) {
-        if (scenario === 'rejected after retained idle') {
-          completeTurn('untouched-thread', 'turn-2'); await act(async () => probes[0]?.resolve(projectsSnapshot(false))); await waitFor(() => expect(probes).toHaveLength(2))
-        }
-        submitTurn('Rejected start')
-        if (scenario === 'rejected before probe') await act(async () => rejectSend(new Error('no')))
-        if (scenario !== 'rejected after retained idle') await act(async () => probes[0]?.resolve(projectsSnapshot(false)))
-        else await act(async () => probes[1]?.reject(new Error('trailing failed')))
-        if (scenario === 'rejected after probe') {
-          await act(async () => rejectSend(new Error('no'))); await waitFor(() => expect(probes).toHaveLength(2))
-          await act(async () => probes[1]?.resolve(projectsSnapshot(false)))
-        } else if (scenario === 'rejected after retained idle') {
-          await act(async () => rejectSend(new Error('no'))); await waitFor(() => expect(probes).toHaveLength(3))
-          await act(async () => probes[2]?.resolve(projectsSnapshot(false)))
-        }
-        await waitForWorkspace(1); return
-      }
-      if (scenario === 'sole reject') {
-        await act(async () => probes[0]?.reject(new Error('probe failed'))); await waitFor(() => expect(probes).toHaveLength(2))
-        await act(async () => probes[1]?.resolve(projectsSnapshot(false)))
-      } else {
-        completeTurn('untouched-thread', 'turn-2')
-        if (submitted) {
-          submitTurn('Start again')
-          if (scenario === 'unrelated') {
-            // prettier-ignore
-            startTurn('background-thread', 'background'); completeTurn('background-thread', 'background')
-          }
-        }
-        await act(async () => probes[0]?.resolve(projectsSnapshot(false))); await waitFor(() => expect(probes).toHaveLength(2))
-        if (scenario === 'switched reject') {
-          fireEvent.keyDown(window, { key: 'p', metaKey: true })
-          fireEvent.click(screen.getByRole('option', { name: /^Another Project / }))
-          // prettier-ignore
-          await waitFor(() => expect(transport.request).toHaveBeenCalledWith('workspace.info', { path: '/work/another-project' }))
-          transport.request.mockClear(); completeTurn('background-thread', 'background')
-          await act(async () => probes[1]?.reject(new Error('old project failed'))); await waitFor(() => expect(probes).toHaveLength(3))
-          await act(async () => probes[2]?.reject(new Error('new project failed'))); await waitFor(() => expect(probes).toHaveLength(4))
-          await act(async () => probes[3]?.resolve(projectsSnapshot(false))); await waitForWorkspace(1); return
-        }
-        if (scenario === 'started') startTurn('untouched-thread', 'turn-3')
-        // prettier-ignore
-        await act(async () => scenario === 'missing' ? probes[1]?.resolve({ projects: [] }) : submitted ? probes[1]?.resolve(projectsSnapshot(false)) : probes[1]?.reject(new Error('probe failed')))
-      }
-      if (scenario === 'started' || submitted) {
-        await act(async () => new Promise((resolve) => window.setTimeout(resolve, 0)))
-        expect(rpcCount('workspace.info')).toBe(0); return
-      }
-      await waitForWorkspace(1)
-    },
-  )
+  it.each(['reject', 'missing', 'started', 'submitted', 'unrelated', 'sole reject', 'rejected before probe', 'rejected after probe', 'rejected after retained idle', 'switched reject'] as const)('settles workspace metadata when the probe sequence ends with %s', async (scenario) => { let rejectSend!: (reason: Error) => void; if (scenario.startsWith('rejected')) { const request = transport.request.getMockImplementation()!; transport.request.mockImplementation((method: string, params: unknown) => method === 'thread.sendTurn' ? new Promise((_, reject) => (rejectSend = reject)) : request(method, params)) } if (scenario === 'switched reject') { serverProjects.push(serverProject('/work/another-project', 'Another Project', [{ id: 'background-thread', title: 'Background', running: false }])); (serverProjects[0] as { sessions: unknown[] }).sessions.push({ id: 'idle-thread', title: 'Idle work', running: false }) } const submitted = scenario === 'submitted' || scenario === 'unrelated'; if (scenario === 'unrelated') (serverProjects[0] as { sessions: unknown[] }).sessions.push({ id: 'background-thread', running: false }); const probes = await renderWithDeferredProjectProbes(); if (scenario === 'switched reject') { startTurn('untouched-thread', 'turn-1'); transport.request.mockClear(); fireEvent.click(screen.getByRole('button', { name: /^Idle work,/ })); expect(rpcCount('workspace.info')).toBe(0) } completeTurn('untouched-thread', 'turn-1'); await waitFor(() => expect(probes).toHaveLength(1)); if (scenario.startsWith('rejected')) { if (scenario === 'rejected after retained idle') { completeTurn('untouched-thread', 'turn-2'); await act(async () => probes[0]?.resolve(projectsSnapshot(false))); await waitFor(() => expect(probes).toHaveLength(2)) } submitTurn('Rejected start'); if (scenario === 'rejected before probe') await act(async () => rejectSend(new Error('no'))); if (scenario !== 'rejected after retained idle') await act(async () => probes[0]?.resolve(projectsSnapshot(false))); else await act(async () => probes[1]?.reject(new Error('trailing failed'))); if (scenario === 'rejected after probe') { await act(async () => rejectSend(new Error('no'))); await waitFor(() => expect(probes).toHaveLength(2)); await act(async () => probes[1]?.resolve(projectsSnapshot(false))) } else if (scenario === 'rejected after retained idle') { await act(async () => rejectSend(new Error('no'))); await waitFor(() => expect(probes).toHaveLength(3)); await act(async () => probes[2]?.resolve(projectsSnapshot(false))) } await waitForWorkspace(1); return } if (scenario === 'sole reject') { await act(async () => probes[0]?.reject(new Error('probe failed'))); await waitFor(() => expect(probes).toHaveLength(2)); await act(async () => probes[1]?.resolve(projectsSnapshot(false))) } else { completeTurn('untouched-thread', 'turn-2'); if (submitted) { submitTurn('Start again'); if (scenario === 'unrelated') { startTurn('background-thread', 'background'); completeTurn('background-thread', 'background') } } await act(async () => probes[0]?.resolve(projectsSnapshot(false))); await waitFor(() => expect(probes).toHaveLength(2)); if (scenario === 'switched reject') { fireEvent.keyDown(window, { key: 'p', metaKey: true }); fireEvent.click(screen.getByRole('option', { name: /^Another Project / })); await waitFor(() => expect(transport.request).toHaveBeenCalledWith('workspace.info', { path: '/work/another-project' })); transport.request.mockClear(); completeTurn('background-thread', 'background'); await act(async () => probes[1]?.reject(new Error('old project failed'))); await waitFor(() => expect(probes).toHaveLength(3)); await act(async () => probes[2]?.reject(new Error('new project failed'))); await waitFor(() => expect(probes).toHaveLength(4)); await act(async () => probes[3]?.resolve(projectsSnapshot(false))); await waitForWorkspace(1); return } if (scenario === 'started') startTurn('untouched-thread', 'turn-3'); await act(async () => scenario === 'missing' ? probes[1]?.resolve({ projects: [] }) : submitted ? probes[1]?.resolve(projectsSnapshot(false)) : probes[1]?.reject(new Error('probe failed'))) } if (scenario === 'started' || submitted) { await act(async () => new Promise((resolve) => window.setTimeout(resolve, 0))); expect(rpcCount('workspace.info')).toBe(0); return } await waitForWorkspace(1) })
   // prettier-ignore
   it('abandons an active probe when the transport changes', async () => { const probes = await renderWithDeferredProjectProbes(); completeTurn('untouched-thread', 'turn-1'); await waitFor(() => expect(probes).toHaveLength(1)); await act(async () => { window.location.hash = '#access_token=reconnected'; window.dispatchEvent(new HashChangeEvent('hashchange')) }); await waitFor(() => expect(probes).toHaveLength(2)); await act(async () => probes[0]?.reject(new Error('transport closed'))); expect(probes).toHaveLength(2); await act(async () => probes[1]?.resolve(projectsSnapshot(false))); completeTurn('untouched-thread', 'turn-2'); await waitFor(() => expect(probes).toHaveLength(3)) })
-  it.each(['indeterminate', 'approval', 'inactive queue', 'durable queue', 'overlap'] as const)(
-    'refreshes after reconnect reconciles %s as idle',
-    async (scenario) => {
-      const request = transport.request.getMockImplementation()!
-      if (scenario === 'approval' || scenario === 'overlap') {
-        // prettier-ignore
-        ;(serverProjects[0] as { sessions: Array<{ status?: string }> }).sessions[0]!.status = scenario === 'approval' ? 'approval' : 'working'
-      } else if (scenario === 'inactive queue' || scenario === 'durable queue') {
-        // prettier-ignore
-        ;(serverProjects[0] as { sessions: unknown[] }).sessions.push({ id: 'background-thread', title: 'Background', running: false })
-      }
-      const queuedTurn = { id: 'queued-turn', text: 'Reconnect me', attachments: [], createdAt: 1 }
-      let reconnecting = false
-      // prettier-ignore
-      transport.request.mockImplementation((method: string, params: unknown) => method === 'thread.sendTurn' ? scenario === 'indeterminate' ? Promise.reject(new IndeterminateRequestError('socket lost')) : Promise.resolve({ queued: true, queuedTurn }) : method === 'thread.queue' && scenario === 'durable queue' && reconnecting ? Promise.resolve({ items: [queuedTurn], canSteer: true }) : request(method, params))
-      await openNewSession()
-      if (scenario === 'overlap') {
-        const histories: Array<(value: { events: []; running: false }) => void> = []
-        // prettier-ignore
-        transport.request.mockImplementation((method: string, params: unknown) => method === 'thread.history' ? new Promise((resolve) => histories.push(resolve)) : request(method, params))
-        // prettier-ignore
-        { transport.request.mockClear(); act(() => { for (const listener of transport.sequenceGapListeners) { listener(1, 2); listener(2, 3) } }); await waitFor(() => expect(histories).toHaveLength(2)); await act(async () => histories[0]?.({ events: [], running: false })); await act(async () => histories[1]?.({ events: [], running: false })); await waitForWorkspace(1); return }
-      }
-      if (scenario !== 'approval') {
-        if (scenario === 'inactive queue' || scenario === 'durable queue')
-          startTurn('untouched-thread', 'active-turn')
-        submitTurn('Reconnect me')
-        await waitFor(() => expect(rpcCount('thread.sendTurn')).toBe(1))
-        if (scenario === 'inactive queue' || scenario === 'durable queue')
-          fireEvent.click(screen.getByRole('button', { name: /^Background,/ }))
-      }
-      transport.request.mockClear()
-      reconnecting = true
-      // prettier-ignore
-      act(() => { setConnectionState('reconnecting'); setConnectionState('open') })
-      if (scenario === 'durable queue') {
-        await waitFor(() => expect(rpcCount('thread.queue')).toBeGreaterThan(0))
-        expect(rpcCount('workspace.info')).toBe(0)
-        return
-      }
-      await waitForWorkspace(1)
-    },
-  )
+  // prettier-ignore
+  it.each(['indeterminate', 'approval', 'inactive queue', 'durable queue', 'overlap'] as const)('refreshes after reconnect reconciles %s as idle', async (scenario) => { const request = transport.request.getMockImplementation()!; if (scenario === 'approval' || scenario === 'overlap') (serverProjects[0] as { sessions: Array<{ status?: string }> }).sessions[0]!.status = scenario === 'approval' ? 'approval' : 'working'; else if (scenario === 'inactive queue' || scenario === 'durable queue') (serverProjects[0] as { sessions: unknown[] }).sessions.push({ id: 'background-thread', title: 'Background', running: false }); const queuedTurn = { id: 'queued-turn', text: 'Reconnect me', attachments: [], createdAt: 1 }; let reconnecting = false; transport.request.mockImplementation((method: string, params: unknown) => method === 'thread.sendTurn' ? scenario === 'indeterminate' ? Promise.reject(new IndeterminateRequestError('socket lost')) : Promise.resolve({ queued: true, queuedTurn }) : method === 'thread.queue' && scenario === 'durable queue' && reconnecting ? Promise.resolve({ items: [queuedTurn], canSteer: true }) : method === 'thread.history' && scenario === 'inactive queue' && reconnecting ? Promise.resolve({ events: [{ seq: 1, event: { type: 'item.completed', item: { id: queuedTurn.id, turnId: 'offline', type: 'message', role: 'user', status: 'completed', text: queuedTurn.text, createdAt: 1 } } }], running: false }) : request(method, params)); await openNewSession(); if (scenario === 'overlap') { const histories: Array<(value: { events: []; running: false }) => void> = []; transport.request.mockImplementation((method: string, params: unknown) => method === 'thread.history' ? new Promise((resolve) => histories.push(resolve)) : request(method, params)); transport.request.mockClear(); act(() => { for (const listener of transport.sequenceGapListeners) { listener(1, 2); listener(2, 3) } }); await waitFor(() => expect(histories).toHaveLength(2)); await act(async () => histories[0]?.({ events: [], running: false })); await act(async () => histories[1]?.({ events: [], running: false })); await waitForWorkspace(1); return } if (scenario !== 'approval') { if (scenario === 'inactive queue' || scenario === 'durable queue') startTurn('untouched-thread', 'active-turn'); submitTurn('Reconnect me'); await waitFor(() => expect(rpcCount('thread.sendTurn')).toBe(1)); if (scenario === 'inactive queue' || scenario === 'durable queue') fireEvent.click(screen.getByRole('button', { name: /^Background,/ })) } transport.request.mockClear(); reconnecting = true; act(() => { setConnectionState('reconnecting'); setConnectionState('open') }); if (scenario === 'durable queue') { await waitFor(() => expect(rpcCount('thread.queue')).toBeGreaterThan(0)); expect(rpcCount('workspace.info')).toBe(0); return } await waitForWorkspace(1) })
   // prettier-ignore
   it.each(['delete', 'steer'] as const)('releases queued ownership after %s', async (action) => { const request = transport.request.getMockImplementation()!, queuedTurn = { id: 'queued', text: 'Queue next', attachments: [], createdAt: 1 }; let accept!: (value: { queued: true; queuedTurn: typeof queuedTurn }) => void; transport.request.mockImplementation((method: string, params: unknown) => method === 'thread.sendTurn' ? new Promise((resolve) => { accept = resolve }) : request(method, params)); await openNewSession(); startTurn('untouched-thread', 'active'); transport.request.mockClear(); submitTurn('Queue next'); await waitFor(() => expect(rpcCount('thread.sendTurn')).toBe(1)); await act(async () => accept({ queued: true, queuedTurn })); fireEvent.click(screen.getByRole('button', { name: action === 'delete' ? 'Remove Queue next from queue' : 'Steer' })); await waitFor(() => expect(transport.request).toHaveBeenCalledWith(`thread.${action === 'delete' ? 'delete' : 'steer'}QueuedTurn`, { threadId: 'untouched-thread', queuedTurnId: 'queued' })); emitQueue('untouched-thread', []); completeTurn('untouched-thread', 'active'); await waitForWorkspace(1) })
   // prettier-ignore
@@ -1497,6 +1380,20 @@ describe('new chats', () => {
   it('scopes reconnect idle consensus to the active project', async () => { const request = transport.request.getMockImplementation()!, queued = { id: 'foreign', text: 'Foreign queue', attachments: [], createdAt: 1 }; let reconnecting = false; serverProjects.push(serverProject('/work/another-project', 'Another Project', [{ id: 'background-thread', title: 'Background', running: true }])); transport.request.mockImplementation((method: string, params: unknown) => method === 'thread.sendTurn' ? Promise.reject(new IndeterminateRequestError('lost')) : reconnecting && method === 'thread.history' && (params as { threadId: string }).threadId === 'untouched-thread' ? Promise.resolve({ events: [], running: true }) : reconnecting && method === 'thread.queue' && (params as { threadId: string }).threadId === 'untouched-thread' ? Promise.resolve({ items: [queued], canSteer: true }) : request(method, params)); await openNewSession(); startTurn('untouched-thread', 'a'); submitTurn('Lost submit'); await waitFor(() => expect(rpcCount('thread.sendTurn')).toBe(1)); fireEvent.keyDown(window, { key: 'p', metaKey: true }); fireEvent.click(screen.getByRole('option', { name: /^Another Project / })); await waitFor(() => expect(transport.request).toHaveBeenCalledWith('workspace.info', { path: '/work/another-project' })); startTurn('background-thread', 'b'); (serverProjects[1] as { sessions: Array<{ running: boolean }> }).sessions[0]!.running = false; transport.request.mockClear(); reconnecting = true; act(() => { setConnectionState('reconnecting'); setConnectionState('open') }); await waitForWorkspace(1) })
   // prettier-ignore
   it('reconciles workspace ownership when a running session is archived', async () => { await openNewSession(); startTurn('untouched-thread', 'active'); transport.request.mockClear(); fireEvent.click(screen.getByRole('button', { name: 'Archive New session' })); await waitFor(() => expect(transport.request).toHaveBeenCalledWith('thread.delete', { threadId: 'untouched-thread' })); await waitForWorkspace(1) })
+  // prettier-ignore
+  it('keeps a claimed steer blocked until its exact outcome', async () => { const request = transport.request.getMockImplementation()!, queued = { id: 'steer-q', text: 'Steer later', attachments: [], createdAt: 1 }; let rejectSteer!: (reason: Error) => void; transport.request.mockImplementation((method: string, params: unknown) => method === 'thread.sendTurn' ? Promise.resolve({ queued: true, queuedTurn: queued }) : method === 'thread.steerQueuedTurn' ? new Promise((_, reject) => (rejectSteer = reject)) : request(method, params)); await openNewSession(); startTurn('untouched-thread', 'active'); transport.request.mockClear(); submitTurn('Steer later'); await screen.findByRole('button', { name: 'Remove Steer later from queue' }); fireEvent.click(screen.getByRole('button', { name: 'Steer' })); await waitFor(() => expect(rpcCount('thread.steerQueuedTurn')).toBe(1)); emitQueue('untouched-thread', []); completeTurn('untouched-thread', 'active'); await act(async () => new Promise((resolve) => window.setTimeout(resolve, 0))); expect(rpcCount('workspace.info')).toBe(0); emitQueue('untouched-thread', [queued]); await act(async () => rejectSteer(new Error('restored'))); fireEvent.click(screen.getByRole('button', { name: 'Remove Steer later from queue' })); emitQueue('untouched-thread', []); await waitForWorkspace(1) })
+  // prettier-ignore
+  it('keeps a reconnect queue claim blocked until durable evidence', async () => { const request = transport.request.getMockImplementation()!, queued = { id: 'claim-q', text: 'Claim later', attachments: [], createdAt: 1 }; transport.request.mockImplementation((method: string, params: unknown) => method === 'thread.sendTurn' ? Promise.resolve({ queued: true, queuedTurn: queued }) : request(method, params)); await openNewSession(); startTurn('untouched-thread', 'active'); submitTurn('Claim later'); await screen.findByRole('button', { name: 'Remove Claim later from queue' }); transport.request.mockClear(); act(() => { setConnectionState('reconnecting'); setConnectionState('open') }); await waitFor(() => expect(rpcCount('thread.queue')).toBeGreaterThan(0)); expect(rpcCount('workspace.info')).toBe(0); emitQueue('untouched-thread', [queued]); fireEvent.click(screen.getByRole('button', { name: 'Remove Claim later from queue' })); emitQueue('untouched-thread', []); await waitForWorkspace(1) })
+  // prettier-ignore
+  it('retries unknown queue evidence on the next completion', async () => { const request = transport.request.getMockImplementation()!, queued = { id: 'stale', text: 'Offline queue', attachments: [], createdAt: 1 }; let failing = true; transport.request.mockImplementation((method: string, params: unknown) => method === 'thread.queue' && failing ? Promise.reject(new Error('offline')) : request(method, params)); await openNewSession(); emitQueue('untouched-thread', [queued]); transport.request.mockClear(); act(() => { setConnectionState('reconnecting'); setConnectionState('open') }); await waitFor(() => expect(rpcCount('thread.queue')).toBeGreaterThan(0)); expect(rpcCount('workspace.info')).toBe(0); failing = false; completeTurn('untouched-thread', 'later'); await waitForWorkspace(1) })
+  // prettier-ignore
+  it('refreshes after a turn runs wholly during an outage', async () => { await openNewSession(); transport.request.mockClear(); act(() => { setConnectionState('reconnecting'); setConnectionState('open') }); await waitForWorkspace(1) })
+  // prettier-ignore
+  it('does not clear a submit owner created during resync', async () => { const request = transport.request.getMockImplementation()!; serverProjects = [serverProject('/work/project', 'project', [{ id: 'untouched-thread', title: 'New session', running: false }, { id: 'background-thread', title: 'Background', running: false, status: 'working' }])]; let accept!: (value: { queued: false; turnId: string }) => void; transport.request.mockImplementation((method: string, params: unknown) => method === 'thread.sendTurn' ? new Promise((resolve) => (accept = resolve)) : request(method, params)); await openNewSession(); (serverProjects[0] as { sessions: Array<{ status?: string }> }).sessions[1]!.status = 'ready'; transport.request.mockClear(); act(() => { setConnectionState('reconnecting'); setConnectionState('open') }); submitTurn('During resync'); await waitFor(() => expect(rpcCount('thread.sendTurn')).toBe(1)); await act(async () => accept({ queued: false, turnId: 'new' })); await act(async () => new Promise((resolve) => window.setTimeout(resolve, 0))); expect(rpcCount('workspace.info')).toBe(0); startTurn('untouched-thread', 'new'); completeTurn('untouched-thread', 'new'); await waitForWorkspace(1) })
+  // prettier-ignore
+  it('reconciles pending owners when the transport is replaced', async () => { await openNewSession(); transport.request.mockClear(); submitTurn('Transport gap'); await waitFor(() => expect(rpcCount('thread.sendTurn')).toBe(1)); await act(async () => { window.location.hash = '#access_token=reconnected'; window.dispatchEvent(new HashChangeEvent('hashchange')) }); await waitForWorkspace(1); transport.request.mockClear(); completeTurn('untouched-thread', 'later'); await waitForWorkspace(1) })
+  // prettier-ignore
+  it('blocks on authoritative queued status without a local queue cache', async () => { serverProjects = [serverProject('/work/project', 'project', [{ id: 'untouched-thread', title: 'New session', running: false }, { id: 'background-thread', title: 'Background', running: false, status: 'queued' }])]; await openNewSession(); transport.request.mockClear(); completeTurn('untouched-thread', 'a'); await act(async () => new Promise((resolve) => window.setTimeout(resolve, 0))); expect(rpcCount('workspace.info')).toBe(0); (serverProjects[0] as { sessions: Array<{ status?: string }> }).sessions[1]!.status = 'ready'; completeTurn('untouched-thread', 'b'); await waitForWorkspace(1) })
 
   it('asks before discarding uncommitted work from an isolated session', async () => {
     serverProjects = [

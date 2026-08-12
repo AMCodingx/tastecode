@@ -715,7 +715,12 @@ export function App() {
     pendingPath: undefined as string | undefined,
     idlePath: undefined as string | undefined,
     blockedPath: undefined as string | undefined,
-    pendingStarts: new Map<string, { path: string; count: number }>(),
+    pendingStarts: new Map<string, { path: string; tokens: number[] }>(),
+    queuedStarts: new Map<string, { threadId: string; token: number }>(),
+    claimedStarts: new Set<string>(),
+    queueActions: new Set<string>(),
+    unknownQueues: new Set<string>(),
+    nextStart: 0,
     revision: 0,
     transportRevision: 0,
   })
@@ -726,10 +731,14 @@ export function App() {
     if (workspaceIdleProbe.current.blockedPath === projectPath)
       workspaceIdleProbe.current.blockedPath = undefined
   }, [])
-  const releaseWorkspaceStart = useCallback((threadId: string) => {
+  const releaseWorkspaceStart = useCallback((threadId: string, token?: number) => {
     const probe = workspaceIdleProbe.current
     const pending = probe.pendingStarts.get(threadId)
-    if (!pending || --pending.count > 0) return
+    if (!pending) return
+    const index = token === undefined ? 0 : pending.tokens.indexOf(token)
+    if (index < 0) return
+    pending.tokens.splice(index, 1)
+    if (pending.tokens.length > 0) return
     probe.pendingStarts.delete(threadId)
     if (probe.blockedPath !== pending.path) return
     if ([...probe.pendingStarts.values()].some((entry) => entry.path === pending.path)) return
@@ -737,11 +746,14 @@ export function App() {
     return pending.path
   }, [])
   const holdWorkspaceStart = useCallback((threadId: string, path: string) => {
-    const current = workspaceIdleProbe.current.pendingStarts.get(threadId)
-    workspaceIdleProbe.current.pendingStarts.set(threadId, {
+    const probe = workspaceIdleProbe.current
+    const current = probe.pendingStarts.get(threadId)
+    const token = ++probe.nextStart
+    probe.pendingStarts.set(threadId, {
       path,
-      count: (current?.count ?? 0) + 1,
+      tokens: [...(current?.tokens ?? []), token],
     })
+    return token
   }, [])
   const refreshWorkspaceAfterCompletion = useCallback(
     (projectPath: string | undefined) => {
@@ -771,9 +783,9 @@ export function App() {
             if (!project) retry = probe.idlePath !== path
             else {
               const pending = [...probe.pendingStarts.values()].some((entry) => entry.path === path)
-              const queued = project.sessions.some(
-                (session) => (queueStates.current.get(session.id)?.items.length ?? 0) > 0,
-              )
+              // prettier-ignore
+              const unknown = project.sessions.some((session) => probe.unknownQueues.has(session.id)), queued = unknown || project.sessions.some((session) => session.status === 'queued' || (queueStates.current.get(session.id)?.items.length ?? 0) > 0)
+              if (unknown) resync.current()
               const blocked =
                 project.sessions.some((session) => session.running) || pending || queued
               if (pending) probe.blockedPath = path
@@ -805,6 +817,20 @@ export function App() {
     },
     [transport],
   )
+  const releaseQueuedStart = useCallback(
+    (queuedTurnId: string) => {
+      const probe = workspaceIdleProbe.current
+      const owner = probe.queuedStarts.get(queuedTurnId)
+      if (!owner) return
+      probe.queuedStarts.delete(queuedTurnId)
+      probe.claimedStarts.delete(queuedTurnId)
+      const path = releaseWorkspaceStart(owner.threadId, owner.token)
+      if (path) refreshWorkspaceAfterCompletion(path)
+    },
+    [releaseWorkspaceStart, refreshWorkspaceAfterCompletion],
+  )
+  // prettier-ignore
+  const releaseDirectStart = useCallback((threadId: string) => { const probe = workspaceIdleProbe.current; const queued = new Set([...probe.queuedStarts.values()].filter((owner) => owner.threadId === threadId).map((owner) => owner.token)); const token = probe.pendingStarts.get(threadId)?.tokens.find((candidate) => !queued.has(candidate)); if (token !== undefined) releaseWorkspaceStart(threadId, token) }, [releaseWorkspaceStart])
   /** Refetch after an outage. Held in a ref because the transport effect is
    *  set up before the fetchers it needs are declared. */
   const resync = useRef<() => void>(() => {})
@@ -956,9 +982,16 @@ export function App() {
       ) {
         const projectPath = findSession(projectsRef.current, threadId)?.project.path
         if (event.type === 'turn.started') {
-          releaseWorkspaceStart(threadId)
+          const probe = workspaceIdleProbe.current
+          // prettier-ignore
+          const queued = [...probe.queuedStarts].find(([id, owner]) => owner.threadId === threadId && (probe.claimedStarts.has(id) || !queueStates.current.get(threadId)?.items.some((item) => item.id === id)))?.[0]
+          if (queued) releaseQueuedStart(queued)
+          else releaseDirectStart(threadId)
           invalidateWorkspaceIdleProbe(projectPath)
-        } else refreshWorkspaceAfterCompletion(projectPath)
+        } else {
+          releaseDirectStart(threadId)
+          refreshWorkspaceAfterCompletion(projectPath)
+        }
       }
 
       if (affectsSessionStatus(event)) {
@@ -995,6 +1028,11 @@ export function App() {
       }
     })
     const offQueue = transport.on('thread.queue', ({ threadId, items, canSteer }) => {
+      // prettier-ignore
+      const previous = new Set(queueStates.current.get(threadId)?.items.map((item) => item.id)), current = new Set(items.map((item) => item.id)), probe = workspaceIdleProbe.current
+      probe.unknownQueues.delete(threadId)
+      // prettier-ignore
+      for (const [id, owner] of probe.queuedStarts) if (owner.threadId === threadId) { if (current.has(id)) probe.claimedStarts.delete(id); else if (previous.has(id) && !probe.queueActions.has(id)) probe.claimedStarts.add(id) }
       serverQueueRevisions.current.set(
         threadId,
         (serverQueueRevisions.current.get(threadId) ?? 0) + 1,
@@ -1029,7 +1067,10 @@ export function App() {
         // silently truncated — an answer cut mid-sentence, an approval that
         // was already resolved still asking — until the user switches
         // sessions and back.
-        if (state === 'open' && missedPushes) {
+        if (
+          state === 'open' &&
+          (missedPushes || workspaceIdleProbe.current.pendingStarts.size > 0)
+        ) {
           missedPushes = false
           resync.current()
         }
@@ -1059,6 +1100,8 @@ export function App() {
     settleQueuedSubmissions,
     invalidateWorkspaceIdleProbe,
     releaseWorkspaceStart,
+    releaseQueuedStart,
+    releaseDirectStart,
     refreshWorkspaceAfterCompletion,
   ])
 
@@ -1464,13 +1507,17 @@ export function App() {
     const activeId = activeIdRef.current
     const path = activePathRef.current
     const threadIds = new Set(pendingSubmissions.current.keys())
-    const ownerPaths = new Map(
-      [...workspaceIdleProbe.current.pendingStarts].filter(([id]) => !id.startsWith('pending:')),
-    )
+    // prettier-ignore
+    const ownerPaths = new Map([...workspaceIdleProbe.current.pendingStarts].filter(([id]) => !id.startsWith('pending:')).map(([id, owner]) => [id, { path: owner.path, tokens: [...owner.tokens] }]))
     for (const id of ownerPaths.keys()) threadIds.add(id)
     for (const session of projectsRef.current.find((project) => project.path === path)?.sessions ??
       [])
-      if (!['failed', 'ready', 'idle'].includes(session.status)) threadIds.add(session.id)
+      if (
+        !['failed', 'ready', 'idle'].includes(session.status) ||
+        (queueStates.current.get(session.id)?.items.length ?? 0) > 0 ||
+        workspaceIdleProbe.current.unknownQueues.has(session.id)
+      )
+        threadIds.add(session.id)
     if (activeId && !activeId.startsWith('pending:')) threadIds.add(activeId)
     const resyncThread = (
       id: string,
@@ -1483,30 +1530,36 @@ export function App() {
         .request('thread.queue', { threadId: id })
         .then(async (state) => {
           const loaded = await history
-          if (!loaded) return
           if (
+            revision !== resyncRevision.current ||
             (localQueueRevisions.current.get(id) ?? 0) !== localQueueRevision ||
             (serverQueueRevisions.current.get(id) ?? 0) !== serverQueueRevision
           ) {
-            return retry ? resyncThread(id, false) : undefined
+            if (revision !== resyncRevision.current) return
+            if (retry) return resyncThread(id, false)
+            workspaceIdleProbe.current.unknownQueues.add(id)
+            return
           }
+          // prettier-ignore
+          for (const [queuedId, owner] of workspaceIdleProbe.current.queuedStarts) if (owner.threadId === id) { if (state.items.some((item) => item.id === queuedId)) workspaceIdleProbe.current.claimedStarts.delete(queuedId); else if (queueStates.current.get(id)?.items.some((item) => item.id === queuedId)) workspaceIdleProbe.current.claimedStarts.add(queuedId) }
           queueStates.current.set(id, state)
-          settleQueuedSubmissions(id, state.items, loaded)
           if (activeIdRef.current === id) {
             setQueuedTurns(state.items)
             setCanSteerQueue(state.canSteer)
           }
+          if (!loaded) {
+            workspaceIdleProbe.current.unknownQueues.add(id)
+            return
+          }
+          workspaceIdleProbe.current.unknownQueues.delete(id)
+          settleQueuedSubmissions(id, state.items, loaded)
           return { id, thread: loaded, queue: state.items }
         })
-        .catch(() => undefined)
+        .catch(() => {
+          if (revision === resyncRevision.current) workspaceIdleProbe.current.unknownQueues.add(id)
+          return undefined
+        })
     }
-    const wasRunning =
-      [...workspaceIdleProbe.current.pendingStarts.values()].some(
-        (pending) => pending.path === path,
-      ) ||
-      projectsRef.current
-        .find((project) => project.path === path)
-        ?.sessions.some((session) => !['failed', 'ready', 'idle'].includes(session.status))
     void Promise.all([
       refreshProjects().catch(() => undefined),
       ...[...threadIds].map((id) => resyncThread(id)),
@@ -1514,8 +1567,38 @@ export function App() {
       if (revision !== resyncRevision.current) return
       const states = threads.filter((state) => state !== undefined)
       const probe = workspaceIdleProbe.current
-      for (const state of states) probe.pendingStarts.delete(state.id)
       const project = projects?.find((candidate) => candidate.path === path)
+      for (const state of states) {
+        const session = projects
+          ?.flatMap((candidate) => candidate.sessions)
+          .find((candidate) => candidate.id === state.id)
+        if (
+          !session ||
+          session.running ||
+          session.status === 'queued' ||
+          state.thread.running ||
+          state.queue.length
+        )
+          continue
+        const captured = ownerPaths.get(state.id)
+        const current = probe.pendingStarts.get(state.id)
+        if (captured && current) {
+          const tokens = new Set(captured.tokens)
+          // prettier-ignore
+          const durable = new Set(state.thread.items.filter((item) => item.turnId !== '').map((item) => item.id)), protectedTokens = new Set([...probe.queuedStarts].filter(([id, owner]) => owner.threadId === state.id && (probe.claimedStarts.has(id) || probe.queueActions.has(id)) && !durable.has(id)).map(([, owner]) => owner.token)), remainingTokens = current.tokens.filter((token) => !tokens.has(token) || protectedTokens.has(token))
+          current.tokens = remainingTokens
+          if (current.tokens.length === 0) probe.pendingStarts.delete(state.id)
+          for (const [queuedId, owner] of probe.queuedStarts)
+            if (
+              owner.threadId === state.id &&
+              tokens.has(owner.token) &&
+              !protectedTokens.has(owner.token)
+            ) {
+              probe.queuedStarts.delete(queuedId)
+              probe.claimedStarts.delete(queuedId)
+            }
+        }
+      }
       // prettier-ignore
       const activeIds = new Set([...threadIds].filter((id) => ownerPaths.get(id)?.path === path || findSession(projectsRef.current, id)?.project.path === path))
       const activeStates = states.filter((state) => activeIds.has(state.id))
@@ -1523,10 +1606,16 @@ export function App() {
         path &&
         project &&
         activeStates.length === activeIds.size &&
-        !project.sessions.some((session) => session.running) &&
+        !project.sessions.some(
+          (session) =>
+            session.running ||
+            session.status === 'queued' ||
+            probe.unknownQueues.has(session.id) ||
+            (queueStates.current.get(session.id)?.items.length ?? 0) > 0,
+        ) &&
         !activeStates.some((state) => state.thread.running || state.queue.length > 0)
       if (!idle) return
-      if (wasRunning) refreshWorkspaceAfterCompletion(path)
+      refreshWorkspaceAfterCompletion(path)
     })
     if (activeId && !activeId.startsWith('pending:')) {
       void transport
@@ -2057,12 +2146,13 @@ export function App() {
       const briefing = designMode
       const turnAttachments = briefing ? addDesignBriefing(attachments) : attachments
       let workspaceStartId = activeId
+      let workspaceStartToken: number | undefined
       if (submission !== 'steer' && activePath && workspaceStartId) {
-        holdWorkspaceStart(workspaceStartId, activePath)
+        workspaceStartToken = holdWorkspaceStart(workspaceStartId, activePath)
       }
       const releasePendingStart = () => {
         if (submission !== 'steer' && workspaceStartId) {
-          const path = releaseWorkspaceStart(workspaceStartId)
+          const path = releaseWorkspaceStart(workspaceStartId, workspaceStartToken)
           if (path) refreshWorkspaceAfterCompletion(path)
         }
       }
@@ -2093,7 +2183,7 @@ export function App() {
           return
         }
         workspaceStartId = provisionalId
-        holdWorkspaceStart(provisionalId, activePath)
+        workspaceStartToken = holdWorkspaceStart(provisionalId, activePath)
         optimisticTurnId = provisional.activeTurn?.id
         threadStates.current.set(provisionalId, provisional)
         setProjects((current) =>
@@ -2252,6 +2342,11 @@ export function App() {
         if (pending) pending.accepted = true
         if (result.queued) {
           if (pending) pending.kind = steering ? 'steer' : 'queue'
+          if (!steering && workspaceStartToken !== undefined)
+            workspaceIdleProbe.current.queuedStarts.set(result.queuedTurn.id, {
+              threadId,
+              token: workspaceStartToken,
+            })
           if (steering) {
             await transport.request('thread.steerQueuedTurn', {
               threadId,
@@ -2287,7 +2382,6 @@ export function App() {
             updateQueue(threadId, (items) => items.filter((item) => item.id !== optimisticQueueId))
           }
         }
-        if (result.queued) releasePendingStart()
       } catch (error) {
         if (isIndeterminateRequestError(error)) {
           const pending = pendingSubmissions.current.get(threadId)?.get(optimisticItemId)
@@ -2402,16 +2496,17 @@ export function App() {
   const deleteQueuedTurn = useCallback(
     (queuedTurnId: string) => {
       if (!activeId) return
-      const projectPath = findSession(projectsRef.current, activeId)?.project.path
+      workspaceIdleProbe.current.queueActions.add(queuedTurnId)
       void transport
         .request('thread.deleteQueuedTurn', { threadId: activeId, queuedTurnId })
         .then(() => {
           updateQueue(activeId, (items) => items.filter((item) => item.id !== queuedTurnId))
-          refreshWorkspaceAfterCompletion(projectPath)
+          releaseQueuedStart(queuedTurnId)
         })
         .catch((error) => setNotice(error instanceof Error ? error.message : String(error)))
+        .finally(() => workspaceIdleProbe.current.queueActions.delete(queuedTurnId))
     },
-    [transport, activeId, updateQueue, refreshWorkspaceAfterCompletion],
+    [transport, activeId, updateQueue, releaseQueuedStart],
   )
 
   const moveQueuedTurn = useCallback(
@@ -2427,16 +2522,17 @@ export function App() {
   const steerQueuedTurn = useCallback(
     (queuedTurnId: string) => {
       if (!activeId) return
-      const projectPath = findSession(projectsRef.current, activeId)?.project.path
+      workspaceIdleProbe.current.queueActions.add(queuedTurnId)
       void transport
         .request('thread.steerQueuedTurn', { threadId: activeId, queuedTurnId })
         .then(() => {
           updateQueue(activeId, (items) => items.filter((item) => item.id !== queuedTurnId))
-          refreshWorkspaceAfterCompletion(projectPath)
+          releaseQueuedStart(queuedTurnId)
         })
         .catch((error) => setNotice(error instanceof Error ? error.message : String(error)))
+        .finally(() => workspaceIdleProbe.current.queueActions.delete(queuedTurnId))
     },
-    [transport, activeId, updateQueue, refreshWorkspaceAfterCompletion],
+    [transport, activeId, updateQueue, releaseQueuedStart],
   )
 
   const selectProject = useCallback(
@@ -2660,7 +2756,7 @@ export function App() {
     async (id: string) => {
       await transport.request('thread.delete', { threadId: id })
       // prettier-ignore
-      const projectPath = (() => { workspaceIdleProbe.current.pendingStarts.delete(id); queueStates.current.delete(id); return findSession(projectsRef.current, id)?.project.path })()
+      const projectPath = (() => { const probe = workspaceIdleProbe.current; probe.pendingStarts.delete(id); probe.unknownQueues.delete(id); for (const [queuedId, owner] of probe.queuedStarts) if (owner.threadId === id) { probe.queuedStarts.delete(queuedId); probe.claimedStarts.delete(queuedId) }; queueStates.current.delete(id); return findSession(projectsRef.current, id)?.project.path })()
       threadStates.current.delete(id)
       durableSequences.current.delete(id)
       pendingThreadDeltas.current.delete(id)
