@@ -157,6 +157,9 @@ const BACKDROP_OPTIONS = [
   { value: 'plum', label: 'Plum' },
 ] as const satisfies ReadonlyArray<{ value: BackdropPreference; label: string }>
 
+const FOCUSABLE_SELECTOR =
+  'a[href]:not([tabindex="-1"]), button:not([disabled]):not([tabindex="-1"]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])'
+
 /**
  * Settings stays intentionally small: the sidebar reorganizes the decisions
  * the app already exposes without inventing preferences for their own sake.
@@ -206,22 +209,44 @@ function SettingsComponent(props: {
     setSection(props.initialSection ?? 'providers')
   }, [props.initialSection])
 
-  // A dialog owns the keyboard: focus moves into it on open (Tab must not
-  // walk the app hidden underneath), and Escape closes it.
   const panel = useRef<HTMLDivElement>(null)
+  const onClose = useRef(props.onClose)
+  onClose.current = props.onClose
   useEffect(() => {
+    const previousFocus =
+      document.activeElement instanceof HTMLElement ? document.activeElement : null
     panel.current?.focus()
-  }, [])
-  const { onClose } = props
-  useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
-      if (event.key !== 'Escape' || event.defaultPrevented) return
+      if (event.key === 'Escape' && !event.defaultPrevented) {
+        event.preventDefault()
+        onClose.current()
+        return
+      }
+      if (event.key !== 'Tab' || event.defaultPrevented || !panel.current) return
+
+      const focusable = Array.from(
+        panel.current.querySelectorAll<HTMLElement>(FOCUSABLE_SELECTOR),
+      ).filter((element) => !element.closest('[hidden], [inert], [aria-hidden="true"]'))
+      const first = focusable[0]
+      const last = focusable.at(-1)
+      const active = document.activeElement
+      const atBoundary =
+        !first ||
+        !last ||
+        active === panel.current ||
+        !panel.current.contains(active) ||
+        (event.shiftKey ? active === first : active === last)
+      if (!atBoundary) return
+
       event.preventDefault()
-      onClose()
+      ;(event.shiftKey ? last : first)?.focus()
     }
     window.addEventListener('keydown', onKey)
-    return () => window.removeEventListener('keydown', onKey)
-  }, [onClose])
+    return () => {
+      window.removeEventListener('keydown', onKey)
+      if (previousFocus?.isConnected) previousFocus.focus()
+    }
+  }, [])
 
   return (
     <div
