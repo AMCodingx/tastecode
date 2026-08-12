@@ -714,6 +714,7 @@ export function App() {
     inFlight: undefined as Promise<void> | undefined,
     pendingPath: undefined as string | undefined,
     idlePath: undefined as string | undefined,
+    blockedPath: undefined as string | undefined,
     pendingStarts: new Map<string, { path: string; count: number }>(),
     startedThreads: new Set<string>(),
     revision: 0,
@@ -723,11 +724,18 @@ export function App() {
     if (!projectPath || projectPath !== activePathRef.current) return
     workspaceIdleProbe.current.revision += 1
     workspaceIdleProbe.current.idlePath = undefined
+    if (workspaceIdleProbe.current.blockedPath === projectPath)
+      workspaceIdleProbe.current.blockedPath = undefined
   }, [])
   const releaseWorkspaceStart = useCallback((threadId: string) => {
     const probe = workspaceIdleProbe.current
     const pending = probe.pendingStarts.get(threadId)
-    if (pending && --pending.count === 0) probe.pendingStarts.delete(threadId)
+    if (!pending || --pending.count > 0) return
+    probe.pendingStarts.delete(threadId)
+    if (probe.blockedPath !== pending.path) return
+    if ([...probe.pendingStarts.values()].some((entry) => entry.path === pending.path)) return
+    probe.blockedPath = undefined
+    return pending.path
   }, [])
   const holdWorkspaceStart = useCallback((threadId: string, path: string) => {
     const current = workspaceIdleProbe.current.pendingStarts.get(threadId)
@@ -756,24 +764,23 @@ export function App() {
               continue
             if (activePathRef.current !== path) continue
             const project = projects.find((candidate) => candidate.path === path)
-            if (!project) {
-              retry = probe.idlePath === undefined
-            } else {
-              const blocked =
-                project.sessions.some((session) => session.running) ||
-                [...probe.pendingStarts.values()].some((pending) => pending.path === path)
+            if (!project) retry = probe.idlePath !== path
+            else {
+              const pending = [...probe.pendingStarts.values()].some((entry) => entry.path === path)
+              const blocked = project.sessions.some((session) => session.running) || pending
+              if (pending) probe.blockedPath = path
+              else if (!blocked && probe.blockedPath === path) probe.blockedPath = undefined
               probe.idlePath = blocked ? undefined : path
             }
           } catch {
             retry =
               transportRevision === probe.transportRevision &&
               revision === probe.revision &&
-              probe.idlePath === undefined
+              probe.idlePath !== path
           }
-          if (retry && retryAvailable && !probe.pendingPath) {
-            retryAvailable = false
-            probe.pendingPath = path
-          }
+          if (!retry || !retryAvailable || probe.pendingPath) continue
+          retryAvailable = false
+          probe.pendingPath = path
         }
         const refresh =
           probe.idlePath === activePathRef.current &&
@@ -1025,9 +1032,7 @@ export function App() {
       const probe = workspaceIdleProbe.current
       probe.revision += 1
       probe.transportRevision += 1
-      probe.inFlight = undefined
-      probe.pendingPath = undefined
-      probe.idlePath = undefined
+      probe.inFlight = probe.pendingPath = probe.idlePath = probe.blockedPath = undefined
       probe.startedThreads.clear()
       offEvents()
       offQueue()
@@ -1445,7 +1450,10 @@ export function App() {
 
   resync.current = () => {
     const activeId = activeIdRef.current
+    const path = activePathRef.current
     const threadIds = new Set(pendingSubmissions.current.keys())
+    for (const [id, pending] of workspaceIdleProbe.current.pendingStarts)
+      if (pending.path === path && !id.startsWith('pending:')) threadIds.add(id)
     if (activeId && !activeId.startsWith('pending:')) threadIds.add(activeId)
     const resyncThread = (id: string, retry = true): Promise<ThreadState | undefined> => {
       const history = loadHistory(id, durableSequences.current.get(id)).catch(() => undefined)
@@ -1472,14 +1480,13 @@ export function App() {
         })
         .catch(() => undefined)
     }
-    const path = activePathRef.current
     const wasRunning =
       [...workspaceIdleProbe.current.pendingStarts.values()].some(
         (pending) => pending.path === path,
       ) ||
       projectsRef.current
         .find((project) => project.path === path)
-        ?.sessions.some((session) => session.status === 'starting' || session.status === 'working')
+        ?.sessions.some((session) => !['failed', 'ready', 'idle'].includes(session.status))
     void Promise.all([
       refreshProjects().catch(() => undefined),
       ...[...threadIds].map((id) => resyncThread(id)),
@@ -2020,13 +2027,15 @@ export function App() {
       // input only).
       const briefing = designMode
       const turnAttachments = briefing ? addDesignBriefing(attachments) : attachments
-      invalidateWorkspaceIdleProbe(activePath)
       let workspaceStartId = activeId
       if (submission !== 'steer' && activePath && workspaceStartId) {
         holdWorkspaceStart(workspaceStartId, activePath)
       }
       const releasePendingStart = () => {
-        if (submission !== 'steer' && workspaceStartId) releaseWorkspaceStart(workspaceStartId)
+        if (submission !== 'steer' && workspaceStartId) {
+          const path = releaseWorkspaceStart(workspaceStartId)
+          if (path) refreshWorkspaceAfterCompletion(path)
+        }
       }
       // Typing first and having the session appear is the natural order. Making
       // the user press "new session" before they are allowed to type is the
@@ -2295,9 +2304,9 @@ export function App() {
       selectedServiceTier,
       updateQueue,
       designMode,
-      invalidateWorkspaceIdleProbe,
       holdWorkspaceStart,
       releaseWorkspaceStart,
+      refreshWorkspaceAfterCompletion,
       restoreRejectedDraft,
       sendAvailability,
     ],

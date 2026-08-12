@@ -509,67 +509,39 @@ function profileHistoryResult() {
   }
 }
 
-function projectsSnapshot(running: boolean) {
-  return {
-    projects: serverProjects.map((entry) => {
-      const project = entry as { sessions: Array<Record<string, unknown>> }
-      return {
-        ...project,
-        sessions: project.sessions.map((session) => ({ ...session, running })),
-      }
-    }),
-  }
-}
+// prettier-ignore
+const projectsSnapshot = (running: boolean) => ({ projects: serverProjects.map((entry) => { const project = entry as { sessions: Array<Record<string, unknown>> }; return { ...project, sessions: project.sessions.map((session) => ({ ...session, running })) } }) })
+// prettier-ignore
+type ProjectProbe = { resolve: (value: ReturnType<typeof projectsSnapshot>) => void; reject: (reason?: unknown) => void }
 async function renderWithDeferredProjectProbes() {
   const request = transport.request.getMockImplementation()!
-  const probes: Array<{
-    resolve: (value: ReturnType<typeof projectsSnapshot>) => void
-    reject: (reason?: unknown) => void
-  }> = []
+  const probes: ProjectProbe[] = []
   let capture = false
-  transport.request.mockImplementation((method: string, params: unknown) =>
-    method === 'projects.list' && capture
-      ? new Promise((resolve, reject) => probes.push({ resolve, reject }))
-      : request(method, params),
-  )
+  // prettier-ignore
+  transport.request.mockImplementation((method: string, params: unknown) => method === 'projects.list' && capture ? new Promise((resolve, reject) => probes.push({ resolve, reject })) : request(method, params))
   await openNewSession()
   transport.request.mockClear()
   capture = true
   return probes
 }
-const rpcCount = (method: string) =>
-  transport.request.mock.calls.filter(([called]) => called === method).length
-const completeTurn = (threadId: string, turnId: string) =>
-  emitThreadEvent(threadId, { type: 'turn.completed', turnId, status: 'completed' })
-const startTurn = (threadId: string, turnId: string) =>
-  emitThreadEvent(threadId, {
-    type: 'turn.started',
-    turn: { id: turnId, threadId, status: 'running', createdAt: 1 },
-  })
-const submitTurn = (text: string) => {
-  const composer = screen.getByPlaceholderText('Do anything')
-  fireEvent.change(composer, { target: { value: text } })
-  fireEvent.keyDown(composer, { key: 'Enter' })
-}
-const waitForWorkspace = (count: number) =>
-  waitFor(() => expect(rpcCount('workspace.info')).toBe(count))
-const waitForInitialWorkspace = () =>
-  waitFor(() =>
-    expect(transport.request).toHaveBeenCalledWith('workspace.branches', { path: '/work/project' }),
-  )
-async function openNewSession() {
-  render(<App />)
-  fireEvent.click(await screen.findByRole('button', { name: /^New session,/ }))
-  await waitForInitialWorkspace()
-}
-const setConnectionState = (state: string) => {
-  for (const listener of transport.stateListeners) listener(state)
-}
-const serverProject = (path: string, name: string, sessions: unknown[] = []) => ({
-  path,
-  name,
-  sessions,
-})
+// prettier-ignore
+const rpcCount = (method: string) => transport.request.mock.calls.filter(([called]) => called === method).length
+// prettier-ignore
+const completeTurn = (threadId: string, turnId: string) => emitThreadEvent(threadId, { type: 'turn.completed', turnId, status: 'completed' })
+// prettier-ignore
+const startTurn = (threadId: string, turnId: string) => emitThreadEvent(threadId, { type: 'turn.started', turn: { id: turnId, threadId, status: 'running', createdAt: 1 } })
+// prettier-ignore
+const submitTurn = (text: string) => { const composer = screen.getByPlaceholderText('Do anything'); fireEvent.change(composer, { target: { value: text } }); fireEvent.keyDown(composer, { key: 'Enter' }) }
+// prettier-ignore
+const waitForWorkspace = (count: number) => waitFor(() => expect(rpcCount('workspace.info')).toBe(count))
+// prettier-ignore
+const waitForInitialWorkspace = () => waitFor(() => expect(transport.request).toHaveBeenCalledWith('workspace.branches', { path: '/work/project' }))
+// prettier-ignore
+async function openNewSession() { render(<App />); fireEvent.click(await screen.findByRole('button', { name: /^New session,/ })); await waitForInitialWorkspace() }
+// prettier-ignore
+const setConnectionState = (state: string) => { for (const listener of transport.stateListeners) listener(state) }
+// prettier-ignore
+const serverProject = (path: string, name: string, sessions: unknown[] = []) => ({ path, name, sessions })
 describe('web client', () => {
   it('opens the workspace directly on first launch', async () => {
     localStorage.removeItem('harness.provider')
@@ -1412,15 +1384,12 @@ describe('new chats', () => {
   })
 
   it('starts workspace info and branch reads together', async () => {
-    const request = transport.request.getMockImplementation()
-    if (!request) throw new Error('missing request mock')
+    const request = transport.request.getMockImplementation()!
     let resolveInfo!: (value: ResultOf<'workspace.info'>) => void
-    const info = new Promise<Parameters<typeof resolveInfo>[0]>((resolve) => {
-      resolveInfo = resolve
-    })
-    transport.request.mockImplementation((method: string, params: unknown) =>
-      method === 'workspace.info' ? info : request(method, params),
-    )
+    // prettier-ignore
+    const info = new Promise<Parameters<typeof resolveInfo>[0]>((resolve) => (resolveInfo = resolve))
+    // prettier-ignore
+    transport.request.mockImplementation((method: string, params: unknown) => method === 'workspace.info' ? info : request(method, params))
     render(<App />)
     await waitForInitialWorkspace()
     await act(async () => resolveInfo({ branch: 'main', added: 0, removed: 0, dirtyFiles: 0 }))
@@ -1429,21 +1398,15 @@ describe('new chats', () => {
     await openNewSession()
     transport.request.mockClear()
     submitTurn('Do the work')
-    await waitFor(() => {
-      expect(transport.request).toHaveBeenCalledWith(
-        'thread.sendTurn',
-        expect.objectContaining({ threadId: 'untouched-thread', text: 'Do the work' }),
-      )
-    })
+    // prettier-ignore
+    await waitFor(() => expect(transport.request).toHaveBeenCalledWith('thread.sendTurn', expect.objectContaining({ threadId: 'untouched-thread', text: 'Do the work' })))
     expect(rpcCount('workspace.info')).toBe(0)
     completeTurn('untouched-thread', 'turn-1')
     await waitForWorkspace(1)
   })
   it('coalesces overlapping completion probes before refreshing workspace metadata', async () => {
     const probes = await renderWithDeferredProjectProbes()
-    for (const turnId of ['turn-1', 'turn-2', 'turn-3']) {
-      completeTurn('untouched-thread', turnId)
-    }
+    for (const turnId of ['turn-1', 'turn-2', 'turn-3']) completeTurn('untouched-thread', turnId)
     await waitFor(() => expect(probes).toHaveLength(1))
     expect(rpcCount('projects.list')).toBe(1)
     await act(async () => probes[0]?.resolve(projectsSnapshot(true)))
@@ -1452,19 +1415,47 @@ describe('new chats', () => {
     await act(async () => probes[1]?.resolve(projectsSnapshot(false)))
     await waitForWorkspace(1)
   })
-  it.each(['reject', 'missing', 'started', 'submitted', 'unrelated', 'sole reject'] as const)(
+  // prettier-ignore
+  it.each(['reject', 'missing', 'started', 'submitted', 'unrelated', 'sole reject', 'rejected before probe', 'rejected after probe', 'switched reject'] as const)(
     'settles workspace metadata when the probe sequence ends with %s',
     async (scenario) => {
+      let rejectSend!: (reason: Error) => void
+      if (scenario.startsWith('rejected')) {
+        const request = transport.request.getMockImplementation()!
+        // prettier-ignore
+        transport.request.mockImplementation((method: string, params: unknown) => method === 'thread.sendTurn' ? new Promise((_, reject) => (rejectSend = reject)) : request(method, params))
+      }
+      if (scenario === 'switched reject') {
+        // prettier-ignore
+        serverProjects.push(serverProject('/work/another-project', 'Another Project', [{ id: 'background-thread', title: 'Background', running: false }]))
+        // prettier-ignore
+        ;(serverProjects[0] as { sessions: unknown[] }).sessions.push({ id: 'idle-thread', title: 'Idle work', running: false })
+      }
       const submitted = scenario === 'submitted' || scenario === 'unrelated'
       if (scenario === 'unrelated') {
-        ;(serverProjects[0] as { sessions: unknown[] }).sessions.push({
-          id: 'background-thread',
-          running: false,
-        })
+        ;(serverProjects[0] as { sessions: unknown[] }).sessions.push({ id: 'background-thread', running: false })
       }
       const probes = await renderWithDeferredProjectProbes()
+      if (scenario === 'switched reject') {
+        // prettier-ignore
+        startTurn('untouched-thread', 'turn-1'); transport.request.mockClear()
+        fireEvent.click(screen.getByRole('button', { name: /^Idle work,/ }))
+        expect(rpcCount('workspace.info')).toBe(0)
+      }
       completeTurn('untouched-thread', 'turn-1')
       await waitFor(() => expect(probes).toHaveLength(1))
+      if (scenario.startsWith('rejected')) {
+        submitTurn('Rejected start')
+        if (scenario === 'rejected before probe') await act(async () => rejectSend(new Error('no')))
+        await act(async () => probes[0]?.resolve(projectsSnapshot(false)))
+        if (scenario === 'rejected after probe') {
+          await act(async () => rejectSend(new Error('no')))
+          await waitFor(() => expect(probes).toHaveLength(2))
+          await act(async () => probes[1]?.resolve(projectsSnapshot(false)))
+        }
+        await waitForWorkspace(1)
+        return
+      }
       if (scenario === 'sole reject') {
         await act(async () => probes[0]?.reject(new Error('probe failed')))
         await waitFor(() => expect(probes).toHaveLength(2))
@@ -1474,20 +1465,30 @@ describe('new chats', () => {
         if (submitted) {
           submitTurn('Start again')
           if (scenario === 'unrelated') {
-            startTurn('background-thread', 'background')
-            completeTurn('background-thread', 'background')
+            // prettier-ignore
+            startTurn('background-thread', 'background'); completeTurn('background-thread', 'background')
           }
         }
         await act(async () => probes[0]?.resolve(projectsSnapshot(false)))
         await waitFor(() => expect(probes).toHaveLength(2))
-        if (scenario === 'started') {
-          startTurn('untouched-thread', 'turn-3')
+        if (scenario === 'switched reject') {
+          fireEvent.keyDown(window, { key: 'p', metaKey: true })
+          fireEvent.click(screen.getByRole('option', { name: /^Another Project / }))
+          // prettier-ignore
+          await waitFor(() => expect(transport.request).toHaveBeenCalledWith('workspace.info', { path: '/work/another-project' }))
+          transport.request.mockClear()
+          completeTurn('background-thread', 'background')
+          await act(async () => probes[1]?.reject(new Error('old project failed')))
+          await waitFor(() => expect(probes).toHaveLength(3))
+          await act(async () => probes[2]?.reject(new Error('new project failed')))
+          await waitFor(() => expect(probes).toHaveLength(4))
+          await act(async () => probes[3]?.resolve(projectsSnapshot(false)))
+          await waitForWorkspace(1)
+          return
         }
-        await act(async () => {
-          if (scenario === 'missing') probes[1]?.resolve({ projects: [] })
-          else if (submitted) probes[1]?.resolve(projectsSnapshot(false))
-          else probes[1]?.reject(new Error('probe failed'))
-        })
+        if (scenario === 'started') startTurn('untouched-thread', 'turn-3')
+        // prettier-ignore
+        await act(async () => scenario === 'missing' ? probes[1]?.resolve({ projects: [] }) : submitted ? probes[1]?.resolve(projectsSnapshot(false)) : probes[1]?.reject(new Error('probe failed')))
       }
       if (scenario === 'started' || submitted) {
         await act(async () => new Promise((resolve) => window.setTimeout(resolve, 0)))
@@ -1512,23 +1513,33 @@ describe('new chats', () => {
     completeTurn('untouched-thread', 'turn-2')
     await waitFor(() => expect(probes).toHaveLength(3))
   })
-  it('refreshes after reconnect reconciles an indeterminate turn as idle', async () => {
-    const request = transport.request.getMockImplementation()!
-    transport.request.mockImplementation((method: string, params: unknown) =>
-      method === 'thread.sendTurn'
-        ? Promise.reject(new IndeterminateRequestError('socket lost'))
-        : request(method, params),
-    )
-    await openNewSession()
-    submitTurn('Reconnect me')
-    await waitFor(() => expect(rpcCount('thread.sendTurn')).toBe(1))
-    transport.request.mockClear()
-    act(() => {
-      setConnectionState('reconnecting')
-      setConnectionState('open')
-    })
-    await waitForWorkspace(1)
-  })
+  it.each(['indeterminate', 'approval', 'inactive queue'] as const)(
+    'refreshes after reconnect reconciles %s as idle',
+    async (scenario) => {
+      const request = transport.request.getMockImplementation()!
+      if (scenario === 'approval') {
+        ;(serverProjects[0] as { sessions: Array<{ status?: string }> }).sessions[0]!.status =
+          'approval'
+      } else if (scenario === 'inactive queue') {
+        // prettier-ignore
+        ;(serverProjects[0] as { sessions: unknown[] }).sessions.push({ id: 'background-thread', title: 'Background', running: false })
+      }
+      // prettier-ignore
+      transport.request.mockImplementation((method: string, params: unknown) => method === 'thread.sendTurn' ? scenario === 'indeterminate' ? Promise.reject(new IndeterminateRequestError('socket lost')) : Promise.resolve({ queued: true, turnId: 'queued-turn' }) : request(method, params))
+      await openNewSession()
+      if (scenario !== 'approval') {
+        if (scenario === 'inactive queue') startTurn('untouched-thread', 'active-turn')
+        submitTurn('Reconnect me')
+        await waitFor(() => expect(rpcCount('thread.sendTurn')).toBe(1))
+        if (scenario === 'inactive queue')
+          fireEvent.click(screen.getByRole('button', { name: /^Background,/ }))
+      }
+      transport.request.mockClear()
+      // prettier-ignore
+      act(() => { setConnectionState('reconnecting'); setConnectionState('open') })
+      await waitForWorkspace(1)
+    },
+  )
 
   it('asks before discarding uncommitted work from an isolated session', async () => {
     serverProjects = [
@@ -3130,32 +3141,6 @@ describe('live sessions', () => {
     fireEvent.click(screen.getByRole('button', { name: /^Old chat,/ }))
     expect((composer as HTMLTextAreaElement).value).toBe('Keep this if restore wins')
     expect(screen.queryByRole('button', { name: 'Remove reference.png' })).toBeNull()
-  })
-
-  it('refreshes after completion and project switch, not while switching sessions', async () => {
-    serverProjects = [
-      serverProject('/work/project', 'project', [
-        { id: 'thread-1', title: 'Running work', running: false },
-        { id: 'thread-2', title: 'Idle work', running: false },
-      ]),
-      serverProject('/work/another-project', 'Another Project'),
-    ]
-    render(<App />)
-    fireEvent.click(await screen.findByRole('button', { name: /^Running work,/ }))
-    await waitForInitialWorkspace()
-    startTurn('thread-1', 'turn-1')
-    transport.request.mockClear()
-    fireEvent.click(screen.getByRole('button', { name: /^Idle work,/ }))
-    expect(rpcCount('workspace.info')).toBe(0)
-    completeTurn('thread-1', 'turn-1')
-    await waitForWorkspace(1)
-    fireEvent.keyDown(window, { key: 'p', metaKey: true })
-    fireEvent.click(screen.getByRole('option', { name: /^Another Project / }))
-    await waitFor(() =>
-      expect(transport.request).toHaveBeenCalledWith('workspace.info', {
-        path: '/work/another-project',
-      }),
-    )
   })
 
   it('queues Enter submissions while the active session is running', async () => {
