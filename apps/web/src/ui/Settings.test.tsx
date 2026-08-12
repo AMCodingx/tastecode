@@ -141,6 +141,19 @@ describe('settings dialog keyboard behavior', () => {
     expect(document.activeElement).toBe(opener)
     openerView.unmount()
   })
+
+  it('leaves Escape to a nested control that handles it', () => {
+    const onClose = vi.fn()
+    renderAppearanceSettings(onClose)
+    const nestedControl = screen.getByRole('button', { name: 'Lavender' })
+    nestedControl.addEventListener('keydown', (event) => event.preventDefault())
+
+    nestedControl.focus()
+    fireEvent.keyDown(nestedControl, { key: 'Escape' })
+
+    expect(onClose).not.toHaveBeenCalled()
+    expect(document.activeElement).toBe(nestedControl)
+  })
 })
 
 function deferred<T>() {
