@@ -2713,6 +2713,10 @@
   border-top: 1px solid var(--line);
 }
 
+.provider-terminal + .settings__row {
+  border-top: 1px solid var(--line);
+}
+
 .settings__row-copy {
   min-width: 0;
 }
