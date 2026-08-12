@@ -117,6 +117,12 @@ describe('settings dialog keyboard behavior', () => {
     dialog.focus()
     fireEvent.keyDown(dialog, { key: 'Tab', shiftKey: true })
     expect(document.activeElement).toBe(last)
+
+    first.focus()
+    const handledTab = new KeyboardEvent('keydown', { key: 'Tab', bubbles: true, cancelable: true })
+    handledTab.preventDefault()
+    first.dispatchEvent(handledTab)
+    expect(document.activeElement).toBe(first)
   })
 
   it.each([

@@ -158,7 +158,7 @@ const BACKDROP_OPTIONS = [
 ] as const satisfies ReadonlyArray<{ value: BackdropPreference; label: string }>
 
 const FOCUSABLE_SELECTOR =
-  'a[href], button:not([disabled]):not([tabindex="-1"]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])'
+  'a[href]:not([tabindex="-1"]), button:not([disabled]):not([tabindex="-1"]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])'
 
 /**
  * Settings stays intentionally small: the sidebar reorganizes the decisions
@@ -222,7 +222,7 @@ function SettingsComponent(props: {
         onClose.current()
         return
       }
-      if (event.key !== 'Tab' || !panel.current) return
+      if (event.key !== 'Tab' || event.defaultPrevented || !panel.current) return
 
       const focusable = Array.from(
         panel.current.querySelectorAll<HTMLElement>(FOCUSABLE_SELECTOR),
