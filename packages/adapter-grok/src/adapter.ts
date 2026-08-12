@@ -162,8 +162,8 @@ export class GrokAdapter extends EventEmitter<GrokAdapterEvents> {
   /** grok's own session id, so follow-up turns resume rather than restart. */
   #sessionId: string | undefined
   #child: ChildProcessWithoutNullStreams | undefined
-  /** Children we killed on purpose — their non-zero exits are not failures. */
-  #intentionalKills = new WeakSet<ChildProcessWithoutNullStreams>()
+  /** Why we killed a child: only an explicit Stop completes the turn. */
+  #killReasons = new WeakMap<ChildProcessWithoutNullStreams, 'interrupt' | 'silent'>()
   #promptDirectories = new WeakMap<ChildProcessWithoutNullStreams, string>()
   #turnCounter = 0
   /** Session instructions ride in front of the first prompt: the CLI's
@@ -241,7 +241,7 @@ export class GrokAdapter extends EventEmitter<GrokAdapterEvents> {
       turn: { id: turnId, threadId, status: 'running', createdAt: Date.now() },
     })
 
-    let sawEnd = false
+    let terminal = false
     let messageCounter = 1
     let message = new StreamedItem(`${turnId}-message-${messageCounter}`)
     const reasoning = new StreamedItem(`${turnId}-reasoning`)
@@ -332,7 +332,8 @@ export class GrokAdapter extends EventEmitter<GrokAdapterEvents> {
           return
         }
         if (frame.type === 'end') {
-          sawEnd = true
+          if (terminal) return
+          terminal = true
           if (frame.sessionId) this.#sessionId = frame.sessionId
           reasoning.complete(turnId, 'reasoning', this)
           message.complete(turnId, 'message', this)
@@ -374,11 +375,17 @@ export class GrokAdapter extends EventEmitter<GrokAdapterEvents> {
     child.stderr.setEncoding('utf8')
     child.stderr.on('data', (chunk: string) => this.emit('log', chunk.trimEnd()))
 
-    child.on('exit', (code) => {
+    child.on('close', (code) => {
       this.#cleanupPrompt(child)
       if (this.#child === child) this.#child = undefined
-      if (this.#intentionalKills.has(child)) return
-      if (sawEnd) return
+      if (terminal) return
+      terminal = true
+      const killReason = this.#killReasons.get(child)
+      if (killReason === 'interrupt') {
+        this.emit('event', { type: 'turn.completed', turnId, status: 'interrupted' })
+        return
+      }
+      if (killReason === 'silent') return
       // An exit without an end frame would otherwise look like a hang.
       this.emit('event', {
         type: 'thread.error',
@@ -393,6 +400,14 @@ export class GrokAdapter extends EventEmitter<GrokAdapterEvents> {
     child.on('error', (error) => {
       this.#cleanupPrompt(child)
       if (this.#child === child) this.#child = undefined
+      if (terminal) return
+      terminal = true
+      const killReason = this.#killReasons.get(child)
+      if (killReason === 'interrupt') {
+        this.emit('event', { type: 'turn.completed', turnId, status: 'interrupted' })
+        return
+      }
+      if (killReason === 'silent') return
       this.emit('event', { type: 'thread.error', threadId, message: String(error) })
       this.emit('event', { type: 'turn.completed', turnId, status: 'failed' })
     })
@@ -402,7 +417,7 @@ export class GrokAdapter extends EventEmitter<GrokAdapterEvents> {
   }
 
   async interrupt(): Promise<void> {
-    if (this.#child) this.#stop(this.#child)
+    if (this.#child) this.#stop(this.#child, 'interrupt')
   }
 
   /** `grok models` prints a default line plus an "Available models:" list. */
@@ -415,8 +430,9 @@ export class GrokAdapter extends EventEmitter<GrokAdapterEvents> {
     this.#child = undefined
   }
 
-  #stop(child: ChildProcessWithoutNullStreams): void {
-    this.#intentionalKills.add(child)
+  #stop(child: ChildProcessWithoutNullStreams, reason: 'interrupt' | 'silent' = 'silent'): void {
+    if (reason === 'interrupt' || !this.#killReasons.has(child))
+      this.#killReasons.set(child, reason)
     killTree(child)
   }
 

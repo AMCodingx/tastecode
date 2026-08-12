@@ -20,7 +20,11 @@ class FakeChild extends EventEmitter {
 
   kill(): boolean {
     this.killed = true
-    setImmediate(() => this.emit('exit', null))
+    setImmediate(() => {
+      this.stdout.end()
+      this.stderr.end()
+      this.emit('close', null)
+    })
     return true
   }
 }
@@ -220,7 +224,7 @@ describe('Grok adapter', () => {
     expect(args.every((arg) => !/[\r\n]/.test(arg))).toBe(true)
     expect(readFileSync(promptFile, 'utf8')).toBe(text)
 
-    child.emit('exit', 0)
+    child.emit('close', 0)
     expect(existsSync(promptFile)).toBe(false)
   })
 
@@ -235,7 +239,7 @@ describe('Grok adapter', () => {
     await adapter.sendTurn(thread.id, 'go')
 
     child.stdout.end('')
-    child.emit('exit', 1)
+    child.emit('close', 1)
     await new Promise((resolve) => setImmediate(resolve))
 
     expect(events).toEqual(
@@ -244,6 +248,64 @@ describe('Grok adapter', () => {
         expect.objectContaining({ type: 'turn.completed', status: 'failed' }),
       ]),
     )
+  })
+
+  it('ends an interrupted turn exactly once while keeping replacement and disposal silent', async () => {
+    const children: FakeChild[] = []
+    const adapter = new GrokAdapter({
+      spawn: () => {
+        const child = new FakeChild()
+        children.push(child)
+        return child as unknown as ChildProcessWithoutNullStreams
+      },
+    })
+    const events: DomainEvent[] = []
+    adapter.on('event', (event) => events.push(event))
+    const thread = await adapter.startThread('C:\\repo')
+    const interruptedTurnId = await adapter.sendTurn(thread.id, 'stop me')
+
+    await adapter.interrupt()
+    await adapter.sendTurn(thread.id, 'replace me')
+    await new Promise((resolve) => setImmediate(resolve))
+
+    expect(children[0]?.killed).toBe(true)
+    expect(events.filter((event) => event.type === 'turn.completed')).toEqual([
+      { type: 'turn.completed', turnId: interruptedTurnId, status: 'interrupted' },
+    ])
+
+    await adapter.sendTurn(thread.id, 'replacement')
+    await new Promise((resolve) => setImmediate(resolve))
+
+    expect(children[1]?.killed).toBe(true)
+    expect(events.filter((event) => event.type === 'turn.completed')).toHaveLength(1)
+
+    adapter.dispose()
+    await new Promise((resolve) => setImmediate(resolve))
+
+    expect(children[2]?.killed).toBe(true)
+    expect(events.filter((event) => event.type === 'turn.completed')).toHaveLength(1)
+  })
+
+  it('drains a final end frame before classifying process close', async () => {
+    const child = new FakeChild()
+    const adapter = new GrokAdapter({
+      spawn: () => child as unknown as ChildProcessWithoutNullStreams,
+    })
+    const events: DomainEvent[] = []
+    adapter.on('event', (event) => events.push(event))
+    const thread = await adapter.startThread('C:\\repo')
+    const turnId = await adapter.sendTurn(thread.id, 'finish normally')
+
+    child.emit('exit', 0)
+    const drained = new Promise<void>((resolve) => child.stdout.once('end', resolve))
+    child.stdout.end(JSON.stringify({ type: 'end', stopReason: 'end_turn' }))
+    await drained
+    child.emit('close', 0)
+    await new Promise((resolve) => setImmediate(resolve))
+
+    expect(events.filter((event) => event.type === 'turn.completed')).toEqual([
+      { type: 'turn.completed', turnId, status: 'completed' },
+    ])
   })
 
   it('parses the captured models listing and its auth line', () => {
