@@ -118,12 +118,49 @@ describe('design activity rows', () => {
     expect(workLabel(items, 'turn-m1', false)).toBe('Building the website')
   })
 
+  it('collapses a repeated phase across suppressed design activity', () => {
+    renderCompleted([
+      marker('m1', 'design:page'),
+      {
+        id: 'cmd-1',
+        turnId: 'turn-m1',
+        type: 'command',
+        status: 'completed',
+        command: 'pnpm build',
+        createdAt: 2,
+      },
+      {
+        id: 'think-1',
+        turnId: 'turn-m1',
+        type: 'reasoning',
+        status: 'completed',
+        text: 'Planning the implementation',
+        createdAt: 3,
+      },
+      marker('m2', 'design:page'),
+      marker('m3', 'design:build'),
+      marker('m4', 'design:page'),
+    ])
+
+    expect(screen.getAllByText('Planning the page')).toHaveLength(2)
+    expect(screen.getByText('Building the website')).toBeTruthy()
+    expect(screen.queryByText('pnpm build')).toBeNull()
+    expect(screen.queryByText('Planning the implementation')).toBeNull()
+  })
+
   it('collapses phase markers repeated by retried provider turns', () => {
     const first = marker('m1', 'design:build')
-    expect(isRepeatedDesignRow(marker('m2', 'design:build'), first)).toBe(true)
-    expect(isRepeatedDesignRow(marker('m2', 'design:review'), first)).toBe(false)
-    expect(isRepeatedDesignRow(marker('m2', 'some other tool'), first)).toBe(false)
-    expect(isRepeatedDesignRow(first, undefined)).toBe(false)
+    expect(isRepeatedDesignRow(marker('m2', 'design:build'), [first], 1)).toBe(true)
+    expect(isRepeatedDesignRow(marker('m2', 'design:review'), [first], 1)).toBe(false)
+    expect(isRepeatedDesignRow(marker('m2', 'some other tool'), [first], 1)).toBe(false)
+    expect(isRepeatedDesignRow(first, [], 0)).toBe(false)
+    expect(
+      isRepeatedDesignRow(
+        marker('m2', 'design:build'),
+        [turnItem('note', 1, { text: 'design:build' })],
+        1,
+      ),
+    ).toBe(false)
   })
 })
 

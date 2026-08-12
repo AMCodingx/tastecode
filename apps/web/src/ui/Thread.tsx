@@ -325,7 +325,7 @@ export function Thread(props: {
               const suppressed =
                 (compactedActivity && !activityLead) ||
                 (liveActivity && !visibleLiveImageResult) ||
-                isRepeatedDesignRow(item, props.items[row.index - 1]) ||
+                isRepeatedDesignRow(item, props.items, row.index) ||
                 // A design turn tells its story through the phase labels and
                 // Harness notes; the provider's raw commands, tool calls, and
                 // thinking would drown that story in noise.
@@ -1078,11 +1078,25 @@ function imageViewDetail(item: Item): string | undefined {
   return detail || undefined
 }
 
-/** A phase that retried produces one marker per provider turn; the reader
- *  cares that the phase happened, not how many turns it took. */
-export function isRepeatedDesignRow(item: Item, prior: Item | undefined): boolean {
-  if (!prior) return false
-  if (item.type !== 'tool_call' || prior.type !== 'tool_call') return false
+/** A phase that retried produces one marker per adjacent provider turn; the
+ *  reader cares that the phase happened, not about suppressed work between retries. */
+export function isRepeatedDesignRow(item: Item, items: readonly Item[], index: number): boolean {
+  if (item.type !== 'tool_call') return false
   const phase = designPhaseLabel(toolText(item))
-  return phase !== undefined && phase === designPhaseLabel(toolText(prior))
+  if (!phase) return false
+
+  let adjacentTurn: string | undefined
+  for (let priorIndex = index - 1; priorIndex >= 0; priorIndex--) {
+    const prior = items[priorIndex]
+    if (!prior) continue
+    const priorPhase = prior.type === 'tool_call' ? designPhaseLabel(toolText(prior)) : undefined
+    if (priorPhase) {
+      return priorPhase === phase && (adjacentTurn === undefined || adjacentTurn === prior.turnId)
+    }
+    if (!isActivity(prior)) return false
+    if (prior.turnId === item.turnId) continue
+    if (adjacentTurn !== undefined && adjacentTurn !== prior.turnId) return false
+    adjacentTurn = prior.turnId
+  }
+  return false
 }
