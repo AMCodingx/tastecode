@@ -150,15 +150,65 @@ describe('provider authentication states', () => {
       ++reads === 1 ? status.promise : { signedIn: true },
     )
     const row = providerRow('Codex')
-    expect(within(row).getByText('Checking account…')).toBeTruthy()
+    expect(within(row).getByRole('status').textContent).toContain('Checking account…')
     expect(within(row).queryByRole('button', { name: 'Sign in' })).toBeNull()
     status.reject(new Error('Codex status unavailable'))
     expect((await screen.findByRole('alert')).textContent).toContain('Codex status unavailable')
+    const issue = within(row).getByRole('button', { name: 'Problem details' })
+    expect(issue.getAttribute('aria-describedby')).toBe(within(row).getByRole('tooltip').id)
     expect(within(row).queryByRole('button', { name: 'Sign in' })).toBeNull()
     fireEvent.click(action(row, 'Retry'))
     await waitFor(() => within(row).getByText('Signed in'))
     expect(reads).toBe(2)
   })
+  it('uses one provider row grammar with honest actions and normalized marks', async () => {
+    renderProviders(
+      [
+        { ...installedProvider('codex', 'Codex'), version: 'codex-cli 1.4.0' },
+        {
+          ...installedProvider('claude-code', 'Claude Code'),
+          problem: 'Claude Code should be updated',
+        },
+        {
+          id: 'grok',
+          displayName: 'Grok',
+          installed: false,
+          auth: 'unknown',
+          problem: 'grok is not on PATH',
+          setup: { installUrl: 'https://x.ai/cli', login: 'provider' },
+        },
+      ],
+      (method, params) => {
+        if (method !== 'auth.status') throw new Error(`unexpected ${method}`)
+        return { signedIn: params.provider === 'codex' }
+      },
+    )
+
+    const codex = providerRow('Codex')
+    const claude = providerRow('Claude Code')
+    const grok = providerRow('Grok')
+    await waitFor(() => expect(within(codex).getByText('Signed in')).toBeTruthy())
+    const columns = (row: HTMLElement) => Array.from(row.children).map((child) => child.className)
+    expect(columns(codex)).toEqual(columns(claude))
+    expect(columns(claude)).toEqual(columns(grok))
+    expect(within(codex).getByText('codex-cli 1.4.0')).toBeTruthy()
+    for (const row of [codex, claude, grok]) {
+      expect(row.querySelector('.provider-row__mark svg')?.getAttribute('width')).toBe('18')
+    }
+    expect(within(claude).getByRole('button', { name: 'Sign in' }).className).toContain(
+      'is-primary',
+    )
+    expect(within(codex).getByRole('button', { name: 'Sign out' }).className).toContain('is-quiet')
+    expect(within(claude).getByRole('tooltip').textContent).toBe('Claude Code should be updated')
+    expect(within(grok).getByText('Not installed')).toBeTruthy()
+    expect(within(grok).queryByRole('button', { name: 'Problem details' })).toBeNull()
+    const guide = within(grok).getByRole('link', { name: 'Open setup guide' })
+    expect(guide.querySelector('svg')).toBeTruthy()
+    expect(guide.getAttribute('href')).toBe('https://x.ai/cli')
+    expect(guide.getAttribute('target')).toBe('_blank')
+    expect(guide.getAttribute('rel')).toBe('noopener noreferrer')
+  })
+
   it('keeps overlapping provider operations and errors independent', async () => {
     const codexStatus = deferred<Account>()
     const codexSignOut = deferred<Record<string, never>>()
@@ -1139,10 +1189,22 @@ describe('provider settings', () => {
       for (const listener of channels.get(channel) ?? []) listener(data)
     }
     emit('terminal.output', { terminalId: 'term-install-2', data: 'added 12 packages\r\n' })
-    await waitFor(() => expect(screen.getByText('added 12 packages')).toBeTruthy())
+    const installRow = providerRow('OpenCode')
+    expect(within(installRow).getByRole('status').textContent).toContain('Installing…')
+    expect(screen.queryByText('added 12 packages')).toBeNull()
+    const details = within(installRow).getByRole('button', { name: 'Details' })
+    expect(details.getAttribute('aria-expanded')).toBe('false')
+    fireEvent.click(details)
+    expect(details.getAttribute('aria-expanded')).toBe('true')
+    expect(await screen.findByTestId('install-terminal')).toBeTruthy()
+    details.focus()
 
     emit('terminal.exit', { terminalId: 'term-install-2', exitCode: 0 })
     await waitFor(() => expect(onConnectionsChanged).toHaveBeenCalled())
+    const successDetails = within(installRow).getByRole('button', { name: 'Hide details' })
+    expect(successDetails.getAttribute('aria-expanded')).toBe('true')
+    expect(screen.getByTestId('install-terminal')).toBeTruthy()
+    expect(document.activeElement).toBe(successDetails)
 
     // The succeeded row persists until the provider list confirms the
     // install, and parents may hand the callback a fresh identity on every

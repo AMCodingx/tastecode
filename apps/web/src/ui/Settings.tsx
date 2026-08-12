@@ -5,6 +5,7 @@ import {
   useCallback,
   useDeferredValue,
   useEffect,
+  useId,
   useRef,
   useState,
   useSyncExternalStore,
@@ -19,7 +20,6 @@ import type {
   ModelConnectionPreset,
   ModelTransport,
   ProviderId,
-  ProviderSetup,
   ProviderStatus,
   ResultOf,
   SidebarSettings,
@@ -28,8 +28,8 @@ import {
   ArrowLeft,
   BarChart3,
   Bug,
-  CircleUserRound,
   CircleAlert,
+  CircleUserRound,
   Blocks,
   Check,
   ChevronDown,
@@ -38,7 +38,6 @@ import {
   Eye,
   EyeOff,
   Info,
-  LogOut,
   Boxes,
   KeyRound,
   Network,
@@ -92,6 +91,7 @@ import { groupModelsBySource } from './ModelSelector.js'
 import { CustomModelForm } from './CustomModelForm.js'
 import { SkillsSettings } from './SkillsSettings.js'
 import { ProviderIcon } from './ProviderIcon.js'
+import { ProviderRow, type ProviderAction } from './ProviderRow.js'
 import { ProfileSettings } from './ProfileSettings.js'
 import { renderQrSvg } from './qr-code.js'
 import { UsageSettings } from './UsageSettings.js'
@@ -673,11 +673,8 @@ export function ProviderSettings(props: {
       return (
         <InstallableRow
           key={status.id}
-          title={status.displayName}
-          idleNote={status.problem}
-          icon={<ProviderIcon mark={providerMark(status.id)} size={17} />}
+          provider={status}
           target={{ provider: status.id }}
-          setup={status.setup}
           transport={props.transport}
           onInstalled={props.onConnectionsChanged}
         />
@@ -685,34 +682,31 @@ export function ProviderSettings(props: {
     }
     if (authState.phase !== 'ready') {
       return (
-        <SettingsRow key={status.id} title={status.displayName}>
-          <div className="provider-settings__actions">
-            <span
-              className="settings__status"
-              role={authState.phase === 'error' ? 'alert' : 'status'}
-            >
-              {authState.phase === 'error' ? authState.message : 'Checking account…'}
-            </span>
-            <ProviderIcon mark={providerMark(status.id)} size={17} />
-            {authState.phase === 'error' ? (
-              <button
-                className="settings__action"
-                type="button"
-                onClick={() => void refreshAccount(status.id, true)}
-              >
-                Retry
-              </button>
-            ) : null}
-          </div>
-        </SettingsRow>
+        <ProviderRow
+          key={status.id}
+          provider={status}
+          status={authState.phase === 'error' ? 'Account unavailable' : 'Checking account…'}
+          live={authState.phase === 'loading'}
+          issue={
+            authState.phase === 'error'
+              ? { message: authState.message, announce: true }
+              : status.problem
+                ? { message: status.problem }
+                : undefined
+          }
+          primary={
+            authState.phase === 'error'
+              ? { label: 'Retry', onClick: () => void refreshAccount(status.id, true) }
+              : undefined
+          }
+        />
       )
     }
     if (!account?.signedIn && status.setup?.login === 'provider') {
       return (
         <CliSignInRow
           key={status.id}
-          title={status.displayName}
-          icon={<ProviderIcon mark={providerMark(status.id)} size={17} />}
+          provider={status}
           target={{ provider: status.id }}
           transport={props.transport}
           onSignedIn={() => void refreshAccount(status.id, true)}
@@ -734,35 +728,48 @@ export function ProviderSettings(props: {
     )
     const operation = authOperations[status.id]
     const authError = authErrors[status.id]
+    const operationStatus =
+      operation?.kind === 'sign-in'
+        ? 'Signing in…'
+        : operation?.kind === 'sign-out'
+          ? 'Signing out…'
+          : accountStatus
     return (
-      <SettingsRow key={status.id} title={status.displayName}>
-        <div className="provider-settings__actions">
-          <span className="settings__status" role={authError ? 'alert' : undefined}>
-            {authError ?? accountStatus}
-          </span>
-          <ProviderIcon mark={providerMark(status.id)} size={17} />
-          {account?.signedIn ? (
-            <button
-              className="settings__action"
-              type="button"
-              disabled={operation !== undefined}
-              onClick={() => void signOut(status.id)}
-            >
-              <LogOut size={13} aria-hidden />
-              {operation?.kind === 'sign-out' ? 'Signing out…' : 'Sign out'}
-            </button>
-          ) : (
-            <button
-              className="settings__action"
-              type="button"
-              disabled={operation !== undefined}
-              onClick={() => void signIn(status.id)}
-            >
-              {operation?.kind === 'sign-in' ? 'Signing in…' : 'Sign in'}
-            </button>
-          )}
-        </div>
-      </SettingsRow>
+      <ProviderRow
+        key={status.id}
+        provider={status}
+        status={operationStatus}
+        live={operation !== undefined}
+        issue={
+          authError
+            ? {
+                message: authError,
+                announce: true,
+              }
+            : status.problem
+              ? { message: status.problem }
+              : undefined
+        }
+        primary={
+          account?.signedIn
+            ? undefined
+            : {
+                label: operation?.kind === 'sign-in' ? 'Signing in…' : 'Sign in',
+                disabled: operation !== undefined,
+                onClick: () => void signIn(status.id),
+              }
+        }
+        secondary={
+          account?.signedIn
+            ? {
+                label: operation?.kind === 'sign-out' ? 'Signing out…' : 'Sign out',
+                disabled: operation !== undefined,
+                danger: true,
+                onClick: () => void signOut(status.id),
+              }
+            : undefined
+        }
+      />
     )
   }
 
@@ -773,7 +780,7 @@ export function ProviderSettings(props: {
   const byId = (id: ProviderId) => direct.filter((status) => status.id === id)
 
   return (
-    <SettingsPanel title="Providers">
+    <SettingsPanel title="Providers" groupClassName="settings__group--providers">
       {byId('codex').map(renderProviderRow)}
       {byId('claude-code').map(renderProviderRow)}
       {byId('grok').map(renderProviderRow)}
@@ -1729,15 +1736,13 @@ function SettingsPanel(props: { title: string; groupClassName?: string; children
  * hidden until the user asks for it or the install fails and needs them.
  */
 function InstallableRow(props: {
-  title: string
-  idleNote?: string | undefined
-  icon: ReactNode
+  provider: ProviderStatus
   target: InstallTarget
-  setup: ProviderSetup | undefined
   transport: Transport
   onInstalled: () => void
 }) {
   const key = installKey(props.target)
+  const detailsId = useId()
   const install = useSyncExternalStore(subscribeInstalls, () => installState(key))
   const [showTerminal, setShowTerminal] = useState(false)
   const [startError, setStartError] = useState<string>()
@@ -1773,6 +1778,7 @@ function InstallableRow(props: {
 
   const start = () => {
     setStartError(undefined)
+    setShowTerminal(false)
     void beginInstall(props.transport, props.target).catch((cause: unknown) =>
       setStartError(cause instanceof Error ? cause.message : String(cause)),
     )
@@ -1780,61 +1786,61 @@ function InstallableRow(props: {
 
   const status =
     install?.phase === 'running'
-      ? install.lastLine || 'Installing…'
+      ? 'Installing…'
       : install?.phase === 'succeeded'
         ? 'Installed · refreshing…'
-        : undefined
+        : install?.phase === 'failed' || startError
+          ? 'Install failed'
+          : 'Not installed'
   const issue =
     install?.phase === 'failed'
       ? {
           message: `Install failed${install.exitCode === null ? '' : ` (exit ${install.exitCode})`}.`,
-          tip: 'Open the terminal below for the log, then retry.',
+          announce: true,
         }
       : startError
-        ? { message: startError, tip: 'Retry, or install it from the terminal yourself.' }
-        : props.idleNote
-          ? { message: props.idleNote, tip: 'Install it here, then come back to sign in.' }
-          : undefined
+        ? {
+            message: startError,
+            announce: true,
+          }
+        : undefined
+  const setup = props.provider.setup
+  const details: ProviderAction | undefined =
+    install?.phase === 'running' || install?.phase === 'failed' || install?.phase === 'succeeded'
+      ? {
+          label: showTerminal ? 'Hide details' : 'Details',
+          expanded: showTerminal,
+          controls: detailsId,
+          onClick: () => setShowTerminal((visible) => !visible),
+        }
+      : undefined
+  const primary: ProviderAction | undefined = !setup?.installCommand
+    ? setup
+      ? { label: 'Open setup guide', href: setup.installUrl }
+      : undefined
+    : install?.phase === 'running'
+      ? { label: 'Installing…', disabled: true }
+      : install?.phase === 'succeeded'
+        ? { label: 'Installed', disabled: true }
+        : {
+            label: install?.phase === 'failed' ? 'Retry install' : 'Install',
+            onClick: start,
+          }
 
   return (
     <>
-      <SettingsRow title={props.title}>
-        <div className="provider-settings__actions">
-          {issue ? <RowIssue message={issue.message} tip={issue.tip} /> : null}
-          {status ? <span className="settings__status">{status}</span> : null}
-          {props.icon}
-          {!props.setup?.installCommand ? (
-            <button
-              className="settings__action"
-              type="button"
-              disabled={!props.setup}
-              onClick={() =>
-                props.setup && window.open(props.setup.installUrl, '_blank', 'noopener,noreferrer')
-              }
-            >
-              Install first
-            </button>
-          ) : install?.phase === 'running' ? (
-            <button
-              className="settings__action"
-              type="button"
-              onClick={() => setShowTerminal((visible) => !visible)}
-            >
-              {showTerminal ? 'Hide terminal' : 'Installing…'}
-            </button>
-          ) : install?.phase === 'succeeded' ? (
-            <button className="settings__action" type="button" disabled>
-              Installed
-            </button>
-          ) : (
-            <button className="settings__action" type="button" onClick={start}>
-              {install?.phase === 'failed' ? 'Retry install' : 'Install'}
-            </button>
-          )}
+      <ProviderRow
+        provider={props.provider}
+        status={status}
+        live={install?.phase === 'running' || install?.phase === 'succeeded'}
+        issue={issue}
+        primary={primary}
+        secondary={details}
+      />
+      {install ? (
+        <div id={detailsId} className="provider-terminal" hidden={!showTerminal}>
+          {showTerminal ? <ProviderTerminal transport={props.transport} installKey={key} /> : null}
         </div>
-      </SettingsRow>
-      {install && showTerminal ? (
-        <ProviderTerminal transport={props.transport} installKey={key} />
       ) : null}
     </>
   )
@@ -1848,14 +1854,13 @@ function InstallableRow(props: {
  * keeps the log around for reading before a retry.
  */
 function CliSignInRow(props: {
-  title: string
-  idleNote?: string | undefined
-  icon: ReactNode
+  provider: ProviderStatus
   target: InstallTarget
   transport: Transport
   onSignedIn: () => void
 }) {
   const key = loginKey(props.target)
+  const detailsId = useId()
   const login = useSyncExternalStore(subscribeInstalls, () => installState(key))
   // The terminal is the fallback, not the flow: it stays hidden until asked
   // for, and opens itself only when a failure makes it the evidence.
@@ -1899,36 +1904,41 @@ function CliSignInRow(props: {
     login?.phase === 'failed'
       ? {
           message: `The CLI exited${login.exitCode === null ? '' : ` (exit ${login.exitCode})`}.`,
-          tip: 'Check the terminal below for what happened, then retry.',
+          announce: true,
         }
       : startError
-        ? { message: startError, tip: 'Retry, or run the login in your own terminal.' }
-        : props.idleNote
-          ? { message: props.idleNote, tip: undefined }
+        ? {
+            message: startError,
+            announce: true,
+          }
+        : props.provider.problem
+          ? { message: props.provider.problem }
           : undefined
+  const status = running ? 'Signing in…' : issue?.announce ? 'Sign-in failed' : 'Not signed in'
+  const details: ProviderAction | undefined =
+    login && (running || login.phase === 'failed')
+      ? {
+          label: showTerminal ? 'Hide details' : 'Details',
+          expanded: showTerminal,
+          controls: detailsId,
+          onClick: () => setShowTerminal((visible) => !visible),
+        }
+      : undefined
 
   return (
     <>
-      <SettingsRow title={props.title}>
-        <div className="provider-settings__actions">
-          {issue ? <RowIssue message={issue.message} tip={issue.tip} /> : null}
-          {running ? <span className="settings__status">Signing in…</span> : null}
-          {props.icon}
-          {running ? (
-            <button
-              className="settings__action"
-              type="button"
-              onClick={() => setShowTerminal((visible) => !visible)}
-            >
-              {showTerminal ? 'Hide details' : 'Details'}
-            </button>
-          ) : (
-            <button className="settings__action" type="button" onClick={start}>
-              {login?.phase === 'failed' ? 'Retry sign-in' : 'Sign in'}
-            </button>
-          )}
-        </div>
-      </SettingsRow>
+      <ProviderRow
+        provider={props.provider}
+        status={status}
+        live={running}
+        issue={issue}
+        primary={{
+          label: running ? 'Signing in…' : login?.phase === 'failed' ? 'Retry sign-in' : 'Sign in',
+          disabled: running,
+          onClick: start,
+        }}
+        secondary={details}
+      />
       {running ? (
         <div className="signin-card">
           {code ? (
@@ -1962,14 +1972,14 @@ function CliSignInRow(props: {
             </button>
           ) : null}
           {!showTerminal && login.lastLine ? (
-            <span className="signin-card__live" aria-live="polite">
-              {login.lastLine}
-            </span>
+            <span className="signin-card__live">{login.lastLine}</span>
           ) : null}
         </div>
       ) : null}
-      {login && showTerminal ? (
-        <ProviderTerminal transport={props.transport} installKey={key} />
+      {login ? (
+        <div id={detailsId} className="provider-terminal" hidden={!showTerminal}>
+          {showTerminal ? <ProviderTerminal transport={props.transport} installKey={key} /> : null}
+        </div>
       ) : null}
     </>
   )
