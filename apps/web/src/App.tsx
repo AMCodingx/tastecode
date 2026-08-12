@@ -735,7 +735,7 @@ export function App() {
   const clearWorkspaceThread = useCallback((threadId: string) => { const probe = workspaceIdleProbe.current, path = probe.pendingStarts.get(threadId)?.path ?? findSession(projectsRef.current, threadId)?.project.path; probe.pendingStarts.delete(threadId); probe.unknownQueues.delete(threadId); queueStates.current.delete(threadId); pendingSubmissions.current.delete(threadId); threadStates.current.delete(threadId); durableSequences.current.delete(threadId); pendingThreadDeltas.current.delete(threadId); historyOwners.current.delete(threadId); historyBuffers.current.delete(threadId); localQueueRevisions.current.delete(threadId); serverQueueRevisions.current.delete(threadId); for (const [id, owner] of probe.submissionStarts) if (owner.threadId === threadId) probe.submissionStarts.delete(id); for (const [id, owner] of probe.queuedStarts) if (owner.threadId === threadId) { probe.queuedStarts.delete(id); probe.claimedStarts.delete(id) }; for (const [id, action] of probe.queueActions) if (action.threadId === threadId) probe.queueActions.delete(id); if (activeIdRef.current === threadId) { activeIdRef.current = undefined; setActiveId(undefined); setThread(emptyThread) }; return path }, [])
   /** Refetch after an outage. Held in a ref because the transport effect is
    *  set up before the fetchers it needs are declared. */
-  const resync = useRef<() => void>(() => {})
+  const resync = useRef<(retry?: boolean) => void>(() => {})
   const resyncRevision = useRef(0)
   const sidebarSettingsRef = useRef(sidebarSettings)
   sidebarSettingsRef.current = sidebarSettings
@@ -882,9 +882,8 @@ export function App() {
         event.type === 'turn.completed' ||
         event.type === 'thread.error'
       ) {
-        const projectPath =
-          findSession(projectsRef.current, threadId)?.project.path ??
-          (threadId === activeIdRef.current ? activePathRef.current : undefined)
+        // prettier-ignore
+        const projectPath = findSession(projectsRef.current, threadId)?.project.path ?? (threadId === activeIdRef.current ? activePathRef.current : undefined)
         if (event.type === 'turn.started') {
           const probe = workspaceIdleProbe.current
           probe.unknownQueues.delete(threadId)
@@ -1259,9 +1258,7 @@ export function App() {
     }
   }, [transport, provider])
 
-  // Branches and uncommitted size for the composer shelf. Turn start already
-  // takes a git checkpoint, so only re-read after the server confirms that
-  // every turn in the active project is idle.
+  // Turn start takes a git checkpoint, so refresh the shelf only after project idle.
   useEffect(() => {
     if (!activePath) {
       setWorkspace(undefined)
@@ -1414,7 +1411,7 @@ export function App() {
     [transport],
   )
 
-  resync.current = () => {
+  resync.current = (retry = true) => {
     const revision = ++resyncRevision.current
     workspaceIdleProbe.current.revision += 1
     const activeId = activeIdRef.current
@@ -1434,10 +1431,8 @@ export function App() {
       )
         threadIds.add(session.id)
     if (activeId && !activeId.startsWith('pending:')) threadIds.add(activeId)
-    const resyncThread = (
-      id: string,
-      retry = true,
-    ): Promise<{ id: string; thread: ThreadState; queue: QueuedTurn[] } | undefined> => {
+    // prettier-ignore
+    const resyncThread = (id: string, retry = true): Promise<{ id: string; thread: ThreadState; queue: QueuedTurn[] } | undefined> => {
       const history = loadHistory(id, durableSequences.current.get(id)).catch(() => undefined)
       const localQueueRevision = localQueueRevisions.current.get(id) ?? 0
       const serverQueueRevision = serverQueueRevisions.current.get(id) ?? 0
@@ -1489,6 +1484,7 @@ export function App() {
       const project = projects?.find((candidate) => candidate.path === path)
       if (!projects) {
         for (const id of ownerPaths.keys()) probe.unknownQueues.add(id)
+        if (retry) resync.current(false)
         return
       }
       if (projects)
@@ -1503,9 +1499,8 @@ export function App() {
           .find((candidate) => candidate.id === state.id)
         const captured = ownerPaths.get(state.id)
         const current = probe.pendingStarts.get(state.id)
-        const durable = new Set(
-          state.thread.items.filter((item) => item.turnId !== '').map((item) => item.id),
-        )
+        // prettier-ignore
+        const durable = new Set(state.thread.items.filter((item) => item.turnId !== '').map((item) => item.id))
         for (const [id, start] of probe.submissionStarts)
           if (start.threadId === state.id && durable.has(id)) {
             probe.submissionStarts.delete(id)
@@ -1564,7 +1559,10 @@ export function App() {
             (queueStates.current.get(session.id)?.items.length ?? 0) > 0,
         ) &&
         !activeStates.some((state) => state.thread.running || state.queue.length > 0)
-      if (!idle) return
+      if (!idle) {
+        if (retry && activeStates.length < activeIds.size) resync.current(false)
+        return
+      }
       refreshWorkspaceAfterCompletion(path)
     })
     if (activeId && !activeId.startsWith('pending:')) {
@@ -1933,10 +1931,8 @@ export function App() {
         threadStates.current.set(threadId, provisional)
         durableSequences.current.set(threadId, 0)
         const pendingStart = workspaceIdleProbe.current.pendingStarts.get(provisionalId)
-        if (pendingStart) {
-          workspaceIdleProbe.current.pendingStarts.delete(provisionalId)
-          workspaceIdleProbe.current.pendingStarts.set(threadId, pendingStart)
-        }
+        // prettier-ignore
+        if (pendingStart) { workspaceIdleProbe.current.pendingStarts.delete(provisionalId); workspaceIdleProbe.current.pendingStarts.set(threadId, pendingStart) }
         const pending =
           pendingSession.current?.id === provisionalId ? pendingSession.current : undefined
         if (pending) pending.threadId = threadId

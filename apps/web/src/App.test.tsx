@@ -1387,7 +1387,7 @@ describe('new chats', () => {
   // prettier-ignore
   it('retries unknown queue evidence on the next completion', async () => { const request = transport.request.getMockImplementation()!, queued = { id: 'stale', text: 'Offline queue', attachments: [], createdAt: 1 }; let failing = true; transport.request.mockImplementation((method: string, params: unknown) => method === 'thread.queue' && failing ? Promise.reject(new Error('offline')) : request(method, params)); await openNewSession(); emitQueue('untouched-thread', [queued]); transport.request.mockClear(); act(() => { setConnectionState('reconnecting'); setConnectionState('open') }); await waitFor(() => expect(rpcCount('thread.queue')).toBeGreaterThan(0)); expect(rpcCount('workspace.info')).toBe(0); failing = false; completeTurn('untouched-thread', 'later'); await waitForWorkspace(1) })
   // prettier-ignore
-  it('refreshes after a turn runs wholly during an outage', async () => { await openNewSession(); transport.request.mockClear(); act(() => { setConnectionState('reconnecting'); setConnectionState('open') }); await waitForWorkspace(1) })
+  it.each(['clean', 'projects.list', 'thread.history', 'thread.queue'] as const)('refreshes after a turn runs wholly during an outage with %s reconciliation', async (scenario) => { const request = transport.request.getMockImplementation()!; await openNewSession(); let fail = scenario !== 'clean'; transport.request.mockImplementation((method: string, params: unknown) => method === scenario && fail ? (fail = false, Promise.reject(new Error('transient'))) : request(method, params)); transport.request.mockClear(); act(() => { setConnectionState('reconnecting'); setConnectionState('open') }); await waitForWorkspace(1) })
   // prettier-ignore
   it('does not clear a submit owner created during resync', async () => { const request = transport.request.getMockImplementation()!; serverProjects = [serverProject('/work/project', 'project', [{ id: 'untouched-thread', title: 'New session', running: false }, { id: 'background-thread', title: 'Background', running: false, status: 'working' }])]; let accept!: (value: { queued: false; turnId: string }) => void; transport.request.mockImplementation((method: string, params: unknown) => method === 'thread.sendTurn' ? new Promise((resolve) => (accept = resolve)) : request(method, params)); await openNewSession(); (serverProjects[0] as { sessions: Array<{ status?: string }> }).sessions[1]!.status = 'ready'; transport.request.mockClear(); act(() => { setConnectionState('reconnecting'); setConnectionState('open') }); submitTurn('During resync'); await waitFor(() => expect(rpcCount('thread.sendTurn')).toBe(1)); await act(async () => accept({ queued: false, turnId: 'new' })); await act(async () => new Promise((resolve) => window.setTimeout(resolve, 0))); expect(rpcCount('workspace.info')).toBe(0); startTurn('untouched-thread', 'new'); completeTurn('untouched-thread', 'new'); await waitForWorkspace(1) })
   // prettier-ignore
@@ -1528,7 +1528,7 @@ describe('new chats', () => {
     await act(async () => rejectRestore(new IndeterminateRequestError('restore reply lost')))
     // prettier-ignore
     act(() => { for (const listener of transport.stateListeners) listener('reconnecting'); for (const listener of transport.stateListeners) listener('open') })
-    await waitFor(() => expect(historyReads).toBe(3))
+    await waitFor(() => expect(historyReads).toBeGreaterThanOrEqual(3))
     fireEvent.click(screen.getByRole('button', { name: 'Restore checkpoint' }))
     fireEvent.click(await screen.findByRole('button', { name: 'Undo restore' }))
     await waitFor(() => {
@@ -1538,7 +1538,7 @@ describe('new chats', () => {
       })
     })
     // prettier-ignore
-    expect(transport.request.mock.calls.filter(([method]) => method === 'thread.history').map(([, params]) => params)).toEqual([{ threadId: 'thread-rollback' }, { threadId: 'thread-rollback', afterSeq: 0 }, ...Array.from({ length: 3 }, () => ({ threadId: 'thread-rollback' }))])
+    expect(transport.request.mock.calls.filter(([method]) => method === 'thread.history').map(([, params]) => params)).toEqual([{ threadId: 'thread-rollback' }, { threadId: 'thread-rollback', afterSeq: 0 }, { threadId: 'thread-rollback' }, { threadId: 'thread-rollback', afterSeq: 0 }, ...Array.from({ length: 2 }, () => ({ threadId: 'thread-rollback' }))])
   })
 
   it('persists the macOS font smoothing setting', async () => {
