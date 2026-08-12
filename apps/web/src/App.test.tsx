@@ -1394,12 +1394,7 @@ describe('new chats', () => {
       removed: number
       dirtyFiles: number
     }) => void
-    const info = new Promise<{
-      branch: string
-      added: number
-      removed: number
-      dirtyFiles: number
-    }>((resolve) => {
+    const info = new Promise<Parameters<typeof resolveInfo>[0]>((resolve) => {
       resolveInfo = resolve
     })
     transport.request.mockImplementation((method: string, params: unknown) =>
@@ -1465,9 +1460,7 @@ describe('new chats', () => {
     for (const turnId of ['turn-1', 'turn-2', 'turn-3']) {
       emitThreadEvent('untouched-thread', { type: 'turn.completed', turnId, status: 'completed' })
     }
-    await waitFor(() => {
-      expect(probes).toHaveLength(1)
-    })
+    await waitFor(() => expect(probes).toHaveLength(1))
     expect(
       transport.request.mock.calls.filter(([method]) => method === 'projects.list'),
     ).toHaveLength(1)
