@@ -77,6 +77,16 @@ afterEach(() => {
   Reflect.deleteProperty(navigator, 'clipboard')
 })
 
+describe('settings viewport layout', () => {
+  it('keeps both desktop panes scrollable inside short windows', () => {
+    const { container } = renderAppearanceSettings()
+    const settings = container.querySelector('.settings')
+
+    expect(settings?.querySelector(':scope > .settings__sidebar')).toBeTruthy()
+    expect(settings?.querySelector(':scope > .settings__main')).toBeTruthy()
+  })
+})
+
 describe('model picker layout setting', () => {
   it('reflects changes from the shared layout preference', () => {
     renderAppearanceSettings()
