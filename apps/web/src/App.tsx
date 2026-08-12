@@ -710,21 +710,52 @@ export function App() {
   }, [])
   const projectsRef = useRef(projects)
   projectsRef.current = projects
-  const workspaceIdleProbe = useRef(0)
+  const workspaceIdleProbe = useRef<{
+    inFlight: Promise<void> | undefined
+    pendingPath: string | undefined
+    idlePath: string | undefined
+  }>({ inFlight: undefined, pendingPath: undefined, idlePath: undefined })
   const refreshWorkspaceAfterCompletion = useCallback(
     (threadId: string) => {
       const projectPath = findSession(projectsRef.current, threadId)?.project.path
       if (!projectPath || projectPath !== activePathRef.current) return
-      const probe = ++workspaceIdleProbe.current
-      void transport
-        .request('projects.list', {})
-        .then(({ projects }) => {
-          if (probe !== workspaceIdleProbe.current || activePathRef.current !== projectPath) return
-          const project = projects.find((candidate) => candidate.path === projectPath)
-          if (!project || project.sessions.some((session) => session.running)) return
+
+      const probe = workspaceIdleProbe.current
+      probe.pendingPath = projectPath
+      if (probe.inFlight) return
+
+      const drain = async () => {
+        while (probe.pendingPath) {
+          const path = probe.pendingPath
+          probe.pendingPath = undefined
+          try {
+            const { projects } = await transport.request('projects.list', {})
+            if (activePathRef.current !== path) {
+              if (probe.idlePath === path) probe.idlePath = undefined
+              continue
+            }
+            const project = projects.find((candidate) => candidate.path === path)
+            if (!project) continue
+            if (project.sessions.some((session) => session.running)) {
+              if (probe.idlePath === path) probe.idlePath = undefined
+            } else {
+              probe.idlePath = path
+            }
+          } catch {
+            // A later failed snapshot must not discard an earlier confirmed idle state.
+          }
+        }
+        if (probe.idlePath === activePathRef.current) {
+          probe.idlePath = undefined
           setWorkspaceRefreshRevision((revision) => revision + 1)
-        })
-        .catch(() => undefined)
+        } else {
+          probe.idlePath = undefined
+        }
+      }
+
+      probe.inFlight = drain().finally(() => {
+        probe.inFlight = undefined
+      })
     },
     [transport],
   )
