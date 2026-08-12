@@ -401,6 +401,8 @@ export function App() {
   const [railWidth, setRailWidth] = useState(readRailWidth)
   const [workspace, setWorkspace] = useState<WorkspaceInfo | undefined>()
   const [branches, setBranches] = useState<string[]>([])
+  const [workspaceRefreshRevision, setWorkspaceRefreshRevision] = useState(0)
+  const workspaceActivity = useRef({ path: activePath, running: thread.running })
   const [account, setAccount] = useState<Account | undefined>()
   const [accountCheck, setAccountCheck] = useState<AccountCheck>({ provider, state: 'loading' })
   const accountRequestRevision = useRef(0)
@@ -1182,8 +1184,16 @@ export function App() {
     }
   }, [transport, provider])
 
-  // Branches and uncommitted size for the composer shelf. Re-read after every
-  // turn, because the agent is exactly what changes them.
+  useEffect(() => {
+    const previous = workspaceActivity.current
+    workspaceActivity.current = { path: activePath, running: thread.running }
+    if (previous.path === activePath && previous.running && !thread.running) {
+      setWorkspaceRefreshRevision((revision) => revision + 1)
+    }
+  }, [activePath, thread.running])
+
+  // Branches and uncommitted size for the composer shelf. Turn start already
+  // takes a git checkpoint, so only re-read after the turn becomes idle.
   useEffect(() => {
     if (!activePath) {
       setWorkspace(undefined)
@@ -1191,26 +1201,18 @@ export function App() {
       return
     }
     let cancelled = false
-    void (async () => {
-      const info = await transport
-        .request('workspace.info', { path: activePath })
-        .catch(() => undefined)
+    void Promise.all([
+      transport.request('workspace.info', { path: activePath }).catch(() => undefined),
+      transport.request('workspace.branches', { path: activePath }).catch(() => undefined),
+    ]).then(([info, result]) => {
       if (cancelled) return
       setWorkspace(info)
-
-      const result = await transport
-        .request('workspace.branches', { path: activePath })
-        .catch(() => undefined)
-      if (cancelled) return
       setBranches(result?.branches ?? (info?.branch ? [info.branch] : []))
-    })().catch(() => {
-      if (cancelled) return
-      setBranches([])
     })
     return () => {
       cancelled = true
     }
-  }, [transport, activePath, thread.running])
+  }, [transport, activePath, workspaceRefreshRevision])
 
   useEffect(() => {
     let cancelled = false

@@ -1350,6 +1350,118 @@ describe('new chats', () => {
     })
   })
 
+  it('starts workspace info and branch reads together', async () => {
+    const request = transport.request.getMockImplementation()
+    if (!request) throw new Error('missing request mock')
+    let resolveInfo!: (value: {
+      branch: string
+      added: number
+      removed: number
+      dirtyFiles: number
+    }) => void
+    const info = new Promise<{
+      branch: string
+      added: number
+      removed: number
+      dirtyFiles: number
+    }>((resolve) => {
+      resolveInfo = resolve
+    })
+    transport.request.mockImplementation((method: string, params: unknown) =>
+      method === 'workspace.info' ? info : request(method, params),
+    )
+
+    render(<App />)
+
+    await waitFor(() => {
+      expect(transport.request).toHaveBeenCalledWith('workspace.info', { path: '/work/project' })
+      expect(transport.request).toHaveBeenCalledWith('workspace.branches', {
+        path: '/work/project',
+      })
+    })
+    await act(async () => resolveInfo({ branch: 'main', added: 0, removed: 0, dirtyFiles: 0 }))
+  })
+
+  it('refreshes workspace metadata after completion but not on submit', async () => {
+    render(<App />)
+    fireEvent.click(await screen.findByRole('button', { name: 'New session' }))
+    await waitFor(() => {
+      expect(transport.request).toHaveBeenCalledWith('workspace.info', { path: '/work/project' })
+      expect(transport.request).toHaveBeenCalledWith('workspace.branches', {
+        path: '/work/project',
+      })
+    })
+    transport.request.mockClear()
+
+    const composer = screen.getByPlaceholderText('Do anything')
+    fireEvent.change(composer, { target: { value: 'Do the work' } })
+    fireEvent.keyDown(composer, { key: 'Enter' })
+    await waitFor(() => {
+      expect(transport.request).toHaveBeenCalledWith(
+        'thread.sendTurn',
+        expect.objectContaining({ threadId: 'untouched-thread', text: 'Do the work' }),
+      )
+    })
+    expect(
+      transport.request.mock.calls.filter(([method]) => method === 'workspace.info'),
+    ).toHaveLength(0)
+    expect(
+      transport.request.mock.calls.filter(([method]) => method === 'workspace.branches'),
+    ).toHaveLength(0)
+
+    emitThreadEvent('untouched-thread', {
+      type: 'turn.completed',
+      turnId: 'turn-1',
+      status: 'completed',
+    })
+    await waitFor(() => {
+      expect(
+        transport.request.mock.calls.filter(([method]) => method === 'workspace.info'),
+      ).toHaveLength(1)
+      expect(
+        transport.request.mock.calls.filter(([method]) => method === 'workspace.branches'),
+      ).toHaveLength(1)
+    })
+  })
+
+  it('refreshes workspace metadata after switching projects', async () => {
+    serverProjects = [
+      {
+        path: '/work/project',
+        name: 'project',
+        pinned: false,
+        createdAt: 0,
+        sessions: [{ id: 'untouched-thread', title: 'New session', running: false }],
+      },
+      {
+        path: '/work/another-project',
+        name: 'Another Project',
+        pinned: false,
+        createdAt: 1,
+        sessions: [],
+      },
+    ]
+    render(<App />)
+    await waitFor(() => {
+      expect(transport.request).toHaveBeenCalledWith('workspace.branches', {
+        path: '/work/project',
+      })
+    })
+    transport.request.mockClear()
+
+    fireEvent.keyDown(window, { key: 'p', metaKey: true })
+    fireEvent.click(screen.getByRole('option', { name: /^Another Project / }))
+
+    await waitFor(() => {
+      expect(transport.request).toHaveBeenCalledWith('workspace.info', {
+        path: '/work/another-project',
+      })
+      expect(transport.request).toHaveBeenCalledWith('workspace.branches', {
+        path: '/work/another-project',
+      })
+    })
+  })
+
   it('asks before discarding uncommitted work from an isolated session', async () => {
     serverProjects = [
       {
