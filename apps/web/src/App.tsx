@@ -710,130 +710,18 @@ export function App() {
   }, [])
   const projectsRef = useRef(projects)
   projectsRef.current = projects
-  const workspaceIdleProbe = useRef({
-    inFlight: undefined as Promise<void> | undefined,
-    pendingPath: undefined as string | undefined,
-    idlePath: undefined as string | undefined,
-    blockedPath: undefined as string | undefined,
-    pendingStarts: new Map<string, { path: string; tokens: number[] }>(),
-    submissionStarts: new Map<string, { threadId: string; token: number }>(),
-    queuedStarts: new Map<string, { threadId: string; token: number }>(),
-    claimedStarts: new Set<string>(),
-    queueActions: new Map<string, { threadId: string; kind: 'delete' | 'steer' }>(),
-    unknownQueues: new Set<string>(),
-    nextStart: 0,
-    revision: 0,
-    transportRevision: 0,
-  })
-  const invalidateWorkspaceIdleProbe = useCallback((projectPath: string | undefined) => {
-    if (!projectPath || projectPath !== activePathRef.current) return
-    workspaceIdleProbe.current.revision += 1
-    workspaceIdleProbe.current.idlePath = undefined
-    if (workspaceIdleProbe.current.blockedPath === projectPath)
-      workspaceIdleProbe.current.blockedPath = undefined
-  }, [])
-  const releaseWorkspaceStart = useCallback((threadId: string, token?: number) => {
-    const probe = workspaceIdleProbe.current
-    const pending = probe.pendingStarts.get(threadId)
-    if (!pending) return
-    const index = token === undefined ? 0 : pending.tokens.indexOf(token)
-    if (index < 0) return
-    pending.tokens.splice(index, 1)
-    if (pending.tokens.length > 0) return
-    probe.pendingStarts.delete(threadId)
-    if (probe.blockedPath !== pending.path) return
-    if ([...probe.pendingStarts.values()].some((entry) => entry.path === pending.path)) return
-    probe.blockedPath = undefined
-    return pending.path
-  }, [])
-  const holdWorkspaceStart = useCallback((threadId: string, path: string) => {
-    const probe = workspaceIdleProbe.current
-    const current = probe.pendingStarts.get(threadId)
-    const token = ++probe.nextStart
-    probe.pendingStarts.set(threadId, {
-      path,
-      tokens: [...(current?.tokens ?? []), token],
-    })
-    return token
-  }, [])
-  const refreshWorkspaceAfterCompletion = useCallback(
-    (projectPath: string | undefined) => {
-      if (!projectPath || projectPath !== activePathRef.current) return
-      const probe = workspaceIdleProbe.current
-      probe.pendingPath = projectPath
-      if (probe.inFlight) return
-      const drain = async () => {
-        const transportRevision = probe.transportRevision
-        let retryPath: string | undefined
-        let retryAvailable = true
-        while (probe.pendingPath && transportRevision === probe.transportRevision) {
-          const path = probe.pendingPath
-          if (path !== retryPath) {
-            retryPath = path
-            retryAvailable = true
-          }
-          const revision = probe.revision
-          probe.pendingPath = undefined
-          let retry = false
-          try {
-            const { projects } = await transport.request('projects.list', {})
-            if (revision !== probe.revision || transportRevision !== probe.transportRevision)
-              continue
-            if (activePathRef.current !== path) continue
-            const project = projects.find((candidate) => candidate.path === path)
-            if (!project) retry = probe.idlePath !== path
-            else {
-              const pending = [...probe.pendingStarts.values()].some((entry) => entry.path === path)
-              // prettier-ignore
-              const unknown = project.sessions.some((session) => probe.unknownQueues.has(session.id)), queued = project.sessions.some((session) => session.status === 'queued' || (queueStates.current.get(session.id)?.items.length ?? 0) > 0 || [...probe.queueActions.values()].some((action) => action.threadId === session.id))
-              if (unknown) resync.current()
-              const blocked =
-                project.sessions.some((session) => session.running) || pending || queued
-              if (blocked) probe.blockedPath = path
-              else if (!blocked && probe.blockedPath === path) probe.blockedPath = undefined
-              probe.idlePath = blocked ? undefined : path
-            }
-          } catch {
-            retry =
-              transportRevision === probe.transportRevision &&
-              revision === probe.revision &&
-              probe.idlePath !== path
-          }
-          if (!retry || !retryAvailable || probe.pendingPath) continue
-          retryAvailable = false
-          probe.pendingPath = path
-        }
-        const path = probe.idlePath
-        const blocked = [...probe.pendingStarts.values()].some((pending) => pending.path === path)
-        if (path === activePathRef.current && blocked) probe.blockedPath = path
-        probe.idlePath = undefined
-        if (path === activePathRef.current && !blocked)
-          setWorkspaceRefreshRevision((revision) => revision + 1)
-      }
-      const inFlight = drain()
-      probe.inFlight = inFlight
-      void inFlight.finally(() => {
-        if (probe.inFlight === inFlight) probe.inFlight = undefined
-      })
-    },
-    [transport],
-  )
-  const releaseQueuedStart = useCallback(
-    (queuedTurnId: string) => {
-      const probe = workspaceIdleProbe.current
-      const owner = probe.queuedStarts.get(queuedTurnId)
-      if (!owner) return
-      probe.queuedStarts.delete(queuedTurnId)
-      probe.claimedStarts.delete(queuedTurnId)
-      probe.queueActions.delete(queuedTurnId)
-      for (const [id, start] of probe.submissionStarts)
-        if (start.threadId === owner.threadId && start.token === owner.token)
-          probe.submissionStarts.delete(id)
-      const path = releaseWorkspaceStart(owner.threadId, owner.token)
-      if (path) refreshWorkspaceAfterCompletion(path)
-    },
-    [releaseWorkspaceStart, refreshWorkspaceAfterCompletion],
-  )
+  // prettier-ignore
+  const workspaceIdleProbe = useRef({ inFlight: undefined as Promise<void> | undefined, pendingPath: undefined as string | undefined, idlePath: undefined as string | undefined, blockedPath: undefined as string | undefined, pendingStarts: new Map<string, { path: string; tokens: number[] }>(), submissionStarts: new Map<string, { threadId: string; token: number }>(), queuedStarts: new Map<string, { threadId: string; token: number }>(), claimedStarts: new Set<string>(), queueActions: new Map<string, { threadId: string; kind: 'delete' | 'steer' }>(), unknownQueues: new Set<string>(), nextStart: 0, revision: 0, transportRevision: 0 })
+  // prettier-ignore
+  const invalidateWorkspaceIdleProbe = useCallback((projectPath: string | undefined) => { if (!projectPath || projectPath !== activePathRef.current) return; workspaceIdleProbe.current.revision += 1; workspaceIdleProbe.current.idlePath = undefined; if (workspaceIdleProbe.current.blockedPath === projectPath) workspaceIdleProbe.current.blockedPath = undefined }, [])
+  // prettier-ignore
+  const releaseWorkspaceStart = useCallback((threadId: string, token?: number) => { const probe = workspaceIdleProbe.current, pending = probe.pendingStarts.get(threadId); if (!pending) return; const index = token === undefined ? 0 : pending.tokens.indexOf(token); if (index < 0) return; pending.tokens.splice(index, 1); if (pending.tokens.length > 0) return; probe.pendingStarts.delete(threadId); if (probe.blockedPath !== pending.path || [...probe.pendingStarts.values()].some((entry) => entry.path === pending.path)) return; probe.blockedPath = undefined; return pending.path }, [])
+  // prettier-ignore
+  const holdWorkspaceStart = useCallback((threadId: string, path: string) => { const probe = workspaceIdleProbe.current, current = probe.pendingStarts.get(threadId), token = ++probe.nextStart; probe.pendingStarts.set(threadId, { path, tokens: [...(current?.tokens ?? []), token] }); return token }, [])
+  // prettier-ignore
+  const refreshWorkspaceAfterCompletion = useCallback((projectPath: string | undefined) => { if (!projectPath || projectPath !== activePathRef.current) return; const probe = workspaceIdleProbe.current; probe.pendingPath = projectPath; if (probe.inFlight) return; const drain = async () => { const transportRevision = probe.transportRevision; let retryPath: string | undefined, retryAvailable = true; while (probe.pendingPath && transportRevision === probe.transportRevision) { const path = probe.pendingPath; if (path !== retryPath) { retryPath = path; retryAvailable = true }; const revision = probe.revision; probe.pendingPath = undefined; let retry = false; try { const { projects } = await transport.request('projects.list', {}); if (revision !== probe.revision || transportRevision !== probe.transportRevision) continue; if (activePathRef.current !== path) continue; const project = projects.find((candidate) => candidate.path === path); if (!project) retry = probe.idlePath !== path; else { const pending = [...probe.pendingStarts.values()].some((entry) => entry.path === path), unknown = project.sessions.some((session) => probe.unknownQueues.has(session.id)), queued = project.sessions.some((session) => session.status === 'queued' || (queueStates.current.get(session.id)?.items.length ?? 0) > 0 || [...probe.queueActions.values()].some((action) => action.threadId === session.id)); if (unknown) resync.current(); const blocked = project.sessions.some((session) => session.running) || pending || queued; if (blocked) probe.blockedPath = path; else if (probe.blockedPath === path) probe.blockedPath = undefined; probe.idlePath = blocked ? undefined : path } } catch { retry = transportRevision === probe.transportRevision && revision === probe.revision && probe.idlePath !== path }; if (!retry || !retryAvailable || probe.pendingPath) continue; retryAvailable = false; probe.pendingPath = path }; const path = probe.idlePath, blocked = [...probe.pendingStarts.values()].some((pending) => pending.path === path); if (path === activePathRef.current && blocked) probe.blockedPath = path; probe.idlePath = undefined; if (path === activePathRef.current && !blocked) setWorkspaceRefreshRevision((revision) => revision + 1) }; const inFlight = drain(); probe.inFlight = inFlight; void inFlight.finally(() => { if (probe.inFlight === inFlight) probe.inFlight = undefined }) }, [transport])
+  // prettier-ignore
+  const releaseQueuedStart = useCallback((queuedTurnId: string) => { const probe = workspaceIdleProbe.current, owner = probe.queuedStarts.get(queuedTurnId); if (!owner) return; probe.queuedStarts.delete(queuedTurnId); probe.claimedStarts.delete(queuedTurnId); probe.queueActions.delete(queuedTurnId); for (const [id, start] of probe.submissionStarts) if (start.threadId === owner.threadId && start.token === owner.token) probe.submissionStarts.delete(id); const path = releaseWorkspaceStart(owner.threadId, owner.token); if (path) refreshWorkspaceAfterCompletion(path) }, [releaseWorkspaceStart, refreshWorkspaceAfterCompletion])
   // prettier-ignore
   const releaseDirectStart = useCallback((threadId: string) => { const probe = workspaceIdleProbe.current; for (const [id, action] of probe.queueActions) if (action.threadId === threadId && !queueStates.current.get(threadId)?.items.some((item) => item.id === id)) { probe.queueActions.delete(id); break }; const queued = new Set([...probe.queuedStarts.values()].filter((owner) => owner.threadId === threadId).map((owner) => owner.token)); const token = probe.pendingStarts.get(threadId)?.tokens.find((candidate) => !queued.has(candidate)); if (token === undefined) return; for (const [id, start] of probe.submissionStarts) if (start.threadId === threadId && start.token === token) probe.submissionStarts.delete(id); releaseWorkspaceStart(threadId, token) }, [releaseWorkspaceStart])
   // prettier-ignore
