@@ -1840,6 +1840,7 @@ describe('persisted threads', () => {
     for (const file of ['index.html', 'styles.css', 'app.js', 'preview-server.js', 'extra.json']) {
       writeFileSync(path.join(workspace, file), file)
     }
+    writeFileSync(path.join(workspace, 'README.md'), 'pre-existing user file')
     store.setDesignRun('persisted-exact-build', {
       originalRequest: request,
       options: {},
@@ -1847,6 +1848,7 @@ describe('persisted threads', () => {
       askedQuestions: false,
       finalAsked: false,
       explicitAnswers: [],
+      buildFileBaseline: ['README.md'],
     })
 
     const { orchestrator, sessions, received, capturePreview } = harness(undefined, store)
