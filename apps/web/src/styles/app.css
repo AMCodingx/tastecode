@@ -645,6 +645,8 @@
   position: relative;
   z-index: 2;
   min-width: 0;
+  min-height: 0;
+  overflow-y: auto;
   padding: calc(var(--titlebar-h) + 14px) 8px 16px;
   background: var(--bg-rail);
   border-right: 1px solid var(--line);
