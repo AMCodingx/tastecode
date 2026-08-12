@@ -520,10 +520,8 @@ function projectsSnapshot(running: boolean) {
     }),
   }
 }
-
 async function renderWithDeferredProjectProbes() {
-  const request = transport.request.getMockImplementation()
-  if (!request) throw new Error('missing request mock')
+  const request = transport.request.getMockImplementation()!
   const probes: Array<{
     resolve: (value: ReturnType<typeof projectsSnapshot>) => void
     reject: (reason?: unknown) => void
@@ -534,11 +532,7 @@ async function renderWithDeferredProjectProbes() {
       ? new Promise((resolve, reject) => probes.push({ resolve, reject }))
       : request(method, params),
   )
-  render(<App />)
-  fireEvent.click(await screen.findByRole('button', { name: 'New session' }))
-  await waitFor(() => {
-    expect(transport.request).toHaveBeenCalledWith('workspace.branches', { path: '/work/project' })
-  })
+  await openNewSession()
   transport.request.mockClear()
   capture = true
   return probes
@@ -547,6 +541,35 @@ const rpcCount = (method: string) =>
   transport.request.mock.calls.filter(([called]) => called === method).length
 const completeTurn = (threadId: string, turnId: string) =>
   emitThreadEvent(threadId, { type: 'turn.completed', turnId, status: 'completed' })
+const startTurn = (threadId: string, turnId: string) =>
+  emitThreadEvent(threadId, {
+    type: 'turn.started',
+    turn: { id: turnId, threadId, status: 'running', createdAt: 1 },
+  })
+const submitTurn = (text: string) => {
+  const composer = screen.getByPlaceholderText('Do anything')
+  fireEvent.change(composer, { target: { value: text } })
+  fireEvent.keyDown(composer, { key: 'Enter' })
+}
+const waitForWorkspace = (count: number) =>
+  waitFor(() => expect(rpcCount('workspace.info')).toBe(count))
+const waitForInitialWorkspace = () =>
+  waitFor(() =>
+    expect(transport.request).toHaveBeenCalledWith('workspace.branches', { path: '/work/project' }),
+  )
+async function openNewSession() {
+  render(<App />)
+  fireEvent.click(await screen.findByRole('button', { name: /^New session,/ }))
+  await waitForInitialWorkspace()
+}
+const setConnectionState = (state: string) => {
+  for (const listener of transport.stateListeners) listener(state)
+}
+const serverProject = (path: string, name: string, sessions: unknown[] = []) => ({
+  path,
+  name,
+  sessions,
+})
 describe('web client', () => {
   it('opens the workspace directly on first launch', async () => {
     localStorage.removeItem('harness.provider')
@@ -1399,29 +1422,13 @@ describe('new chats', () => {
       method === 'workspace.info' ? info : request(method, params),
     )
     render(<App />)
-    await waitFor(() => {
-      expect(transport.request).toHaveBeenCalledWith('workspace.info', { path: '/work/project' })
-      expect(transport.request).toHaveBeenCalledWith('workspace.branches', {
-        path: '/work/project',
-      })
-    })
+    await waitForInitialWorkspace()
     await act(async () => resolveInfo({ branch: 'main', added: 0, removed: 0, dirtyFiles: 0 }))
   })
-
   it('refreshes workspace metadata after completion but not on submit', async () => {
-    render(<App />)
-    fireEvent.click(await screen.findByRole('button', { name: 'New session' }))
-    await waitFor(() => {
-      expect(transport.request).toHaveBeenCalledWith('workspace.info', { path: '/work/project' })
-      expect(transport.request).toHaveBeenCalledWith('workspace.branches', {
-        path: '/work/project',
-      })
-    })
+    await openNewSession()
     transport.request.mockClear()
-
-    const composer = screen.getByPlaceholderText('Do anything')
-    fireEvent.change(composer, { target: { value: 'Do the work' } })
-    fireEvent.keyDown(composer, { key: 'Enter' })
+    submitTurn('Do the work')
     await waitFor(() => {
       expect(transport.request).toHaveBeenCalledWith(
         'thread.sendTurn',
@@ -1429,13 +1436,9 @@ describe('new chats', () => {
       )
     })
     expect(rpcCount('workspace.info')).toBe(0)
-
     completeTurn('untouched-thread', 'turn-1')
-    await waitFor(() => {
-      expect(rpcCount('workspace.info')).toBe(1)
-    })
+    await waitForWorkspace(1)
   })
-
   it('coalesces overlapping completion probes before refreshing workspace metadata', async () => {
     const probes = await renderWithDeferredProjectProbes()
     for (const turnId of ['turn-1', 'turn-2', 'turn-3']) {
@@ -1447,14 +1450,18 @@ describe('new chats', () => {
     await waitFor(() => expect(probes).toHaveLength(2))
     expect(rpcCount('projects.list')).toBe(2)
     await act(async () => probes[1]?.resolve(projectsSnapshot(false)))
-    await waitFor(() => {
-      expect(rpcCount('workspace.info')).toBe(1)
-    })
+    await waitForWorkspace(1)
   })
-
-  it.each(['reject', 'missing', 'started', 'submitted', 'sole reject'] as const)(
+  it.each(['reject', 'missing', 'started', 'submitted', 'unrelated', 'sole reject'] as const)(
     'settles workspace metadata when the probe sequence ends with %s',
     async (scenario) => {
+      const submitted = scenario === 'submitted' || scenario === 'unrelated'
+      if (scenario === 'unrelated') {
+        ;(serverProjects[0] as { sessions: unknown[] }).sessions.push({
+          id: 'background-thread',
+          running: false,
+        })
+      }
       const probes = await renderWithDeferredProjectProbes()
       completeTurn('untouched-thread', 'turn-1')
       await waitFor(() => expect(probes).toHaveLength(1))
@@ -1464,36 +1471,32 @@ describe('new chats', () => {
         await act(async () => probes[1]?.resolve(projectsSnapshot(false)))
       } else {
         completeTurn('untouched-thread', 'turn-2')
-        if (scenario === 'submitted') {
-          const composer = screen.getByPlaceholderText('Do anything')
-          fireEvent.change(composer, { target: { value: 'Start again' } })
-          fireEvent.keyDown(composer, { key: 'Enter' })
+        if (submitted) {
+          submitTurn('Start again')
+          if (scenario === 'unrelated') {
+            startTurn('background-thread', 'background')
+            completeTurn('background-thread', 'background')
+          }
         }
         await act(async () => probes[0]?.resolve(projectsSnapshot(false)))
         await waitFor(() => expect(probes).toHaveLength(2))
         if (scenario === 'started') {
-          emitThreadEvent('untouched-thread', {
-            type: 'turn.started',
-            turn: { id: 'turn-3', threadId: 'untouched-thread', status: 'running', createdAt: 1 },
-          })
+          startTurn('untouched-thread', 'turn-3')
         }
         await act(async () => {
           if (scenario === 'missing') probes[1]?.resolve({ projects: [] })
-          else if (scenario === 'submitted') probes[1]?.resolve(projectsSnapshot(false))
+          else if (submitted) probes[1]?.resolve(projectsSnapshot(false))
           else probes[1]?.reject(new Error('probe failed'))
         })
       }
-      if (scenario === 'started' || scenario === 'submitted') {
+      if (scenario === 'started' || submitted) {
         await act(async () => new Promise((resolve) => window.setTimeout(resolve, 0)))
         expect(rpcCount('workspace.info')).toBe(0)
         return
       }
-      await waitFor(() => {
-        expect(rpcCount('workspace.info')).toBe(1)
-      })
+      await waitForWorkspace(1)
     },
   )
-
   it('abandons an active probe when the transport changes', async () => {
     const probes = await renderWithDeferredProjectProbes()
     completeTurn('untouched-thread', 'turn-1')
@@ -1509,43 +1512,22 @@ describe('new chats', () => {
     completeTurn('untouched-thread', 'turn-2')
     await waitFor(() => expect(probes).toHaveLength(3))
   })
-
-  it('refreshes workspace metadata after switching projects', async () => {
-    serverProjects = [
-      {
-        path: '/work/project',
-        name: 'project',
-        pinned: false,
-        createdAt: 0,
-        sessions: [{ id: 'untouched-thread', title: 'New session', running: false }],
-      },
-      {
-        path: '/work/another-project',
-        name: 'Another Project',
-        pinned: false,
-        createdAt: 1,
-        sessions: [],
-      },
-    ]
-    render(<App />)
-    await waitFor(() => {
-      expect(transport.request).toHaveBeenCalledWith('workspace.branches', {
-        path: '/work/project',
-      })
-    })
+  it('refreshes after reconnect reconciles an indeterminate turn as idle', async () => {
+    const request = transport.request.getMockImplementation()!
+    transport.request.mockImplementation((method: string, params: unknown) =>
+      method === 'thread.sendTurn'
+        ? Promise.reject(new IndeterminateRequestError('socket lost'))
+        : request(method, params),
+    )
+    await openNewSession()
+    submitTurn('Reconnect me')
+    await waitFor(() => expect(rpcCount('thread.sendTurn')).toBe(1))
     transport.request.mockClear()
-
-    fireEvent.keyDown(window, { key: 'p', metaKey: true })
-    fireEvent.click(screen.getByRole('option', { name: /^Another Project / }))
-
-    await waitFor(() => {
-      expect(transport.request).toHaveBeenCalledWith('workspace.info', {
-        path: '/work/another-project',
-      })
-      expect(transport.request).toHaveBeenCalledWith('workspace.branches', {
-        path: '/work/another-project',
-      })
+    act(() => {
+      setConnectionState('reconnecting')
+      setConnectionState('open')
     })
+    await waitForWorkspace(1)
   })
 
   it('asks before discarding uncommitted work from an isolated session', async () => {
@@ -3118,11 +3100,7 @@ describe('live sessions', () => {
 
     render(<App />)
     fireEvent.click(await screen.findByRole('button', { name: /^Old chat,/ }))
-    await waitFor(() => {
-      expect(transport.request).toHaveBeenCalledWith('workspace.branches', {
-        path: '/work/project',
-      })
-    })
+    await waitForInitialWorkspace()
     transport.request.mockClear()
     const composer = screen.getByPlaceholderText('Do anything')
     dropFile(composer, '/work/reference.png')
@@ -3154,45 +3132,30 @@ describe('live sessions', () => {
     expect(screen.queryByRole('button', { name: 'Remove reference.png' })).toBeNull()
   })
 
-  it('refreshes after a background turn completes, not while switching sessions', async () => {
+  it('refreshes after completion and project switch, not while switching sessions', async () => {
     serverProjects = [
-      {
-        path: '/work/project',
-        name: 'project',
-        pinned: false,
-        createdAt: 0,
-        sessions: [
-          { id: 'thread-1', title: 'Running work', running: false },
-          { id: 'thread-2', title: 'Idle work', running: false },
-        ],
-      },
+      serverProject('/work/project', 'project', [
+        { id: 'thread-1', title: 'Running work', running: false },
+        { id: 'thread-2', title: 'Idle work', running: false },
+      ]),
+      serverProject('/work/another-project', 'Another Project'),
     ]
-
     render(<App />)
     fireEvent.click(await screen.findByRole('button', { name: /^Running work,/ }))
-    await waitFor(() => {
-      expect(transport.request).toHaveBeenCalledWith('workspace.branches', {
-        path: '/work/project',
-      })
-    })
-    emitThreadEvent('thread-1', {
-      type: 'turn.started',
-      turn: { id: 'turn-1', threadId: 'thread-1', status: 'running', createdAt: 0 },
-    })
+    await waitForInitialWorkspace()
+    startTurn('thread-1', 'turn-1')
     transport.request.mockClear()
-
     fireEvent.click(screen.getByRole('button', { name: /^Idle work,/ }))
-    await waitFor(() => {
-      expect(transport.request).toHaveBeenCalledWith('thread.history', {
-        threadId: 'thread-2',
-      })
-    })
     expect(rpcCount('workspace.info')).toBe(0)
-
     completeTurn('thread-1', 'turn-1')
-    await waitFor(() => {
-      expect(rpcCount('workspace.info')).toBe(1)
-    })
+    await waitForWorkspace(1)
+    fireEvent.keyDown(window, { key: 'p', metaKey: true })
+    fireEvent.click(screen.getByRole('option', { name: /^Another Project / }))
+    await waitFor(() =>
+      expect(transport.request).toHaveBeenCalledWith('workspace.info', {
+        path: '/work/another-project',
+      }),
+    )
   })
 
   it('queues Enter submissions while the active session is running', async () => {

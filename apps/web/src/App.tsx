@@ -714,8 +714,7 @@ export function App() {
     inFlight: undefined as Promise<void> | undefined,
     pendingPath: undefined as string | undefined,
     idlePath: undefined as string | undefined,
-    startingPath: undefined as string | undefined,
-    pendingStarts: 0,
+    pendingStarts: new Map<string, { path: string; count: number }>(),
     startedThreads: new Set<string>(),
     revision: 0,
     transportRevision: 0,
@@ -725,21 +724,24 @@ export function App() {
     workspaceIdleProbe.current.revision += 1
     workspaceIdleProbe.current.idlePath = undefined
   }, [])
-  const releaseWorkspaceStart = useCallback((projectPath: string | undefined) => {
+  const releaseWorkspaceStart = useCallback((threadId: string) => {
     const probe = workspaceIdleProbe.current
-    if (projectPath && probe.startingPath === projectPath && --probe.pendingStarts === 0) {
-      probe.startingPath = undefined
-    }
+    const pending = probe.pendingStarts.get(threadId)
+    if (pending && --pending.count === 0) probe.pendingStarts.delete(threadId)
+  }, [])
+  const holdWorkspaceStart = useCallback((threadId: string, path: string) => {
+    const current = workspaceIdleProbe.current.pendingStarts.get(threadId)
+    workspaceIdleProbe.current.pendingStarts.set(threadId, {
+      path,
+      count: (current?.count ?? 0) + 1,
+    })
   }, [])
   const refreshWorkspaceAfterCompletion = useCallback(
-    (threadId: string) => {
-      const projectPath = findSession(projectsRef.current, threadId)?.project.path
+    (projectPath: string | undefined) => {
       if (!projectPath || projectPath !== activePathRef.current) return
-
       const probe = workspaceIdleProbe.current
       probe.pendingPath = projectPath
       if (probe.inFlight) return
-
       const drain = async () => {
         const transportRevision = probe.transportRevision
         let retryAvailable = true
@@ -752,19 +754,15 @@ export function App() {
             const { projects } = await transport.request('projects.list', {})
             if (revision !== probe.revision || transportRevision !== probe.transportRevision)
               continue
-            if (activePathRef.current !== path) {
-              if (probe.idlePath === path) probe.idlePath = undefined
-              continue
-            }
+            if (activePathRef.current !== path) continue
             const project = projects.find((candidate) => candidate.path === path)
             if (!project) {
               retry = probe.idlePath === undefined
-            } else if (probe.startingPath === path) {
-              probe.idlePath = undefined
-            } else if (project.sessions.some((session) => session.running)) {
-              if (probe.idlePath === path) probe.idlePath = undefined
             } else {
-              probe.idlePath = path
+              const blocked =
+                project.sessions.some((session) => session.running) ||
+                [...probe.pendingStarts.values()].some((pending) => pending.path === path)
+              probe.idlePath = blocked ? undefined : path
             }
           } catch {
             retry =
@@ -777,14 +775,12 @@ export function App() {
             probe.pendingPath = path
           }
         }
-        if (probe.idlePath === activePathRef.current && probe.startingPath !== probe.idlePath) {
-          probe.idlePath = undefined
-          setWorkspaceRefreshRevision((revision) => revision + 1)
-        } else {
-          probe.idlePath = undefined
-        }
+        const refresh =
+          probe.idlePath === activePathRef.current &&
+          ![...probe.pendingStarts.values()].some((pending) => pending.path === probe.idlePath)
+        probe.idlePath = undefined
+        if (refresh) setWorkspaceRefreshRevision((revision) => revision + 1)
       }
-
       const inFlight = drain()
       probe.inFlight = inFlight
       void inFlight.finally(() => {
@@ -939,12 +935,12 @@ export function App() {
       if (event.type === 'turn.started' || event.type === 'turn.completed') {
         const projectPath = findSession(projectsRef.current, threadId)?.project.path
         const probe = workspaceIdleProbe.current
-        if (event.type === 'turn.started') probe.startedThreads.add(threadId)
-        const missedStart =
-          event.type === 'turn.completed' && !probe.startedThreads.delete(threadId)
-        if (event.type === 'turn.started' || missedStart) releaseWorkspaceStart(projectPath)
+        if (event.type === 'turn.started') {
+          probe.startedThreads.add(threadId)
+          releaseWorkspaceStart(threadId)
+        } else if (!probe.startedThreads.delete(threadId)) releaseWorkspaceStart(threadId)
         if (event.type === 'turn.started') invalidateWorkspaceIdleProbe(projectPath)
-        else refreshWorkspaceAfterCompletion(threadId)
+        else refreshWorkspaceAfterCompletion(projectPath)
       }
 
       if (affectsSessionStatus(event)) {
@@ -1369,6 +1365,7 @@ export function App() {
       })),
     )
     setActivePath((current) => current ?? list[0]?.path)
+    return list
   }, [transport])
 
   const refreshCheckpoints = useCallback(
@@ -1450,11 +1447,11 @@ export function App() {
     const activeId = activeIdRef.current
     const threadIds = new Set(pendingSubmissions.current.keys())
     if (activeId && !activeId.startsWith('pending:')) threadIds.add(activeId)
-    const resyncThread = (id: string, retry = true) => {
+    const resyncThread = (id: string, retry = true): Promise<ThreadState | undefined> => {
       const history = loadHistory(id, durableSequences.current.get(id)).catch(() => undefined)
       const localQueueRevision = localQueueRevisions.current.get(id) ?? 0
       const serverQueueRevision = serverQueueRevisions.current.get(id) ?? 0
-      void transport
+      return transport
         .request('thread.queue', { threadId: id })
         .then(async (state) => {
           const loaded = await history
@@ -1463,8 +1460,7 @@ export function App() {
             (localQueueRevisions.current.get(id) ?? 0) !== localQueueRevision ||
             (serverQueueRevisions.current.get(id) ?? 0) !== serverQueueRevision
           ) {
-            if (retry) resyncThread(id, false)
-            return
+            return retry ? resyncThread(id, false) : undefined
           }
           queueStates.current.set(id, state)
           settleQueuedSubmissions(id, state.items, loaded)
@@ -1472,10 +1468,34 @@ export function App() {
             setQueuedTurns(state.items)
             setCanSteerQueue(state.canSteer)
           }
+          return loaded
         })
         .catch(() => undefined)
     }
-    for (const id of threadIds) resyncThread(id)
+    const path = activePathRef.current
+    const wasRunning =
+      [...workspaceIdleProbe.current.pendingStarts.values()].some(
+        (pending) => pending.path === path,
+      ) ||
+      projectsRef.current
+        .find((project) => project.path === path)
+        ?.sessions.some((session) => session.status === 'starting' || session.status === 'working')
+    void Promise.all([
+      refreshProjects().catch(() => undefined),
+      ...[...threadIds].map((id) => resyncThread(id)),
+    ]).then(([projects, ...threads]) => {
+      const project = projects?.find((candidate) => candidate.path === path)
+      const idle =
+        path &&
+        project &&
+        !project.sessions.some((session) => session.running) &&
+        !threads.some((thread) => thread?.running)
+      if (!idle) return
+      const probe = workspaceIdleProbe.current
+      for (const id of threadIds)
+        if (!pendingSubmissions.current.has(id)) probe.pendingStarts.delete(id)
+      if (wasRunning) refreshWorkspaceAfterCompletion(path)
+    })
     if (activeId && !activeId.startsWith('pending:')) {
       void transport
         .request('usage.summary', { threadId: activeId })
@@ -1484,7 +1504,6 @@ export function App() {
         })
         .catch(() => undefined)
     }
-    void refreshProjects().catch(() => undefined)
     const sourceRevision = sidebarSettingsSourceRevision.current
     void transport
       .request('sidebar.settings', {})
@@ -1842,6 +1861,11 @@ export function App() {
         threadStates.current.delete(provisionalId)
         threadStates.current.set(threadId, provisional)
         durableSequences.current.set(threadId, 0)
+        const pendingStart = workspaceIdleProbe.current.pendingStarts.get(provisionalId)
+        if (pendingStart) {
+          workspaceIdleProbe.current.pendingStarts.delete(provisionalId)
+          workspaceIdleProbe.current.pendingStarts.set(threadId, pendingStart)
+        }
         const pending =
           pendingSession.current?.id === provisionalId ? pendingSession.current : undefined
         if (pending) pending.threadId = threadId
@@ -1997,14 +2021,12 @@ export function App() {
       const briefing = designMode
       const turnAttachments = briefing ? addDesignBriefing(attachments) : attachments
       invalidateWorkspaceIdleProbe(activePath)
-      if (submission !== 'steer' && activePath) {
-        const probe = workspaceIdleProbe.current
-        if (probe.startingPath !== activePath) probe.pendingStarts = 0
-        probe.startingPath = activePath
-        probe.pendingStarts += 1
+      let workspaceStartId = activeId
+      if (submission !== 'steer' && activePath && workspaceStartId) {
+        holdWorkspaceStart(workspaceStartId, activePath)
       }
       const releasePendingStart = () => {
-        if (submission !== 'steer') releaseWorkspaceStart(activePath)
+        if (submission !== 'steer' && workspaceStartId) releaseWorkspaceStart(workspaceStartId)
       }
       // Typing first and having the session appear is the natural order. Making
       // the user press "new session" before they are allowed to type is the
@@ -2029,10 +2051,11 @@ export function App() {
         )
         const choice = selectedModelChoice
         if (!choice) {
-          releasePendingStart()
           restoreDraft()
           return
         }
+        workspaceStartId = provisionalId
+        holdWorkspaceStart(provisionalId, activePath)
         optimisticTurnId = provisional.activeTurn?.id
         threadStates.current.set(provisionalId, provisional)
         setProjects((current) =>
@@ -2077,6 +2100,7 @@ export function App() {
           restoreDraft()
           return
         }
+        workspaceStartId = threadId
         optimisticAdded = true
         titledOnCreate = true
       } else if (pendingSession.current?.id === threadId) {
@@ -2097,6 +2121,7 @@ export function App() {
           restoreDraft()
           return
         }
+        workspaceStartId = threadId
         optimisticAdded = true
       }
 
@@ -2271,6 +2296,7 @@ export function App() {
       updateQueue,
       designMode,
       invalidateWorkspaceIdleProbe,
+      holdWorkspaceStart,
       releaseWorkspaceStart,
       restoreRejectedDraft,
       sendAvailability,
