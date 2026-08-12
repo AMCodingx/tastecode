@@ -402,7 +402,6 @@ export function App() {
   const [workspace, setWorkspace] = useState<WorkspaceInfo | undefined>()
   const [branches, setBranches] = useState<string[]>([])
   const [workspaceRefreshRevision, setWorkspaceRefreshRevision] = useState(0)
-  const workspaceActivity = useRef({ path: activePath, running: thread.running })
   const [account, setAccount] = useState<Account | undefined>()
   const [accountCheck, setAccountCheck] = useState<AccountCheck>({ provider, state: 'loading' })
   const accountRequestRevision = useRef(0)
@@ -671,6 +670,8 @@ export function App() {
 
   const activeIdRef = useRef(activeId)
   activeIdRef.current = activeId
+  const activePathRef = useRef(activePath)
+  activePathRef.current = activePath
   const restoreRejectedDraft = useCallback((threadId: string, rejected: RecoverableDraft) => {
     const current = rejectedDrafts.current.get(threadId)
     const draft = {
@@ -709,6 +710,24 @@ export function App() {
   }, [])
   const projectsRef = useRef(projects)
   projectsRef.current = projects
+  const workspaceIdleProbe = useRef(0)
+  const refreshWorkspaceAfterCompletion = useCallback(
+    (threadId: string) => {
+      const projectPath = findSession(projectsRef.current, threadId)?.project.path
+      if (!projectPath || projectPath !== activePathRef.current) return
+      const probe = ++workspaceIdleProbe.current
+      void transport
+        .request('projects.list', {})
+        .then(({ projects }) => {
+          if (probe !== workspaceIdleProbe.current || activePathRef.current !== projectPath) return
+          const project = projects.find((candidate) => candidate.path === projectPath)
+          if (!project || project.sessions.some((session) => session.running)) return
+          setWorkspaceRefreshRevision((revision) => revision + 1)
+        })
+        .catch(() => undefined)
+    },
+    [transport],
+  )
   /** Refetch after an outage. Held in a ref because the transport effect is
    *  set up before the fetchers it needs are declared. */
   const resync = useRef<() => void>(() => {})
@@ -852,6 +871,7 @@ export function App() {
         setThread(next)
       }
       if (threadId === activeIdRef.current && endsDesignBriefing(event)) setDesignMode(false)
+      if (event.type === 'turn.completed') refreshWorkspaceAfterCompletion(threadId)
 
       if (affectsSessionStatus(event)) {
         setProjects((current) => {
@@ -940,7 +960,7 @@ export function App() {
       offState()
       transport.close()
     }
-  }, [transport, acceptSidebarSettings, settleQueuedSubmissions])
+  }, [transport, acceptSidebarSettings, settleQueuedSubmissions, refreshWorkspaceAfterCompletion])
 
   useEffect(() => {
     let cancelled = false
@@ -1184,16 +1204,9 @@ export function App() {
     }
   }, [transport, provider])
 
-  useEffect(() => {
-    const previous = workspaceActivity.current
-    workspaceActivity.current = { path: activePath, running: thread.running }
-    if (previous.path === activePath && previous.running && !thread.running) {
-      setWorkspaceRefreshRevision((revision) => revision + 1)
-    }
-  }, [activePath, thread.running])
-
   // Branches and uncommitted size for the composer shelf. Turn start already
-  // takes a git checkpoint, so only re-read after the turn becomes idle.
+  // takes a git checkpoint, so only re-read after the server confirms that
+  // every turn in the active project is idle.
   useEffect(() => {
     if (!activePath) {
       setWorkspace(undefined)

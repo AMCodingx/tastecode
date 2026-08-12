@@ -1424,6 +1424,92 @@ describe('new chats', () => {
     })
   })
 
+  it('waits for a queued turn chain to become idle before refreshing workspace metadata', async () => {
+    const request = transport.request.getMockImplementation()
+    if (!request) throw new Error('missing request mock')
+    let nextTurnStarting = false
+    transport.request.mockImplementation((method: string, params: unknown) => {
+      if (method === 'projects.list' && nextTurnStarting) {
+        return Promise.resolve({
+          projects: [
+            {
+              ...(serverProjects[0] as Record<string, unknown>),
+              sessions: [
+                {
+                  id: 'untouched-thread',
+                  title: 'New session',
+                  provider: 'codex',
+                  createdAt: 0,
+                  running: true,
+                  status: 'starting',
+                },
+              ],
+            },
+          ],
+        })
+      }
+      return request(method, params)
+    })
+
+    render(<App />)
+    fireEvent.click(await screen.findByRole('button', { name: 'New session' }))
+    await waitFor(() => {
+      expect(transport.request).toHaveBeenCalledWith('workspace.branches', {
+        path: '/work/project',
+      })
+    })
+    emitThreadEvent('untouched-thread', {
+      type: 'turn.started',
+      turn: {
+        id: 'turn-1',
+        threadId: 'untouched-thread',
+        status: 'running',
+        createdAt: 0,
+      },
+    })
+    transport.request.mockClear()
+
+    nextTurnStarting = true
+    emitThreadEvent('untouched-thread', {
+      type: 'turn.completed',
+      turnId: 'turn-1',
+      status: 'completed',
+    })
+    await waitFor(() => {
+      expect(transport.request).toHaveBeenCalledWith('projects.list', {})
+    })
+    expect(
+      transport.request.mock.calls.filter(([method]) => method === 'workspace.info'),
+    ).toHaveLength(0)
+    expect(
+      transport.request.mock.calls.filter(([method]) => method === 'workspace.branches'),
+    ).toHaveLength(0)
+
+    emitThreadEvent('untouched-thread', {
+      type: 'turn.started',
+      turn: {
+        id: 'turn-2',
+        threadId: 'untouched-thread',
+        status: 'running',
+        createdAt: 1,
+      },
+    })
+    nextTurnStarting = false
+    emitThreadEvent('untouched-thread', {
+      type: 'turn.completed',
+      turnId: 'turn-2',
+      status: 'completed',
+    })
+    await waitFor(() => {
+      expect(
+        transport.request.mock.calls.filter(([method]) => method === 'workspace.info'),
+      ).toHaveLength(1)
+      expect(
+        transport.request.mock.calls.filter(([method]) => method === 'workspace.branches'),
+      ).toHaveLength(1)
+    })
+  })
+
   it('refreshes workspace metadata after switching projects', async () => {
     serverProjects = [
       {
@@ -3032,6 +3118,12 @@ describe('live sessions', () => {
 
     render(<App />)
     fireEvent.click(await screen.findByRole('button', { name: /^Old chat,/ }))
+    await waitFor(() => {
+      expect(transport.request).toHaveBeenCalledWith('workspace.branches', {
+        path: '/work/project',
+      })
+    })
+    transport.request.mockClear()
     const composer = screen.getByPlaceholderText('Do anything')
     dropFile(composer, '/work/reference.png')
     fireEvent.change(composer, { target: { value: 'Keep this if restore wins' } })
@@ -3054,11 +3146,67 @@ describe('live sessions', () => {
     expect(screen.getByRole('alert').textContent).toContain(
       'cannot start a turn while restoring a checkpoint',
     )
+    expect(rpcCount('workspace.info')).toBe(0)
     fireEvent.click(screen.getByRole('button', { name: 'Remove reference.png' }))
     fireEvent.click(screen.getByRole('button', { name: /^Background,/ }))
     fireEvent.click(screen.getByRole('button', { name: /^Old chat,/ }))
     expect((composer as HTMLTextAreaElement).value).toBe('Keep this if restore wins')
     expect(screen.queryByRole('button', { name: 'Remove reference.png' })).toBeNull()
+  })
+
+  it('refreshes after a background turn completes, not while switching sessions', async () => {
+    serverProjects = [
+      {
+        path: '/work/project',
+        name: 'project',
+        pinned: false,
+        createdAt: 0,
+        sessions: [
+          { id: 'thread-1', title: 'Running work', running: false },
+          { id: 'thread-2', title: 'Idle work', running: false },
+        ],
+      },
+    ]
+
+    render(<App />)
+    fireEvent.click(await screen.findByRole('button', { name: /^Running work,/ }))
+    await waitFor(() => {
+      expect(transport.request).toHaveBeenCalledWith('workspace.branches', {
+        path: '/work/project',
+      })
+    })
+    emitThreadEvent('thread-1', {
+      type: 'turn.started',
+      turn: { id: 'turn-1', threadId: 'thread-1', status: 'running', createdAt: 0 },
+    })
+    transport.request.mockClear()
+
+    fireEvent.click(screen.getByRole('button', { name: /^Idle work,/ }))
+    await waitFor(() => {
+      expect(transport.request).toHaveBeenCalledWith('thread.history', {
+        threadId: 'thread-2',
+      })
+    })
+    expect(
+      transport.request.mock.calls.filter(([method]) => method === 'workspace.info'),
+    ).toHaveLength(0)
+    expect(
+      transport.request.mock.calls.filter(([method]) => method === 'workspace.branches'),
+    ).toHaveLength(0)
+
+    emitThreadEvent('thread-1', {
+      type: 'turn.completed',
+      turnId: 'turn-1',
+      status: 'completed',
+    })
+    await waitFor(() => {
+      expect(
+        transport.request.mock.calls.filter(([method]) => method === 'workspace.info'),
+      ).toHaveLength(1)
+      expect(
+        transport.request.mock.calls.filter(([method]) => method === 'workspace.branches'),
+      ).toHaveLength(1)
+    })
   })
 
   it('queues Enter submissions while the active session is running', async () => {
