@@ -714,7 +714,13 @@ export function App() {
     inFlight: Promise<void> | undefined
     pendingPath: string | undefined
     idlePath: string | undefined
-  }>({ inFlight: undefined, pendingPath: undefined, idlePath: undefined })
+    revision: number
+  }>({ inFlight: undefined, pendingPath: undefined, idlePath: undefined, revision: 0 })
+  const invalidateWorkspaceIdleProbe = useCallback((projectPath: string | undefined) => {
+    if (!projectPath || projectPath !== activePathRef.current) return
+    workspaceIdleProbe.current.revision += 1
+    workspaceIdleProbe.current.idlePath = undefined
+  }, [])
   const refreshWorkspaceAfterCompletion = useCallback(
     (threadId: string) => {
       const projectPath = findSession(projectsRef.current, threadId)?.project.path
@@ -725,24 +731,33 @@ export function App() {
       if (probe.inFlight) return
 
       const drain = async () => {
+        let retryAvailable = true
         while (probe.pendingPath) {
           const path = probe.pendingPath
+          const revision = probe.revision
           probe.pendingPath = undefined
+          let retry = false
           try {
             const { projects } = await transport.request('projects.list', {})
+            if (revision !== probe.revision) continue
             if (activePathRef.current !== path) {
               if (probe.idlePath === path) probe.idlePath = undefined
               continue
             }
             const project = projects.find((candidate) => candidate.path === path)
-            if (!project) continue
-            if (project.sessions.some((session) => session.running)) {
+            if (!project) {
+              retry = probe.idlePath === undefined
+            } else if (project.sessions.some((session) => session.running)) {
               if (probe.idlePath === path) probe.idlePath = undefined
             } else {
               probe.idlePath = path
             }
           } catch {
-            // A later failed snapshot must not discard an earlier confirmed idle state.
+            retry = revision === probe.revision && probe.idlePath === undefined
+          }
+          if (retry && retryAvailable && !probe.pendingPath) {
+            retryAvailable = false
+            probe.pendingPath = path
           }
         }
         if (probe.idlePath === activePathRef.current) {
@@ -902,6 +917,9 @@ export function App() {
         setThread(next)
       }
       if (threadId === activeIdRef.current && endsDesignBriefing(event)) setDesignMode(false)
+      if (event.type === 'turn.started') {
+        invalidateWorkspaceIdleProbe(findSession(projectsRef.current, threadId)?.project.path)
+      }
       if (event.type === 'turn.completed') refreshWorkspaceAfterCompletion(threadId)
 
       if (affectsSessionStatus(event)) {
@@ -991,7 +1009,13 @@ export function App() {
       offState()
       transport.close()
     }
-  }, [transport, acceptSidebarSettings, settleQueuedSubmissions, refreshWorkspaceAfterCompletion])
+  }, [
+    transport,
+    acceptSidebarSettings,
+    settleQueuedSubmissions,
+    invalidateWorkspaceIdleProbe,
+    refreshWorkspaceAfterCompletion,
+  ])
 
   useEffect(() => {
     let cancelled = false
@@ -1939,6 +1963,7 @@ export function App() {
       // input only).
       const briefing = designMode
       const turnAttachments = briefing ? addDesignBriefing(attachments) : attachments
+      invalidateWorkspaceIdleProbe(activePath)
       // Typing first and having the session appear is the natural order. Making
       // the user press "new session" before they are allowed to type is the
       // app's bookkeeping leaking into their way of working.
@@ -2199,6 +2224,7 @@ export function App() {
       selectedServiceTier,
       updateQueue,
       designMode,
+      invalidateWorkspaceIdleProbe,
       restoreRejectedDraft,
       sendAvailability,
     ],

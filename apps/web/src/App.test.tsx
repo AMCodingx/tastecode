@@ -521,6 +521,29 @@ function projectsSnapshot(running: boolean) {
   }
 }
 
+async function renderWithDeferredProjectProbes() {
+  const request = transport.request.getMockImplementation()
+  if (!request) throw new Error('missing request mock')
+  const probes: Array<{
+    resolve: (value: ReturnType<typeof projectsSnapshot>) => void
+    reject: (reason?: unknown) => void
+  }> = []
+  let capture = false
+  transport.request.mockImplementation((method: string, params: unknown) =>
+    method === 'projects.list' && capture
+      ? new Promise((resolve, reject) => probes.push({ resolve, reject }))
+      : request(method, params),
+  )
+  render(<App />)
+  fireEvent.click(await screen.findByRole('button', { name: 'New session' }))
+  await waitFor(() => {
+    expect(transport.request).toHaveBeenCalledWith('workspace.branches', { path: '/work/project' })
+  })
+  transport.request.mockClear()
+  capture = true
+  return probes
+}
+
 describe('web client', () => {
   it('opens the workspace directly on first launch', async () => {
     localStorage.removeItem('harness.provider')
@@ -1437,28 +1460,7 @@ describe('new chats', () => {
   })
 
   it('coalesces overlapping completion probes before refreshing workspace metadata', async () => {
-    const request = transport.request.getMockImplementation()
-    if (!request) throw new Error('missing request mock')
-    const probes: Array<{
-      resolve: (value: ReturnType<typeof projectsSnapshot>) => void
-      reject: (reason?: unknown) => void
-    }> = []
-    let captureProbes = false
-    transport.request.mockImplementation((method: string, params: unknown) =>
-      method === 'projects.list' && captureProbes
-        ? new Promise((resolve, reject) => probes.push({ resolve, reject }))
-        : request(method, params),
-    )
-
-    render(<App />)
-    fireEvent.click(await screen.findByRole('button', { name: 'New session' }))
-    await waitFor(() => {
-      expect(transport.request).toHaveBeenCalledWith('workspace.branches', {
-        path: '/work/project',
-      })
-    })
-    transport.request.mockClear()
-    captureProbes = true
+    const probes = await renderWithDeferredProjectProbes()
 
     for (const turnId of ['turn-1', 'turn-2', 'turn-3']) {
       emitThreadEvent('untouched-thread', { type: 'turn.completed', turnId, status: 'completed' })
@@ -1487,31 +1489,10 @@ describe('new chats', () => {
     })
   })
 
-  it.each(['reject', 'missing'] as const)(
-    'keeps a confirmed idle result when the trailing probe is %s',
-    async (trailingResult) => {
-      const request = transport.request.getMockImplementation()
-      if (!request) throw new Error('missing request mock')
-      const probes: Array<{
-        resolve: (value: ReturnType<typeof projectsSnapshot>) => void
-        reject: (reason?: unknown) => void
-      }> = []
-      let captureProbes = false
-      transport.request.mockImplementation((method: string, params: unknown) =>
-        method === 'projects.list' && captureProbes
-          ? new Promise((resolve, reject) => probes.push({ resolve, reject }))
-          : request(method, params),
-      )
-
-      render(<App />)
-      fireEvent.click(await screen.findByRole('button', { name: 'New session' }))
-      await waitFor(() => {
-        expect(transport.request).toHaveBeenCalledWith('workspace.branches', {
-          path: '/work/project',
-        })
-      })
-      transport.request.mockClear()
-      captureProbes = true
+  it.each(['reject', 'missing', 'started', 'submitted', 'sole reject'] as const)(
+    'settles workspace metadata when the probe sequence ends with %s',
+    async (scenario) => {
+      const probes = await renderWithDeferredProjectProbes()
 
       emitThreadEvent('untouched-thread', {
         type: 'turn.completed',
@@ -1519,18 +1500,39 @@ describe('new chats', () => {
         status: 'completed',
       })
       await waitFor(() => expect(probes).toHaveLength(1))
-      emitThreadEvent('untouched-thread', {
-        type: 'turn.completed',
-        turnId: 'turn-2',
-        status: 'completed',
-      })
-      await act(async () => probes[0]?.resolve(projectsSnapshot(false)))
-      await waitFor(() => expect(probes).toHaveLength(2))
-
-      await act(async () => {
-        if (trailingResult === 'reject') probes[1]?.reject(new Error('probe failed'))
-        else probes[1]?.resolve({ projects: [] })
-      })
+      if (scenario === 'sole reject') {
+        await act(async () => probes[0]?.reject(new Error('probe failed')))
+        await waitFor(() => expect(probes).toHaveLength(2))
+        await act(async () => probes[1]?.resolve(projectsSnapshot(false)))
+      } else {
+        emitThreadEvent('untouched-thread', {
+          type: 'turn.completed',
+          turnId: 'turn-2',
+          status: 'completed',
+        })
+        await act(async () => probes[0]?.resolve(projectsSnapshot(false)))
+        await waitFor(() => expect(probes).toHaveLength(2))
+        if (scenario === 'started') {
+          emitThreadEvent('untouched-thread', {
+            type: 'turn.started',
+            turn: { id: 'turn-3', threadId: 'untouched-thread', status: 'running', createdAt: 1 },
+          })
+        } else if (scenario === 'submitted') {
+          const composer = screen.getByPlaceholderText('Do anything')
+          fireEvent.change(composer, { target: { value: 'Start again' } })
+          fireEvent.keyDown(composer, { key: 'Enter' })
+        }
+        await act(async () => {
+          if (scenario === 'missing') probes[1]?.resolve({ projects: [] })
+          else probes[1]?.reject(new Error('probe failed'))
+        })
+      }
+      if (scenario === 'started' || scenario === 'submitted') {
+        expect(
+          transport.request.mock.calls.filter(([method]) => method === 'workspace.info'),
+        ).toHaveLength(0)
+        return
+      }
       await waitFor(() => {
         expect(
           transport.request.mock.calls.filter(([method]) => method === 'workspace.info'),
