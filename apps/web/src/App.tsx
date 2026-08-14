@@ -152,6 +152,7 @@ const TERMINAL_OPEN_KEY = 'harness.terminal.open'
 const TERMINAL_HEIGHT_KEY = 'harness.terminal.height'
 const RAIL_WIDTH_KEY = 'harness.rail.width'
 const WORKSPACE_PANEL_WIDTH_KEY = 'harness.workspacePanel.width'
+const NOTICE_AUTO_DISMISS_MS = 5_000
 const DEFAULT_SIDEBAR_SETTINGS: SidebarSettings = { mode: 'classic', autoSettleDays: 3 }
 const TerminalPane = lazy(() =>
   import('./ui/TerminalPane.js').then((module) => ({ default: module.TerminalPane })),
@@ -506,6 +507,14 @@ export function App() {
   const [rollbackLoadingId, setRollbackLoadingId] = useState<number | undefined>()
   const [rollbackRestoring, setRollbackRestoring] = useState(false)
   const [undoRestore, setUndoRestore] = useState<{ threadId: string; token: string } | undefined>()
+  useEffect(() => {
+    if (!notice) return
+    const timeout = globalThis.setTimeout(() => {
+      setNotice(undefined)
+      setUndoRestore(undefined)
+    }, NOTICE_AUTO_DISMISS_MS)
+    return () => globalThis.clearTimeout(timeout)
+  }, [notice])
   const [isolateSession, setIsolateSession] = useState(false)
   const [designMode, setDesignMode] = useState(false)
   const [checkoutDelete, setCheckoutDelete] = useState<
