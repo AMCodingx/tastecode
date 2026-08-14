@@ -1018,6 +1018,10 @@ function ModelVisibilityGroup(props: {
   hiddenModels: Set<string>
   onModelVisibilityChange: (key: string, visible: boolean) => void
 }) {
+  const visibleCount = props.choices.filter((choice) => !props.hiddenModels.has(choice.key)).length
+  const allVisible = visibleCount === props.choices.length
+  const mixedVisibility = visibleCount > 0 && !allVisible
+
   return (
     <section className="model-visibility" aria-label={props.source}>
       <header className="model-visibility__source">
@@ -1026,6 +1030,24 @@ function ModelVisibilityGroup(props: {
             <SourceIdentity presentation={{ label: props.source, mark: props.choices[0].mark }} />
           </h3>
         ) : null}
+        <button
+          className={`switch model-visibility__source-switch${allVisible ? ' is-on' : ''}${mixedVisibility ? ' is-mixed' : ''}`}
+          type="button"
+          role="checkbox"
+          aria-label={`Include models from ${props.source} in model picker`}
+          aria-checked={mixedVisibility ? 'mixed' : allVisible}
+          onClick={() => {
+            const visible = !allVisible
+            for (const choice of props.choices) {
+              const currentlyVisible = !props.hiddenModels.has(choice.key)
+              if (currentlyVisible !== visible) {
+                props.onModelVisibilityChange(choice.key, visible)
+              }
+            }
+          }}
+        >
+          <span className="switch__thumb" />
+        </button>
       </header>
 
       <div className="model-visibility__models">

@@ -608,7 +608,7 @@ describe('model settings', () => {
     )
   })
 
-  it('keeps every model visible while toggling picker inclusion individually', () => {
+  it('toggles a whole provider while exposing partial model visibility honestly', () => {
     const models: ModelChoice[] = [
       {
         key: 'opencode:ling',
@@ -645,7 +645,7 @@ describe('model settings', () => {
       on: vi.fn(() => () => {}),
     } as unknown as Transport
 
-    render(
+    const settings = (hiddenModels: Set<string>) => (
       <Settings
         provider="codex"
         providerName="Codex"
@@ -657,7 +657,7 @@ describe('model settings', () => {
         acpAgents={[]}
         modelConnections={[]}
         models={models}
-        hiddenModels={new Set(['opencode:ling'])}
+        hiddenModels={hiddenModels}
         onModelVisibilityChange={onModelVisibilityChange}
         onConnectionsChanged={() => {}}
         projectCount={0}
@@ -679,8 +679,9 @@ describe('model settings', () => {
         onAccountChange={() => {}}
         onReset={() => {}}
         onClose={() => {}}
-      />,
+      />
     )
+    const view = render(settings(new Set(['opencode:ling'])))
 
     const categories = screen.getByRole('navigation', { name: 'Settings categories' })
     expect(within(categories).getAllByRole('button')[0]?.textContent).toBe('General')
@@ -691,15 +692,53 @@ describe('model settings', () => {
     expect(sourceHeading?.querySelector('svg')?.getAttribute('width')).toBe('15')
     expect(screen.queryByRole('searchbox')).toBeNull()
     expect(screen.getByText('OpenCode Zen · Ling-3.0-tiny Free')).toBeTruthy()
+    const providerToggle = screen.getByRole('checkbox', {
+      name: 'Include models from OpenCode in model picker',
+    })
     const ling = screen.getByRole('switch', {
       name: 'Include OpenCode Zen · Ling-3.0-tiny Free in model picker',
     })
     const qwen = screen.getByRole('switch', {
       name: 'Include OpenCode Go · Qwen3.8 Max in model picker',
     })
+    expect(providerToggle.getAttribute('aria-checked')).toBe('mixed')
+    expect(providerToggle.classList.contains('is-mixed')).toBe(true)
     expect(ling.getAttribute('aria-checked')).toBe('false')
     expect(qwen.getAttribute('aria-checked')).toBe('true')
-    fireEvent.click(ling)
+
+    fireEvent.click(providerToggle)
+    expect(onModelVisibilityChange).toHaveBeenCalledOnce()
+    expect(onModelVisibilityChange).toHaveBeenCalledWith('opencode:ling', true)
+
+    onModelVisibilityChange.mockClear()
+    view.rerender(settings(new Set()))
+    const enabledProvider = screen.getByRole('checkbox', {
+      name: 'Include models from OpenCode in model picker',
+    })
+    expect(enabledProvider.getAttribute('aria-checked')).toBe('true')
+    expect(enabledProvider.classList.contains('is-on')).toBe(true)
+    fireEvent.click(enabledProvider)
+    expect(onModelVisibilityChange).toHaveBeenCalledTimes(2)
+    expect(onModelVisibilityChange).toHaveBeenNthCalledWith(1, 'opencode:ling', false)
+    expect(onModelVisibilityChange).toHaveBeenNthCalledWith(2, 'opencode:qwen', false)
+
+    onModelVisibilityChange.mockClear()
+    view.rerender(settings(new Set(['opencode:ling', 'opencode:qwen'])))
+    const disabledProvider = screen.getByRole('checkbox', {
+      name: 'Include models from OpenCode in model picker',
+    })
+    expect(disabledProvider.getAttribute('aria-checked')).toBe('false')
+    fireEvent.click(disabledProvider)
+    expect(onModelVisibilityChange).toHaveBeenCalledTimes(2)
+    expect(onModelVisibilityChange).toHaveBeenNthCalledWith(1, 'opencode:ling', true)
+    expect(onModelVisibilityChange).toHaveBeenNthCalledWith(2, 'opencode:qwen', true)
+
+    onModelVisibilityChange.mockClear()
+    fireEvent.click(
+      screen.getByRole('switch', {
+        name: 'Include OpenCode Zen · Ling-3.0-tiny Free in model picker',
+      }),
+    )
     expect(onModelVisibilityChange).toHaveBeenCalledWith('opencode:ling', true)
     expect(screen.getByText('OpenCode Go · Qwen3.8 Max')).toBeTruthy()
   })

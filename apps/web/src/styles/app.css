@@ -1953,12 +1953,16 @@
 
 .model-visibility__source {
   display: grid;
-  grid-template-columns: minmax(0, max-content) minmax(120px, 1fr);
+  grid-template-columns: minmax(0, 1fr) auto;
   align-items: center;
   gap: 18px;
   min-height: 46px;
   padding: 7px 16px;
   color: var(--text);
+}
+
+.model-visibility__source-switch {
+  justify-self: end;
 }
 
 .model-visibility__source h3 {
@@ -9151,7 +9155,7 @@
   }
 
   .model-visibility__source {
-    grid-template-columns: minmax(0, 1fr);
+    grid-template-columns: minmax(0, 1fr) auto;
     row-gap: 8px;
   }
 
