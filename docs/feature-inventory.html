@@ -332,21 +332,27 @@
           </li>
         </ul>
 
-        <h3>Claude Code (structured CLI, stream-json)</h3>
+        <h3>Claude Code (Agent SDK over the installed CLI)</h3>
         <ul class="check">
           <li>
             <label
               ><input type="checkbox" /><span
-                >Sign-in state with email and plan, sign out from Settings</span
+                >CLI sign-in, redacted account email and plan, sign out from Settings
+                <span class="d"
+                  >claude auth login runs in the guided provider terminal; SDK initialization fills
+                  account details without sending a prompt</span
+                ></span
               ></label
             >
           </li>
           <li>
             <label
               ><input type="checkbox" /><span
-                >Model aliases plus pinned previous generations
+                >Versioned SDK models without the synthetic Default row, merged with the full
+                catalog
                 <span class="d"
-                  >Fable 5, Opus 5, Sonnet 5, Haiku 4.5, Opus 4.8, Opus 4.7, Sonnet 4.6</span
+                  >Fable 5, Opus 5, Sonnet 5, Haiku 4.5, Opus 4.8, Opus 4.7, Opus 4.6, Opus 4.5,
+                  Sonnet 4.6</span
                 ></span
               ></label
             >
@@ -362,10 +368,10 @@
           <li>
             <label
               ><input type="checkbox" /><span
-                >Interrupt, streamed reasoning, session resume across turns
+                >Steer, interrupt, streamed text and reasoning, durable session resume
                 <span class="d"
-                  >type-aware text and tool identities stay unique, chronological, and deterministic
-                  when Claude reuses a message ID</span
+                  >one long-lived prompt stream carries follow-up turns while SDK controls change
+                  the model and stop active work without replacing the process</span
                 ></span
               ></label
             >
@@ -373,8 +379,10 @@
           <li>
             <label
               ><input type="checkbox" /><span
-                >Permission modes mapped to the CLI
-                <span class="d">ask, accept edits, bypass</span></span
+                >SDK permissions and structured questions use TasteCode-native cards
+                <span class="d"
+                  >ask, accept edits, automatic review, bypass, and AskUserQuestion</span
+                ></span
               ></label
             >
           </li>

@@ -118,15 +118,17 @@ designed and maps straight onto the UI. Items are `message`, `reasoning`, `comma
 `file_change`, `tool_call`, `plan`, `error`, each with a `started → deltas → completed`
 lifecycle. Adapters translate _into_ this. Nothing engine-specific leaks past them.
 
-| Tier       | Mechanism                        | Engines                                                        | Fidelity                              |
-| ---------- | -------------------------------- | -------------------------------------------------------------- | ------------------------------------- |
-| 1 — Native | Vendor's own protocol            | Codex (`app-server` JSON-RPC), OpenCode (HTTP), Pi (RPC JSONL) | Full where the protocol exposes it    |
-| 2 — ACP    | Agent Client Protocol over stdio | Gemini CLI + ~25 others                                        | Good. One adapter, long tail for free |
-| 3 — CLI    | Headless NDJSON                  | Claude Code, Cursor, Grok                                      | Adequate. Version-pinned, fragile     |
+| Tier       | Mechanism                        | Engines                                                                                 | Fidelity                              |
+| ---------- | -------------------------------- | --------------------------------------------------------------------------------------- | ------------------------------------- |
+| 1 — Native | Vendor protocol or supported SDK | Codex (`app-server` JSON-RPC), Claude Code (Agent SDK), OpenCode (HTTP), Pi (RPC JSONL) | Full where the protocol exposes it    |
+| 2 — ACP    | Agent Client Protocol over stdio | Gemini CLI + ~25 others                                                                 | Good. One adapter, long tail for free |
+| 3 — CLI    | Headless NDJSON                  | Cursor, Grok                                                                            | Adequate. Version-pinned, fragile     |
 
 Engines can appear in more than one tier. We default to the highest fidelity available, with
-a user override — so if Claude Code's ACP surface proves more stable than its CLI surface,
-we switch tiers without touching the UI. That's the point of the layer.
+a user override. Claude Code now runs through Anthropic's Agent SDK while keeping the user's
+installed `claude` executable and account, so the adapter gets a persistent prompt stream,
+interactive permissions and questions, and live control calls without making shared behavior
+depend on that vendor. A different Claude surface can still replace it without touching the UI.
 
 **Users may register protocol-compatible executables as separate harness sources.** Each
 entry names an existing adapter protocol and stores an executable, fixed argv, optional launch
@@ -138,13 +140,16 @@ conventional user locations such as `~/.local/bin`. When a mod boots from its ow
 receive that project normally. The source gets its own model catalog and persisted identity, so
 a fork can coexist with the stock CLI without replacing it.
 
-Settings can run a bounded compatibility check before the first prompt. Codex, Pi, OpenCode,
-and ACP complete their actual initialize handshake; one-shot CLI adapters run only their free
-help/model-discovery command. Missing executables, inaccessible directories, protocol failures,
-and timeouts are reported separately, and timed-out protocol children are disposed. A successful
-check proves the advertised handshake, not arbitrary behavior in a modified implementation, so
-version drift and custom-server instability remain disclosed. Parked built-ins stay hidden unless
-the user explicitly registers one of these sources.
+Settings can run a bounded compatibility check before the first prompt. Codex, Claude Code, Pi,
+OpenCode, and ACP complete their actual initialize handshake; one-shot CLI adapters run only their
+free help/model-discovery command. Claude's SDK probe uses a never-yielding prompt stream, so it can
+read models and account metadata without starting an Anthropic API request. Its synthetic `default`
+row is discarded, live aliases are presented with their resolved version numbers, and the live list
+is merged with Claude Code's complete versioned catalog. Missing executables,
+inaccessible directories, protocol failures, and timeouts are reported separately, and timed-out
+protocol children are disposed. A successful check proves the advertised handshake, not arbitrary
+behavior in a modified implementation, so version drift and custom-server instability remain
+disclosed. Parked built-ins stay hidden unless the user explicitly registers one of these sources.
 
 **`capabilities()` is what makes it honest.** Not every engine can fork, steer, or emit
 reasoning. The UI reads capabilities and hides what's unavailable rather than showing a
