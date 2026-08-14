@@ -5247,6 +5247,10 @@
   border-radius: var(--r-card);
 }
 
+.aux--reasoning .aux__out {
+  font-family: var(--font-ui);
+}
+
 /* Match the completion rail: one virtual-row resize, then compositor-only motion. */
 .aux__reveal {
   display: none;
