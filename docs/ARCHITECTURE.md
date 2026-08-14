@@ -236,6 +236,12 @@ An adapter that cannot perform an operation reports it as unsupported through ca
 and returns an actionable error; TasteCode does not pretend success or fall back to mutating
 global state. Read-only inventory may still be exposed when the provider supports it.
 
+Grok's one-shot print mode has no session-scoped MCP input, so a Grok session with enabled
+project servers starts through the same installed binary's ACP stdio mode and passes those
+servers in `session/new`. Sessions without a project server keep the captured streaming-JSON
+path. This preserves Grok's inherited user configuration without writing `~/.grok/config.toml`
+or a repository `.grok/config.toml` on the user's behalf.
+
 _Rejected:_ repository-local MCP config (opening an untrusted checkout must not authorize
 command execution; revisit only with an explicit trust gate) · SQLite config (not
 human-readable or hand-editable) · writing project state into each vendor's global config
@@ -350,3 +356,4 @@ registry entry, which is deliberately a good first outside contribution.
 | 2026-08-12 | Defined provider-neutral ephemeral Side chat sessions.                  |
 | 2026-08-12 | Standardized Electron browser previews on sandboxed `<webview>` guests. |
 | 2026-08-14 | Removed phone and remote-client support from active product scope.      |
+| 2026-08-14 | Routed project-enabled Grok MCP sessions through ACP stdio.             |

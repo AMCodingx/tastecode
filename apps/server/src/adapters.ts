@@ -1,6 +1,6 @@
-import { AcpAdapter } from '@harness/adapter-acp'
+import { AcpAdapter, prepareAcpMcpServers } from '@harness/adapter-acp'
 import { AntigravityAdapter } from '@harness/adapter-antigravity'
-import { GrokAdapter } from '@harness/adapter-grok'
+import { GrokAdapter, grokCommand } from '@harness/adapter-grok'
 import {
   ApiAgentSession,
   createAnthropicMessagesTransport,
@@ -488,6 +488,37 @@ function grokRuntime(
   return {
     async start(workspacePath, options) {
       const harness = harnessFor('grok', options.agent, resolveHarness)
+      const projectMcp = options.mcpServers?.some((server) => server.enabled) ?? false
+      if (projectMcp) {
+        const adapter = new AcpAdapter('grok', {
+          name: harness?.displayName ?? 'Grok',
+          command: grokCommand(),
+          args: [
+            'agent',
+            ...(options.model ? ['--model', options.model] : []),
+            ...(options.effort ? ['--reasoning-effort', options.effort] : []),
+            'stdio',
+          ],
+          provider: 'grok',
+          mcpServers: prepareAcpMcpServers(options.mcpServers ?? [], options.mcpCredentials ?? {}),
+          ...(harness ? { spawn: customHarnessSpawn(harness) } : {}),
+        })
+        adapter.on('log', onLog)
+        try {
+          const starting = adapter.startThread(workspacePath, {
+            model: options.model,
+            approval: options.approval,
+            instructions: options.instructions,
+          })
+          const thread = harness
+            ? await customHarnessOperation(harness, 'start an MCP-enabled ACP session', starting)
+            : await starting
+          return { thread, session: adapter }
+        } catch (error) {
+          adapter.dispose()
+          throw error
+        }
+      }
       const adapter = new GrokAdapter(harness ? { spawn: customHarnessSpawn(harness) } : {})
       adapter.on('log', onLog)
       const thread = await adapter.startThread(workspacePath, {
