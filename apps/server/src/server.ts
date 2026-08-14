@@ -922,7 +922,7 @@ export function startServer(
 
       case 'thread.setApproval': {
         const p = params as { threadId: string; approval: 'ask' | 'auto' | 'auto-review' | 'full' }
-        orchestrator.setThreadApproval(p.threadId, p.approval)
+        await orchestrator.setThreadApproval(p.threadId, p.approval)
         return {}
       }
 

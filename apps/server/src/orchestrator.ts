@@ -373,7 +373,7 @@ const UNSUPPORTED_SKILL_CAPABILITIES: SkillCapabilities = {
  */
 export class Orchestrator {
   #threads = new Map<string, { thread: Thread; session: AgentSession; worktree?: Worktree }>()
-  /** Approval mode each live thread was started with; not persisted. */
+  /** Approval mode selected for each attached or pending-resume thread; not persisted. */
   #threadApprovals = new Map<string, ApprovalMode>()
   #sideThreads = new Map<string, string>()
   #sideParents = new Map<string, string>()
@@ -2117,15 +2117,27 @@ export class Orchestrator {
   }
 
   /**
-   * Change the access level of a live thread. The mode is recorded for the
-   * design-flow note and pushed to sessions that keep approval state
-   * mutable; engines that mapped the mode onto launch switches keep the
-   * sandbox they started with.
+   * Change a thread's access level. Persisted threads are resumed with the
+   * selected mode; attached sessions receive the change directly when their
+   * adapter supports it.
    */
-  setThreadApproval(threadId: string, approval: ApprovalMode): void {
-    const session = this.#get(threadId).session
+  async setThreadApproval(threadId: string, approval: ApprovalMode): Promise<void> {
+    const previous = this.#threadApprovals.get(threadId)
+    const hadPrevious = this.#threadApprovals.has(threadId)
     this.#threadApprovals.set(threadId, approval)
-    session.setApproval?.(approval)
+    try {
+      const attached = this.#threads.get(threadId)
+      if (attached) await attached.session.setApproval?.(approval)
+      else {
+        const joiningResume = this.#resumingThreads.has(threadId)
+        await this.#ensureThread(threadId)
+        if (joiningResume) await this.#get(threadId).session.setApproval?.(approval)
+      }
+    } catch (error) {
+      if (hadPrevious) this.#threadApprovals.set(threadId, previous!)
+      else this.#threadApprovals.delete(threadId)
+      throw error
+    }
   }
 
   respondToUserInput(threadId: string, requestId: string, answers: Record<string, string[]>): void {
@@ -2474,6 +2486,9 @@ export class Orchestrator {
     const workspacePath = stored.worktreePath ?? resolveWorkspacePath(stored.projectPath)
     const result = await runtime.resume(threadId, workspacePath, {
       ...(stored.agent ? { agent: stored.agent } : {}),
+      ...(this.#threadApprovals.has(threadId)
+        ? { approval: this.#threadApprovals.get(threadId)! }
+        : {}),
       instructions: REPLY_STYLE_INSTRUCTIONS,
       ...this.#mcpRuntimeOptions(stored.provider, stored.projectPath),
     })

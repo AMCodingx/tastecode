@@ -340,15 +340,34 @@ describe('live access level', () => {
     const { orchestrator, sessions } = harness()
     const thread = await orchestrator.startThread('codex', process.cwd(), { approval: 'ask' })
 
-    orchestrator.setThreadApproval(thread.id, 'full')
+    await orchestrator.setThreadApproval(thread.id, 'full')
 
     expect(sessions[0]?.approvalModes).toEqual(['full'])
+  })
+
+  it('resumes a persisted thread with the selected mode', async () => {
+    const store = new Store(':memory:')
+    store.addProject('/repo')
+    store.addThread({
+      id: 'persisted-thread',
+      projectPath: '/repo',
+      provider: 'codex',
+      title: 'Persisted',
+    })
+    const { orchestrator, resumedIds, resumedOptions } = harness(undefined, store)
+
+    await orchestrator.setThreadApproval('persisted-thread', 'full')
+
+    expect(resumedIds).toEqual(['persisted-thread'])
+    expect(resumedOptions[0]).toMatchObject({ approval: 'full' })
   })
 
   it('throws for a thread it does not know', async () => {
     const { orchestrator } = harness()
 
-    expect(() => orchestrator.setThreadApproval('missing-thread', 'auto')).toThrow(/no such thread/)
+    await expect(orchestrator.setThreadApproval('missing-thread', 'auto')).rejects.toThrow(
+      /no such thread/,
+    )
   })
 })
 
