@@ -157,7 +157,6 @@ describe('WorkspacePanel', () => {
   })
 
   it('keeps panel controls inside the workspace chrome', () => {
-    const onClose = vi.fn()
     const onExpandedChange = vi.fn()
     render(
       <WorkspacePanel
@@ -170,7 +169,7 @@ describe('WorkspacePanel', () => {
         sideChatStartOptions={{ approval: 'ask' }}
         nativeSurfacesVisible
         onOpen={vi.fn()}
-        onClose={onClose}
+        onClose={vi.fn()}
         onExpandedChange={onExpandedChange}
         onWidthChange={vi.fn()}
       />,
@@ -180,9 +179,8 @@ describe('WorkspacePanel', () => {
       expect(screen.getByRole('button', { name: title }).querySelector('svg')).toBeTruthy()
     }
     fireEvent.click(screen.getByRole('button', { name: 'Expand workspace tools' }))
-    fireEvent.click(screen.getByRole('button', { name: 'Hide workspace tools' }))
     expect(onExpandedChange).toHaveBeenCalledWith(true)
-    expect(onClose).toHaveBeenCalledOnce()
+    expect(screen.queryByRole('button', { name: 'Hide workspace tools' })).toBeNull()
   })
 
   it('routes a workspace shell exit through the terminal tab close path', async () => {
