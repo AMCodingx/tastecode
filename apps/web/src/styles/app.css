@@ -2131,8 +2131,15 @@
 .settings__email {
   display: inline-block;
   width: min(180px, 100%);
+  padding: 0;
   overflow: hidden;
+  border: 0;
   border-radius: var(--r-sm);
+  background: none;
+  color: inherit;
+  cursor: pointer;
+  font: inherit;
+  text-align: left;
   vertical-align: bottom;
 }
 
@@ -2151,10 +2158,8 @@
   white-space: nowrap;
 }
 
-.settings__email:hover .settings__email-value,
-.settings__email:focus .settings__email-value {
+.settings__email[data-revealed='true'] .settings__email-value {
   filter: none;
-  transition-delay: 700ms;
   user-select: text;
 }
 
