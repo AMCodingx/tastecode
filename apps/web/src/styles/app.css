@@ -4454,6 +4454,9 @@
 
 .thread {
   overflow-y: auto;
+  /* TanStack already preserves the active viewport while virtual rows resize.
+     Native scroll anchoring would apply a second correction to the changing runway. */
+  overflow-anchor: none;
   min-height: 0;
   padding: 16px 0 4px;
   font-size: var(--t-lg);
@@ -4711,28 +4714,30 @@
   transform: rotate(90deg);
 }
 
-/* The extra clip layer lets the grid animate to the content's real height.
-   Keeping the body mounted also makes closing as smooth as opening. */
+/* Commit the expanded height in one layout pass. Animating the grid track made
+   ResizeObserver remeasure the virtual row throughout the transition. */
 .activity__reveal {
-  display: grid;
-  grid-template-rows: 0fr;
-  opacity: 0;
-  transform: translateY(-4px);
-  transition:
-    grid-template-rows var(--dur-slow) var(--ease-out),
-    opacity var(--dur-fast) var(--ease-out),
-    transform var(--dur-slow) var(--ease-out);
+  display: none;
 }
 
 .activity__reveal[data-open='true'] {
-  grid-template-rows: 1fr;
-  opacity: 1;
-  transform: translateY(0);
+  display: block;
+}
+
+.activity__reveal[data-open='true'] > .activity__reveal-clip {
+  animation: disclosure-reveal-in var(--dur-fast) var(--ease-out);
 }
 
 .activity__reveal-clip {
   min-height: 0;
   overflow: hidden;
+}
+
+@keyframes disclosure-reveal-in {
+  from {
+    opacity: 0;
+    transform: translateY(-4px);
+  }
 }
 
 .activity--empty .activity__summary {
@@ -4807,9 +4812,9 @@
     animation: none;
   }
 
-  .activity__reveal,
-  .aux__reveal {
-    transition: none;
+  .activity__reveal[data-open='true'] > .activity__reveal-clip,
+  .aux__reveal[data-open='true'] > .aux__reveal-clip {
+    animation: none;
   }
 }
 
@@ -5242,23 +5247,17 @@
   border-radius: var(--r-card);
 }
 
-/* The same animated disclosure as the completion rail: the grid row animates
-   to the output's real height while the mounted clip keeps closing smooth. */
+/* Match the completion rail: one virtual-row resize, then compositor-only motion. */
 .aux__reveal {
-  display: grid;
-  grid-template-rows: 0fr;
-  opacity: 0;
-  transform: translateY(-4px);
-  transition:
-    grid-template-rows var(--dur-slow) var(--ease-out),
-    opacity var(--dur-fast) var(--ease-out),
-    transform var(--dur-slow) var(--ease-out);
+  display: none;
 }
 
 .aux__reveal[data-open='true'] {
-  grid-template-rows: 1fr;
-  opacity: 1;
-  transform: translateY(0);
+  display: block;
+}
+
+.aux__reveal[data-open='true'] > .aux__reveal-clip {
+  animation: disclosure-reveal-in var(--dur-fast) var(--ease-out);
 }
 
 .aux__reveal-clip {
