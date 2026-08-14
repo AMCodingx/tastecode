@@ -14,6 +14,7 @@ use std::time::Duration;
 
 pub const GROK_SUPPORTED_VERSION: &str = "0.1";
 pub const GROK_EFFORTS: &[&str] = &["low", "medium", "high"];
+const GROK_4_6_EFFORTS: &[&str] = &["low", "medium", "high", "xhigh"];
 const CAPTURE_TIMEOUT: Duration = Duration::from_secs(15);
 const CAPTURE_MAX_OUTPUT: usize = 1024 * 1024;
 
@@ -176,15 +177,22 @@ pub fn parse_grok_models(output: &str) -> Vec<Model> {
         else {
             continue;
         };
-        let known_efforts = (id == "grok-4.5")
-            .then(|| GROK_EFFORTS.iter().map(|effort| (*effort).into()).collect());
+        let known_efforts = match id {
+            "grok-4.5" => Some(GROK_EFFORTS),
+            "grok-4.6" => Some(GROK_4_6_EFFORTS),
+            _ => None,
+        };
         models.push(Model {
             id: id.into(),
             display_name: grok_display_name(id),
             description: None,
             is_default: details[id.len()..].trim_start().starts_with("(default)"),
-            reasoning_efforts: known_efforts.unwrap_or_default(),
-            default_reasoning_effort: (id == "grok-4.5").then(|| "high".into()),
+            reasoning_efforts: known_efforts
+                .unwrap_or_default()
+                .iter()
+                .map(|effort| (*effort).into())
+                .collect(),
+            default_reasoning_effort: known_efforts.map(|_| "high".into()),
             service_tiers: Vec::new(),
             default_service_tier: None,
         });
@@ -277,7 +285,18 @@ mod tests {
     }
 
     #[test]
-    fn unknown_models_do_not_inherit_grok_4_5_reasoning_levels() {
+    fn parses_grok_4_6_reasoning_levels() {
+        let models = parse_grok_models("Available models:\n  * grok-4.6 (default)");
+
+        assert_eq!(
+            models[0].reasoning_efforts,
+            ["low", "medium", "high", "xhigh"]
+        );
+        assert_eq!(models[0].default_reasoning_effort.as_deref(), Some("high"));
+    }
+
+    #[test]
+    fn unknown_models_do_not_inherit_known_grok_reasoning_levels() {
         let models = parse_grok_models("Available models:\n  * grok-future (default)");
 
         assert_eq!(models[0].display_name, "Grok Future");
