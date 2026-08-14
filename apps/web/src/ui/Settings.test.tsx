@@ -22,7 +22,7 @@ vi.mock('./InstallTerminal.js', () => ({
 
 function renderSettings(
   options: {
-    initialSection?: 'appearance' | 'data' | 'about'
+    initialSection?: 'appearance' | 'models' | 'data' | 'about'
     onClose?: () => void
     onReset?: () => void
     transport?: Transport
@@ -487,6 +487,127 @@ describe('app haptic setting', () => {
 })
 
 describe('model settings', () => {
+  it('shows the automatic Luna policy and persists a manual model and effort', async () => {
+    const sources = [
+      {
+        id: 'codex',
+        displayName: 'Codex',
+        provider: 'codex' as const,
+        models: [
+          {
+            id: 'gpt-5.6-luna',
+            displayName: 'GPT-5.6 Luna',
+            isDefault: false,
+            reasoningEfforts: ['low', 'medium', 'high'],
+            serviceTiers: [],
+          },
+        ],
+      },
+    ]
+    const request = vi.fn(async (method: string, params: unknown) => {
+      if (method === 'backgroundModel.settings') {
+        return {
+          preference: { mode: 'automatic' as const },
+          sources,
+          resolved: {
+            provider: 'codex' as const,
+            model: 'gpt-5.6-luna',
+            effort: 'medium',
+            sourceName: 'Codex',
+            automatic: true,
+          },
+        }
+      }
+      if (method === 'backgroundModel.updateSettings') {
+        const preference = params as ResultOf<'backgroundModel.settings'>['preference']
+        const target = preference.mode === 'manual' ? preference.target : undefined
+        return {
+          preference,
+          sources,
+          ...(target
+            ? {
+                resolved: {
+                  ...target,
+                  sourceName: 'Codex',
+                  automatic: false,
+                },
+              }
+            : {}),
+        }
+      }
+      throw new Error(`unexpected ${method}`)
+    })
+    renderSettings({
+      initialSection: 'models',
+      transport: { request, on: vi.fn(() => () => {}) } as unknown as Transport,
+    })
+
+    const picker = await screen.findByRole('combobox', { name: 'Background model' })
+    expect(picker.tagName).toBe('BUTTON')
+    expect(screen.getByText(/gpt-5\.6 luna through codex at medium effort/i)).toBeTruthy()
+    fireEvent.click(picker)
+    fireEvent.click(screen.getByRole('option', { name: 'GPT-5.6 Luna' }))
+
+    await waitFor(() =>
+      expect(request).toHaveBeenCalledWith('backgroundModel.updateSettings', {
+        mode: 'manual',
+        target: {
+          provider: 'codex',
+          model: 'gpt-5.6-luna',
+          effort: 'low',
+        },
+      }),
+    )
+    const effort = await screen.findByRole('combobox', { name: 'Background reasoning effort' })
+    expect(effort.tagName).toBe('BUTTON')
+    fireEvent.click(effort)
+    fireEvent.click(screen.getByRole('option', { name: 'high' }))
+    await waitFor(() =>
+      expect(request).toHaveBeenCalledWith('backgroundModel.updateSettings', {
+        mode: 'manual',
+        target: {
+          provider: 'codex',
+          model: 'gpt-5.6-luna',
+          effort: 'high',
+        },
+      }),
+    )
+  })
+
+  it('keeps a disconnected manual choice visible so Automatic can replace it', async () => {
+    const request = vi.fn(async (method: string, params: unknown) => {
+      if (method === 'backgroundModel.settings') {
+        return {
+          preference: {
+            mode: 'manual' as const,
+            target: { provider: 'grok' as const, model: 'grok-code-fast-1', effort: 'low' },
+          },
+          sources: [],
+        }
+      }
+      if (method === 'backgroundModel.updateSettings') {
+        return { preference: params as { mode: 'automatic' }, sources: [] }
+      }
+      throw new Error(`unexpected ${method}`)
+    })
+    renderSettings({
+      initialSection: 'models',
+      transport: { request, on: vi.fn(() => () => {}) } as unknown as Transport,
+    })
+
+    const picker = await screen.findByRole('combobox', { name: 'Background model' })
+    expect(picker.textContent).toContain('grok-code-fast-1 (unavailable)')
+    expect(screen.getByText(/grok-code-fast-1 is unavailable/i)).toBeTruthy()
+    fireEvent.click(picker)
+    fireEvent.click(screen.getByRole('option', { name: 'Automatic (recommended)' }))
+
+    await waitFor(() =>
+      expect(request).toHaveBeenCalledWith('backgroundModel.updateSettings', {
+        mode: 'automatic',
+      }),
+    )
+  })
+
   it('keeps every model visible while toggling picker inclusion individually', () => {
     const models: ModelChoice[] = [
       {

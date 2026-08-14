@@ -81,6 +81,9 @@ import type {
   Account,
   ApprovalDecision,
   ApprovalMode,
+  BackgroundModelPreference,
+  BackgroundModelSettings,
+  BackgroundModelSource,
   DiffDecision,
   DomainEvent,
   McpCapabilities,
@@ -118,6 +121,15 @@ import { installLocalSkill } from './skill-install.js'
 import { startDesignPreview, type RunningPreview } from './design-preview-runner.js'
 import { assertPublicWorkspaceFile, existingWorkspacePath } from './api-workspace-paths.js'
 import { sideChatInstructions } from './side-chat.js'
+import {
+  cleanGeneratedCommitMessage,
+  cleanGeneratedTitle,
+  commitMessagePrompt,
+  resolveBackgroundModel,
+  runBackgroundCompletion,
+  titlePrompt,
+  type AvailableBackgroundModelSource,
+} from './background-model.js'
 
 type UserSubmission = { id: string; text: string; createdAt: number; queueId?: string }
 type QueuedTurnEntry = QueuedTurn & { options: TurnOptions; clientSubmissionId?: string }
@@ -430,6 +442,10 @@ export class Orchestrator {
   #mcpConfig: McpConfigStore
   #modelConnections: ModelConnectionStore
   #customHarnesses: CustomHarnessStore
+  #backgroundSourcesCache:
+    { expiresAt: number; sources: AvailableBackgroundModelSource[] } | undefined
+  #backgroundSourcesStarting: Promise<AvailableBackgroundModelSource[]> | undefined
+  #backgroundSourcesRevision = 0
   #readCredential: (reference: string) => string
   #terminals: TerminalManager
 
@@ -521,7 +537,10 @@ export class Orchestrator {
     if (this.#controlStarting) return this.#controlStarting
     const adapter = new CodexAdapter()
     adapter.on('log', (line) => this.#onLog(line))
-    adapter.on('login', (result) => this.#onLogin('codex', result))
+    adapter.on('login', (result) => {
+      if (result.success) this.#invalidateBackgroundSources()
+      this.#onLogin('codex', result)
+    })
     adapter.onUsageChanged(() => {
       if (this.#control === adapter) this.#onUsageChanged('codex')
     })
@@ -570,7 +589,9 @@ export class Orchestrator {
   }
 
   upsertCustomHarness(harness: Parameters<CustomHarnessStore['upsert']>[0]) {
-    return this.#customHarnesses.upsert(harness)
+    const saved = this.#customHarnesses.upsert(harness)
+    this.#invalidateBackgroundSources()
+    return saved
   }
 
   verifyCustomHarness(
@@ -582,24 +603,220 @@ export class Orchestrator {
 
   removeCustomHarness(harnessId: string): void {
     this.#customHarnesses.remove(harnessId)
+    this.#invalidateBackgroundSources()
   }
 
   upsertModelConnection(connection: Parameters<ModelConnectionStore['upsert']>[0]) {
-    return this.#modelConnections.upsert(connection)
+    const saved = this.#modelConnections.upsert(connection)
+    this.#invalidateBackgroundSources()
+    return saved
   }
 
   setModelConnectionCredential(connectionId: string, apiKey: string): void {
     this.#modelConnections.setCredential(connectionId, apiKey)
+    this.#invalidateBackgroundSources()
   }
 
   removeModelConnection(connectionId: string): void {
     this.#modelConnections.remove(connectionId)
+    this.#invalidateBackgroundSources()
   }
 
   async listConnectionModels(connectionId: string): Promise<Model[]> {
     const connection = this.#modelConnections.get(connectionId)
     const apiKey = this.#readCredential(connection.credentialRef)
     return apiRuntime(connection, apiKey, this.#onLog).listModels()
+  }
+
+  async backgroundModelSettings(): Promise<BackgroundModelSettings> {
+    const preference = this.#store.backgroundModelPreference()
+    const available = await this.#backgroundModelSources()
+    const resolved = resolveBackgroundModel(preference, available)
+    const sources: BackgroundModelSource[] = available.map((source) => ({
+      id: source.id,
+      displayName: source.displayName,
+      provider: source.provider,
+      ...(source.connectionId ? { connectionId: source.connectionId } : {}),
+      ...(source.agent ? { agent: source.agent } : {}),
+      models: source.models,
+    }))
+    return { preference, sources, ...(resolved ? { resolved } : {}) }
+  }
+
+  async updateBackgroundModelPreference(
+    preference: BackgroundModelPreference,
+  ): Promise<BackgroundModelSettings> {
+    this.#store.updateBackgroundModelPreference(preference)
+    return this.backgroundModelSettings()
+  }
+
+  async generateBackgroundTitle(
+    threadId: string,
+    request: string,
+    expectedTitle: string,
+  ): Promise<{ title: string; applied: boolean }> {
+    const before = this.#store.thread(threadId)
+    if (!before) throw new Error(`no such thread: ${threadId}`)
+    if (before.title !== expectedTitle) return { title: before.title, applied: false }
+
+    const output = await this.#runBackgroundTask(titlePrompt(request))
+    const title = cleanGeneratedTitle(output, expectedTitle)
+    const current = this.#store.thread(threadId)
+    const applied = current?.title === expectedTitle
+    if (applied) this.#store.renameThread(threadId, title)
+    return { title: applied ? title : (current?.title ?? expectedTitle), applied }
+  }
+
+  async generateBackgroundCommitMessage(diff: SessionDiff): Promise<string> {
+    if (diff.files.length === 0) throw new Error('The working tree is clean.')
+    const output = await this.#runBackgroundTask(commitMessagePrompt(diff))
+    return cleanGeneratedCommitMessage(output)
+  }
+
+  async #runBackgroundTask(prompt: string): Promise<string> {
+    const settings = await this.backgroundModelSettings()
+    if (!settings.resolved) {
+      throw new Error(
+        settings.preference.mode === 'manual'
+          ? 'The selected background model is unavailable. Choose another one in Settings.'
+          : 'Connect a provider with an available model before using background writing.',
+      )
+    }
+    const runtime =
+      settings.resolved.provider === 'api'
+        ? this.#apiRuntime(settings.resolved.connectionId)
+        : this.#runtimeFor(settings.resolved.provider, this.#onLog)
+    return runBackgroundCompletion({ runtime, selection: settings.resolved, prompt })
+  }
+
+  async #backgroundModelSources(): Promise<AvailableBackgroundModelSource[]> {
+    const cached = this.#backgroundSourcesCache
+    if (cached && cached.expiresAt > Date.now()) return cached.sources
+    if (this.#backgroundSourcesStarting) return this.#backgroundSourcesStarting
+
+    const revision = this.#backgroundSourcesRevision
+    const starting = this.#discoverBackgroundModelSources()
+      .then((sources) => {
+        if (this.#backgroundSourcesRevision === revision) {
+          this.#backgroundSourcesCache = { expiresAt: Date.now() + 60_000, sources }
+        }
+        return sources
+      })
+      .finally(() => {
+        if (this.#backgroundSourcesStarting === starting) {
+          this.#backgroundSourcesStarting = undefined
+        }
+      })
+    this.#backgroundSourcesStarting = starting
+    return starting
+  }
+
+  async #discoverBackgroundModelSources(): Promise<AvailableBackgroundModelSource[]> {
+    const builtIns = await Promise.all(
+      (
+        [
+          ['codex', 'Codex'],
+          ['claude-code', 'Claude Code'],
+          ['grok', 'Grok'],
+        ] as const
+      ).map(async ([provider, displayName]) => {
+        try {
+          const account = await this.account(provider)
+          if (!account.signedIn) return undefined
+          const models = await this.listModels(provider)
+          if (models.length === 0) return undefined
+          return {
+            id: provider,
+            displayName,
+            provider,
+            models,
+            ...(provider === 'codex'
+              ? {
+                  codexSubscription: Boolean(
+                    account.plan && account.plan.toLowerCase() !== 'api key',
+                  ),
+                }
+              : {}),
+          } satisfies AvailableBackgroundModelSource
+        } catch {
+          return undefined
+        }
+      }),
+    )
+
+    const custom = await Promise.all(
+      this.#customHarnesses.list().map(async (harness) => {
+        try {
+          const models = await this.listModels(harness.provider, harness.id)
+          if (models.length === 0) return undefined
+          return {
+            id: `${harness.provider}:${harness.id}`,
+            displayName: harness.displayName,
+            provider: harness.provider,
+            agent: harness.id,
+            models,
+          } satisfies AvailableBackgroundModelSource
+        } catch {
+          return undefined
+        }
+      }),
+    )
+
+    const connections = await Promise.all(
+      this.#modelConnections
+        .list()
+        .filter((connection) => connection.enabled && connection.credentialConfigured)
+        .map(async (connection) => {
+          const stored = this.#modelConnections.get(connection.id)
+          let apiKey: string
+          try {
+            apiKey = this.#readCredential(stored.credentialRef)
+          } catch {
+            return undefined
+          }
+          let models: Model[] = []
+          try {
+            models = await apiRuntime(stored, apiKey, this.#onLog).listModels()
+          } catch {
+            // Compatible endpoints are allowed to omit model discovery; the
+            // connection's explicit default remains runnable in that case.
+          }
+          if (models.length === 0 && connection.defaultModel) {
+            models = [
+              {
+                id: connection.defaultModel,
+                displayName: connection.defaultModel,
+                isDefault: true,
+                reasoningEfforts: [],
+                serviceTiers: [],
+              },
+            ]
+          }
+          if (models.length === 0) return undefined
+          return {
+            id: `api:${connection.id}`,
+            displayName: connection.displayName,
+            provider: 'api',
+            connectionId: connection.id,
+            models,
+          } satisfies AvailableBackgroundModelSource
+        }),
+    )
+
+    const sources: Array<AvailableBackgroundModelSource | undefined> = [
+      ...builtIns,
+      ...custom,
+      ...connections,
+    ]
+    return sources.filter(
+      (source): source is AvailableBackgroundModelSource => source !== undefined,
+    )
+  }
+
+  #invalidateBackgroundSources(): void {
+    this.#backgroundSourcesRevision += 1
+    this.#backgroundSourcesCache = undefined
+    this.#backgroundSourcesStarting = undefined
   }
 
   async listMcpServers(
@@ -857,6 +1074,7 @@ export class Orchestrator {
       if (this.#providerLogins.get(provider)?.loginId === result.loginId) {
         this.#providerLogins.delete(provider)
       }
+      if (result.success) this.#invalidateBackgroundSources()
       this.#onLogin(provider, result)
     })
     this.#providerLogins.set(provider, login)
@@ -876,15 +1094,18 @@ export class Orchestrator {
 
   async useApiKey(provider: ProviderId, apiKey: string): Promise<Account> {
     if (provider !== 'codex') throw new Error(`provider "${provider}" cannot sign in yet`)
-    return (await this.#controlAdapter()).useApiKey(apiKey)
+    const account = await (await this.#controlAdapter()).useApiKey(apiKey)
+    this.#invalidateBackgroundSources()
+    return account
   }
 
   async signOut(provider: ProviderId, agent?: string): Promise<void> {
-    if (provider === 'codex') return (await this.#controlAdapter()).signOut()
-    if (provider === 'claude-code') return signOutClaude()
-    if (provider === 'cursor') return signOutCursor()
-    if (provider === 'grok') return signOutGrok()
-    if (provider === 'acp' && agent) return acpSignOut(agent)
+    if (provider === 'codex') await (await this.#controlAdapter()).signOut()
+    else if (provider === 'claude-code') await signOutClaude()
+    else if (provider === 'cursor') await signOutCursor()
+    else if (provider === 'grok') await signOutGrok()
+    else if (provider === 'acp' && agent) await acpSignOut(agent)
+    this.#invalidateBackgroundSources()
   }
 
   async voiceStatus(provider: ProviderId): Promise<{
@@ -2209,6 +2430,9 @@ export class Orchestrator {
     this.#designInputs.clear()
     this.#designInputByThread.clear()
     this.#resumingThreads.clear()
+    this.#backgroundSourcesCache = undefined
+    this.#backgroundSourcesStarting = undefined
+    this.#backgroundSourcesRevision += 1
     void this.#controlStarting?.then(
       (adapter) => adapter.dispose(),
       () => undefined,

@@ -155,6 +155,7 @@ export type StartOptions = {
   serviceTier?: string | undefined
   effort?: string | undefined
   approval?: ApprovalMode | undefined
+  ephemeral?: boolean | undefined
 }
 
 export type TurnOptions = Pick<StartOptions, 'model' | 'serviceTier' | 'effort'>
@@ -796,6 +797,7 @@ export class CodexAdapter extends EventEmitter<CodexAdapterEvents> {
         ...(options.model ? { model: options.model } : {}),
         ...(options.serviceTier ? { serviceTier: options.serviceTier } : {}),
         ...(options.instructions ? { developerInstructions: options.instructions } : {}),
+        ...(options.ephemeral !== undefined ? { ephemeral: options.ephemeral } : {}),
         ...(Object.keys(config).length ? { config } : {}),
         ...(approval ?? {}),
       },
