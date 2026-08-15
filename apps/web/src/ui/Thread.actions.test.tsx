@@ -550,7 +550,7 @@ describe('completed activity disclosure', () => {
       />,
     )
 
-    fireEvent.click(screen.getByRole('button', { name: 'Worked for 1s' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Viewed images' }))
 
     await waitFor(() =>
       expect(screen.getByRole('img', { name: 'Preview of uuid-layout.png' })).toBeTruthy(),
@@ -643,8 +643,8 @@ describe('completed activity disclosure', () => {
       turnItem('answer-1', 3, { role: 'assistant', text: 'Done.' }),
     ])
 
-    fireEvent.click(screen.getByRole('button', { name: 'Worked for 1s' }))
-    expect(screen.getByText('Compacted context window')).toBeTruthy()
+    fireEvent.click(screen.getByRole('button', { name: 'Compacted context window' }))
+    expect(screen.getAllByText('Compacted context window')).toHaveLength(2)
     expect(screen.queryByText('context compaction')).toBeNull()
     expect(screen.queryByText('[contextCompaction]')).toBeNull()
   })
