@@ -6509,6 +6509,27 @@
   opacity: 1;
 }
 
+.branch-menu {
+  min-width: min(320px, calc(100vw - 16px));
+}
+
+.branch-menu__search {
+  margin: 2px 2px 4px;
+}
+
+.branch-menu__results {
+  display: grid;
+  gap: 2px;
+}
+
+.branch-menu__empty {
+  margin: 0;
+  padding: 20px 8px;
+  color: var(--text-3);
+  font-size: var(--t-sm);
+  text-align: center;
+}
+
 .stat--add {
   color: var(--success);
 }

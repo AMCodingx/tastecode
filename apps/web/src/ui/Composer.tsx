@@ -57,6 +57,7 @@ import {
 } from './ComposerResourcePicker.js'
 import { MediaViewer } from './MediaViewer.js'
 import { Menu, MenuItem } from './Menu.js'
+import { ModelSearchField } from './ModelSearchField.js'
 import { ModelSelector } from './ModelSelector.js'
 import type { Project } from './Sidebar.js'
 
@@ -118,6 +119,62 @@ const PREVIEWABLE_IMAGE_RE = /\.(apng|avif|bmp|gif|ico|jpe?g|png|webp)$/i
 const VIDEO_RE = /\.(avi|m4v|mkv|mov|mp4|mpe?g|ogg|ogv|webm)$/i
 const COMPOSER_MIN_HEIGHT = 68
 const COMPOSER_MAX_HEIGHT = 242
+
+function BranchMenu(props: {
+  branches: string[]
+  activeBranch: string | undefined
+  onSelect: (branch: string) => void
+}) {
+  const [query, setQuery] = useState('')
+  const results = useRef<HTMLDivElement>(null)
+  const orderedBranches = useMemo(
+    () => [
+      ...props.branches.filter((branch) => branch === 'main'),
+      ...props.branches.filter((branch) => branch !== 'main'),
+    ],
+    [props.branches],
+  )
+  const normalizedQuery = query.trim().toLocaleLowerCase()
+  const filteredBranches = normalizedQuery
+    ? orderedBranches.filter((branch) => branch.toLocaleLowerCase().includes(normalizedQuery))
+    : orderedBranches
+
+  const focusResult = (edge: 'first' | 'last') => {
+    const items = results.current?.querySelectorAll<HTMLButtonElement>('.menu__item')
+    const target = edge === 'first' ? items?.[0] : items?.[items.length - 1]
+    target?.focus()
+  }
+
+  return (
+    <>
+      <ModelSearchField
+        className="branch-menu__search"
+        value={query}
+        label="Search branches"
+        placeholder="Search branches"
+        autoFocus
+        onChange={setQuery}
+        onNavigate={focusResult}
+      />
+      <div className="branch-menu__results" ref={results}>
+        {filteredBranches.length > 0 ? (
+          filteredBranches.map((branch) => (
+            <MenuItem
+              key={branch}
+              title={branch}
+              active={branch === props.activeBranch}
+              onClick={() => props.onSelect(branch)}
+            />
+          ))
+        ) : (
+          <p className="branch-menu__empty" role="status">
+            No matching branches.
+          </p>
+        )}
+      </div>
+    </>
+  )
+}
 const COMPOSER_DOCK_ANIMATION_ID = 'harness-composer-dock'
 const COMPOSER_DOCK_MOTION_MS = 320
 const COMPOSER_DOCK_EASING = 'cubic-bezier(0.23, 1, 0.32, 1)'
@@ -807,6 +864,9 @@ function ComposerComponent(props: {
                   label="Choose branch"
                   drop="down"
                   triggerClassName="shelf-control shelf-control--branch"
+                  panelRole="dialog"
+                  panelLabel="Choose branch"
+                  panelClassName="branch-menu"
                   trigger={() => (
                     <span className="shelf-control__content">
                       <GitBranch size={15} aria-hidden />
@@ -815,19 +875,14 @@ function ComposerComponent(props: {
                   )}
                 >
                   {(close) => (
-                    <>
-                      {props.branches.map((branch) => (
-                        <MenuItem
-                          key={branch}
-                          title={branch}
-                          active={branch === props.branch}
-                          onClick={() => {
-                            props.onBranchChange(branch)
-                            close()
-                          }}
-                        />
-                      ))}
-                    </>
+                    <BranchMenu
+                      branches={props.branches}
+                      activeBranch={props.branch}
+                      onSelect={(branch) => {
+                        props.onBranchChange(branch)
+                        close()
+                      }}
+                    />
                   )}
                 </Menu>
               ) : null}
