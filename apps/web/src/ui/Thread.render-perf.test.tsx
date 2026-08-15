@@ -365,6 +365,14 @@ describe('streamed thread renders', () => {
     expect(rendered.container.querySelector('.activity__working-label-previous')?.textContent).toBe(
       'Working',
     )
+    const previousTime = rendered.container.querySelector(
+      '.activity__working-status-previous .activity__working-time',
+    )?.textContent
+    const currentTime = rendered.container.querySelector(
+      '.activity__working-status .activity__working-time',
+    )?.textContent
+    expect(previousTime).toBeTruthy()
+    expect(currentTime).toBe(previousTime)
 
     act(() => vi.advanceTimersByTime(480))
 
