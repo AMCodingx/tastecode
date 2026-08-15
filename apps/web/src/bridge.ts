@@ -42,6 +42,7 @@ export type AppThemePreference = AppTheme | 'system'
 export type NativeHapticPattern = 'alignment' | 'generic'
 
 const bridge = (globalThis as { harness?: Bridge }).harness
+const attachmentPreviews = new Map<string, PickedAttachment>()
 
 export const isDesktop = bridge?.isDesktop === true
 export const canCapturePreview = bridge?.capturePreview !== undefined
@@ -64,9 +65,11 @@ export async function pickSkillFolder(): Promise<string | undefined> {
 export async function pickFiles(): Promise<PickedAttachment[]> {
   if (bridge) {
     const files = await bridge.pickFiles()
-    return files.map((file) =>
+    const picked = files.map((file) =>
       typeof file === 'string' ? { path: file, name: attachmentName(file) } : file,
     )
+    for (const attachment of picked) attachmentPreviews.set(attachment.path, attachment)
+    return picked
   }
   const typed = window.prompt('Full path of a file to attach')?.trim()
   return typed ? [{ path: typed, name: attachmentName(typed) }] : []
@@ -85,8 +88,17 @@ export function revealProjectFile(path: string, projectPath: string): Promise<vo
 }
 
 export async function previewViewedImage(reference: string): Promise<PickedAttachment | undefined> {
+  const cached = attachmentPreviews.get(reference)
+  if (cached) return cached
   try {
-    return await bridge?.previewViewedImage?.(reference)
+    const direct = await bridge?.previewViewedImage?.(reference)
+    const preview =
+      direct ??
+      (attachmentName(reference) === reference
+        ? undefined
+        : await bridge?.previewViewedImage?.(attachmentName(reference)))
+    if (preview) attachmentPreviews.set(reference, preview)
+    return preview
   } catch {
     return undefined
   }
@@ -99,7 +111,10 @@ export async function savePastedFile(file: File): Promise<PickedAttachment | und
     type: file.type,
     bytes: await file.arrayBuffer(),
   })
-  return typeof saved === 'string' ? { path: saved, name: attachmentName(saved) } : saved
+  const attachment =
+    typeof saved === 'string' ? { path: saved, name: attachmentName(saved) } : saved
+  attachmentPreviews.set(attachment.path, attachment)
+  return attachment
 }
 
 export async function writeClipboardText(text: string): Promise<void> {

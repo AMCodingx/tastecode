@@ -29,7 +29,12 @@ import {
   SquareTerminal,
   Wrench,
 } from 'lucide-react'
-import { previewViewedImage, writeClipboardText, type PickedAttachment } from '../bridge.js'
+import {
+  previewViewedImage,
+  revealPath,
+  writeClipboardText,
+  type PickedAttachment,
+} from '../bridge.js'
 import { isEditableTarget } from '../shortcuts.js'
 import type { Transport } from '../transport.js'
 import { Approval, AutomaticApprovalReview } from './Approval.js'
@@ -683,9 +688,22 @@ const Row = memo(function Row({
   // The user's own words get a surface so the eye can find where each exchange
   // begins; the agent's answer is plain prose, which is what you actually read.
   if (item.type === 'message' && item.role === 'user') {
+    const imageAttachments = item.attachments?.filter(isImageAttachment) ?? []
     return (
       <div className="said">
-        <p className="said__text">{item.text}</p>
+        {imageAttachments.length > 0 ? (
+          <div className="said__attachments" aria-label="Attached images">
+            {imageAttachments.map((attachment) => (
+              <ViewedImagePreview
+                key={attachment}
+                reference={attachment}
+                active
+                variant="message"
+              />
+            ))}
+          </div>
+        ) : null}
+        {item.text ? <p className="said__text">{item.text}</p> : null}
         {item.text ? (
           <div className="response-actions said__actions" aria-label="Prompt actions">
             <CopyAction text={item.text} label="Copy prompt" />
@@ -935,10 +953,12 @@ function ViewedImagePreview({
   reference,
   active,
   fallbackClassName,
+  variant = 'detail',
 }: {
   reference: string
   active: boolean
-  fallbackClassName: string
+  fallbackClassName?: string
+  variant?: 'detail' | 'message'
 }) {
   const [preview, setPreview] = useState<PickedAttachment>()
   const [viewerOpen, setViewerOpen] = useState(false)
@@ -965,11 +985,25 @@ function ViewedImagePreview({
   const inlineSource =
     preview?.thumbnailUrl && !thumbnailFailed ? preview.thumbnailUrl : preview?.previewUrl
   if (!preview || !inlineSource || !preview.previewUrl || imageFailed) {
-    return <pre className={fallbackClassName}>{reference}</pre>
+    if (variant === 'detail' && fallbackClassName) {
+      return <pre className={fallbackClassName}>{reference}</pre>
+    }
+    return (
+      <span
+        className="viewed-image-preview viewed-image-preview--message is-loading"
+        aria-label={`Loading preview of ${attachmentName(reference)}`}
+      >
+        <span className="viewed-image-preview__placeholder" aria-hidden>
+          <Images />
+        </span>
+      </span>
+    )
   }
 
   return (
-    <div className="viewed-image-preview">
+    <div
+      className={`viewed-image-preview${variant === 'message' ? ' viewed-image-preview--message' : ''}`}
+    >
       <button
         type="button"
         className="viewed-image-preview__open"
@@ -987,19 +1021,32 @@ function ViewedImagePreview({
           }
         />
       </button>
-      <span className="viewed-image-preview__name" title={reference}>
-        {reference}
-      </span>
+      {variant === 'detail' ? (
+        <span className="viewed-image-preview__name" title={reference}>
+          {reference}
+        </span>
+      ) : null}
       {viewerOpen ? (
         <MediaViewer
           src={preview.previewUrl}
           name={preview.name}
           mediaType="image"
+          onReveal={variant === 'message' ? () => void revealPath(reference) : undefined}
           onClose={() => setViewerOpen(false)}
         />
       ) : null}
     </div>
   )
+}
+
+const IMAGE_ATTACHMENT_RE = /\.(?:apng|avif|bmp|gif|ico|jpe?g|png|webp)$/i
+
+function isImageAttachment(reference: string): boolean {
+  return IMAGE_ATTACHMENT_RE.test(reference)
+}
+
+function attachmentName(reference: string): string {
+  return reference.split(/[\\/]/).filter(Boolean).at(-1) ?? reference
 }
 
 function ResponseActions({
