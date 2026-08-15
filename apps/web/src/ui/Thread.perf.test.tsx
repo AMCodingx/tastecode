@@ -162,6 +162,28 @@ describe('thread at scale', () => {
     ).toBe('Creating brand direction')
   })
 
+  it('names current and saved Codex activities instead of showing unknown', () => {
+    const item = (type: Item['type'], text: string): Item => ({
+      id: `${type}-${text}`,
+      turnId: 'turn-1',
+      type,
+      text,
+      status: 'started',
+      createdAt: 1,
+    })
+
+    expect(workLabel([item('tool_call', 'context compaction')], 'turn-1', false)).toBe(
+      'Compacting context window…',
+    )
+    expect(workLabel([item('unknown', '[contextCompaction]')], 'turn-1', false)).toBe(
+      'Compacting context window…',
+    )
+    expect(workLabel([item('unknown', '[futureCapability]')], 'turn-1', false)).toBe(
+      'Future capability',
+    )
+    expect(workLabel([item('unknown', '[unknown]')], 'turn-1', false)).toBe('Agent activity')
+  })
+
   it('costs about the same at a thousand items as at a hundred', () => {
     // The property virtualisation buys us. Rendering every row makes this ratio
     // track the item count instead — a tenfold difference, not a small one.

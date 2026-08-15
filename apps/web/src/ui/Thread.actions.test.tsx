@@ -173,6 +173,20 @@ describe('design activity rows', () => {
   })
 })
 
+describe('provider activity labels', () => {
+  it('uses a completed label for saved context-compaction rows', () => {
+    renderCompleted([
+      turnItem('compact', 1, {
+        type: 'unknown',
+        text: '[contextCompaction]',
+      }),
+    ])
+
+    expect(screen.getByText('Compacted context window')).toBeTruthy()
+    expect(screen.queryByText('unknown')).toBeNull()
+  })
+})
+
 describe('empty thread', () => {
   it('explains how to start an idle thread', () => {
     const rendered = renderCompleted([])
