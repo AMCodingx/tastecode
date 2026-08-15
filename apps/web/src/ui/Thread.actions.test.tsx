@@ -461,6 +461,27 @@ describe('completed activity disclosure', () => {
     expect(screen.getByText('Viewed image')).toBeTruthy()
   })
 
+  it('names context compaction while running and after replay', () => {
+    const startedCompaction = turnItem('compaction-1', 2, {
+      type: 'tool_call',
+      status: 'started',
+      text: 'context compaction',
+    })
+
+    expect(workLabel([startedCompaction], 'turn-1', false)).toBe('Compacting context window…')
+
+    renderCompleted([
+      turnItem('prompt-1', 1, { role: 'user', text: 'Continue' }),
+      { ...startedCompaction, status: 'completed' },
+      turnItem('answer-1', 3, { role: 'assistant', text: 'Done.' }),
+    ])
+
+    fireEvent.click(screen.getByRole('button', { name: 'Worked for 1s' }))
+    expect(screen.getByText('Compacted context window')).toBeTruthy()
+    expect(screen.queryByText('context compaction')).toBeNull()
+    expect(screen.queryByText('[contextCompaction]')).toBeNull()
+  })
+
   it('does not repeat identical file path and output details', () => {
     renderCompleted([
       turnItem('prompt-1', 1, { role: 'user', text: 'Fix it' }),

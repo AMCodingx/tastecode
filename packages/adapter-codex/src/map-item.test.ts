@@ -145,3 +145,19 @@ describe('Codex image inspection items', () => {
     })
   })
 })
+
+describe('Codex context compaction items', () => {
+  it('maps context compaction to a provider-neutral tool activity', () => {
+    expect(
+      mapThreadItem(
+        { type: 'contextCompaction', id: 'compaction-1' },
+        { ...context, status: 'started' },
+      ),
+    ).toMatchObject({
+      id: 'compaction-1',
+      type: 'tool_call',
+      status: 'started',
+      text: 'context compaction',
+    })
+  })
+})
