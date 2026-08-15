@@ -17,6 +17,7 @@ type Bridge = {
   pickFolder: () => Promise<string | undefined>
   pickSkillFolder: () => Promise<string | undefined>
   pickFiles: () => Promise<Array<PickedAttachment | string>>
+  previewViewedImage?: (reference: string) => Promise<PickedAttachment | undefined>
   revealPath: (path: string) => Promise<void>
   revealProjectFile?: (path: string, projectPath: string) => Promise<void>
   savePastedFile: (file: {
@@ -96,6 +97,14 @@ export function revealPath(path: string): Promise<void> {
 
 export function revealProjectFile(path: string, projectPath: string): Promise<void> {
   return bridge?.revealProjectFile?.(path, projectPath) ?? Promise.resolve()
+}
+
+export async function previewViewedImage(reference: string): Promise<PickedAttachment | undefined> {
+  try {
+    return await bridge?.previewViewedImage?.(reference)
+  } catch {
+    return undefined
+  }
 }
 
 export async function savePastedFile(file: File): Promise<PickedAttachment | undefined> {

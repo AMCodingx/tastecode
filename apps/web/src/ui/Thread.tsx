@@ -29,12 +29,13 @@ import {
   SquareTerminal,
   Wrench,
 } from 'lucide-react'
-import { writeClipboardText } from '../bridge.js'
+import { previewViewedImage, writeClipboardText, type PickedAttachment } from '../bridge.js'
 import { isEditableTarget } from '../shortcuts.js'
 import type { Transport } from '../transport.js'
 import { Approval, AutomaticApprovalReview } from './Approval.js'
 import { Diff } from './Diff.js'
 import { Markdown } from './Markdown.js'
+import { MediaViewer } from './MediaViewer.js'
 import { Plan } from './Plan.js'
 import { ThreadSearch } from './ThreadSearch.js'
 import { createThreadProjector, neighbourTurn, type TurnTiming } from './turns.js'
@@ -797,7 +798,15 @@ function AuxDisclosure({ item, live }: { item: Item; live: boolean }) {
       {detail && !(item.type === 'tool_call' && designPhaseLabel(toolText(item))) ? (
         <div className="aux__reveal" data-open={expanded} aria-hidden={!expanded} inert={!expanded}>
           <div className="aux__reveal-clip">
-            <pre className="aux__out">{detail}</pre>
+            {isImageView(item) && item.status === 'completed' ? (
+              <ViewedImagePreview
+                reference={detail}
+                active={expanded}
+                fallbackClassName="aux__out"
+              />
+            ) : (
+              <pre className="aux__out">{detail}</pre>
+            )}
           </div>
         </div>
       ) : null}
@@ -880,7 +889,17 @@ function CompletionRail({
                       <span className="aux__code">exit {item.exitCode}</span>
                     ) : null}
                   </div>
-                  {detail ? <pre className="activity__detail">{detail}</pre> : null}
+                  {detail ? (
+                    isImageView(item) && item.status === 'completed' ? (
+                      <ViewedImagePreview
+                        reference={detail}
+                        active={expanded}
+                        fallbackClassName="activity__detail"
+                      />
+                    ) : (
+                      <pre className="activity__detail">{detail}</pre>
+                    )
+                  ) : null}
                 </div>
               )
             })}
@@ -910,6 +929,77 @@ function activityDetail(item: Item): string | undefined {
     (detail, index) => detail && detail !== summary && details.indexOf(detail) === index,
   )
   return unique.length > 0 ? unique.join('\n') : undefined
+}
+
+function ViewedImagePreview({
+  reference,
+  active,
+  fallbackClassName,
+}: {
+  reference: string
+  active: boolean
+  fallbackClassName: string
+}) {
+  const [preview, setPreview] = useState<PickedAttachment>()
+  const [viewerOpen, setViewerOpen] = useState(false)
+  const [thumbnailFailed, setThumbnailFailed] = useState(false)
+  const [imageFailed, setImageFailed] = useState(false)
+  const attempted = useRef<string | undefined>(undefined)
+
+  useEffect(() => {
+    if (!active || attempted.current === reference) return
+    attempted.current = reference
+    let cancelled = false
+    void previewViewedImage(reference).then((result) => {
+      if (!cancelled) {
+        setPreview(result)
+        setThumbnailFailed(false)
+        setImageFailed(false)
+      }
+    })
+    return () => {
+      cancelled = true
+    }
+  }, [active, reference])
+
+  const inlineSource =
+    preview?.thumbnailUrl && !thumbnailFailed ? preview.thumbnailUrl : preview?.previewUrl
+  if (!preview || !inlineSource || !preview.previewUrl || imageFailed) {
+    return <pre className={fallbackClassName}>{reference}</pre>
+  }
+
+  return (
+    <div className="viewed-image-preview">
+      <button
+        type="button"
+        className="viewed-image-preview__open"
+        aria-label={`Open preview of ${preview.name}`}
+        onClick={() => setViewerOpen(true)}
+      >
+        <img
+          src={inlineSource}
+          alt={`Preview of ${preview.name}`}
+          draggable={false}
+          onError={() =>
+            preview.thumbnailUrl && !thumbnailFailed
+              ? setThumbnailFailed(true)
+              : setImageFailed(true)
+          }
+        />
+      </button>
+      <span className="viewed-image-preview__name" title={reference}>
+        {reference}
+      </span>
+      {viewerOpen ? (
+        <MediaViewer
+          src={preview.previewUrl}
+          name={preview.name}
+          mediaType="image"
+          onClose={() => setViewerOpen(false)}
+        />
+      ) : null}
+    </div>
+  )
 }
 
 function ResponseActions({

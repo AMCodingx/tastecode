@@ -59,6 +59,7 @@ import { restoreMainWindowPresence } from './window-presence.js'
 import { startVisibilityWatchdog } from './window-visibility-watchdog.js'
 import { windowThemeOptions, windowThemeSource } from './window-theme.js'
 import { isZoomAction, nextZoomFactor, type ZoomAction, zoomShortcut } from './zoom-shortcuts.js'
+import { viewedImagePath } from './viewed-image-path.js'
 
 const { autoUpdater } = updaterPackage
 
@@ -591,6 +592,17 @@ ipcMain.handle('harness:pickFiles', async (event) => {
   return result.canceled
     ? []
     : result.filePaths.map((filePath) => pickedAttachment(filePath, attachmentPreviewSecret))
+})
+
+ipcMain.handle('harness:previewViewedImage', async (event, reference: unknown) => {
+  requireOwnRenderer(event.sender)
+  const filePath = await viewedImagePath(
+    reference,
+    path.join(app.getPath('temp'), 'TasteCode', 'pasted-files'),
+  )
+  if (!filePath) return undefined
+  const attachment = pickedAttachment(filePath, attachmentPreviewSecret)
+  return attachment.mediaType === 'image' ? attachment : undefined
 })
 
 ipcMain.handle('harness:revealPath', (event, value: unknown) => {

@@ -4,11 +4,12 @@ import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/re
 import type { Item } from '@harness/contracts'
 import { Thread, isRepeatedDesignRow, workLabel } from './Thread.js'
 
-const { writeClipboardText } = vi.hoisted(() => ({
+const { previewViewedImage, writeClipboardText } = vi.hoisted(() => ({
+  previewViewedImage: vi.fn(async (): Promise<unknown> => undefined),
   writeClipboardText: vi.fn(async () => undefined),
 }))
 
-vi.mock('../bridge.js', () => ({ writeClipboardText }))
+vi.mock('../bridge.js', () => ({ previewViewedImage, writeClipboardText }))
 
 vi.mock('@tanstack/react-virtual', () => ({
   useVirtualizer: ({ count }: { count: number }) => ({
@@ -26,7 +27,11 @@ vi.mock('@tanstack/react-virtual', () => ({
   }),
 }))
 
-afterEach(cleanup)
+afterEach(() => {
+  cleanup()
+  previewViewedImage.mockReset()
+  previewViewedImage.mockResolvedValue(undefined)
+})
 
 function turnItem(id: string, createdAt: number, fields: Partial<Item>): Item {
   return {
@@ -381,6 +386,46 @@ describe('completed activity disclosure', () => {
     expect(screen.getByText('broken.png')).toBeTruthy()
     expect(screen.queryByText('[imageView]')).toBeNull()
     expect(container.querySelectorAll('.lucide-images')).toHaveLength(3)
+  })
+
+  it('shows a safe image preview when completed work is revealed', async () => {
+    previewViewedImage.mockResolvedValueOnce({
+      path: '/tmp/TasteCode/pasted-files/uuid-layout.png',
+      name: 'uuid-layout.png',
+      mediaType: 'image',
+      previewUrl: 'tastecode-attachment://preview/full',
+      thumbnailUrl: 'tastecode-attachment://preview/thumb?thumbnail=1',
+    })
+    render(
+      <Thread
+        items={[
+          turnItem('prompt-1', 1, { role: 'user', text: 'Review it' }),
+          turnItem('image-1', 2, {
+            type: 'tool_call',
+            text: 'image view\nuuid-layout.png',
+          }),
+          turnItem('answer-1', 3, { role: 'assistant', text: 'Reviewed.' }),
+        ]}
+        projectPath="/work/site"
+        running={false}
+        activeTurn={undefined}
+        plan={[]}
+        diff={undefined}
+        approvals={[]}
+        userInputs={[]}
+        reviews={[]}
+        onDecide={() => undefined}
+        onAnswerUserInput={() => undefined}
+      />,
+    )
+
+    fireEvent.click(screen.getByRole('button', { name: 'Worked for 1s' }))
+
+    await waitFor(() =>
+      expect(screen.getByRole('img', { name: 'Preview of uuid-layout.png' })).toBeTruthy(),
+    )
+    expect(previewViewedImage).toHaveBeenCalledWith('uuid-layout.png')
+    expect(screen.getByRole('button', { name: 'Open preview of uuid-layout.png' })).toBeTruthy()
   })
 
   it('does not claim an interrupted image inspection completed', () => {
