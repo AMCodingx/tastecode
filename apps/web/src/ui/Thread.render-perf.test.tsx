@@ -99,7 +99,7 @@ function view(
       items={items}
       liveItems={identity.liveItems}
       itemVersion={identity.itemVersion}
-      searching={identity.searching}
+      {...(identity.searching === undefined ? {} : { searching: identity.searching })}
       running={running}
       activeTurn={running ? { id: 'turn-2', startedAt: 0 } : undefined}
       threadId={identity.threadId}
@@ -342,7 +342,9 @@ describe('streamed thread renders', () => {
     rendered.rerender(view([user], true, { searching: true }))
 
     expect(rendered.container.querySelector('.activity--working')).toBe(rail)
-    expect(rendered.container.querySelector('.activity__working-label')?.textContent).toBe('Searching')
+    expect(rendered.container.querySelector('.activity__working-label')?.textContent).toBe(
+      'Searching',
+    )
     expect(rendered.container.querySelector('.activity__working-label-previous')?.textContent).toBe(
       'Working',
     )
