@@ -4895,17 +4895,19 @@
   align-items: center;
 }
 
-.activity__working-label,
-.activity__working-label-previous {
+.activity__working-status,
+.activity__working-status-previous {
   grid-area: 1 / 1;
+  display: inline-flex;
+  align-items: center;
   white-space: nowrap;
 }
 
-.activity__working-label.is-entering {
+.activity__working-status.is-entering {
   animation: activity-label-in 480ms cubic-bezier(0.4, 0, 0.2, 1) both;
 }
 
-.activity__working-label-previous {
+.activity__working-status-previous {
   animation: activity-label-out 480ms cubic-bezier(0.4, 0, 0.2, 1) both;
 }
 
@@ -4956,13 +4958,13 @@
   .thread__row.is-entering > :is(.reply, .aux, .activity),
   .thread__row.is-entering > .said,
   .activity--working,
-  .activity__working-label,
-  .activity__working-label-previous,
+  .activity__working-status,
+  .activity__working-status-previous,
   .activity.is-settling {
     animation: none;
   }
 
-  .activity__working-label-previous {
+  .activity__working-status-previous {
     display: none;
   }
 

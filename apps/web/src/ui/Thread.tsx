@@ -1111,10 +1111,7 @@ const WorkingRail = memo(function WorkingRail({
             aria-hidden
           />
         </span>
-        <WorkingLabel label={label} />
-        <span className="activity__working-time">
-          <WorkingTimer startedAt={startedAt} />
-        </span>
+        <WorkingLabel label={label} startedAt={startedAt} />
       </div>
     </div>
   )
@@ -1122,7 +1119,7 @@ const WorkingRail = memo(function WorkingRail({
 
 const WORKING_LABEL_MOTION_MS = 480
 
-function WorkingLabel({ label }: { label: string }) {
+function WorkingLabel({ label, startedAt }: { label: string; startedAt: number }) {
   const lastLabel = useRef(label)
   const timer = useRef<number | undefined>(undefined)
   const [previousLabel, setPreviousLabel] = useState<string>()
@@ -1149,12 +1146,21 @@ function WorkingLabel({ label }: { label: string }) {
   return (
     <span className="activity__working-label-swap" aria-live="polite" aria-atomic="true">
       {previousLabel ? (
-        <span className="activity__working-label-previous" aria-hidden>
-          {previousLabel}
+        <span className="activity__working-status-previous" aria-hidden>
+          <span className="activity__working-label-previous">{previousLabel}</span>
+          <span className="activity__working-time">
+            <WorkingTimer startedAt={startedAt} />
+          </span>
         </span>
       ) : null}
-      <span className={`activity__working-label${previousLabel ? ' is-entering' : ''}`} key={label}>
-        {label}
+      <span
+        className={`activity__working-status${previousLabel ? ' is-entering' : ''}`}
+        key={label}
+      >
+        <span className="activity__working-label">{label}</span>
+        <span className="activity__working-time">
+          <WorkingTimer startedAt={startedAt} />
+        </span>
       </span>
     </span>
   )
