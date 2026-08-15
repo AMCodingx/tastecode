@@ -2360,6 +2360,27 @@
   margin-bottom: 24px;
 }
 
+.mcp-settings__actions,
+.mcp-settings__provider {
+  display: flex;
+  align-items: center;
+}
+
+.mcp-settings__actions {
+  flex: none;
+  gap: 10px;
+}
+
+.mcp-settings__provider {
+  gap: 7px;
+  color: var(--text-3);
+  font-size: var(--t-xs);
+}
+
+.mcp-settings__provider-select .app-select__trigger {
+  min-width: 108px;
+}
+
 .mcp-settings__header .settings__title {
   margin-bottom: 5px;
 }

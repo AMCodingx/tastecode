@@ -148,6 +148,11 @@ const BACKDROP_OPTIONS = [
   { value: 'plum', label: 'Plum' },
 ] as const satisfies ReadonlyArray<{ value: BackdropPreference; label: string }>
 
+const MCP_PROVIDER_OPTIONS = [
+  { provider: 'codex', providerName: 'Codex' },
+  { provider: 'grok', providerName: 'Grok' },
+] satisfies Array<{ provider: ProviderId; providerName: string }>
+
 const FOCUSABLE_SELECTOR =
   'a[href]:not([tabindex="-1"]), button:not([disabled]):not([tabindex="-1"]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])'
 
@@ -328,7 +333,7 @@ function SettingsComponent(props: {
           ) : null}
           {section === 'providers' ? <ProviderSettings {...props} /> : null}
           {section === 'models' ? <ModelSettings {...props} /> : null}
-          {section === 'mcp' ? <McpSettings {...props} /> : null}
+          {section === 'mcp' ? <McpSettings {...props} providers={MCP_PROVIDER_OPTIONS} /> : null}
           {section === 'skills' ? <SkillsSettings {...props} /> : null}
           {section === 'workflows' ? <WorkflowSettings {...props} /> : null}
           {section === 'appearance' ? <AppearanceSettings {...props} /> : null}

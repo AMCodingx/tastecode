@@ -332,7 +332,7 @@ const UNSUPPORTED_MCP_CAPABILITIES: McpCapabilities = {
   cancelOAuth: false,
 }
 /** TasteCode-managed project servers only: no vendor inventory, no OAuth. */
-const OPENCODE_MCP_MANAGEMENT_CAPABILITIES: McpCapabilities = {
+const PROJECT_MCP_MANAGEMENT_CAPABILITIES: McpCapabilities = {
   inventory: false,
   add: true,
   update: true,
@@ -606,13 +606,12 @@ export class Orchestrator {
     provider: ProviderId,
     projectPath: string,
   ): Promise<{ capabilities: McpCapabilities; servers: McpServer[] }> {
-    if (provider === 'opencode') {
-      // No vendor inventory over this surface, but the harness-managed
-      // project servers are real: they are handed to every opencode launch
-      // through its own config.
+    if (provider === 'opencode' || provider === 'grok') {
+      // No vendor inventory over this surface, but the TasteCode-managed
+      // project servers are real: each adapter receives them when it starts.
       this.#watchedMcpProjects.add(projectPath)
       return {
-        capabilities: OPENCODE_MCP_MANAGEMENT_CAPABILITIES,
+        capabilities: PROJECT_MCP_MANAGEMENT_CAPABILITIES,
         servers: this.#mcpConfig.list(provider, projectPath).map((config) => ({
           id: config.id,
           scope: 'project' as const,
@@ -750,6 +749,9 @@ export class Orchestrator {
 
   async reloadMcpServers(provider: ProviderId, projectPath: string): Promise<void> {
     this.#requireMcpManagement(provider)
+    if (provider !== 'codex') {
+      throw new Error(`provider "${provider}" applies MCP changes to new sessions`)
+    }
     const active = [...this.#threads.values()].find(
       ({ thread }) =>
         thread.provider === provider && this.#store.thread(thread.id)?.projectPath === projectPath,
@@ -788,12 +790,12 @@ export class Orchestrator {
   }
 
   #requireMcpManagement(provider: ProviderId): void {
-    if (provider !== 'codex' && provider !== 'opencode')
+    if (provider !== 'codex' && provider !== 'grok' && provider !== 'opencode')
       throw new Error(`provider "${provider}" cannot manage MCP servers yet`)
   }
 
   #mcpRuntimeOptions(provider: ProviderId, projectPath: string): StartOptions {
-    if (provider !== 'codex' && provider !== 'opencode') return {}
+    if (provider !== 'codex' && provider !== 'grok' && provider !== 'opencode') return {}
     const mcpServers = this.#mcpConfig.list(provider, projectPath)
     const mcpCredentials: Record<string, string> = {}
     for (const server of mcpServers) {

@@ -2531,6 +2531,33 @@ describe('MCP inventory', () => {
       servers: [{ id: 'docs', scope: 'project', enabled: true }],
     })
   })
+
+  it('manages Grok project servers and passes them into new sessions', async () => {
+    const { orchestrator, startedOptions } = harness()
+    orchestrator.addMcpServer('grok', '/repo', {
+      id: 'test-tools',
+      enabled: true,
+      displayName: 'Test tools',
+      transport: { type: 'stdio', command: 'node', args: ['test-mcp.js'] },
+    })
+
+    await expect(orchestrator.listMcpServers('grok', '/repo')).resolves.toMatchObject({
+      capabilities: { inventory: false, add: true, update: true, remove: true, reload: false },
+      servers: [
+        {
+          id: 'test-tools',
+          displayName: 'Test tools',
+          scope: 'project',
+          enabled: true,
+        },
+      ],
+    })
+
+    await orchestrator.startThread('grok', '/repo')
+    expect(startedOptions[0]).toMatchObject({
+      mcpServers: [{ id: 'test-tools', enabled: true }],
+    })
+  })
 })
 
 describe('skills inventory', () => {
