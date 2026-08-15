@@ -2,6 +2,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import type { Item } from '@harness/contracts'
+import { StrictMode } from 'react'
 import { Thread, isRepeatedDesignRow, workLabel } from './Thread.js'
 
 const { previewViewedImage, revealPath, writeClipboardText } = vi.hoisted(() => ({
@@ -417,6 +418,42 @@ describe('completed activity disclosure', () => {
       attachments.compareDocumentPosition(text) & Node.DOCUMENT_POSITION_FOLLOWING,
     ).toBeTruthy()
     expect(container.querySelectorAll('.viewed-image-preview--message')).toHaveLength(1)
+  })
+
+  it('finishes a sent image preview after the Strict Mode effect replay', async () => {
+    const path = '/tmp/TasteCode/pasted-files/strict-reference.png'
+    previewViewedImage.mockResolvedValue({
+      path,
+      name: 'strict-reference.png',
+      mediaType: 'image',
+      previewUrl: 'tastecode-attachment://preview/strict',
+    })
+
+    render(
+      <StrictMode>
+        <Thread
+          items={[
+            turnItem('prompt-1', 1, {
+              role: 'user',
+              text: 'Strict preview',
+              attachments: [path],
+            }),
+          ]}
+          running={false}
+          activeTurn={undefined}
+          plan={[]}
+          diff={undefined}
+          approvals={[]}
+          userInputs={[]}
+          reviews={[]}
+          onDecide={() => undefined}
+          onAnswerUserInput={() => undefined}
+        />
+      </StrictMode>,
+    )
+
+    expect(await screen.findByRole('img', { name: 'Preview of strict-reference.png' })).toBeTruthy()
+    expect(previewViewedImage).toHaveBeenCalled()
   })
 
   it('shows a safe image preview when completed work is revealed', async () => {
