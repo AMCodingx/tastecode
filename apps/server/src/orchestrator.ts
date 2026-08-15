@@ -1624,6 +1624,9 @@ export class Orchestrator {
 
   #recordUserSubmission(threadId: string, turnId: string, submission: UserSubmission): void {
     this.#serverOwnedUserTurns.add(userTurnKey(threadId, turnId))
+    const visibleAttachments = submission.attachments.filter(
+      (attachment) => !isDesignBriefAttachment(attachment),
+    )
     const event: DomainEvent = {
       type: 'item.completed',
       item: {
@@ -1633,7 +1636,7 @@ export class Orchestrator {
         role: 'user',
         status: 'completed',
         text: submission.text,
-        ...(submission.attachments.length > 0 ? { attachments: submission.attachments } : {}),
+        ...(visibleAttachments.length > 0 ? { attachments: visibleAttachments } : {}),
         createdAt: submission.createdAt,
       },
     }

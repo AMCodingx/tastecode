@@ -4,12 +4,13 @@ import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/re
 import type { Item } from '@harness/contracts'
 import { Thread, isRepeatedDesignRow, workLabel } from './Thread.js'
 
-const { previewViewedImage, writeClipboardText } = vi.hoisted(() => ({
+const { previewViewedImage, revealPath, writeClipboardText } = vi.hoisted(() => ({
   previewViewedImage: vi.fn(async (): Promise<unknown> => undefined),
+  revealPath: vi.fn(async () => undefined),
   writeClipboardText: vi.fn(async () => undefined),
 }))
 
-vi.mock('../bridge.js', () => ({ previewViewedImage, writeClipboardText }))
+vi.mock('../bridge.js', () => ({ previewViewedImage, revealPath, writeClipboardText }))
 
 vi.mock('@tanstack/react-virtual', () => ({
   useVirtualizer: ({ count }: { count: number }) => ({
@@ -31,6 +32,7 @@ afterEach(() => {
   cleanup()
   previewViewedImage.mockReset()
   previewViewedImage.mockResolvedValue(undefined)
+  revealPath.mockReset()
 })
 
 function turnItem(id: string, createdAt: number, fields: Partial<Item>): Item {
@@ -386,6 +388,35 @@ describe('completed activity disclosure', () => {
     expect(screen.getByText('broken.png')).toBeTruthy()
     expect(screen.queryByText('[imageView]')).toBeNull()
     expect(container.querySelectorAll('.lucide-images')).toHaveLength(3)
+  })
+
+  it('shows sent image attachments above the user message', async () => {
+    const path = '/tmp/TasteCode/pasted-files/uuid-reference.png'
+    previewViewedImage.mockResolvedValueOnce({
+      path,
+      name: 'uuid-reference.png',
+      mediaType: 'image',
+      previewUrl: 'tastecode-attachment://preview/full',
+      thumbnailUrl: 'tastecode-attachment://preview/thumb?thumbnail=1',
+    })
+    const { container } = renderCompleted([
+      turnItem('prompt-1', 1, {
+        role: 'user',
+        text: 'Use this reference',
+        attachments: [path, '/work/notes.txt'],
+      }),
+    ])
+
+    const image = await screen.findByRole('img', { name: 'Preview of uuid-reference.png' })
+    const attachments = container.querySelector('.said__attachments')
+    const text = screen.getByText('Use this reference')
+    if (!attachments) throw new Error('sent attachment preview was not rendered')
+    expect(previewViewedImage).toHaveBeenCalledWith(path)
+    expect(attachments.contains(image)).toBe(true)
+    expect(
+      attachments.compareDocumentPosition(text) & Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy()
+    expect(container.querySelectorAll('.viewed-image-preview--message')).toHaveLength(1)
   })
 
   it('shows a safe image preview when completed work is revealed', async () => {

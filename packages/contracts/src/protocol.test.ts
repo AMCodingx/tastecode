@@ -93,9 +93,9 @@ describe('domain events', () => {
     }
 
     expect(ItemSchema.parse(message)).toEqual(message)
-    expect(ItemSchema.parse({ ...message, attachments: ['/work/reference.png'] }).attachments).toEqual(
-      ['/work/reference.png'],
-    )
+    expect(
+      ItemSchema.parse({ ...message, attachments: ['/work/reference.png'] }).attachments,
+    ).toEqual(['/work/reference.png'])
   })
 
   it('carries one item ID through a complete lifecycle', () => {
