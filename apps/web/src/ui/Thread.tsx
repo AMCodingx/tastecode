@@ -29,12 +29,18 @@ import {
   SquareTerminal,
   Wrench,
 } from 'lucide-react'
-import { writeClipboardText } from '../bridge.js'
+import {
+  previewViewedImage,
+  revealPath,
+  writeClipboardText,
+  type PickedAttachment,
+} from '../bridge.js'
 import { isEditableTarget } from '../shortcuts.js'
 import type { Transport } from '../transport.js'
 import { Approval, AutomaticApprovalReview } from './Approval.js'
 import { Diff } from './Diff.js'
 import { Markdown } from './Markdown.js'
+import { MediaViewer } from './MediaViewer.js'
 import { Plan } from './Plan.js'
 import { ThreadSearch } from './ThreadSearch.js'
 import {
@@ -686,9 +692,22 @@ const Row = memo(function Row({
   // The user's own words get a surface so the eye can find where each exchange
   // begins; the agent's answer is plain prose, which is what you actually read.
   if (item.type === 'message' && item.role === 'user') {
+    const imageAttachments = item.attachments?.filter(isImageAttachment) ?? []
     return (
       <div className="said">
-        <p className="said__text">{item.text}</p>
+        {imageAttachments.length > 0 ? (
+          <div className="said__attachments" aria-label="Attached images">
+            {imageAttachments.map((attachment) => (
+              <ViewedImagePreview
+                key={attachment}
+                reference={attachment}
+                active
+                variant="message"
+              />
+            ))}
+          </div>
+        ) : null}
+        {item.text ? <p className="said__text">{item.text}</p> : null}
         {item.text ? (
           <div className="response-actions said__actions" aria-label="Prompt actions">
             <CopyAction text={item.text} label="Copy prompt" />
@@ -811,7 +830,15 @@ function AuxDisclosure({ item, live }: { item: Item; live: boolean }) {
       {detail && !(item.type === 'tool_call' && designPhaseLabel(toolText(item))) ? (
         <div className="aux__reveal" data-open={expanded} aria-hidden={!expanded} inert={!expanded}>
           <div className="aux__reveal-clip">
-            <pre className="aux__out">{detail}</pre>
+            {isImageView(item) && item.status === 'completed' ? (
+              <ViewedImagePreview
+                reference={detail}
+                active={expanded}
+                fallbackClassName="aux__out"
+              />
+            ) : (
+              <pre className="aux__out">{detail}</pre>
+            )}
           </div>
         </div>
       ) : null}
@@ -882,7 +909,17 @@ function ActivityStack({
                       <span className="aux__code">exit {item.exitCode}</span>
                     ) : null}
                   </div>
-                  {detail ? <pre className="activity__detail">{detail}</pre> : null}
+                  {detail ? (
+                    isImageView(item) && item.status === 'completed' ? (
+                      <ViewedImagePreview
+                        reference={detail}
+                        active={expanded}
+                        fallbackClassName="activity__detail"
+                      />
+                    ) : (
+                      <pre className="activity__detail">{detail}</pre>
+                    )
+                  ) : null}
                 </div>
               )
             })}
@@ -1014,6 +1051,104 @@ function activityItemLabel(item: Item): string {
 
 function inlineActivityText(text: string | undefined): string {
   return text?.replace(/\s+/g, ' ').trim() ?? ''
+}
+
+function ViewedImagePreview({
+  reference,
+  active,
+  fallbackClassName,
+  variant = 'detail',
+}: {
+  reference: string
+  active: boolean
+  fallbackClassName?: string
+  variant?: 'detail' | 'message'
+}) {
+  const [preview, setPreview] = useState<PickedAttachment>()
+  const [viewerOpen, setViewerOpen] = useState(false)
+  const [thumbnailFailed, setThumbnailFailed] = useState(false)
+  const [imageFailed, setImageFailed] = useState(false)
+
+  useEffect(() => {
+    if (!active) return
+    let cancelled = false
+    void previewViewedImage(reference).then((result) => {
+      if (!cancelled) {
+        setPreview(result)
+        setThumbnailFailed(false)
+        setImageFailed(false)
+      }
+    })
+    return () => {
+      cancelled = true
+    }
+  }, [active, reference])
+
+  const inlineSource =
+    preview?.thumbnailUrl && !thumbnailFailed ? preview.thumbnailUrl : preview?.previewUrl
+  if (!preview || !inlineSource || !preview.previewUrl || imageFailed) {
+    if (variant === 'detail' && fallbackClassName) {
+      return <pre className={fallbackClassName}>{reference}</pre>
+    }
+    return (
+      <span
+        className="viewed-image-preview viewed-image-preview--message is-loading"
+        aria-label={`Loading preview of ${attachmentName(reference)}`}
+      >
+        <span className="viewed-image-preview__placeholder" aria-hidden>
+          <Images />
+        </span>
+      </span>
+    )
+  }
+
+  return (
+    <div
+      className={`viewed-image-preview${variant === 'message' ? ' viewed-image-preview--message' : ''}`}
+    >
+      <button
+        type="button"
+        className="viewed-image-preview__open"
+        aria-label={`Open preview of ${preview.name}`}
+        onClick={() => setViewerOpen(true)}
+      >
+        <img
+          src={inlineSource}
+          alt={`Preview of ${preview.name}`}
+          draggable={false}
+          onError={() =>
+            preview.thumbnailUrl && !thumbnailFailed
+              ? setThumbnailFailed(true)
+              : setImageFailed(true)
+          }
+        />
+      </button>
+      {variant === 'detail' ? (
+        <span className="viewed-image-preview__name" title={reference}>
+          {reference}
+        </span>
+      ) : null}
+      {viewerOpen ? (
+        <MediaViewer
+          src={preview.previewUrl}
+          name={preview.name}
+          mediaType="image"
+          onReveal={variant === 'message' ? () => void revealPath(reference) : undefined}
+          onClose={() => setViewerOpen(false)}
+        />
+      ) : null}
+    </div>
+  )
+}
+
+const IMAGE_ATTACHMENT_RE = /\.(?:apng|avif|bmp|gif|ico|jpe?g|png|webp)$/i
+
+function isImageAttachment(reference: string): boolean {
+  return IMAGE_ATTACHMENT_RE.test(reference)
+}
+
+function attachmentName(reference: string): string {
+  return reference.split(/[\\/]/).filter(Boolean).at(-1) ?? reference
 }
 
 function ResponseActions({

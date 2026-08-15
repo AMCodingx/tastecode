@@ -2,13 +2,16 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import type { Item } from '@harness/contracts'
+import { StrictMode } from 'react'
 import { Thread, isRepeatedDesignRow, workLabel } from './Thread.js'
 
-const { writeClipboardText } = vi.hoisted(() => ({
+const { previewViewedImage, revealPath, writeClipboardText } = vi.hoisted(() => ({
+  previewViewedImage: vi.fn(async (): Promise<unknown> => undefined),
+  revealPath: vi.fn(async () => undefined),
   writeClipboardText: vi.fn(async () => undefined),
 }))
 
-vi.mock('../bridge.js', () => ({ writeClipboardText }))
+vi.mock('../bridge.js', () => ({ previewViewedImage, revealPath, writeClipboardText }))
 
 vi.mock('@tanstack/react-virtual', () => ({
   useVirtualizer: ({ count }: { count: number }) => ({
@@ -26,7 +29,12 @@ vi.mock('@tanstack/react-virtual', () => ({
   }),
 }))
 
-afterEach(cleanup)
+afterEach(() => {
+  cleanup()
+  previewViewedImage.mockReset()
+  previewViewedImage.mockResolvedValue(undefined)
+  revealPath.mockReset()
+})
 
 function turnItem(id: string, createdAt: number, fields: Partial<Item>): Item {
   return {
@@ -444,6 +452,111 @@ describe('completed activity disclosure', () => {
     expect(screen.getByText('broken.png')).toBeTruthy()
     expect(screen.queryByText('[imageView]')).toBeNull()
     expect(container.querySelectorAll('.activity__body .lucide-images')).toHaveLength(3)
+  })
+
+  it('shows sent image attachments above the user message', async () => {
+    const path = '/tmp/TasteCode/pasted-files/uuid-reference.png'
+    previewViewedImage.mockResolvedValueOnce({
+      path,
+      name: 'uuid-reference.png',
+      mediaType: 'image',
+      previewUrl: 'tastecode-attachment://preview/full',
+      thumbnailUrl: 'tastecode-attachment://preview/thumb?thumbnail=1',
+    })
+    const { container } = renderCompleted([
+      turnItem('prompt-1', 1, {
+        role: 'user',
+        text: 'Use this reference',
+        attachments: [path, '/work/notes.txt'],
+      }),
+    ])
+
+    const image = await screen.findByRole('img', { name: 'Preview of uuid-reference.png' })
+    const attachments = container.querySelector('.said__attachments')
+    const text = screen.getByText('Use this reference')
+    if (!attachments) throw new Error('sent attachment preview was not rendered')
+    expect(previewViewedImage).toHaveBeenCalledWith(path)
+    expect(attachments.contains(image)).toBe(true)
+    expect(
+      attachments.compareDocumentPosition(text) & Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy()
+    expect(container.querySelectorAll('.viewed-image-preview--message')).toHaveLength(1)
+  })
+
+  it('finishes a sent image preview after the Strict Mode effect replay', async () => {
+    const path = '/tmp/TasteCode/pasted-files/strict-reference.png'
+    previewViewedImage.mockResolvedValue({
+      path,
+      name: 'strict-reference.png',
+      mediaType: 'image',
+      previewUrl: 'tastecode-attachment://preview/strict',
+    })
+
+    render(
+      <StrictMode>
+        <Thread
+          items={[
+            turnItem('prompt-1', 1, {
+              role: 'user',
+              text: 'Strict preview',
+              attachments: [path],
+            }),
+          ]}
+          running={false}
+          activeTurn={undefined}
+          plan={[]}
+          diff={undefined}
+          approvals={[]}
+          userInputs={[]}
+          reviews={[]}
+          onDecide={() => undefined}
+          onAnswerUserInput={() => undefined}
+        />
+      </StrictMode>,
+    )
+
+    expect(await screen.findByRole('img', { name: 'Preview of strict-reference.png' })).toBeTruthy()
+    expect(previewViewedImage).toHaveBeenCalled()
+  })
+
+  it('shows a safe image preview when completed work is revealed', async () => {
+    previewViewedImage.mockResolvedValueOnce({
+      path: '/tmp/TasteCode/pasted-files/uuid-layout.png',
+      name: 'uuid-layout.png',
+      mediaType: 'image',
+      previewUrl: 'tastecode-attachment://preview/full',
+      thumbnailUrl: 'tastecode-attachment://preview/thumb?thumbnail=1',
+    })
+    render(
+      <Thread
+        items={[
+          turnItem('prompt-1', 1, { role: 'user', text: 'Review it' }),
+          turnItem('image-1', 2, {
+            type: 'tool_call',
+            text: 'image view\nuuid-layout.png',
+          }),
+          turnItem('answer-1', 3, { role: 'assistant', text: 'Reviewed.' }),
+        ]}
+        projectPath="/work/site"
+        running={false}
+        activeTurn={undefined}
+        plan={[]}
+        diff={undefined}
+        approvals={[]}
+        userInputs={[]}
+        reviews={[]}
+        onDecide={() => undefined}
+        onAnswerUserInput={() => undefined}
+      />,
+    )
+
+    fireEvent.click(screen.getByRole('button', { name: 'Worked for 1s' }))
+
+    await waitFor(() =>
+      expect(screen.getByRole('img', { name: 'Preview of uuid-layout.png' })).toBeTruthy(),
+    )
+    expect(previewViewedImage).toHaveBeenCalledWith('uuid-layout.png')
+    expect(screen.getByRole('button', { name: 'Open preview of uuid-layout.png' })).toBeTruthy()
   })
 
   it('does not claim an interrupted image inspection completed', () => {

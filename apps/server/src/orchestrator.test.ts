@@ -741,19 +741,25 @@ describe('durable user submissions', () => {
       const thread = await orchestrator.startThread('codex', '/repo')
       const session = sessions[0]!
       session.turnIds.push('turn-current', 'turn-queued', 'turn-steered')
-      await orchestrator.submitTurn(thread.id, 'Repeat this.', [], {}, 'submission-current')
+      await orchestrator.submitTurn(
+        thread.id,
+        'Repeat this.',
+        ['/current.png'],
+        {},
+        'submission-current',
+      )
       session.emit(turnStarted(thread.id, 'turn-current'))
       const queued = await orchestrator.submitTurn(
         thread.id,
         'Repeat this.',
-        [],
+        ['/queued.png'],
         {},
         'submission-queued',
       )
       const steered = await orchestrator.submitTurn(
         thread.id,
         'Repeat this.',
-        [],
+        ['/steered.png'],
         {},
         'submission-steered',
       )
@@ -783,10 +789,10 @@ describe('durable user submissions', () => {
           (event): event is Extract<DomainEvent, { type: 'item.completed' }> =>
             event.type === 'item.completed' && event.item.role === 'user',
         )
-      expect(users.map(({ item }) => [item.id, item.turnId])).toEqual([
-        ['submission-current', 'turn-current'],
-        ['submission-queued', 'turn-queued'],
-        ['submission-steered', 'turn-steered'],
+      expect(users.map(({ item }) => [item.id, item.turnId, item.attachments])).toEqual([
+        ['submission-current', 'turn-current', ['/current.png']],
+        ['submission-queued', 'turn-queued', ['/queued.png']],
+        ['submission-steered', 'turn-steered', ['/steered.png']],
       ])
     } finally {
       releaseSteer()
