@@ -964,11 +964,9 @@ function ViewedImagePreview({
   const [viewerOpen, setViewerOpen] = useState(false)
   const [thumbnailFailed, setThumbnailFailed] = useState(false)
   const [imageFailed, setImageFailed] = useState(false)
-  const attempted = useRef<string | undefined>(undefined)
 
   useEffect(() => {
-    if (!active || attempted.current === reference) return
-    attempted.current = reference
+    if (!active) return
     let cancelled = false
     void previewViewedImage(reference).then((result) => {
       if (!cancelled) {
