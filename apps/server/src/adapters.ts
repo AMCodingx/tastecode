@@ -772,6 +772,7 @@ function codexRuntime(
         }
         const thread = await adapter.resumeThread(threadId, workspacePath, {
           ...(options.instructions ? { instructions: options.instructions } : {}),
+          ...(options.approval ? { approval: options.approval } : {}),
         })
         return { thread, session: adapter }
       } catch (error) {
