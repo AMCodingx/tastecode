@@ -1647,6 +1647,26 @@ describe('new chats', () => {
     expect(transport.request).not.toHaveBeenCalledWith('thread.start', expect.anything())
   })
 
+  it('auto-dismisses notifications after five seconds', async () => {
+    serverProjects = []
+    render(<App />)
+
+    const composer = await screen.findByPlaceholderText('Do anything')
+    vi.useFakeTimers()
+    try {
+      fireEvent.change(composer, { target: { value: 'Start after I choose a project' } })
+      fireEvent.click(screen.getByRole('button', { name: 'Send' }))
+
+      expect(screen.getByRole('alert').textContent).toContain('Choose a project before sending.')
+      act(() => vi.advanceTimersByTime(4_999))
+      expect(screen.getByRole('alert')).toBeTruthy()
+      act(() => vi.advanceTimersByTime(1))
+      expect(screen.queryByRole('alert')).toBeNull()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
   it('offers setup without clearing a loaded-thread draft when its provider cannot run', async () => {
     serverProviders = [
       {
