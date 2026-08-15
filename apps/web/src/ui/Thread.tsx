@@ -778,7 +778,11 @@ const Row = memo(function Row({
 function AuxDisclosure({ item, live }: { item: Item; live: boolean }) {
   const [expanded, setExpanded] = useState(false)
   const detail =
-    item.type === 'command' ? activityDetail(item) : (imageViewDetail(item) ?? item.text)
+    item.type === 'command'
+      ? activityDetail(item)
+      : isContextCompaction(item)
+        ? undefined
+        : (imageViewDetail(item) ?? item.text)
 
   return (
     <div className={`aux aux--${item.type} ${live ? 'aux--live' : ''}`} data-expanded={expanded}>
@@ -891,6 +895,7 @@ function ActivityStack({
 
 function activityDetail(item: Item): string | undefined {
   if (item.type === 'tool_call' && designPhaseLabel(toolText(item))) return undefined
+  if (isContextCompaction(item)) return undefined
   const image = imageViewDetail(item)
   if (image !== undefined) return image
   const details =
@@ -1263,6 +1268,10 @@ function summariseLive(item: Item): string {
       const text = toolText(item)
       const designPhase = designPhaseLabel(text)
       if (designPhase) return designPhase
+      if (isContextCompaction(item)) {
+        if (item.status === 'failed') return 'Could not compact context window'
+        return ongoing ? 'Compacting context window…' : 'Compacted context window'
+      }
       if (isImageView(item)) {
         if (item.status === 'failed') return 'Could not view image'
         return ongoing ? 'Viewing image' : 'Viewed image'
@@ -1310,13 +1319,19 @@ function summarise(item: Item): string {
       // same human label the working rail used while the phase ran.
       return (
         designPhaseLabel(toolText(item)) ??
-        (isImageView(item)
+        (isContextCompaction(item)
           ? item.status === 'failed'
-            ? 'Could not view image'
+            ? 'Could not compact context window'
             : item.status === 'started'
-              ? 'Image inspection interrupted'
-              : 'Viewed image'
-          : item.text) ??
+              ? 'Context compaction interrupted'
+              : 'Compacted context window'
+          : isImageView(item)
+            ? item.status === 'failed'
+              ? 'Could not view image'
+              : item.status === 'started'
+                ? 'Image inspection interrupted'
+                : 'Viewed image'
+            : item.text) ??
         'Tool call'
       )
     case 'plan':
@@ -1328,6 +1343,10 @@ function summarise(item: Item): string {
 
 function isImageView(item: Item): boolean {
   return item.type === 'tool_call' && item.text?.split('\n', 1)[0]?.trim() === 'image view'
+}
+
+function isContextCompaction(item: Item): boolean {
+  return item.type === 'tool_call' && item.text?.trim() === 'context compaction'
 }
 
 function imageViewDetail(item: Item): string | undefined {

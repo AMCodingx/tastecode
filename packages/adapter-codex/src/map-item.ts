@@ -122,6 +122,9 @@ export function mapThreadItem(
       }
     }
 
+    case 'contextCompaction':
+      return { ...base, type: 'tool_call', text: 'context compaction' }
+
     default:
       return { ...base, type: 'unknown', text: `[${raw.type}]` }
   }
