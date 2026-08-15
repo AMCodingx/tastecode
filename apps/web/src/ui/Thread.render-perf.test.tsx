@@ -91,6 +91,7 @@ function view(
       { item: Item; version: number; textUpdate: { kind: 'append'; text: string } }
     >
     itemVersion?: number
+    searching?: boolean
   } = {},
 ) {
   return (
@@ -98,6 +99,7 @@ function view(
       items={items}
       liveItems={identity.liveItems}
       itemVersion={identity.itemVersion}
+      searching={identity.searching}
       running={running}
       activeTurn={running ? { id: 'turn-2', startedAt: 0 } : undefined}
       threadId={identity.threadId}
@@ -324,6 +326,31 @@ describe('streamed thread renders', () => {
     expect(rendered.container.querySelector('[data-index="0"]')?.className).not.toContain(
       'is-compact-to-next',
     )
+  })
+
+  it('crossfades working labels without remounting the rail', () => {
+    vi.useFakeTimers()
+    const user = message({
+      id: 'user-1',
+      turnId: 'turn-2',
+      role: 'user',
+      text: 'Run the checks',
+    })
+    const rendered = render(view([user]))
+    const rail = rendered.container.querySelector('.activity--working')
+
+    rendered.rerender(view([user], true, { searching: true }))
+
+    expect(rendered.container.querySelector('.activity--working')).toBe(rail)
+    expect(rendered.container.querySelector('.activity__working-label')?.textContent).toBe('Searching')
+    expect(rendered.container.querySelector('.activity__working-label-previous')?.textContent).toBe(
+      'Working',
+    )
+
+    act(() => vi.advanceTimersByTime(480))
+
+    expect(rendered.container.querySelector('.activity__working-label-previous')).toBeNull()
+    vi.useRealTimers()
   })
 
   it('does not restart the entry animation timer for streamed text updates', () => {

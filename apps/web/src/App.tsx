@@ -2209,6 +2209,7 @@ export function App() {
       activeIdRef.current = undefined
       setActiveId(undefined)
       setThread(emptyThread)
+      setComposerFocusRequest((request) => request + 1)
       if (!PUBLIC_BETA_PROVIDER_IDS.has(provider)) setCatalogRequest((current) => current + 1)
     },
     [
