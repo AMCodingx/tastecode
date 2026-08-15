@@ -740,6 +740,28 @@ describe('Composer branch shelf', () => {
     renderComposer(vi.fn(), { branch: undefined, branches: [] })
     expect(screen.queryByRole('button', { name: 'Choose branch' })).toBeNull()
   })
+
+  it('keeps main first and filters branches from the shared search field', () => {
+    renderComposer(vi.fn(), {
+      branch: 'feature/current',
+      branches: ['feature/current', 'main', 'agent/review', 'fix/desktop'],
+    })
+
+    fireEvent.click(screen.getByRole('button', { name: 'Choose branch' }))
+
+    const dialog = screen.getByRole('dialog', { name: 'Choose branch' })
+    const branchNames = Array.from(dialog.querySelectorAll('.menu__item')).map((item) =>
+      item.textContent?.trim(),
+    )
+    expect(branchNames).toEqual(['main', 'feature/current', 'agent/review', 'fix/desktop'])
+
+    const search = screen.getByRole('searchbox', { name: 'Search branches' })
+    fireEvent.change(search, { target: { value: 'agent' } })
+
+    expect(screen.getByRole('menuitem', { name: 'agent/review' })).toBeTruthy()
+    expect(screen.queryByRole('menuitem', { name: 'main' })).toBeNull()
+    expect(screen.queryByRole('menuitem', { name: 'feature/current' })).toBeNull()
+  })
 })
 
 describe('Composer draft replacement', () => {
