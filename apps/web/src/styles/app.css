@@ -3938,6 +3938,14 @@
   white-space: nowrap;
 }
 
+.sess__unread-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: var(--r-circle);
+  background: var(--light);
+  flex: none;
+}
+
 .sess__source {
   max-width: 84px;
   flex: none;
