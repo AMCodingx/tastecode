@@ -4500,6 +4500,12 @@
   padding-bottom: 12px;
 }
 
+/* Keep one turn's narration and work status visually connected. The normal
+   turn gap is too large between two rows that describe the same live step. */
+.thread__row.is-compact-to-next {
+  padding-bottom: 4px;
+}
+
 .thread__row.is-suppressed {
   height: 0;
   overflow: hidden;

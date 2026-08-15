@@ -293,6 +293,39 @@ describe('streamed thread renders', () => {
     expect(rendered.container.querySelector('.activity--working')).toBeNull()
   })
 
+  it('keeps live narration close to the activity row that follows it', () => {
+    const user = message({
+      id: 'user-1',
+      turnId: 'turn-2',
+      role: 'user',
+      text: 'Run the checks',
+    })
+    const narration = message({
+      id: 'commentary-1',
+      turnId: 'turn-2',
+      role: 'assistant',
+      phase: 'commentary',
+      text: 'I found the cause.',
+    })
+    const command = message({
+      id: 'command-1',
+      turnId: 'turn-2',
+      type: 'command',
+      role: undefined,
+      status: 'started',
+      command: 'pnpm test',
+    })
+
+    const rendered = render(view([user, narration, command]))
+
+    expect(rendered.container.querySelector('[data-index="1"]')?.className).toContain(
+      'is-compact-to-next',
+    )
+    expect(rendered.container.querySelector('[data-index="0"]')?.className).not.toContain(
+      'is-compact-to-next',
+    )
+  })
+
   it('does not restart the entry animation timer for streamed text updates', () => {
     vi.useFakeTimers()
     const existing: Item[] = [

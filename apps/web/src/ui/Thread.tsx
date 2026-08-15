@@ -392,6 +392,14 @@ export function Thread(props: {
                   !compactedActivity &&
                   ((isActivity(item) && !designPhaseLabel(toolText(item))) ||
                     item.type === 'error'))
+              const nextVisibleItem = itemAt(
+                activityLead && activityGroup ? activityGroup.lastIndex + 1 : row.index + 1,
+              )
+              const compactToNext =
+                !suppressed &&
+                nextVisibleItem?.turnId === item.turnId &&
+                !(item.type === 'message' && item.role === 'user') &&
+                !(nextVisibleItem.type === 'message' && nextVisibleItem.role === 'user')
               const settling = settledTurnId === item.turnId
               const railAnchor =
                 showWorkingRail && live && presentation?.firstResponseIndex === row.index
@@ -404,7 +412,7 @@ export function Thread(props: {
               return (
                 <div
                   key={row.key}
-                  className={`thread__row${suppressed ? ' is-suppressed' : ''}${enteringItemIds.has(item.id) ? ' is-entering' : ''}${settling ? ' is-settling' : ''}${railAnchor ? ' is-rail-anchor' : ''}`}
+                  className={`thread__row${suppressed ? ' is-suppressed' : ''}${compactToNext ? ' is-compact-to-next' : ''}${enteringItemIds.has(item.id) ? ' is-entering' : ''}${settling ? ' is-settling' : ''}${railAnchor ? ' is-rail-anchor' : ''}`}
                   data-index={row.index}
                   ref={virtualizer.measureElement}
                   style={{ transform: `translateY(${row.start}px)` }}
