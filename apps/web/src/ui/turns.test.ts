@@ -47,7 +47,7 @@ describe('turn boundaries', () => {
     expect(neighbourTurn(turns, 3, 'prev')).toBe(1)
   })
 
-  it('collects completed turn activity behind one elapsed-time disclosure', () => {
+  it('keeps reasoning visible and groups the following tool activity', () => {
     const items: Item[] = [
       { ...item('user', 't1'), role: 'user', createdAt: 1_000 },
       {
@@ -66,7 +66,7 @@ describe('turn boundaries', () => {
     ]
 
     expect(presentTurns(items).get('t1')).toMatchObject({
-      activityGroups: [{ items: [items[1], items[2]], firstIndex: 1 }],
+      activityGroups: [{ items: [items[2]], firstIndex: 2 }],
       responseText: 'Done.',
       firstResponseIndex: 1,
       finalAnswerIndex: 3,
@@ -169,7 +169,7 @@ describe('turn boundaries', () => {
       t1: { startedAt: 1_000, completedAt: 14_000 },
     }).get('t1')
 
-    expect(presentation?.activityGroups.map(({ elapsedMs }) => elapsedMs)).toEqual([4_000, 8_000])
+    expect(presentation?.activityGroups.map(({ elapsedMs }) => elapsedMs)).toEqual([8_000])
     expect(presentation?.workStartedAt).toBe(13_000)
   })
 

@@ -216,7 +216,7 @@ describe('streamed thread renders', () => {
     })
   })
 
-  it('does not reconcile the working animation for streamed text updates', () => {
+  it('does not add a duplicate working animation beside a streamed answer', () => {
     const items: Item[] = [
       message({ id: 'user-1', turnId: 'turn-2', role: 'user', text: 'Question' }),
       message({ id: 'answer-1', turnId: 'turn-2', status: 'started', text: 'Hel' }),
@@ -226,24 +226,18 @@ describe('streamed thread renders', () => {
 
     rendered.rerender(view([...items.slice(0, -1), { ...items.at(-1)!, text: 'Hello' }]))
 
-    expect(initialRenders).toBe(1)
+    expect(initialRenders).toBe(0)
     expect(orbRender).toHaveBeenCalledTimes(initialRenders)
   })
 
-  it('uses the stable rail as the only live status and clears completed activity', () => {
+  it('keeps one live activity stack while commands change, then settles it at a boundary', () => {
     const user = message({
       id: 'user-1',
       turnId: 'turn-2',
       role: 'user',
       text: 'Run the checks',
     })
-    const opening = message({
-      id: 'opening-1',
-      turnId: 'turn-2',
-      status: 'started',
-      text: 'I will run the checks.',
-    })
-    const command = message({
+    const firstCommand = message({
       id: 'command-1',
       turnId: 'turn-2',
       type: 'command',
@@ -251,51 +245,52 @@ describe('streamed thread renders', () => {
       status: 'started',
       command: 'pnpm test',
     })
-    const rendered = render(view([user, opening]))
-    const rail = rendered.container.querySelector('.activity--working')
+    const rendered = render(view([user, firstCommand]))
+    const stack = rendered.container.querySelector('.activity')
 
-    expect(rendered.container.querySelector('.activity__working-label')?.textContent).toBe(
-      'Working',
+    expect(rendered.getByRole('button', { name: 'Running pnpm test' })).toBeTruthy()
+    expect(rendered.container.querySelector('[data-index="1"]')?.className).not.toContain(
+      'is-suppressed',
     )
-    rendered.rerender(view([user, opening, command]))
 
-    expect(rendered.container.querySelector('.activity--working')).toBe(rail)
-    expect(rendered.container.querySelector('.activity__working-label')?.textContent).toBe(
-      'Running a command',
-    )
-    expect(rendered.container.querySelectorAll('.aux--live')).toHaveLength(0)
+    const secondCommand = message({
+      id: 'command-2',
+      turnId: 'turn-2',
+      type: 'command',
+      role: undefined,
+      status: 'started',
+      command: 'git status --short',
+    })
+    rendered.rerender(view([user, { ...firstCommand, status: 'completed' }, secondCommand]))
+
+    expect(rendered.container.querySelector('.activity')).toBe(stack)
+    expect(rendered.getByRole('button', { name: 'Running git status --short' })).toBeTruthy()
+    expect(rendered.container.querySelectorAll('.activity')).toHaveLength(1)
     expect(rendered.container.querySelector('[data-index="2"]')?.className).toContain(
       'is-suppressed',
     )
-    expect(rendered.container.querySelector('[data-index="2"]')?.className).not.toContain(
-      'is-live-activity',
-    )
 
-    rendered.rerender(view([user, opening, { ...command, text: 'Tests passed.' }]))
-    expect(rendered.container.querySelector('.activity--working')).toBe(rail)
-    expect(rendered.container.querySelectorAll('.aux--live')).toHaveLength(0)
-
-    const narration = message({
-      id: 'answer-1',
+    const reasoning = message({
+      id: 'reasoning-1',
       turnId: 'turn-2',
+      type: 'reasoning',
+      role: undefined,
       status: 'started',
-      text: 'The checks passed.',
+      text: 'Reviewing command results',
     })
     rendered.rerender(
-      view([user, opening, { ...command, status: 'completed', text: 'Tests passed.' }, narration]),
+      view([
+        user,
+        { ...firstCommand, status: 'completed' },
+        { ...secondCommand, status: 'completed' },
+        reasoning,
+      ]),
     )
 
-    expect(rendered.container.querySelector('.activity--working')).toBe(rail)
-    expect(rendered.container.querySelector('.activity__working-label')?.textContent).toBe(
-      'Working',
-    )
-    expect(rendered.container.querySelectorAll('.aux--live')).toHaveLength(0)
-    expect(rendered.container.querySelector('[data-index="2"]')?.className).toContain(
-      'is-suppressed',
-    )
-    expect(rendered.queryByRole('button', { name: 'Ran a command' })).toBeNull()
-    expect(rendered.queryByRole('button', { name: 'pnpm test' })).toBeNull()
-    expect(markdownRender).toHaveBeenLastCalledWith({ text: narration.text, streaming: true })
+    expect(rendered.container.querySelector('.activity')).toBe(stack)
+    expect(rendered.getByRole('button', { name: 'Ran commands' })).toBeTruthy()
+    expect(rendered.getByText('Reviewing command results')).toBeTruthy()
+    expect(rendered.container.querySelector('.activity--working')).toBeNull()
   })
 
   it('does not restart the entry animation timer for streamed text updates', () => {
