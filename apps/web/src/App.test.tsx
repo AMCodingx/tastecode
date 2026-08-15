@@ -2638,6 +2638,7 @@ describe('new chats', () => {
 
     const composer = document.querySelector('textarea')
     expect(composer).not.toBeNull()
+    expect(document.activeElement).toBe(composer)
     fireEvent.change(composer!, { target: { value: 'Fix the sidebar' } })
     fireEvent.keyDown(composer!, { key: 'Enter' })
 
