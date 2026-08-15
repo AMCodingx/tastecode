@@ -3044,6 +3044,7 @@
   place-items: center;
   width: 20px;
   height: 20px;
+  padding: 0;
   background: none;
   border: 0;
   border-radius: var(--r-sm);
@@ -3765,6 +3766,7 @@
   align-items: center;
   gap: 1px;
   min-height: 36px;
+  padding-right: 6px;
   border-radius: var(--r-md);
   transition: background var(--dur-fast) var(--ease-out);
 }
