@@ -899,7 +899,7 @@ describe('provider settings', () => {
   it('shows one account action per provider and runs that provider flow', async () => {
     const accounts: Record<string, Account> = {
       codex: { signedIn: true, email: 'private@example.com', plan: 'pro' },
-      'claude-code': { signedIn: true, plan: 'pro' },
+      'claude-code': { signedIn: true, email: 'claude@example.com', plan: 'pro' },
       grok: { signedIn: false },
     }
     const transport = {
@@ -1014,7 +1014,13 @@ describe('provider settings', () => {
     if (!codexRow) throw new Error('Codex provider row missing')
     const email = within(codexRow).getByText('private@example.com')
     expect(email.className).toBe('settings__email-value')
-    expect(email.closest('.settings__email')?.getAttribute('title')).toBe('private@example.com')
+    const emailButton = email.closest<HTMLButtonElement>('.settings__email')
+    expect(emailButton?.getAttribute('title')).toBe('Click to reveal email')
+    expect(emailButton?.getAttribute('data-revealed')).toBe('false')
+    if (!emailButton) throw new Error('redacted email button missing')
+    fireEvent.click(emailButton)
+    expect(emailButton.getAttribute('data-revealed')).toBe('true')
+    expect(emailButton.getAttribute('title')).toBe('Click to hide email')
     expect(within(codexRow).queryByText(/\*+@example\.com/)).toBeNull()
 
     // Beta scope: agent rows and the API-connection form stay out entirely,
@@ -1026,7 +1032,9 @@ describe('provider settings', () => {
 
     const claudeRow = screen.getByText('Claude Code').closest<HTMLElement>('.settings__row')
     const grokRow = screen.getByText('Grok').closest<HTMLElement>('.settings__row')
-    expect(claudeRow?.querySelector('.provider-row__status')?.textContent).toBe('Signed in · pro')
+    expect(claudeRow?.querySelector('.provider-row__status')?.textContent).toBe(
+      'Authenticated as claude@example.com · pro',
+    )
     if (!claudeRow || !grokRow) throw new Error('provider row missing')
     fireEvent.click(within(claudeRow).getByRole('button', { name: 'Sign out' }))
     await waitFor(() =>

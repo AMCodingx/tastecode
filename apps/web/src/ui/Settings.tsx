@@ -1800,22 +1800,41 @@ function providerEmailKey(provider: ProviderId): string {
 function AccountIdentity(props: { provider: ProviderId; account: Account }) {
   const [savedEmail] = useState(() => localStorage.getItem(providerEmailKey(props.provider)))
   const email = props.account.email ?? savedEmail
+  const claude = props.provider === 'claude-code'
 
   return (
     <>
-      {email ? <AccountEmail email={email} /> : 'Signed in'}
+      {email ? (
+        <>
+          {claude ? 'Authenticated as ' : null}
+          <AccountEmail email={email} />
+        </>
+      ) : claude ? (
+        'Authenticated'
+      ) : (
+        'Signed in'
+      )}
       {props.account.plan ? ' · ' : null}
       {props.account.plan}
     </>
   )
 }
 
-/** Privacy by default: reveal the fixed-width blurred address only on intent. */
+/** T3-style privacy: the fixed-width address stays redacted until explicitly clicked. */
 function AccountEmail(props: { email: string }) {
+  const [revealed, setRevealed] = useState(false)
   return (
-    <span className="settings__email" tabIndex={0} title={props.email}>
+    <button
+      className="settings__email"
+      type="button"
+      data-revealed={revealed}
+      aria-label={revealed ? 'Hide account email' : 'Reveal account email'}
+      aria-pressed={revealed}
+      title={revealed ? 'Click to hide email' : 'Click to reveal email'}
+      onClick={() => setRevealed((current) => !current)}
+    >
       <span className="settings__email-value">{props.email}</span>
-    </span>
+    </button>
   )
 }
 
