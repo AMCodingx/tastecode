@@ -14,6 +14,9 @@ import {
 import { createPortal } from 'react-dom'
 import type {
   Account,
+  BackgroundModelSettings as BackgroundModelSettingsState,
+  BackgroundModelSource,
+  BackgroundModelTarget,
   DataOf,
   ModelConnection,
   ModelConnectionPreset,
@@ -79,6 +82,7 @@ import {
   subscribeAppHaptics,
   writeAppHaptics,
 } from '../haptics.js'
+import { AppSelect } from './AppSelect.js'
 import { McpSettings } from './McpSettings.js'
 import { Menu, MenuItem } from './Menu.js'
 import { groupModelsBySource } from './ModelSelector.js'
@@ -792,6 +796,7 @@ export function ProviderSettings(props: {
 }
 
 function ModelSettings(props: {
+  transport: Transport
   models: ModelChoice[]
   hiddenModels: Set<string>
   onModelVisibilityChange: (key: string, visible: boolean) => void
@@ -803,6 +808,7 @@ function ModelSettings(props: {
 
   return (
     <SettingsPanel title="Models" groupClassName="settings__group--plain model-settings">
+      <BackgroundModelSettings transport={props.transport} />
       {sources.length > 0 ? (
         <div className="model-settings__sources">
           {sources.map((group) => (
@@ -823,6 +829,187 @@ function ModelSettings(props: {
       )}
     </SettingsPanel>
   )
+}
+
+function BackgroundModelSettings(props: { transport: Transport }) {
+  const [state, setState] = useState<BackgroundModelSettingsState>()
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState<string>()
+
+  useEffect(() => {
+    let cancelled = false
+    setError(undefined)
+    void Promise.resolve(props.transport.request('backgroundModel.settings', {}))
+      .then((settings) => {
+        if (cancelled) return
+        if (isBackgroundModelSettingsState(settings)) {
+          setState(settings)
+        } else {
+          setError('Background model settings are unavailable.')
+        }
+      })
+      .catch((cause) => {
+        if (!cancelled) setError(cause instanceof Error ? cause.message : String(cause))
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [props.transport])
+
+  const update = async (preference: BackgroundModelSettingsState['preference']) => {
+    setBusy(true)
+    setError(undefined)
+    try {
+      const settings = await props.transport.request('backgroundModel.updateSettings', preference)
+      if (!isBackgroundModelSettingsState(settings)) {
+        throw new Error('Background model settings are unavailable.')
+      }
+      setState(settings)
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : String(cause))
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  const manual = state?.preference.mode === 'manual' ? state.preference.target : undefined
+  const selected = manual ? findBackgroundModel(state?.sources ?? [], manual) : undefined
+  const selectedValue = selected
+    ? backgroundModelValue(selected.source.id, selected.model.id)
+    : manual
+      ? 'unavailable'
+      : 'automatic'
+  const resolved = state?.resolved
+  const resolvedChoice = resolved ? findBackgroundModel(state?.sources ?? [], resolved) : undefined
+  const automaticNote =
+    manual && !selected
+      ? `${manual.model} is unavailable. Choose Automatic or another connected model.`
+      : resolved
+        ? `Currently ${resolvedChoice?.model.displayName ?? resolved.model} through ${resolved.sourceName}${resolved.effort ? ` at ${resolved.effort} effort` : ''}.`
+        : 'Connect a provider with an available model to enable background writing.'
+  const modelOptions = [
+    { value: 'automatic', label: 'Automatic (recommended)' },
+    ...(manual && !selected
+      ? [{ value: 'unavailable', label: `${manual.model} (unavailable)`, disabled: true }]
+      : []),
+    ...(state?.sources ?? []).flatMap((source) =>
+      source.models.map((model) => ({
+        value: backgroundModelValue(source.id, model.id),
+        label: model.displayName,
+      })),
+    ),
+  ]
+  const effortOptions =
+    selected?.model.reasoningEfforts.map((effort) => ({ value: effort, label: effort })) ?? []
+  const selectedEffort = manual?.effort ?? effortOptions[0]?.value ?? ''
+
+  return (
+    <section className="background-model-settings" aria-label="Background work">
+      <header>
+        <h2>Background work</h2>
+        <p>
+          Used for session titles, commit-message drafts, and other short writing. Automatic uses
+          Luna at medium on a Codex subscription, or the newest cost-oriented model at its lowest
+          effort elsewhere.
+        </p>
+      </header>
+      <div className="settings__group">
+        <SettingsRow title="Model" note={automaticNote}>
+          <AppSelect
+            className="settings__select settings__select--model"
+            ariaLabel="Background model"
+            align="right"
+            value={selectedValue}
+            options={modelOptions}
+            disabled={!state || busy}
+            onChange={(value) => {
+              if (value === 'automatic') {
+                void update({ mode: 'automatic' })
+                return
+              }
+              const choice = backgroundModelFromValue(state?.sources ?? [], value)
+              if (!choice) return
+              void update({
+                mode: 'manual',
+                target: {
+                  provider: choice.source.provider,
+                  ...(choice.source.connectionId
+                    ? { connectionId: choice.source.connectionId }
+                    : {}),
+                  ...(choice.source.agent ? { agent: choice.source.agent } : {}),
+                  model: choice.model.id,
+                  ...(choice.model.reasoningEfforts[0]
+                    ? { effort: choice.model.reasoningEfforts[0] }
+                    : {}),
+                },
+              })
+            }}
+          />
+        </SettingsRow>
+        {manual && selected && effortOptions.length > 0 ? (
+          <SettingsRow
+            title="Reasoning effort"
+            note="Choose the effort used for background writing."
+          >
+            <AppSelect
+              className="settings__select settings__select--effort"
+              ariaLabel="Background reasoning effort"
+              align="right"
+              value={selectedEffort}
+              options={effortOptions}
+              disabled={busy}
+              onChange={(effort) =>
+                void update({
+                  mode: 'manual',
+                  target: { ...manual, effort },
+                })
+              }
+            />
+          </SettingsRow>
+        ) : null}
+      </div>
+      {error ? (
+        <p className="background-model-settings__error" role="alert">
+          {error}
+        </p>
+      ) : null}
+    </section>
+  )
+}
+
+function isBackgroundModelSettingsState(value: unknown): value is BackgroundModelSettingsState {
+  if (!value || typeof value !== 'object') return false
+  const candidate = value as Partial<BackgroundModelSettingsState>
+  return (
+    Array.isArray(candidate.sources) &&
+    (candidate.preference?.mode === 'automatic' || candidate.preference?.mode === 'manual')
+  )
+}
+
+function findBackgroundModel(sources: BackgroundModelSource[], target: BackgroundModelTarget) {
+  const source = sources.find(
+    (candidate) =>
+      candidate.provider === target.provider &&
+      candidate.connectionId === target.connectionId &&
+      candidate.agent === target.agent,
+  )
+  const model = source?.models.find((candidate) => candidate.id === target.model)
+  return source && model ? { source, model } : undefined
+}
+
+function backgroundModelValue(sourceId: string, modelId: string): string {
+  return JSON.stringify([sourceId, modelId])
+}
+
+function backgroundModelFromValue(sources: BackgroundModelSource[], value: string) {
+  try {
+    const [sourceId, modelId] = JSON.parse(value) as [string, string]
+    const source = sources.find((candidate) => candidate.id === sourceId)
+    const model = source?.models.find((candidate) => candidate.id === modelId)
+    return source && model ? { source, model } : undefined
+  } catch {
+    return undefined
+  }
 }
 
 function ModelVisibilityGroup(props: {

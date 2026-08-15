@@ -2021,11 +2021,30 @@ export function App() {
     setThread(emptyThread)
   }, [transport, refreshProjects])
 
+  const generateSessionTitle = useCallback(
+    async (threadId: string, prompt: string, expectedTitle: string) => {
+      try {
+        const generated = await transport.request('backgroundModel.generateTitle', {
+          threadId,
+          prompt,
+          expectedTitle,
+        })
+        if (!generated.applied) return
+        setProjects((current) => renameSession(current, threadId, generated.title))
+      } catch {
+        // The immediate prompt-derived title remains useful when a background
+        // provider is unavailable or the short generation fails.
+      }
+    },
+    [transport],
+  )
+
   const createSession = useCallback(
     async (
       projectPath: string,
       provisionalId: string,
       title: string,
+      titlePrompt: string,
     ): Promise<string | undefined> => {
       const choice = selectedModelChoice
       if (!choice) return undefined
@@ -2094,6 +2113,7 @@ export function App() {
         }
         void transport
           .request('thread.rename', { threadId, title: canonicalTitle })
+          .then(() => generateSessionTitle(threadId, titlePrompt, canonicalTitle))
           .catch(() => undefined)
           .then(() => refreshProjects())
           .catch(() => undefined)
@@ -2126,6 +2146,7 @@ export function App() {
       autoReviewSupported,
       isolateSession,
       refreshProjects,
+      generateSessionTitle,
       releaseWorkspaceStart,
       refreshWorkspaceAfterCompletion,
     ],
@@ -2330,7 +2351,7 @@ export function App() {
         setActiveId(provisionalId)
         setThread(provisional)
         setThreadRevealRequest((request) => request + 1)
-        const promise = createSession(activePath, provisionalId, titleFrom(text))
+        const promise = createSession(activePath, provisionalId, titleFrom(text), text)
         pendingSession.current = { id: provisionalId, promise, title: titleFrom(text) }
         threadId = await promise
         interruptRequested = pendingInterruptThreadIds.current.delete(provisionalId)
@@ -2434,7 +2455,10 @@ export function App() {
       if (untitled) {
         const title = titleFrom(text)
         setProjects((current) => promoteSession(renameSession(current, threadId, title), threadId))
-        void transport.request('thread.rename', { threadId, title }).catch(() => undefined)
+        void transport
+          .request('thread.rename', { threadId, title })
+          .then(() => generateSessionTitle(threadId, text, title))
+          .catch(() => undefined)
       }
       const turnChoice =
         !existingSession ||
