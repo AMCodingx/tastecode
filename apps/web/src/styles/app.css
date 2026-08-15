@@ -4765,8 +4765,23 @@
   height: 20px;
 }
 
-.activity__working-label {
-  animation: activity-label-in 180ms var(--ease-out) both;
+.activity__working-label-swap {
+  display: grid;
+  align-items: center;
+}
+
+.activity__working-label,
+.activity__working-label-previous {
+  grid-area: 1 / 1;
+  white-space: nowrap;
+}
+
+.activity__working-label.is-entering {
+  animation: activity-label-in 480ms cubic-bezier(0.4, 0, 0.2, 1) both;
+}
+
+.activity__working-label-previous {
+  animation: activity-label-out 480ms cubic-bezier(0.4, 0, 0.2, 1) both;
 }
 
 /* Dimmer than the label beside it — --text-4 was never defined, so this
@@ -4794,7 +4809,14 @@
 @keyframes activity-label-in {
   from {
     opacity: 0;
-    transform: translateY(3px);
+    transform: translateY(2px);
+  }
+}
+
+@keyframes activity-label-out {
+  to {
+    opacity: 0;
+    transform: translateY(-2px);
   }
 }
 
@@ -4810,8 +4832,13 @@
   .thread__row.is-entering > .said,
   .activity--working,
   .activity__working-label,
+  .activity__working-label-previous,
   .activity.is-settling {
     animation: none;
+  }
+
+  .activity__working-label-previous {
+    display: none;
   }
 
   .activity__reveal[data-open='true'] > .activity__reveal-clip,
