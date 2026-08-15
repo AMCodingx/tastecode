@@ -225,7 +225,7 @@
       <div class="topbar-inner">
         <h1>Feature Inventory</h1>
         <span class="total" id="total">0 checked</span>
-        <span class="meta">2026-08-15 8a087391</span>
+        <span class="meta">2026-08-15 f392cfe6</span>
       </div>
     </div>
 
@@ -913,8 +913,8 @@
                 >Every item type first class
                 <span class="d"
                   >message, reasoning, plan, command, file change, tool call, subagent activity,
-                  error; completed narration and tool output remain chronological and accessible on
-                  replay</span
+                  error; reasoning summaries stay visible while ordered tool stacks remain
+                  expandable and accessible on replay</span
                 ></span
               ></label
             >
@@ -937,9 +937,9 @@
               ><input type="checkbox" /><span
                 >Working status with a live elapsed label during active turns
                 <span class="d"
-                  >one stable rail owns narration and activity transitions, restarting its timer
-                  after each assistant message; completed or failed image inspections remain visible
-                  as settled results without a duplicate live row</span
+                  >a placeholder rail covers the gap before output; reasoning then streams as prose,
+                  while one fixed tool row changes to the current command and settles without a
+                  duplicate live status</span
                 ></span
               ></label
             >
@@ -947,11 +947,12 @@
           <li>
             <label
               ><input type="checkbox" /><span
-                >Collapse and expand per item, reasoning collapsed by default
+                >Stacked tool activity with visible reasoning summaries
                 <span class="d"
-                  >repeated settled reasoning-only histories with no answer compact to one Worked
-                  disclosure; commands stay summarized until opened, with exact command and output
-                  inside the compact reveal</span
+                  >command, file, search, image, plan, and other tool categories in one work batch
+                  share one summary across empty reasoning placeholders; expanding it keeps every
+                  exact command and output available, while visible reasoning summary text remains
+                  directly readable</span
                 ></span
               ></label
             >

@@ -67,7 +67,11 @@ describe('thread reply spacing', () => {
 
     expect(summary).toContain('min-height: 30px')
     expect(summary).toContain('padding: 0 2px 4px')
-    expect(body).toContain('gap: 10px')
+    expect(body).toContain('gap: 6px')
     expect(body).toContain('margin: 4px 0')
+  })
+
+  it('uses a small gap inside one live work sequence', () => {
+    expect(css).toContain('.thread__row.is-compact-to-next {\n  padding-bottom: 4px;\n}')
   })
 })
