@@ -4380,6 +4380,49 @@ describe('live sessions', () => {
     })
     expect(screen.getByRole('button', { name: 'First session, Codex' })).toBeTruthy()
   })
+
+  it('keeps running chats above newly unread completed chats', async () => {
+    serverProjects = [
+      {
+        path: '/work/project',
+        name: 'project',
+        pinned: false,
+        createdAt: 0,
+        sessions: [
+          { id: 'idle-thread', title: 'Idle chat', running: false },
+          { id: 'background-thread', title: 'Background chat', running: false },
+          { id: 'running-thread', title: 'Running chat', running: true },
+        ],
+      },
+    ]
+
+    render(<App />)
+    await screen.findByRole('button', { name: 'Running chat, Codex, working' })
+    expect(sessionTitles()).toEqual(['Running chat', 'Idle chat', 'Background chat'])
+
+    emitThreadEvent('background-thread', {
+      type: 'turn.started',
+      turn: {
+        id: 'background-turn',
+        threadId: 'background-thread',
+        status: 'running',
+        createdAt: 0,
+      },
+    })
+    expect(sessionTitles()).toEqual(['Background chat', 'Running chat', 'Idle chat'])
+
+    emitThreadEvent('background-thread', {
+      type: 'turn.completed',
+      turnId: 'background-turn',
+      status: 'completed',
+    })
+    expect(sessionTitles()).toEqual(['Running chat', 'Background chat', 'Idle chat'])
+    expect(
+      screen
+        .getByRole('button', { name: 'Background chat, Codex, ready, unread' })
+        .querySelector('.sess__unread-dot'),
+    ).not.toBeNull()
+  })
 })
 
 function dropFile(composer: HTMLElement, path: string) {
