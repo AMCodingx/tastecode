@@ -939,6 +939,7 @@ function activityCategoryLabel(item: Item): string {
       return 'Updated plan'
     case 'tool_call': {
       const text = toolText(item)
+      if (isContextCompaction(item)) return 'Compacted context window'
       if (isImageView(item) || text.includes('image')) return 'Viewed images'
       if (text.includes('search')) return 'Searched'
       if (text.match(/read|open|file/)) return 'Read files'
