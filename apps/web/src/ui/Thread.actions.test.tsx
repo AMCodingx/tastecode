@@ -270,7 +270,7 @@ describe('completed activity disclosure', () => {
     )
 
     const disclosure = screen.getByRole('button', {
-      name: 'Worked for 2s · ran a command',
+      name: 'Worked for 3s · ran a command',
     })
     const reveal = container.querySelector('.activity__reveal')
     expect(disclosure.getAttribute('aria-expanded')).toBe('false')
@@ -284,7 +284,7 @@ describe('completed activity disclosure', () => {
     expect(reveal?.getAttribute('aria-hidden')).toBe('false')
   })
 
-  it('preserves narration and activity in exact chronological groups', () => {
+  it('keeps narration visible while work uses one disclosure', () => {
     const items: Item[] = [
       turnItem('prompt-1', 1, { role: 'user', text: 'Fix it' }),
       turnItem('update-1', 2, {
@@ -311,8 +311,9 @@ describe('completed activity disclosure', () => {
     ]
     renderCompleted(items)
 
-    fireEvent.click(screen.getByRole('button', { name: 'Worked for 1s · ran a command' }))
-    fireEvent.click(screen.getByRole('button', { name: 'Worked for 1s' }))
+    const disclosure = screen.getByRole('button', { name: 'Worked for 1s · ran a command' })
+    expect(screen.getAllByText(/Worked for 1s/)).toHaveLength(1)
+    fireEvent.click(disclosure)
 
     const firstNarration = screen.getByText('I found the cause.')
     const command = screen.getByText(/pnpm test/)
@@ -324,13 +325,13 @@ describe('completed activity disclosure', () => {
     expect(
       firstNarration.compareDocumentPosition(command) & Node.DOCUMENT_POSITION_FOLLOWING,
     ).not.toBe(0)
+    expect(command.compareDocumentPosition(file) & Node.DOCUMENT_POSITION_FOLLOWING).not.toBe(0)
     expect(
-      command.compareDocumentPosition(secondNarration) & Node.DOCUMENT_POSITION_FOLLOWING,
+      file.compareDocumentPosition(secondNarration) & Node.DOCUMENT_POSITION_FOLLOWING,
     ).not.toBe(0)
     expect(
-      secondNarration.compareDocumentPosition(file) & Node.DOCUMENT_POSITION_FOLLOWING,
+      secondNarration.compareDocumentPosition(answer) & Node.DOCUMENT_POSITION_FOLLOWING,
     ).not.toBe(0)
-    expect(file.compareDocumentPosition(answer) & Node.DOCUMENT_POSITION_FOLLOWING).not.toBe(0)
   })
 
   it('keeps every completed activity kind accessible after replay', () => {

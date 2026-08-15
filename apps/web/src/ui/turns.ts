@@ -21,17 +21,16 @@ export type TurnMark = {
 }
 
 export type TurnActivityGroup = {
-  /** Consecutive operational items between two transcript messages. */
+  /** All operational items collapsed into the turn's single Worked disclosure. */
   items: Item[]
   /** Flat-list index where Thread anchors this disclosure. */
   firstIndex: number
-  lastIndex: number
-  /** Time spent after the previous message and before the next one. */
+  /** Total elapsed time for the completed turn. */
   elapsedMs: number
 }
 
 export type TurnPresentation = {
-  /** Chronological Worked disclosures, split wherever narration resumes. */
+  /** At most one Worked disclosure for the completed turn. */
   activityGroups: TurnActivityGroup[]
   responseText: string
   firstResponseIndex: number | undefined
@@ -113,9 +112,9 @@ export function findTurns(items: Item[]): TurnMark[] {
  * The compact, completed-turn view used by first-party agent apps.
  *
  * The provider may emit commentary messages before its final answer. Those
- * messages stay in the transcript, so operational items are compacted only in
- * contiguous groups between them. An explicit final-answer phase wins; older
- * unphased histories safely fall back to their last completed assistant message.
+ * messages stay in the transcript, while all operational items compact into
+ * one Worked disclosure for the turn. An explicit final-answer phase wins;
+ * older unphased histories safely fall back to their last completed assistant message.
  */
 export function presentTurns(
   items: Item[],
@@ -124,19 +123,12 @@ export function presentTurns(
   const drafts = new Map<
     string,
     {
-      activityGroups: Array<{
-        entries: Array<{ item: Item; index: number }>
-        lastIndex: number
-        startedAt: number
-        startsTurn: boolean
-        completedAt?: number
-      }>
+      activity: Array<{ item: Item; index: number }>
       answers: Array<{ item: Item; index: number }>
       prompt?: Item
       firstResponseIndex?: number
       earliest: number
       latest: number
-      latestOutputAt?: number
       latestAssistantOutputAt?: number
       hasRunningActivity: boolean
       activityCount: number
@@ -149,7 +141,7 @@ export function presentTurns(
     if (!item.turnId) return
 
     const draft = drafts.get(item.turnId) ?? {
-      activityGroups: [],
+      activity: [],
       answers: [],
       earliest: item.createdAt,
       latest: item.createdAt,
@@ -170,24 +162,9 @@ export function presentTurns(
     if (isActivity(item)) {
       draft.activityCount += 1
       draft.onlyReasoning &&= item.type === 'reasoning'
-      const lastGroup = draft.activityGroups.at(-1)
-      if (lastGroup?.lastIndex === index - 1) {
-        lastGroup.entries.push({ item, index })
-        lastGroup.lastIndex = index
-      } else {
-        draft.activityGroups.push({
-          entries: [{ item, index }],
-          lastIndex: index,
-          startedAt: draft.latestOutputAt ?? item.createdAt,
-          startsTurn: draft.latestAssistantOutputAt === undefined,
-        })
-      }
+      draft.activity.push({ item, index })
       draft.hasRunningActivity ||= item.status === 'started'
     } else {
-      const openGroup = draft.activityGroups.at(-1)
-      if (openGroup && openGroup.completedAt === undefined) openGroup.completedAt = item.createdAt
-      draft.latestOutputAt = item.createdAt
-
       if (item.type === 'message' && item.role === 'user') draft.prompt ??= item
       if (item.type === 'message' && item.role === 'assistant') {
         draft.latestAssistantOutputAt = item.createdAt
@@ -204,29 +181,28 @@ export function presentTurns(
         draft.answers.findLast(({ item }) => item.phase === 'final_answer') ??
         draft.answers.findLast(({ item }) => item.phase === undefined)
       const timing = turnTiming[turnId]
+      const elapsedMs =
+        timing?.startedAt !== undefined && timing.completedAt !== undefined
+          ? Math.max(0, timing.completedAt - timing.startedAt)
+          : Math.max(0, draft.latest - draft.earliest)
 
       return [
         turnId,
         {
-          activityGroups: draft.activityGroups.map(
-            ({ entries, lastIndex, startedAt, startsTurn, completedAt }) => ({
-              items: entries.map(({ item }) => item),
-              firstIndex: entries[0]!.index,
-              lastIndex,
-              elapsedMs: Math.max(
-                0,
-                (completedAt ?? timing?.completedAt ?? draft.latest) -
-                  (startsTurn ? (timing?.startedAt ?? startedAt) : startedAt),
-              ),
-            }),
-          ),
+          activityGroups:
+            draft.activity.length > 0
+              ? [
+                  {
+                    items: draft.activity.map(({ item }) => item),
+                    firstIndex: draft.activity[0]!.index,
+                    elapsedMs,
+                  },
+                ]
+              : [],
           responseText: finalAnswer?.item.text ?? '',
           firstResponseIndex: draft.firstResponseIndex,
           finalAnswerIndex: finalAnswer?.index,
-          elapsedMs:
-            timing?.startedAt !== undefined && timing.completedAt !== undefined
-              ? Math.max(0, timing.completedAt - timing.startedAt)
-              : Math.max(0, draft.latest - draft.earliest),
+          elapsedMs,
           workStartedAt: draft.latestAssistantOutputAt ?? timing?.startedAt ?? draft.earliest,
           prompt: draft.prompt,
           complete:

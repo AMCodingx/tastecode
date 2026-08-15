@@ -359,12 +359,9 @@ export function Thread(props: {
               const live = props.running && props.activeTurn?.id === item.turnId
               const activityGroup =
                 !live && presentation?.complete === true
-                  ? presentation.activityGroups.find(
-                      ({ firstIndex, lastIndex }) =>
-                        row.index >= firstIndex && row.index <= lastIndex,
-                    )
+                  ? presentation.activityGroups[0]
                   : undefined
-              const compactedActivity = activityGroup !== undefined
+              const compactedActivity = activityGroup !== undefined && isActivity(item)
               const activityLead = compactedActivity && activityGroup.firstIndex === row.index
               const responseLead =
                 !live &&
