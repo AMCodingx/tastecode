@@ -126,6 +126,22 @@ describe('thread at scale', () => {
     expect(
       workLabel(
         [
+          {
+            id: 'reasoning-empty',
+            turnId: 'turn-1',
+            type: 'reasoning',
+            text: '',
+            status: 'started',
+            createdAt: 2,
+          },
+        ],
+        'turn-1',
+        false,
+      ),
+    ).toBe('Working')
+    expect(
+      workLabel(
+        [
           ...items,
           {
             id: 'search-1',

@@ -255,6 +255,20 @@ describe('streamed thread renders', () => {
       'is-suppressed',
     )
 
+    const blankReasoning = message({
+      id: 'reasoning-empty',
+      turnId: 'turn-2',
+      type: 'reasoning',
+      role: undefined,
+      status: 'completed',
+      text: '',
+    })
+    rendered.rerender(view([user, { ...firstCommand, status: 'completed' }, blankReasoning]))
+
+    expect(rendered.container.querySelector('.activity')).toBe(stack)
+    expect(rendered.getByRole('button', { name: 'Ran pnpm test' })).toBeTruthy()
+    expect(rendered.queryByText('Thinking')).toBeNull()
+
     const secondCommand = message({
       id: 'command-2',
       turnId: 'turn-2',
@@ -263,12 +277,14 @@ describe('streamed thread renders', () => {
       status: 'started',
       command: 'git status --short',
     })
-    rendered.rerender(view([user, { ...firstCommand, status: 'completed' }, secondCommand]))
+    rendered.rerender(
+      view([user, { ...firstCommand, status: 'completed' }, blankReasoning, secondCommand]),
+    )
 
     expect(rendered.container.querySelector('.activity')).toBe(stack)
     expect(rendered.getByRole('button', { name: 'Running git status --short' })).toBeTruthy()
     expect(rendered.container.querySelectorAll('.activity')).toHaveLength(1)
-    expect(rendered.container.querySelector('[data-index="2"]')?.className).toContain(
+    expect(rendered.container.querySelector('[data-index="3"]')?.className).toContain(
       'is-suppressed',
     )
 
@@ -284,6 +300,7 @@ describe('streamed thread renders', () => {
       view([
         user,
         { ...firstCommand, status: 'completed' },
+        blankReasoning,
         { ...secondCommand, status: 'completed' },
         reasoning,
       ]),
