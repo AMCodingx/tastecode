@@ -202,18 +202,20 @@ describe('empty thread', () => {
 })
 
 describe('completed activity disclosure', () => {
-  it('keeps settled reasoning readable when a turn ends without an answer', () => {
+  it('hides empty reasoning placeholders and keeps real summaries readable', () => {
     const items: Item[] = [
       turnItem('prompt-1', 1, { role: 'user', text: 'Build a website' }),
-      ...Array.from({ length: 4 }, (_, index) =>
-        turnItem(`reasoning-${index}`, 1_001 + index * 1_000, { type: 'reasoning' }),
-      ),
+      turnItem('reasoning-empty', 1_001, { type: 'reasoning' }),
+      turnItem('reasoning-summary', 2_001, {
+        type: 'reasoning',
+        text: 'Planning manual multi-package checks',
+      }),
     ]
 
     renderCompleted(items)
 
-    expect(screen.getAllByText('Thinking')).toHaveLength(4)
-    expect(screen.queryByRole('button', { name: 'Worked for 4s' })).toBeNull()
+    expect(screen.queryByText('Thinking')).toBeNull()
+    expect(screen.getByText('Planning manual multi-package checks')).toBeTruthy()
   })
 
   it('keeps the content mounted while toggling the animated reveal state', () => {
@@ -375,6 +377,32 @@ describe('completed activity disclosure', () => {
 
     expect(firstCommand.closest('.activity__reveal')?.getAttribute('aria-hidden')).toBe('false')
     expect(screen.getByText('Ran pnpm test')).toBeTruthy()
+  })
+
+  it('stacks all tool calls across empty reasoning placeholders', () => {
+    const { container } = renderCompleted([
+      turnItem('prompt-1', 1, { role: 'user', text: 'Check it' }),
+      turnItem('reasoning-1', 2, { type: 'reasoning' }),
+      turnItem('files-1', 3, {
+        type: 'file_change',
+        path: 'src/chat.ts',
+        text: '2 files changed',
+      }),
+      turnItem('reasoning-2', 4, { type: 'reasoning', text: '  ' }),
+      turnItem('command-1', 5, { type: 'command', command: 'git status --short' }),
+      turnItem('reasoning-3', 6, { type: 'reasoning' }),
+      turnItem('read-1', 7, { type: 'tool_call', text: 'read files' }),
+      turnItem('answer-1', 8, { role: 'assistant', text: 'Done.' }),
+    ])
+
+    expect(container.querySelectorAll('.activity')).toHaveLength(1)
+    expect(screen.queryByText('Thinking')).toBeNull()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Edited files, ran commands, read files' }))
+
+    expect(screen.getByText('Edited src/chat.ts')).toBeTruthy()
+    expect(screen.getByText('Ran git status --short')).toBeTruthy()
+    expect(screen.getByText('read files')).toBeTruthy()
   })
 
   it('renders sequential image inspections clearly after replay', () => {

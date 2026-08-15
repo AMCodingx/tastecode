@@ -21,7 +21,7 @@ export type TurnMark = {
 }
 
 export type TurnActivityGroup = {
-  /** Consecutive tool activity between reasoning or transcript messages. */
+  /** Tool activity between visible reasoning or transcript messages. */
   items: Item[]
   /** Flat-list index where Thread anchors this disclosure. */
   firstIndex: number
@@ -31,7 +31,7 @@ export type TurnActivityGroup = {
 }
 
 export type TurnPresentation = {
-  /** Chronological tool disclosures, split wherever reasoning or narration resumes. */
+  /** Chronological tool disclosures, split wherever visible reasoning or narration resumes. */
   activityGroups: TurnActivityGroup[]
   responseText: string
   firstResponseIndex: number | undefined
@@ -113,10 +113,11 @@ export function findTurns(items: Item[]): TurnMark[] {
  * The compact, completed-turn view used by first-party agent apps.
  *
  * The provider may emit reasoning summaries and commentary before its final
- * answer. Those stay readable in the transcript, so only tool activity is
- * compacted into contiguous groups between them. An explicit final-answer
- * phase wins; older unphased histories safely fall back to their last
- * completed assistant message.
+ * answer. Those stay readable in the transcript, so tool activity is split
+ * around visible prose. Providers also emit empty reasoning placeholders;
+ * those are invisible and must not split one work batch into many rows. An
+ * explicit final-answer phase wins; older unphased histories safely fall back
+ * to their last completed assistant message.
  */
 export function presentTurns(
   items: Item[],
@@ -164,7 +165,7 @@ export function presentTurns(
     draft.latest = Math.max(draft.latest, item.createdAt)
     draft.design ||= item.type === 'tool_call' && item.text?.startsWith('design:') === true
 
-    if (item.type !== 'message' || item.role !== 'user') {
+    if ((item.type !== 'message' || item.role !== 'user') && !isBlankReasoning(item)) {
       draft.firstResponseIndex ??= index
     }
 
@@ -187,6 +188,12 @@ export function presentTurns(
           startsTurn: draft.latestAssistantOutputAt === undefined,
         })
       }
+    } else if (isBlankReasoning(item)) {
+      // Empty provider reasoning has no readable transcript content. Keep an
+      // open tool batch anchored in one place while the next command arrives,
+      // and include the placeholder in its compacted flat-list range.
+      const openGroup = draft.activityGroups.at(-1)
+      if (openGroup && openGroup.completedAt === undefined) openGroup.lastIndex = index
     } else {
       const openGroup = draft.activityGroups.at(-1)
       if (openGroup && openGroup.completedAt === undefined) openGroup.completedAt = item.createdAt
@@ -284,6 +291,10 @@ export function isStackedActivity(item: Item): boolean {
     item.type === 'tool_call' ||
     item.type === 'plan'
   )
+}
+
+export function isBlankReasoning(item: Item): boolean {
+  return item.type === 'reasoning' && !item.text?.trim()
 }
 
 /**

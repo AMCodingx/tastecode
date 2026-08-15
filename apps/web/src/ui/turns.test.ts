@@ -144,6 +144,27 @@ describe('turn boundaries', () => {
     })
   })
 
+  it('keeps one activity group across empty reasoning placeholders', () => {
+    const items: Item[] = [
+      { ...item('user', 't1'), role: 'user', text: 'Fix it.' },
+      { ...item('command-1', 't1'), type: 'command', command: 'git status --short' },
+      { ...item('blank-1', 't1'), type: 'reasoning' },
+      { ...item('files', 't1'), type: 'file_change', text: '2 files changed' },
+      { ...item('blank-2', 't1'), type: 'reasoning', text: '   ' },
+      { ...item('command-2', 't1'), type: 'command', command: 'pnpm test' },
+      { ...item('summary', 't1'), type: 'reasoning', text: 'Reviewing test results' },
+      { ...item('answer', 't1'), role: 'assistant', text: 'Fixed.' },
+    ]
+
+    expect(presentTurns(items).get('t1')?.activityGroups).toMatchObject([
+      {
+        items: [items[1], items[3], items[5]],
+        firstIndex: 1,
+        lastIndex: 5,
+      },
+    ])
+  })
+
   it('restarts work timing after each assistant message', () => {
     const items: Item[] = [
       { ...item('user', 't1'), role: 'user', text: 'Fix it.', createdAt: 1_000 },

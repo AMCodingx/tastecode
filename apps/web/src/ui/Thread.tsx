@@ -39,6 +39,7 @@ import { Plan } from './Plan.js'
 import { ThreadSearch } from './ThreadSearch.js'
 import {
   createThreadProjector,
+  isBlankReasoning,
   isStackedActivity,
   neighbourTurn,
   type TurnTiming,
@@ -65,9 +66,9 @@ const EMPTY_LIVE_ITEMS: ReadonlyMap<number, LiveItemUpdate> = new Map()
  * rather than estimated because a single item can be three words or a 400-line
  * diff, and a wrong estimate shows up as scroll drift.
  *
- * Messages and reasoning summaries read as prose. Consecutive commands, tool
- * calls and file edits share one line you can open. The default view should
- * read as a summary of what happened, not a transcript of every byte.
+ * Messages and reasoning summaries read as prose. Commands, tool calls and
+ * file edits in one work batch share one line you can open. The default view
+ * should read as a summary of what happened, not a transcript of every byte.
  */
 export function Thread(props: {
   items: Item[]
@@ -383,6 +384,7 @@ export function Thread(props: {
                 presentation?.complete === true &&
                 presentation.finalAnswerIndex === row.index
               const suppressed =
+                isBlankReasoning(item) ||
                 (compactedActivity && !activityLead) ||
                 isRepeatedDesignRow(item, props.items, row.index) ||
                 // A design turn tells its story through the phase labels and
@@ -740,7 +742,8 @@ const Row = memo(function Row({
   }
 
   if (item.type === 'reasoning') {
-    const text = item.text?.trim() || 'Thinking'
+    const text = item.text?.trim()
+    if (!text) return null
     return (
       <div className={`reasoning-summary${live ? ' is-live' : ''}`}>
         <Markdown
@@ -1171,6 +1174,7 @@ export function workLabel(
     if (!item) continue
     if (item.turnId !== turnId) break
     if (item.status !== 'started' || !isActivity(item)) continue
+    if (isBlankReasoning(item)) continue
     // A design phase owns its whole turn: its label must not flicker to
     // "Running a command" for every tool the provider uses inside it.
     if (item.type === 'tool_call') {
