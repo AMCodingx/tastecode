@@ -5754,6 +5754,14 @@
 
 /* ---------- diff ---------- */
 
+.thread__runway + .diff {
+  margin-top: -8px;
+}
+
+.thread__col > .diff {
+  margin-bottom: 16px;
+}
+
 .diff {
   background: color-mix(in srgb, var(--surface) 55%, var(--bg));
   border: 1px solid var(--line);
