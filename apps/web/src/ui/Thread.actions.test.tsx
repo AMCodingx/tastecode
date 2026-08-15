@@ -202,7 +202,7 @@ describe('empty thread', () => {
 })
 
 describe('completed activity disclosure', () => {
-  it('collapses a settled turn that ended without an assistant answer', () => {
+  it('keeps settled reasoning readable when a turn ends without an answer', () => {
     const items: Item[] = [
       turnItem('prompt-1', 1, { role: 'user', text: 'Build a website' }),
       ...Array.from({ length: 4 }, (_, index) =>
@@ -212,8 +212,8 @@ describe('completed activity disclosure', () => {
 
     renderCompleted(items)
 
-    expect(screen.getByRole('button', { name: 'Worked for 4s' })).toBeTruthy()
-    expect(screen.queryByRole('button', { name: 'Thinking' })).toBeNull()
+    expect(screen.getAllByText('Thinking')).toHaveLength(4)
+    expect(screen.queryByRole('button', { name: 'Worked for 4s' })).toBeNull()
   })
 
   it('keeps the content mounted while toggling the animated reveal state', () => {
@@ -270,7 +270,7 @@ describe('completed activity disclosure', () => {
     )
 
     const disclosure = screen.getByRole('button', {
-      name: 'Worked for 2s · ran a command',
+      name: 'Ran commands',
     })
     const reveal = container.querySelector('.activity__reveal')
     expect(disclosure.getAttribute('aria-expanded')).toBe('false')
@@ -311,16 +311,16 @@ describe('completed activity disclosure', () => {
     ]
     renderCompleted(items)
 
-    fireEvent.click(screen.getByRole('button', { name: 'Worked for 1s · ran a command' }))
-    fireEvent.click(screen.getByRole('button', { name: 'Worked for 1s' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Ran commands' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Edited files' }))
 
     const firstNarration = screen.getByText('I found the cause.')
-    const command = screen.getByText(/pnpm test/)
+    const command = screen.getByText('Ran pnpm test')
     const secondNarration = screen.getByText('The focused test passes.')
-    const file = screen.getByText('Edited files')
+    const file = screen.getByText('Edited src/chat.ts')
     const answer = screen.getByText('Fixed.')
     expect(screen.getByText(/12 passed/)).toBeTruthy()
-    expect(screen.getByText(/src\/chat\.ts\s+2 lines added/)).toBeTruthy()
+    expect(screen.getByText('2 lines added')).toBeTruthy()
     expect(
       firstNarration.compareDocumentPosition(command) & Node.DOCUMENT_POSITION_FOLLOWING,
     ).not.toBe(0)
@@ -339,7 +339,6 @@ describe('completed activity disclosure', () => {
       turnItem('reasoning-1', 2, { type: 'reasoning', text: 'Inspecting state' }),
       turnItem('command-1', 3, { type: 'command', command: 'pnpm test' }),
       turnItem('tool-1', 4, { type: 'tool_call', text: 'Searched 4 files' }),
-      turnItem('design-1', 5, { type: 'tool_call', text: 'design:build' }),
       turnItem('answer-1', 6, {
         role: 'assistant',
         phase: 'final_answer',
@@ -348,12 +347,34 @@ describe('completed activity disclosure', () => {
     ]
     renderCompleted(items.map((entry) => ({ ...entry })))
 
-    fireEvent.click(screen.getByRole('button', { name: 'Worked for 1s · ran a command' }))
-    expect(screen.getByText('Thinking')).toBeTruthy()
     expect(screen.getByText('Inspecting state')).toBeTruthy()
-    expect(screen.getByText(/pnpm test/)).toBeTruthy()
+    fireEvent.click(screen.getByRole('button', { name: 'Ran commands, searched' }))
+    expect(screen.getByText('Ran pnpm test')).toBeTruthy()
     expect(screen.getByText('Searched 4 files')).toBeTruthy()
-    expect(screen.getByText('Building the website')).toBeTruthy()
+  })
+
+  it('stacks tool categories and keeps each command available on expand', () => {
+    renderCompleted([
+      turnItem('prompt-1', 1, { role: 'user', text: 'Check it' }),
+      turnItem('reasoning-1', 2, {
+        type: 'reasoning',
+        text: 'Planning manual multi-package checks',
+      }),
+      turnItem('read-1', 3, { type: 'tool_call', text: 'read files' }),
+      turnItem('command-1', 4, { type: 'command', command: 'git status --short' }),
+      turnItem('command-2', 5, { type: 'command', command: 'pnpm test' }),
+      turnItem('answer-1', 6, { role: 'assistant', text: 'Done.' }),
+    ])
+
+    expect(screen.getByText('Planning manual multi-package checks')).toBeTruthy()
+    const firstCommand = screen.getByText('Ran git status --short')
+    expect(firstCommand.closest('.activity__reveal')?.getAttribute('aria-hidden')).toBe('true')
+    const stack = screen.getByRole('button', { name: 'Read files, ran commands' })
+
+    fireEvent.click(stack)
+
+    expect(firstCommand.closest('.activity__reveal')?.getAttribute('aria-hidden')).toBe('false')
+    expect(screen.getByText('Ran pnpm test')).toBeTruthy()
   })
 
   it('renders sequential image inspections clearly after replay', () => {
@@ -373,14 +394,14 @@ describe('completed activity disclosure', () => {
       }),
     ])
 
-    fireEvent.click(screen.getByRole('button', { name: 'Worked for 1s' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Viewed images' }))
     expect(screen.getAllByText('Viewed image')).toHaveLength(2)
     expect(screen.getByText('Could not view image')).toBeTruthy()
     expect(screen.getByText('desktop.png')).toBeTruthy()
     expect(screen.getByText('mobile.png')).toBeTruthy()
     expect(screen.getByText('broken.png')).toBeTruthy()
     expect(screen.queryByText('[imageView]')).toBeNull()
-    expect(container.querySelectorAll('.lucide-images')).toHaveLength(3)
+    expect(container.querySelectorAll('.activity__body .lucide-images')).toHaveLength(3)
   })
 
   it('does not claim an interrupted image inspection completed', () => {
@@ -421,34 +442,25 @@ describe('completed activity disclosure', () => {
     )
 
     const rendered = render(view(startedImage))
-    const rail = rendered.container.querySelector('.activity--working')
-    expect(rendered.container.querySelector('.activity__working-label')?.textContent).toBe(
-      'Viewing image',
-    )
-    expect(rendered.container.querySelector('[data-index="0"]')?.className).toContain(
+    const stack = rendered.container.querySelector('.activity')
+    expect(screen.getByRole('button', { name: 'Viewing image' })).toBeTruthy()
+    expect(rendered.container.querySelector('[data-index="0"]')?.className).not.toContain(
       'is-suppressed',
     )
-    expect(screen.queryByRole('button', { name: 'Viewing image' })).toBeNull()
     expect(screen.queryByRole('button', { name: 'Image inspection interrupted' })).toBeNull()
     expect(rendered.container.querySelectorAll('.aux--live')).toHaveLength(0)
 
     rendered.rerender(view(completedImage))
-    expect(rendered.container.querySelector('.activity--working')).toBe(rail)
+    expect(rendered.container.querySelector('.activity')).toBe(stack)
     expect(rendered.container.querySelector('[data-index="0"]')?.className).not.toContain(
       'is-suppressed',
     )
     expect(screen.getByRole('button', { name: 'Viewed image' })).toBeTruthy()
-    expect(rendered.container.querySelector('.activity__working-label')?.textContent).toBe(
-      'Working',
-    )
     expect(rendered.container.querySelectorAll('.aux--live')).toHaveLength(0)
 
     rendered.rerender(view(failedImage))
-    expect(rendered.container.querySelector('.activity--working')).toBe(rail)
+    expect(rendered.container.querySelector('.activity')).toBe(stack)
     expect(screen.getByRole('button', { name: 'Could not view image' })).toBeTruthy()
-    expect(rendered.container.querySelector('.activity__working-label')?.textContent).toBe(
-      'Working',
-    )
     expect(rendered.container.querySelectorAll('.aux--live')).toHaveLength(0)
 
     rendered.unmount()
@@ -457,7 +469,7 @@ describe('completed activity disclosure', () => {
       completedImage,
       turnItem('answer-1', 3, { role: 'assistant', text: 'Reviewed.' }),
     ])
-    fireEvent.click(screen.getByRole('button', { name: 'Worked for 1s' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Viewed images' }))
     expect(screen.getByText('Viewed image')).toBeTruthy()
   })
 
@@ -472,8 +484,9 @@ describe('completed activity disclosure', () => {
       turnItem('answer-1', 3, { role: 'assistant', text: 'Fixed.' }),
     ])
 
-    fireEvent.click(screen.getByRole('button', { name: 'Worked for 1s' }))
-    expect(screen.getAllByText('src/chat.ts')).toHaveLength(1)
+    fireEvent.click(screen.getByRole('button', { name: 'Edited files' }))
+    expect(screen.getByText('Edited src/chat.ts')).toBeTruthy()
+    expect(document.querySelector('.activity__detail')).toBeNull()
   })
 
   it('shows response actions only on the explicit final answer', () => {
@@ -595,13 +608,14 @@ describe('collapsed row disclosure', () => {
       />,
     )
 
-    const disclosure = screen.getByRole('button', { name: 'Ran a command' })
-    const reveal = container.querySelector('.aux__reveal')
+    const disclosure = screen.getByRole('button', { name: 'Ran commands' })
+    const reveal = container.querySelector('.activity__reveal')
     expect(disclosure.getAttribute('aria-expanded')).toBe('false')
     expect(reveal?.getAttribute('data-open')).toBe('false')
     expect(reveal?.getAttribute('aria-hidden')).toBe('true')
     expect(reveal?.hasAttribute('inert')).toBe(true)
-    expect(container.querySelector('.aux__out')?.textContent).toBe('pnpm test\n1 failed, 12 passed')
+    expect(container.querySelector('.activity__item-label')?.textContent).toBe('Ran pnpm test')
+    expect(container.querySelector('.activity__detail')?.textContent).toBe('1 failed, 12 passed')
 
     fireEvent.click(disclosure)
 

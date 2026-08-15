@@ -21,7 +21,7 @@ export type TurnMark = {
 }
 
 export type TurnActivityGroup = {
-  /** Consecutive operational items between two transcript messages. */
+  /** Consecutive tool activity between reasoning or transcript messages. */
   items: Item[]
   /** Flat-list index where Thread anchors this disclosure. */
   firstIndex: number
@@ -31,7 +31,7 @@ export type TurnActivityGroup = {
 }
 
 export type TurnPresentation = {
-  /** Chronological Worked disclosures, split wherever narration resumes. */
+  /** Chronological tool disclosures, split wherever reasoning or narration resumes. */
   activityGroups: TurnActivityGroup[]
   responseText: string
   firstResponseIndex: number | undefined
@@ -112,10 +112,11 @@ export function findTurns(items: Item[]): TurnMark[] {
 /**
  * The compact, completed-turn view used by first-party agent apps.
  *
- * The provider may emit commentary messages before its final answer. Those
- * messages stay in the transcript, so operational items are compacted only in
- * contiguous groups between them. An explicit final-answer phase wins; older
- * unphased histories safely fall back to their last completed assistant message.
+ * The provider may emit reasoning summaries and commentary before its final
+ * answer. Those stay readable in the transcript, so only tool activity is
+ * compacted into contiguous groups between them. An explicit final-answer
+ * phase wins; older unphased histories safely fall back to their last
+ * completed assistant message.
  */
 export function presentTurns(
   items: Item[],
@@ -170,6 +171,10 @@ export function presentTurns(
     if (isActivity(item)) {
       draft.activityCount += 1
       draft.onlyReasoning &&= item.type === 'reasoning'
+      draft.hasRunningActivity ||= item.status === 'started'
+    }
+
+    if (isStackedActivity(item)) {
       const lastGroup = draft.activityGroups.at(-1)
       if (lastGroup?.lastIndex === index - 1) {
         lastGroup.entries.push({ item, index })
@@ -182,7 +187,6 @@ export function presentTurns(
           startsTurn: draft.latestAssistantOutputAt === undefined,
         })
       }
-      draft.hasRunningActivity ||= item.status === 'started'
     } else {
       const openGroup = draft.activityGroups.at(-1)
       if (openGroup && openGroup.completedAt === undefined) openGroup.completedAt = item.createdAt
@@ -271,6 +275,15 @@ function isStartedAssistantTailTextUpdate(previous: Item[], next: Item[]): boole
 
 function isActivity(item: Item): boolean {
   return item.type !== 'message' && item.type !== 'error'
+}
+
+export function isStackedActivity(item: Item): boolean {
+  return (
+    item.type === 'command' ||
+    item.type === 'file_change' ||
+    item.type === 'tool_call' ||
+    item.type === 'plan'
+  )
 }
 
 /**
