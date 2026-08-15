@@ -161,3 +161,58 @@ describe('Codex context compaction items', () => {
     })
   })
 })
+
+describe('Codex activity items', () => {
+  it.each([
+    [
+      {
+        type: 'hookPrompt',
+        id: 'hook-1',
+        fragments: [{ text: 'Check the changed files', hookRunId: 'run-1' }],
+      },
+      'hook prompt',
+    ],
+    [{ type: 'sleep', id: 'sleep-1', durationMs: 1_000 }, 'sleep'],
+    [
+      {
+        type: 'imageGeneration',
+        id: 'image-1',
+        status: 'completed',
+        revisedPrompt: null,
+        result: 'image bytes omitted',
+      },
+      'image generation',
+    ],
+    [
+      { type: 'enteredReviewMode', id: 'review-in', review: 'Review the change' },
+      'enter review mode',
+    ],
+    [{ type: 'exitedReviewMode', id: 'review-out', review: 'Review complete' }, 'exit review mode'],
+    [{ type: 'contextCompaction', id: 'compact-1' }, 'context compaction'],
+  ] satisfies Array<[ThreadItem, string]>)('maps $type to a named tool activity', (raw, text) => {
+    expect(mapThreadItem(raw, context)).toMatchObject({
+      id: raw.id,
+      type: 'tool_call',
+      text,
+    })
+  })
+
+  it('keeps the duration for tools that report one', () => {
+    expect(
+      mapThreadItem(
+        {
+          type: 'dynamicToolCall',
+          id: 'dynamic-1',
+          namespace: 'workspace',
+          tool: 'inspect',
+          arguments: {},
+          status: 'completed',
+          contentItems: null,
+          success: true,
+          durationMs: 240,
+        },
+        context,
+      ),
+    ).toMatchObject({ type: 'tool_call', text: 'inspect', durationMs: 240 })
+  })
+})

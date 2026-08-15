@@ -1256,6 +1256,8 @@ function glyph(item: Item) {
 
 function summariseLive(item: Item): string {
   const ongoing = item.status === 'started'
+  const supportedActivity = supportedActivitySummary(item, ongoing)
+  if (supportedActivity) return supportedActivity
 
   switch (item.type) {
     case 'command':
@@ -1283,6 +1285,8 @@ function summariseLive(item: Item): string {
     }
     case 'plan':
       return ongoing ? 'Updating the plan' : 'Updated the plan'
+    case 'unknown':
+      return unknownActivityLabel(item)
     default:
       return summarise(item)
   }
@@ -1305,6 +1309,9 @@ function toolText(item: Item): string {
 }
 
 function summarise(item: Item): string {
+  const supportedActivity = supportedActivitySummary(item, false)
+  if (supportedActivity) return supportedActivity
+
   switch (item.type) {
     case 'command':
       if (item.status === 'started') return 'Command interrupted'
@@ -1336,9 +1343,89 @@ function summarise(item: Item): string {
       )
     case 'plan':
       return 'Plan'
+    case 'unknown':
+      return unknownActivityLabel(item)
     default:
-      return item.type
+      return 'Activity'
   }
+}
+
+function supportedActivitySummary(item: Item, ongoing: boolean): string | undefined {
+  if (item.type !== 'tool_call' && item.type !== 'unknown') return undefined
+  const name = (item.text ?? '')
+    .split('\n', 1)[0]
+    ?.replaceAll(/[^a-z0-9]/gi, '')
+    .toLowerCase()
+  const failed = item.status === 'failed'
+  const interrupted = item.status === 'started' && !ongoing
+
+  switch (name) {
+    case 'contextcompaction':
+      return failed
+        ? 'Could not compact context window'
+        : interrupted
+          ? 'Context compaction interrupted'
+          : ongoing
+            ? 'Compacting context window…'
+            : 'Compacted context window'
+    case 'imagegeneration':
+      return failed
+        ? 'Could not generate an image'
+        : interrupted
+          ? 'Image generation interrupted'
+          : ongoing
+            ? 'Generating an image'
+            : 'Generated an image'
+    case 'imageview':
+      return failed
+        ? 'Could not view image'
+        : interrupted
+          ? 'Image inspection interrupted'
+          : ongoing
+            ? 'Viewing image'
+            : 'Viewed image'
+    case 'hookprompt':
+      return failed
+        ? 'Hook failed'
+        : interrupted
+          ? 'Hook interrupted'
+          : ongoing
+            ? 'Running a hook'
+            : 'Ran a hook'
+    case 'sleep':
+      return failed || interrupted ? 'Wait interrupted' : ongoing ? 'Waiting' : 'Waited'
+    case 'enterreviewmode':
+    case 'enteredreviewmode':
+      return failed
+        ? 'Could not enter review mode'
+        : interrupted
+          ? 'Review mode entry interrupted'
+          : ongoing
+            ? 'Entering review mode'
+            : 'Entered review mode'
+    case 'exitreviewmode':
+    case 'exitedreviewmode':
+      return failed
+        ? 'Could not exit review mode'
+        : interrupted
+          ? 'Review mode exit interrupted'
+          : ongoing
+            ? 'Exiting review mode'
+            : 'Exited review mode'
+    default:
+      return undefined
+  }
+}
+
+function unknownActivityLabel(item: Item): string {
+  const raw = item.text?.match(/^\[([^\]]+)]$/)?.[1]
+  if (!raw || raw.toLowerCase() === 'unknown') return 'Agent activity'
+  const words = raw
+    .replace(/([a-z0-9])([A-Z])/g, '$1 $2')
+    .replaceAll(/[_-]+/g, ' ')
+    .trim()
+    .toLowerCase()
+  return words ? `${words[0]?.toUpperCase()}${words.slice(1)}` : 'Agent activity'
 }
 
 function isImageView(item: Item): boolean {
@@ -1346,7 +1433,11 @@ function isImageView(item: Item): boolean {
 }
 
 function isContextCompaction(item: Item): boolean {
-  return item.type === 'tool_call' && item.text?.trim() === 'context compaction'
+  const text = item.text?.trim()
+  return (
+    (item.type === 'tool_call' && text === 'context compaction') ||
+    (item.type === 'unknown' && text === '[contextCompaction]')
+  )
 }
 
 function imageViewDetail(item: Item): string | undefined {
