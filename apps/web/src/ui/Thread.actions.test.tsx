@@ -298,6 +298,42 @@ describe('completed activity disclosure', () => {
     expect(disclosure.getAttribute('aria-expanded')).toBe('true')
     expect(reveal?.getAttribute('data-open')).toBe('true')
     expect(reveal?.getAttribute('aria-hidden')).toBe('false')
+
+    fireEvent.click(disclosure)
+
+    expect(disclosure.getAttribute('aria-expanded')).toBe('false')
+    expect(reveal?.getAttribute('data-open')).toBe('closing')
+    expect(reveal?.getAttribute('aria-hidden')).toBe('true')
+
+    if (reveal) fireEvent.animationEnd(reveal)
+
+    expect(reveal?.getAttribute('data-open')).toBe('false')
+  })
+
+  it('closes immediately when reduced motion is enabled', () => {
+    const matchMedia = vi.spyOn(window, 'matchMedia').mockImplementation(
+      (query) =>
+        ({
+          matches: query === '(prefers-reduced-motion: reduce)',
+        }) as MediaQueryList,
+    )
+    const { container } = renderCompleted([
+      turnItem('prompt-1', 1, { role: 'user', text: 'Fix it' }),
+      turnItem('command-1', 2, { type: 'command', command: 'pnpm test' }),
+      turnItem('answer-1', 3, {
+        role: 'assistant',
+        phase: 'final_answer',
+        text: 'Fixed.',
+      }),
+    ])
+    const disclosure = screen.getByRole('button', { name: 'Ran commands' })
+    const reveal = container.querySelector('.activity__reveal')
+
+    fireEvent.click(disclosure)
+    fireEvent.click(disclosure)
+
+    expect(reveal?.getAttribute('data-open')).toBe('false')
+    matchMedia.mockRestore()
   })
 
   it('keeps narration visible while work uses one disclosure', () => {
@@ -327,8 +363,8 @@ describe('completed activity disclosure', () => {
     ]
     renderCompleted(items)
 
-    const disclosure = screen.getByRole('button', { name: 'Worked for 1s · ran a command' })
-    expect(screen.getAllByText(/Worked for 1s/)).toHaveLength(1)
+    const disclosure = screen.getByRole('button', { name: 'Ran commands, edited files' })
+    expect(screen.getAllByRole('button', { name: /Ran commands|Edited files/ })).toHaveLength(1)
     fireEvent.click(disclosure)
 
     const firstNarration = screen.getByText('I found the cause.')

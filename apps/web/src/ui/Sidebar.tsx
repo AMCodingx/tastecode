@@ -27,6 +27,7 @@ import {
   Plus,
   Search,
   Settings,
+  SquarePen,
   UserRound,
   X,
 } from 'lucide-react'
@@ -443,7 +444,7 @@ function SidebarComponent(props: {
                     }
                   }}
                 >
-                  <Plus size={15} aria-hidden />
+                  <SquarePen size={15} aria-hidden />
                   <span>New chat</span>
                 </button>
                 <button
@@ -1058,7 +1059,7 @@ function ProjectRow(props: {
               onClick={() => props.onNewSession(props.project.path)}
               title="New chat here"
             >
-              <Plus size={15} aria-hidden />
+              <SquarePen size={15} aria-hidden />
             </button>
           </>
         )}

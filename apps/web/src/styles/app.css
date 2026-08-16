@@ -16,6 +16,27 @@
   user-select: text;
 }
 
+:where(svg.lucide, svg[width][height], svg[aria-hidden='true']) {
+  transform-origin: center;
+  transition: rotate var(--dur-fast) var(--ease-out);
+}
+
+@media (hover: hover) and (pointer: fine) and (prefers-reduced-motion: no-preference) {
+  :where(
+      button,
+      a,
+      summary,
+      [role='button'],
+      [role='menuitem'],
+      [role='tab'],
+      [role='switch']
+    ):hover
+    :where(svg.lucide, svg[width][height], svg[aria-hidden='true']),
+  :where(svg.lucide, svg[width][height], svg[aria-hidden='true']):hover {
+    rotate: 3deg;
+  }
+}
+
 .shell {
   display: grid;
   grid-template-rows: var(--titlebar-h) 1fr;
@@ -4790,11 +4811,17 @@
 
 /* Completed work folds into the same quiet narrative Codex uses: commentary
    and edit milestones remain readable, while raw operational noise stays out. */
+.thread__row > :is(.activity, .aux) {
+  position: relative;
+  margin-block: 4px;
+}
+
 .activity__summary {
   display: flex;
   align-items: center;
   gap: 6px;
   min-height: 30px;
+  margin-left: -3.5px;
   padding: 0 2px 4px;
   background: none;
   border: 0;
@@ -4834,6 +4861,21 @@
   white-space: nowrap;
 }
 
+.activity--live .activity__label {
+  flex: 1 1 0;
+  background: linear-gradient(100deg, var(--text-2) 20%, var(--text) 48%, var(--text-2) 76%);
+  background-clip: text;
+  background-size: 220% 100%;
+  color: transparent;
+  animation: activity-label-shine 2.4s linear infinite;
+}
+
+@keyframes activity-label-shine {
+  to {
+    background-position: -220% 0;
+  }
+}
+
 .activity__chevron {
   flex: none;
   transition:
@@ -4846,6 +4888,8 @@
 }
 
 .activity--live .activity__summary {
+  width: 100%;
+  min-width: 0;
   color: var(--text-2);
 }
 
@@ -4857,6 +4901,18 @@
 
 .activity__reveal[data-open='true'] {
   display: block;
+}
+
+.activity__reveal[data-open='closing'] {
+  position: absolute;
+  z-index: 1;
+  top: 100%;
+  right: 0;
+  left: 0;
+  display: block;
+  background: var(--bg);
+  pointer-events: none;
+  animation: disclosure-reveal-out var(--dur-slow) var(--ease-out) both;
 }
 
 .activity__reveal[data-open='true'] > .activity__reveal-clip {
@@ -4875,6 +4931,23 @@
   }
 }
 
+@keyframes disclosure-reveal-out {
+  to {
+    opacity: 0;
+    transform: translateY(-4px);
+  }
+}
+
+/* Closing details leave flow once, then the virtualizer moves the measured
+   rows with compositor-only transforms while the old details fade above them. */
+.thread:has(:is(.activity__reveal, .aux__reveal)[data-open='closing']) .thread__row {
+  transition: transform var(--dur-slow) var(--ease-out);
+}
+
+.thread__row:has(> :is(.activity, .aux) [data-open='closing']) {
+  z-index: 1;
+}
+
 .activity--empty .activity__summary {
   cursor: default;
 }
@@ -4886,6 +4959,7 @@
 }
 
 .activity--working .activity__summary {
+  min-width: 0;
   cursor: default;
   font-variant-numeric: tabular-nums;
 }
@@ -4900,7 +4974,10 @@
 
 .activity__working-label-swap {
   display: grid;
+  flex: 1 1 0;
   align-items: center;
+  min-width: 0;
+  overflow: hidden;
 }
 
 .activity__working-status,
@@ -4908,6 +4985,16 @@
   grid-area: 1 / 1;
   display: inline-flex;
   align-items: center;
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+}
+
+.activity__working-label,
+.activity__working-label-previous {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
   white-space: nowrap;
 }
 
@@ -4922,6 +5009,7 @@
 /* Dimmer than the label beside it — --text-4 was never defined, so this
    declaration was dropped and the elapsed time read at full label weight. */
 .activity__working-time {
+  flex: none;
   color: color-mix(in srgb, var(--text-3) 72%, transparent);
 }
 
@@ -4976,9 +5064,19 @@
     display: none;
   }
 
+  .activity--live .activity__label {
+    animation: none;
+    background: none;
+    color: var(--text-2);
+  }
+
   .activity__reveal[data-open='true'] > .activity__reveal-clip,
   .aux__reveal[data-open='true'] > .aux__reveal-clip {
     animation: none;
+  }
+
+  .thread:has(:is(.activity__reveal, .aux__reveal)[data-open='closing']) .thread__row {
+    transition: none;
   }
 }
 
@@ -5168,7 +5266,7 @@
   width: 1em;
   height: 1em;
   margin-right: 3px;
-  vertical-align: -0.13em;
+  vertical-align: middle;
 }
 
 .md .md-file-ref__icon > svg {
@@ -5373,15 +5471,19 @@
 .aux__row {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: 6px;
   width: 100%;
+  min-width: 0;
+  min-height: 30px;
+  margin-left: -3.5px;
+  padding: 0 2px 4px;
   background: none;
   border: 0;
   cursor: pointer;
   color: var(--text-3);
   font: inherit;
-  font-size: var(--t-sm);
-  padding: 1px 0;
+  font-size: var(--t-md);
+  letter-spacing: -0.012em;
   text-align: left;
   transition: color var(--dur-fast) var(--ease-out);
 }
@@ -5391,15 +5493,22 @@
 }
 
 .aux__glyph {
-  flex: none;
-  width: 14px;
   display: grid;
+  flex: none;
+  width: 18px;
   place-items: center;
 }
 
+.aux__glyph svg {
+  width: 15px;
+  height: 15px;
+}
+
 .aux__label {
-  font-family: var(--font-mono);
-  font-size: var(--t-sm);
+  flex: 1 1 0;
+  min-width: 0;
+  font-family: var(--font-ui);
+  font-size: var(--t-md);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -5439,6 +5548,18 @@
   display: block;
 }
 
+.aux__reveal[data-open='closing'] {
+  position: absolute;
+  z-index: 1;
+  top: 100%;
+  right: 0;
+  left: 0;
+  display: block;
+  background: var(--bg);
+  pointer-events: none;
+  animation: disclosure-reveal-out var(--dur-slow) var(--ease-out) both;
+}
+
 .aux__reveal[data-open='true'] > .aux__reveal-clip {
   animation: disclosure-reveal-in var(--dur-fast) var(--ease-out);
 }
@@ -5449,26 +5570,16 @@
 }
 
 .aux--live .aux__row {
-  gap: 10px;
-  min-height: 30px;
-  padding: 2px 0;
   color: var(--text-2);
-  font-size: var(--t-lg);
 }
 
 .aux--live .aux__glyph {
-  width: 22px;
   color: var(--text-3);
 }
 
-.aux--live .aux__label {
-  font-family: var(--font-ui);
-  font-size: var(--t-lg);
-}
-
 .aux--live .aux__glyph svg {
-  width: 16px;
-  height: 16px;
+  width: 15px;
+  height: 15px;
   stroke-width: 1.7;
 }
 
@@ -5521,6 +5632,7 @@
   position: static;
   padding-top: 2px;
   margin: 0;
+  margin-left: -6.5px;
   opacity: 1;
   pointer-events: auto;
 }
