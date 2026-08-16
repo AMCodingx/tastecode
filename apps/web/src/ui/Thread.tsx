@@ -77,6 +77,7 @@ export function Thread(props: {
   turnTiming?: TurnTiming | undefined
   plan: PlanStep[]
   diff: string | undefined
+  diffTurnId?: string | undefined
   threadId?: string | undefined
   transport?: Transport | undefined
   searchJump?: { turnId: string; request: number } | undefined
@@ -88,6 +89,8 @@ export function Thread(props: {
   keyboardActive?: boolean | undefined
   onEditMessage?: ((text: string) => void) | undefined
   onRevertCheckpoint?: ((checkpoint: Checkpoint) => void) | undefined
+  onUndoChanges?:
+    ((threadId: string, turnId: string, expectedDiff: string) => Promise<void>) | undefined
   onDecide: (id: string, decision: ApprovalDecision) => void
   onAnswerUserInput: (id: string, answers: Record<string, string[]>) => void | Promise<void>
 }) {
@@ -472,7 +475,16 @@ export function Thread(props: {
 
           {props.running ? <Plan steps={props.plan} compact /> : null}
           {!props.running ? (
-            <Diff diff={props.diff} threadId={props.threadId} transport={props.transport} />
+            <Diff
+              diff={props.diff}
+              threadId={props.threadId}
+              transport={props.transport}
+              onUndo={
+                props.threadId && props.diffTurnId && props.diff && props.onUndoChanges
+                  ? () => props.onUndoChanges!(props.threadId!, props.diffTurnId!, props.diff!)
+                  : undefined
+              }
+            />
           ) : null}
         </div>
       </div>

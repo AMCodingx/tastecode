@@ -2876,6 +2876,19 @@ export function App() {
     [inspectCheckpoint],
   )
 
+  const undoTurnChanges = useCallback(
+    async (threadId: string, turnId: string, expectedDiff: string) => {
+      setNotice(undefined)
+      await transport.request('thread.undoTurnChanges', { threadId, turnId, expectedDiff })
+      if (activeIdRef.current !== threadId) return
+      setNotice('Changes undone.')
+      const projectPath = findSession(projectsRef.current, threadId)?.project.path
+      invalidateWorkspaceIdleProbe(projectPath)
+      refreshWorkspaceAfterCompletion(projectPath)
+    },
+    [transport, invalidateWorkspaceIdleProbe, refreshWorkspaceAfterCompletion],
+  )
+
   const restoreCheckpoint = useCallback(async () => {
     if (!activeId || !rollbackInspection) return
     setRollbackRestoring(true)
@@ -3660,6 +3673,7 @@ export function App() {
                       turnTiming={thread.turnTiming}
                       plan={thread.plan}
                       diff={thread.diff}
+                      diffTurnId={thread.diffTurnId}
                       threadId={activeId}
                       transport={transport}
                       searchJump={searchJump?.threadId === activeId ? searchJump : undefined}
@@ -3672,6 +3686,7 @@ export function App() {
                       onAnswerUserInput={answerUserInput}
                       onEditMessage={editMessage}
                       onRevertCheckpoint={revertCheckpoint}
+                      onUndoChanges={undoTurnChanges}
                     />
                   ) : (
                     <Empty
