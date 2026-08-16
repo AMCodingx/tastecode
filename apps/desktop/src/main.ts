@@ -63,7 +63,13 @@ import { viewedImagePath } from './viewed-image-path.js'
 
 const here = path.dirname(fileURLToPath(import.meta.url))
 const require = createRequire(import.meta.url)
-const productIconPath = path.join(here, '../assets/tastecode-icon.png')
+const productIconPath = path.join(here, '../assets/tastecode-app-icon.png')
+const nativeAppName = 'Taste Code'
+const productDataPath = path.join(app.getPath('appData'), 'TasteCode')
+
+// Keep the existing storage location while the OS-facing product name gains a space.
+app.setPath('userData', productDataPath)
+app.setPath('sessionData', productDataPath)
 
 function isWebUrl(value: string): boolean {
   try {
@@ -97,7 +103,7 @@ if (process.platform === 'win32') {
   app.setAppUserModelId('dev.tastecode.desktop')
   app.commandLine.appendSwitch('disable-features', 'CalculateNativeWinOcclusion')
 }
-app.setName('TasteCode')
+app.setName(nativeAppName)
 // Diagnostics for the field: software rendering and a DevTools port, both
 // opt-in via environment so a broken machine can be inspected.
 if (process.env['HARNESS_DISABLE_GPU'] === '1') app.disableHardwareAcceleration()
@@ -120,7 +126,7 @@ protocol.registerSchemesAsPrivileged([
 ])
 
 if (!ownsSingleInstance) {
-  console.error('[desktop] another TasteCode instance owns the single-instance lock')
+  console.error(`[desktop] another ${nativeAppName} instance owns the single-instance lock`)
   app.quit()
 }
 
@@ -148,7 +154,7 @@ function startOwnedServer(): void {
       if (mainWindow && !mainWindow.isDestroyed()) {
         void dialog.showMessageBox(mainWindow, {
           type: 'error',
-          title: 'TasteCode',
+          title: nativeAppName,
           message: 'The core server keeps crashing.',
           detail: 'Restart the app. If this keeps happening, reinstall it.',
         })
@@ -167,6 +173,7 @@ function createWindow(): void {
   const initialTheme = windowThemeOptions('dark')
   const window = new BrowserWindow({
     icon: productIconPath,
+    title: nativeAppName,
     width: 1180,
     height: 820,
     minWidth: 720,
@@ -303,12 +310,12 @@ function createBackgroundTray(): void {
   if (process.platform === 'darwin' || tray) return
   const icon = nativeImage.createFromPath(productIconPath).resize({ width: 20, height: 20 })
   tray = new Tray(icon)
-  tray.setToolTip('TasteCode')
+  tray.setToolTip(nativeAppName)
   tray.setContextMenu(
     Menu.buildFromTemplate([
-      { label: 'Open TasteCode', click: showMainWindow },
+      { label: `Open ${nativeAppName}`, click: showMainWindow },
       { type: 'separator' },
-      { label: 'Quit TasteCode', click: () => app.quit() },
+      { label: `Quit ${nativeAppName}`, click: () => app.quit() },
     ]),
   )
   tray.on('click', showMainWindow)
@@ -567,7 +574,6 @@ if (ownsSingleInstance) {
   })
 
   void app.whenReady().then(() => {
-    if (process.platform === 'darwin') app.dock?.setIcon(productIconPath)
     startOwnedServer()
     configureAttachmentPreviews()
     configureMediaPermissions()
