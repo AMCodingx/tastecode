@@ -312,49 +312,6 @@ describe('streamed thread renders', () => {
     expect(rendered.container.querySelector('.activity--working')).toBeNull()
   })
 
-  it('crossfades working labels without remounting the rail', () => {
-    vi.useFakeTimers()
-    const user = message({
-      id: 'user-1',
-      turnId: 'turn-2',
-      role: 'user',
-      text: 'Run the checks',
-    })
-    const command = message({
-      id: 'command-1',
-      turnId: 'turn-2',
-      type: 'command',
-      role: undefined,
-      status: 'started',
-      command: 'pnpm test',
-    })
-    const rendered = render(view([user]))
-    const rail = rendered.container.querySelector('.activity--working')
-
-    rendered.rerender(view([user, command]))
-
-    expect(rendered.container.querySelector('.activity--working')).toBe(rail)
-    expect(rendered.container.querySelector('.activity__working-label')?.textContent).toBe(
-      'Running a command',
-    )
-    expect(rendered.container.querySelector('.activity__working-label-previous')?.textContent).toBe(
-      'Working',
-    )
-    const previousTime = rendered.container.querySelector(
-      '.activity__working-status-previous .activity__working-time',
-    )?.textContent
-    const currentTime = rendered.container.querySelector(
-      '.activity__working-status .activity__working-time',
-    )?.textContent
-    expect(previousTime).toBeTruthy()
-    expect(currentTime).toBe(previousTime)
-
-    act(() => vi.advanceTimersByTime(480))
-
-    expect(rendered.container.querySelector('.activity__working-label-previous')).toBeNull()
-    vi.useRealTimers()
-  })
-
   it('keeps live narration close to the activity row that follows it', () => {
     const user = message({
       id: 'user-1',
@@ -388,7 +345,7 @@ describe('streamed thread renders', () => {
     )
   })
 
-  it('crossfades search labels without remounting the rail', () => {
+  it('crossfades working labels without remounting the rail', () => {
     vi.useFakeTimers()
     const user = message({
       id: 'user-1',
@@ -408,6 +365,14 @@ describe('streamed thread renders', () => {
     expect(rendered.container.querySelector('.activity__working-label-previous')?.textContent).toBe(
       'Working',
     )
+    const previousTime = rendered.container.querySelector(
+      '.activity__working-status-previous .activity__working-time',
+    )?.textContent
+    const currentTime = rendered.container.querySelector(
+      '.activity__working-status .activity__working-time',
+    )?.textContent
+    expect(previousTime).toBeTruthy()
+    expect(currentTime).toBe(previousTime)
 
     act(() => vi.advanceTimersByTime(480))
 
