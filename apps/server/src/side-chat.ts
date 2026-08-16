@@ -47,59 +47,8 @@ export function sideChatInstructions(history: ReadonlyArray<{ event: DomainEvent
 export function snapshotEntries(
   history: ReadonlyArray<{ event: DomainEvent }>,
 ): SideChatSnapshotEntry[] {
-  const order: string[] = []
-  const items = new Map<string, Item>()
-
-  for (const { event } of history) {
-    if (event.type === 'item.started') {
-      if (!items.has(event.item.id)) order.push(event.item.id)
-      items.set(event.item.id, event.item)
-      continue
-    }
-    if (event.type === 'item.delta') {
-      const current = items.get(event.itemId)
-      if (current) {
-        items.set(event.itemId, { ...current, text: (current.text ?? '') + event.textDelta })
-      } else {
-        order.push(event.itemId)
-        items.set(event.itemId, {
-          id: event.itemId,
-          turnId: event.turnId,
-          type: 'message',
-          role: 'assistant',
-          status: 'started',
-          text: event.textDelta,
-          createdAt: 0,
-        })
-      }
-      continue
-    }
-    if (event.type === 'item.completed') {
-      if (!items.has(event.item.id)) order.push(event.item.id)
-      const streamed = items.get(event.item.id)?.text
-      items.set(event.item.id, {
-        ...event.item,
-        ...(event.item.text || !streamed ? {} : { text: streamed }),
-      })
-      continue
-    }
-    if (event.type === 'thread.error') {
-      const id = `thread-error:${order.length}`
-      order.push(id)
-      items.set(id, {
-        id,
-        turnId: '',
-        type: 'error',
-        status: 'completed',
-        text: event.message,
-        createdAt: 0,
-      })
-    }
-  }
-
-  const visible = order
-    .map((id) => items.get(id))
-    .filter((item): item is Item => item !== undefined && item.type !== 'reasoning')
+  const visible = projectHistoryItems(history)
+    .filter((item) => item.type !== 'reasoning')
     .map(toSnapshotEntry)
     .filter((entry): entry is SideChatSnapshotEntry => entry !== undefined)
 
@@ -128,6 +77,68 @@ export function snapshotEntries(
     }
   }
   return bounded
+}
+
+export function projectHistoryItems(history: ReadonlyArray<{ event: DomainEvent }>): Item[] {
+  const order: string[] = []
+  const items = new Map<string, Item>()
+
+  for (const { event } of history) {
+    if (event.type === 'item.started') {
+      const existing = items.get(event.item.id)
+      if (!existing) {
+        order.push(event.item.id)
+        items.set(event.item.id, event.item)
+      } else if (existing.status === 'started' || existing.turnId === '') {
+        items.set(event.item.id, {
+          ...event.item,
+          ...(event.item.text || !existing.text ? {} : { text: existing.text }),
+        })
+      }
+      continue
+    }
+    if (event.type === 'item.delta') {
+      const current = items.get(event.itemId)
+      if (current?.status === 'started') {
+        items.set(event.itemId, { ...current, text: (current.text ?? '') + event.textDelta })
+      } else if (!current) {
+        order.push(event.itemId)
+        items.set(event.itemId, {
+          id: event.itemId,
+          turnId: event.turnId,
+          type: 'message',
+          role: 'assistant',
+          status: 'started',
+          text: event.textDelta,
+          createdAt: 0,
+        })
+      }
+      continue
+    }
+    if (event.type === 'item.completed') {
+      if (!items.has(event.item.id)) order.push(event.item.id)
+      const existing = items.get(event.item.id)
+      items.set(event.item.id, {
+        ...event.item,
+        ...(event.item.text || !existing ? {} : { text: existing.text }),
+      })
+      continue
+    }
+    if (event.type === 'thread.error') {
+      const id = `thread-error:${order.length}`
+      order.push(id)
+      items.set(id, {
+        id,
+        turnId: '',
+        type: 'error',
+        status: 'completed',
+        text: event.message,
+        createdAt: 0,
+      })
+    }
+  }
+
+  return order.map((id) => items.get(id)).filter((item): item is Item => item !== undefined)
 }
 
 function toSnapshotEntry(item: Item): SideChatSnapshotEntry | undefined {
