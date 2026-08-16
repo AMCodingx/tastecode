@@ -314,6 +314,11 @@ The persisted `colorPalette` remains version-one compatible, so later phases nee
 framework. `60/30/10` is only loose composition guidance for dominant surfaces, supporting
 structure, and sparse accent use, never a palette formula or pixel quota.
 
+The deterministic gradient helper derives dependency-free CSS recipes for card, section, and page
+purposes from the validated palette. It preserves an opaque content surface for readable copy and
+controls. Build may use at most one matching purpose per view; gradients remain optional and may
+not replace imagery, hierarchy, or content.
+
 Signature-device status is deliberately conservative. Existing or newly proposed devices are not
 called validated unless the input includes real category-buyer attribution evidence. Visual
 novelty, internal preference, and competitor distance can justify a candidate, but do not prove
@@ -337,6 +342,8 @@ The current version-one blueprint contains:
 - the user question, decision stage, prior-section dependencies, and real evidence for each section;
 - final concise heading, body copy, and calls to action;
 - one beta layout family, the exact selected case IDs, and a content-specific layout direction;
+- one bounded motion decision per section with purpose, trigger, behavior, duration, easing, and a
+  reduced-motion equivalent;
 - component needs;
 - asset needs;
 - explicit compact, medium, and expanded transformations per section;
@@ -361,6 +368,13 @@ cross-family, missing, duplicated, and directly repeated compositions fail the P
 Build. Build treats the family, cases, layout direction, and responsive transformations as hard
 composition requirements; Review compares visible geometry against the same decisions. Older
 version-one artifacts without these additive fields remain readable.
+
+The package also carries 132 generated and visually inspected direction references across all 11
+layout families. A deterministic brief-and-brand seed selects one compact geometry cue per family
+for the Page prompt. The cues are optional, never override the brief, brand, accessibility, copy,
+responsive, or case rules, and never copy the reference identity. Only generated WebP variants are
+stored; the source screenshots are excluded. Provider turns receive the distilled cues rather than
+132 binary attachments, keeping the phase provider-neutral and the prompt bounded.
 
 ### Current `assets.json`
 
@@ -578,8 +592,10 @@ separate hidden BrowserWindow remains the authority for exact review screenshots
 
 The Electron main process validates the request, denies permission checks and requests, denies new
 windows, confines navigation and redirects to the preview origin, and verifies the final URL. It
-waits, within a 30-second deadline, for bounded animation settlement, fonts, image load and decode,
-and two final animation frames. It captures each requested size, writes private temporary PNGs,
+scrolls through the document to activate lazy content, then waits, within a 30-second deadline, for
+bounded animation settlement, fonts, image load and decode, and two final animation frames. It
+audits interaction targets across the whole document and captures a whole-page image for each
+requested viewport, bounded to 12,000 CSS pixels in height. It writes private temporary PNGs,
 destroys the window, clears its session storage and HTTP cache, removes failed captures, and sweeps
 capture directories older than one day. Cleanup finishes before the next serialized capture starts.
 
@@ -591,7 +607,6 @@ Current preview risks that still need explicit work:
   approval surface;
 - when several desktop clients are connected, the coordinator uses the first capable socket and the
   capture request has no thread owner, so a concurrent run can open in the wrong visible workspace;
-- captures cover the requested viewport from the top of the page, not a durable full-page iteration;
 - screenshot files are temporary evidence, not a durable iteration history.
 
 ## OriginKit
@@ -652,10 +667,10 @@ them.
 ### Page gaps
 
 The blueprint records visitor questions, decision stages, information dependencies, final copy,
-selected beta layout cases, responsive behavior, interactions, and acceptance criteria. The current
-catalog covers the human-reviewed website section cases but still needs evidence from varied real
-builds. Per-section motion roles remain implicit. Add them only after the Motion rules prove that
-Build and Review need persisted values.
+selected beta layout cases, responsive behavior, interactions, acceptance criteria, and one
+purposeful motion decision per section. The current catalog combines the human-reviewed website
+section cases with 132 generated direction variants. It still needs scored evidence from varied
+real builds to show which cues improve results and which should be retired.
 
 ### Asset gaps
 
@@ -686,9 +701,10 @@ relies primarily on provider-reported checks and screenshots.
 ### Missing internal judgment and tool work
 
 1. Finish compact Brand, Page, Asset, Build, and Review rules inside `packages/design-agent`.
-2. Build and test deterministic type, spacing, gradient, asset, and objective QA tools.
-3. Test the beta layout catalog on varied real briefs, then finish component, imagery, and motion
-   judgment with real reference cases.
+2. Build and test deterministic type, spacing, asset, and objective QA tools; keep the existing
+   palette and gradient helpers narrow and evidence-backed.
+3. Test the beta layout and direction catalogs on varied real briefs, retire weak cues, then finish
+   component, imagery, and motion judgment.
 4. Add provider-independent fixtures proving every phase output parses into the same artifacts.
 5. Define artifact migration before changing persisted schema versions.
 
@@ -742,7 +758,8 @@ judgment rules, and UI design.
 
 ### 5. Raise visual quality with evidence
 
-- build the palette, type, spacing, gradient, and taste-check tools;
+- build the type, spacing, asset, and taste-check tools around the existing palette and gradient
+  helpers;
 - test them on several deliberately different briefs;
 - add reference and anti-reference evidence;
 - add the direction gallery before full implementation when multiple directions are plausible;

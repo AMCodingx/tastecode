@@ -32,6 +32,14 @@ type Bridge = {
   performHaptic?: (pattern: NativeHapticPattern) => void
   capturePreview: (request: PreviewCaptureRequest) => Promise<PreviewCaptureResult>
   openExternal: (url: string) => Promise<void>
+  getDiagnosticsEnabled?: () => Promise<boolean>
+  setDiagnosticsEnabled?: (enabled: boolean) => Promise<boolean>
+  openDiagnostics?: () => Promise<boolean>
+  reportRendererError?: (message: string) => void
+  getUpdateState?: () => Promise<AppUpdateState>
+  checkForUpdates?: () => Promise<AppUpdateState>
+  installUpdate?: () => Promise<boolean>
+  onUpdateState?: (listener: (state: AppUpdateState) => void) => () => void
   onZoomChange: (listener: (factor: number) => void) => () => void
   isDesktop: true
 }
@@ -40,6 +48,13 @@ export type ZoomAction = 'in' | 'out' | 'reset'
 export type AppTheme = 'light' | 'dark'
 export type AppThemePreference = AppTheme | 'system'
 export type NativeHapticPattern = 'alignment' | 'generic'
+export type AppUpdateState = {
+  status: 'unsupported' | 'idle' | 'checking' | 'downloading' | 'current' | 'ready' | 'error'
+  currentVersion: string
+  version?: string
+  progress?: number
+  error?: string
+}
 
 const bridge = (globalThis as { harness?: Bridge }).harness
 const attachmentPreviews = new Map<string, PickedAttachment>()
@@ -163,5 +178,43 @@ export async function capturePreview(
 export function openExternalUrl(url: string): Promise<void> {
   if (!url) return Promise.resolve()
   return bridge?.openExternal(url) ?? Promise.resolve()
+}
+
+export function localDiagnosticsEnabled(): Promise<boolean> {
+  return bridge?.getDiagnosticsEnabled?.() ?? Promise.resolve(false)
+}
+
+export function setLocalDiagnosticsEnabled(enabled: boolean): Promise<boolean> {
+  return bridge?.setDiagnosticsEnabled?.(enabled) ?? Promise.resolve(false)
+}
+
+export function openLocalDiagnostics(): Promise<boolean> {
+  return bridge?.openDiagnostics?.() ?? Promise.resolve(false)
+}
+
+export function reportRendererError(cause: unknown): void {
+  const message = cause instanceof Error ? cause.stack || cause.message : String(cause)
+  bridge?.reportRendererError?.(message.slice(0, 4_000))
+}
+
+const unsupportedUpdate: AppUpdateState = {
+  status: 'unsupported',
+  currentVersion: 'pre-release',
+}
+
+export function appUpdateState(): Promise<AppUpdateState> {
+  return bridge?.getUpdateState?.() ?? Promise.resolve(unsupportedUpdate)
+}
+
+export function checkForAppUpdates(): Promise<AppUpdateState> {
+  return bridge?.checkForUpdates?.() ?? Promise.resolve(unsupportedUpdate)
+}
+
+export function installAppUpdate(): Promise<boolean> {
+  return bridge?.installUpdate?.() ?? Promise.resolve(false)
+}
+
+export function onAppUpdateState(listener: (state: AppUpdateState) => void): () => void {
+  return bridge?.onUpdateState?.(listener) ?? (() => undefined)
 }
 import type { PreviewCaptureRequest, PreviewCaptureResult } from '@harness/contracts'

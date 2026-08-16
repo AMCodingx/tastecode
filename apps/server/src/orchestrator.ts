@@ -111,6 +111,7 @@ import {
   readSessionDiff,
   reviewDiffFile,
   reviewDiffHunk,
+  reverseUnifiedDiff,
   StaleDiffSnapshotError,
 } from './diff-review.js'
 import { McpConfigStore } from './mcp-config.js'
@@ -1660,6 +1661,33 @@ export class Orchestrator {
 
   async diff(threadId: string): Promise<SessionDiff> {
     return readSessionDiff(this.#diffRepoPath(threadId), threadId, this.#store)
+  }
+
+  /** Reverse only the exact provider patch shown in the latest edit block. */
+  async undoTurnChanges(threadId: string, turnId: string, expectedDiff: string): Promise<void> {
+    if (this.isTurnRunning(threadId)) {
+      throw new Error('cannot undo changes while the agent turn is running')
+    }
+    if (this.#restoringThreads.has(threadId)) {
+      throw new Error('cannot undo changes while restoring a checkpoint')
+    }
+    if (this.#reviewingDiffs.has(threadId)) throw new StaleDiffSnapshotError()
+
+    this.#reviewingDiffs.add(threadId)
+    try {
+      const diff = this.#store.turnDiff(threadId, turnId)
+      if (!diff || diff !== expectedDiff) {
+        throw new Error('This edit block changed. Reload the session and try again.')
+      }
+      try {
+        await reverseUnifiedDiff(this.#repoPath(threadId), diff)
+      } catch {
+        throw new Error('These files changed after this edit block. Undo did not change them.')
+      }
+      this.#record(threadId, { type: 'diff.updated', turnId, diff: '' })
+    } finally {
+      this.#reviewingDiffs.delete(threadId)
+    }
   }
 
   async reviewHunk(

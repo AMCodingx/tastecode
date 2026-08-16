@@ -113,3 +113,62 @@ describe('external URL bridge', () => {
     expect(openExternal).toHaveBeenCalledWith('https://example.com/')
   })
 })
+
+describe('local diagnostics bridge', () => {
+  it('is off and inert in the browser', async () => {
+    const bridge = await import('./bridge.js')
+
+    await expect(bridge.localDiagnosticsEnabled()).resolves.toBe(false)
+    await expect(bridge.setLocalDiagnosticsEnabled(true)).resolves.toBe(false)
+    expect(() => bridge.reportRendererError(new Error('test'))).not.toThrow()
+  })
+
+  it('delegates the preference and redacted error source to the desktop', async () => {
+    const setDiagnosticsEnabled = vi.fn().mockResolvedValue(true)
+    const reportRendererError = vi.fn()
+    ;(globalThis as { harness?: unknown }).harness = {
+      isDesktop: true,
+      setDiagnosticsEnabled,
+      reportRendererError,
+    }
+    const bridge = await import('./bridge.js')
+
+    await expect(bridge.setLocalDiagnosticsEnabled(true)).resolves.toBe(true)
+    bridge.reportRendererError(new Error('renderer failed'))
+    expect(setDiagnosticsEnabled).toHaveBeenCalledWith(true)
+    expect(reportRendererError).toHaveBeenCalledWith(expect.stringContaining('renderer failed'))
+  })
+})
+
+describe('app update bridge', () => {
+  it('stays unsupported in the browser', async () => {
+    const bridge = await import('./bridge.js')
+
+    await expect(bridge.appUpdateState()).resolves.toEqual({
+      status: 'unsupported',
+      currentVersion: 'pre-release',
+    })
+    await expect(bridge.installAppUpdate()).resolves.toBe(false)
+  })
+
+  it('delegates update checks and state events to the desktop shell', async () => {
+    const state = { status: 'ready' as const, currentVersion: '1.0.0', version: '1.0.1' }
+    const checkForUpdates = vi.fn().mockResolvedValue(state)
+    const onUpdateState = vi.fn((listener: (next: typeof state) => void) => {
+      listener(state)
+      return () => undefined
+    })
+    ;(globalThis as { harness?: unknown }).harness = {
+      isDesktop: true,
+      checkForUpdates,
+      onUpdateState,
+    }
+    const bridge = await import('./bridge.js')
+    const listener = vi.fn()
+
+    await expect(bridge.checkForAppUpdates()).resolves.toEqual(state)
+    bridge.onAppUpdateState(listener)
+    expect(checkForUpdates).toHaveBeenCalledOnce()
+    expect(listener).toHaveBeenCalledWith(state)
+  })
+})

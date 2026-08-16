@@ -64,6 +64,14 @@ const page = {
       evidence: [],
       copy: { heading: 'Fresh by design.', body: [], callsToAction: [] },
       layout: 'Editorial split.',
+      motion: {
+        purpose: 'explanation',
+        trigger: 'scroll_enter',
+        behavior: 'Product proof resolves into the reading rail.',
+        durationMs: 220,
+        easing: 'cubic-bezier(0.23, 1, 0.32, 1)',
+        reducedMotion: 'Show the final composition immediately.',
+      },
       componentNeeds: [],
       assetNeeds: [],
       transformation: {
@@ -83,6 +91,10 @@ describe('page phase', () => {
     const prompt = designPagePrompt(brief, brand)
     expect(prompt).toContain('<design-brief>')
     expect(prompt).toContain('<brand-system>')
+    expect(prompt).toContain('<reference-direction-deck>')
+    expect(prompt).toContain('generated and visually inspected reference')
+    expect(prompt).toContain('A cue never overrides the brief, brand system')
+    expect(prompt).not.toContain('"imagePath"')
     expect(prompt).toContain('Do not choose new colors or typefaces')
     expect(prompt).toContain('order sections by information dependencies')
     expect(prompt).toContain('Compact reduces simultaneity, not content or capability')
@@ -91,6 +103,9 @@ describe('page phase', () => {
     expect(prompt).toContain('one related base card language and at most one emphasized variant')
     expect(prompt).toContain('record stable assetNeeds for every meaningful image')
     expect(prompt).toContain('Carry the approved brand accent into primary actions')
+    expect(prompt).toContain('Give every section one explicit motion decision')
+    expect(prompt).toContain('Default section introductions to one clear stacked heading')
+    expect(prompt).toContain('do not repeat that split-intro pattern elsewhere')
     expect(prompt).toContain('Never use an em dash')
     expect(prompt).toContain('Do not write eyebrow copy')
     expect(prompt).toContain(
@@ -148,6 +163,10 @@ describe('page phase', () => {
     expect(prompt).toContain('intentionally cropped by the lower edge')
     expect(prompt).toContain('each grouped set of links inside its own card')
     expect(prompt).toContain('one short descriptive text block')
+    const deck = /<reference-direction-deck>\s*([\s\S]*?)\s*<\/reference-direction-deck>/u.exec(
+      prompt,
+    )?.[1]
+    expect(JSON.parse(deck ?? '[]')).toHaveLength(11)
   })
 
   it('parses the final response through the page validator', () => {

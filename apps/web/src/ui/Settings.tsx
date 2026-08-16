@@ -50,7 +50,17 @@ import {
   type ModelChoice,
   type ProviderMark,
 } from '../model-catalog.js'
-import { isDesktop } from '../bridge.js'
+import {
+  appUpdateState,
+  checkForAppUpdates,
+  installAppUpdate,
+  isDesktop,
+  localDiagnosticsEnabled,
+  onAppUpdateState,
+  openLocalDiagnostics,
+  setLocalDiagnosticsEnabled,
+  type AppUpdateState,
+} from '../bridge.js'
 import {
   beginInstall,
   beginLogin,
@@ -1318,10 +1328,53 @@ function ThemePicker(props: {
 
 function DataSettings(props: { projectCount: number; onReset: () => void }) {
   const [confirming, setConfirming] = useState(false)
+  const [diagnosticsEnabled, setDiagnosticsEnabled] = useState(false)
+  const [diagnosticsError, setDiagnosticsError] = useState<string>()
   const projectLabel = `${props.projectCount} ${props.projectCount === 1 ? 'project' : 'projects'} on this machine`
+
+  useEffect(() => {
+    void localDiagnosticsEnabled().then(setDiagnosticsEnabled)
+  }, [])
+
+  const toggleDiagnostics = async () => {
+    setDiagnosticsError(undefined)
+    try {
+      setDiagnosticsEnabled(await setLocalDiagnosticsEnabled(!diagnosticsEnabled))
+    } catch (cause) {
+      setDiagnosticsError(cause instanceof Error ? cause.message : String(cause))
+    }
+  }
 
   return (
     <SettingsPanel title="Data & privacy">
+      {isDesktop ? (
+        <SettingsRow
+          title="Local diagnostics"
+          note="Off by default. Stores app errors and crash dumps only on this device. Nothing is uploaded. Turning it off fully applies after restart."
+          className="settings__row--roomy"
+        >
+          {diagnosticsError ? <RowIssue message={diagnosticsError} /> : null}
+          {diagnosticsEnabled ? (
+            <button
+              className="settings__action"
+              type="button"
+              onClick={() => void openLocalDiagnostics()}
+            >
+              Open folder
+            </button>
+          ) : null}
+          <button
+            className={`switch${diagnosticsEnabled ? ' is-on' : ''}`}
+            type="button"
+            role="switch"
+            aria-label="Local diagnostics"
+            aria-checked={diagnosticsEnabled}
+            onClick={() => void toggleDiagnostics()}
+          >
+            <span className="switch__thumb" />
+          </button>
+        </SettingsRow>
+      ) : null}
       <SettingsRow
         title={projectLabel}
         note="Reset only clears this renderer’s preferences. It does not delete projects, workspaces, files, chat history, or provider credentials."
@@ -1436,11 +1489,22 @@ function ResetConfirmation(props: { onCancel: () => void; onConfirm: () => void 
 function AboutSettings(props: { transport: Transport }) {
   const [checking, setChecking] = useState(false)
   const [result, setResult] = useState<ResultOf<'system.updateCheck'>>()
+  const [nativeUpdate, setNativeUpdate] = useState<AppUpdateState>()
+
+  useEffect(() => {
+    void appUpdateState().then(setNativeUpdate)
+    return onAppUpdateState(setNativeUpdate)
+  }, [])
 
   const check = async () => {
     setChecking(true)
     try {
-      setResult(await props.transport.request('system.updateCheck', {}))
+      const native = await appUpdateState()
+      if (native.status !== 'unsupported') {
+        setNativeUpdate(await checkForAppUpdates())
+      } else {
+        setResult(await props.transport.request('system.updateCheck', {}))
+      }
     } catch (cause) {
       setResult({ error: cause instanceof Error ? cause.message : String(cause) })
     } finally {
@@ -1449,6 +1513,9 @@ function AboutSettings(props: { transport: Transport }) {
   }
 
   const short = (sha: string) => sha.slice(0, 7)
+  const nativeChecking = nativeUpdate?.status === 'checking'
+  const nativeDownloading = nativeUpdate?.status === 'downloading'
+  const nativeReady = nativeUpdate?.status === 'ready'
   // Verdicts stay on the row's one line; a failure goes behind the red dot.
   const updateStatus = !result
     ? undefined
@@ -1465,28 +1532,58 @@ function AboutSettings(props: { transport: Transport }) {
               detail: `Newer: ${short(result.remote.sha)} — pull and restart`,
             }
           : { state: 'unavailable' as const, detail: 'No verdict' }
+  const nativeStatus =
+    nativeUpdate?.status === 'current'
+      ? { state: 'ready' as const, detail: 'Up to date' }
+      : nativeDownloading
+        ? {
+            state: 'checking' as const,
+            detail: `Downloading${nativeUpdate.version ? ` ${nativeUpdate.version}` : ''}${nativeUpdate.progress === undefined ? '' : ` · ${nativeUpdate.progress}%`}`,
+          }
+        : nativeReady
+          ? {
+              state: 'ready' as const,
+              detail: `${nativeUpdate.version ?? 'Update'} ready`,
+            }
+          : undefined
 
   return (
     <SettingsPanel title="About">
       <SettingsRow title="TasteCode">
         <SettingsMeta>
-          {`${isDesktop ? 'Desktop' : 'Browser'} · pre-release${result?.localCommit ? ` · ${short(result.localCommit)}` : ''}`}
+          {`${isDesktop ? 'Desktop' : 'Browser'} · ${nativeUpdate && nativeUpdate.status !== 'unsupported' ? nativeUpdate.currentVersion : 'pre-release'}${result?.localCommit ? ` · ${short(result.localCommit)}` : ''}`}
         </SettingsMeta>
       </SettingsRow>
       <SettingsRow title="Updates">
-        {result?.error ? (
+        {nativeUpdate?.status === 'error' ? (
+          <RowIssue
+            message={nativeUpdate.error ?? 'Update check failed'}
+            tip="Check your connection, then retry."
+          />
+        ) : result?.error ? (
           <RowIssue message={result.error} tip="Check your network or GitHub access, then retry." />
         ) : null}
-        {checking ? <StateLabel state="checking" live /> : null}
-        {!checking && updateStatus ? <StateLabel {...updateStatus} live /> : null}
+        {checking || nativeChecking ? <StateLabel state="checking" live /> : null}
+        {!checking && !nativeChecking && nativeStatus ? (
+          <StateLabel {...nativeStatus} live />
+        ) : null}
+        {!checking && !nativeChecking && !nativeStatus && updateStatus ? (
+          <StateLabel {...updateStatus} live />
+        ) : null}
         <button
           className="settings__action"
           type="button"
-          disabled={checking}
-          onClick={() => void check()}
+          disabled={checking || nativeChecking || nativeDownloading}
+          onClick={() => void (nativeReady ? installAppUpdate() : check())}
         >
           <RotateCcw size={13} aria-hidden />
-          {checking ? 'Checking…' : 'Check for updates'}
+          {nativeReady
+            ? 'Restart to update'
+            : nativeDownloading
+              ? 'Downloading…'
+              : checking || nativeChecking
+                ? 'Checking…'
+                : 'Check for updates'}
         </button>
       </SettingsRow>
       <SettingsRow title="Source">

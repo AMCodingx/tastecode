@@ -293,9 +293,7 @@ describe('completed activity disclosure', () => {
       />,
     )
 
-    const disclosure = screen.getByRole('button', {
-      name: 'Ran commands',
-    })
+    const disclosure = screen.getByRole('button', { name: 'Ran commands' })
     const reveal = container.querySelector('.activity__reveal')
     expect(disclosure.getAttribute('aria-expanded')).toBe('false')
     expect(reveal?.getAttribute('data-open')).toBe('false')

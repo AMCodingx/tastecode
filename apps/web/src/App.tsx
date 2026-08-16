@@ -54,6 +54,7 @@ import { StageHeader } from './ui/StageHeader.js'
 import { Thread } from './ui/Thread.js'
 import { TitleBar } from './ui/TitleBar.js'
 import { ZoomHud } from './ui/ZoomHud.js'
+import { WelcomeDialog } from './ui/WelcomeDialog.js'
 import { serverBaseUrl } from './server-url.js'
 import { addDesignBriefing } from './design-agent/briefing.js'
 import { sourceSupportsAttachments } from './attachment-capability.js'
@@ -113,6 +114,7 @@ import {
 
 const SERVER_BASE_URL = serverBaseUrl(import.meta.env.VITE_HARNESS_SERVER_URL)
 const SETUP_KEY = 'harness.provider'
+const ONBOARDING_KEY = 'harness.onboarding.v1'
 const PROVIDER_IDS = [
   'codex',
   'claude-code',
@@ -350,8 +352,17 @@ export function App() {
   // to the server and comes back through here.
   const [projects, setProjects] = useState<Project[]>([])
   const [projectsStatus, setProjectsStatus] = useState<'loading' | 'ready' | 'failed'>('loading')
+  const [onboardingDismissed, setOnboardingDismissed] = useState(
+    () => readSetting(ONBOARDING_KEY) === 'done',
+  )
   /** The thread whose interrupt has been sent but not yet acknowledged. */
   const [stoppingThreadId, setStoppingThreadId] = useState<string | undefined>()
+
+  useEffect(() => {
+    if (projectsStatus !== 'ready' || projects.length === 0 || onboardingDismissed) return
+    writeSetting(ONBOARDING_KEY, 'done')
+    setOnboardingDismissed(true)
+  }, [projects, projectsStatus, onboardingDismissed])
   const [offline, setOffline] = useState(false)
   const [activeId, setActiveId] = useState<string | undefined>()
   const [activePath, setActivePath] = useState<string | undefined>()
@@ -2880,6 +2891,19 @@ export function App() {
     [inspectCheckpoint],
   )
 
+  const undoTurnChanges = useCallback(
+    async (threadId: string, turnId: string, expectedDiff: string) => {
+      setNotice(undefined)
+      await transport.request('thread.undoTurnChanges', { threadId, turnId, expectedDiff })
+      if (activeIdRef.current !== threadId) return
+      setNotice('Changes undone.')
+      const projectPath = findSession(projectsRef.current, threadId)?.project.path
+      invalidateWorkspaceIdleProbe(projectPath)
+      refreshWorkspaceAfterCompletion(projectPath)
+    },
+    [transport, invalidateWorkspaceIdleProbe, refreshWorkspaceAfterCompletion],
+  )
+
   const restoreCheckpoint = useCallback(async () => {
     if (!activeId || !rollbackInspection) return
     setRollbackRestoring(true)
@@ -3664,6 +3688,7 @@ export function App() {
                       turnTiming={thread.turnTiming}
                       plan={thread.plan}
                       diff={thread.diff}
+                      diffTurnId={thread.diffTurnId}
                       threadId={activeId}
                       transport={transport}
                       searchJump={searchJump?.threadId === activeId ? searchJump : undefined}
@@ -3676,6 +3701,7 @@ export function App() {
                       onAnswerUserInput={answerUserInput}
                       onEditMessage={editMessage}
                       onRevertCheckpoint={revertCheckpoint}
+                      onUndoChanges={undoTurnChanges}
                     />
                   ) : (
                     <Empty
@@ -3824,6 +3850,22 @@ export function App() {
           onAccountChange={handleAccountChange}
           onReset={resetSettings}
           onClose={closeSettings}
+        />
+      ) : null}
+
+      {isDesktop &&
+      projectsStatus === 'ready' &&
+      projects.length === 0 &&
+      !onboardingDismissed &&
+      !settingsOpen ? (
+        <WelcomeDialog
+          providerStatuses={providerStatuses}
+          onAddProject={() => void addProject()}
+          onOpenProviders={() => openSettings('providers')}
+          onDismiss={() => {
+            writeSetting(ONBOARDING_KEY, 'done')
+            setOnboardingDismissed(true)
+          }}
         />
       ) : null}
 

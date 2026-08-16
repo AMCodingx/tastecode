@@ -89,6 +89,7 @@ export function Thread(props: {
   turnTiming?: TurnTiming | undefined
   plan: PlanStep[]
   diff: string | undefined
+  diffTurnId?: string | undefined
   threadId?: string | undefined
   transport?: Transport | undefined
   searchJump?: { turnId: string; request: number } | undefined
@@ -100,6 +101,8 @@ export function Thread(props: {
   keyboardActive?: boolean | undefined
   onEditMessage?: ((text: string) => void) | undefined
   onRevertCheckpoint?: ((checkpoint: Checkpoint) => void) | undefined
+  onUndoChanges?:
+    ((threadId: string, turnId: string, expectedDiff: string) => Promise<void>) | undefined
   onDecide: (id: string, decision: ApprovalDecision) => void
   onAnswerUserInput: (id: string, answers: Record<string, string[]>) => void | Promise<void>
 }) {
@@ -494,7 +497,16 @@ export function Thread(props: {
 
           {props.running ? <Plan steps={props.plan} compact /> : null}
           {!props.running ? (
-            <Diff diff={props.diff} threadId={props.threadId} transport={props.transport} />
+            <Diff
+              diff={props.diff}
+              threadId={props.threadId}
+              transport={props.transport}
+              onUndo={
+                props.threadId && props.diffTurnId && props.diff && props.onUndoChanges
+                  ? () => props.onUndoChanges!(props.threadId!, props.diffTurnId!, props.diff!)
+                  : undefined
+              }
+            />
           ) : null}
         </div>
       </div>
@@ -989,6 +1001,104 @@ function activityDetail(item: Item): string | undefined {
   return unique.length > 0 ? unique.join('\n') : undefined
 }
 
+function ViewedImagePreview({
+  reference,
+  active,
+  fallbackClassName,
+  variant = 'detail',
+}: {
+  reference: string
+  active: boolean
+  fallbackClassName?: string
+  variant?: 'detail' | 'message'
+}) {
+  const [preview, setPreview] = useState<PickedAttachment>()
+  const [viewerOpen, setViewerOpen] = useState(false)
+  const [thumbnailFailed, setThumbnailFailed] = useState(false)
+  const [imageFailed, setImageFailed] = useState(false)
+
+  useEffect(() => {
+    if (!active) return
+    let cancelled = false
+    void previewViewedImage(reference).then((result) => {
+      if (!cancelled) {
+        setPreview(result)
+        setThumbnailFailed(false)
+        setImageFailed(false)
+      }
+    })
+    return () => {
+      cancelled = true
+    }
+  }, [active, reference])
+
+  const inlineSource =
+    preview?.thumbnailUrl && !thumbnailFailed ? preview.thumbnailUrl : preview?.previewUrl
+  if (!preview || !inlineSource || !preview.previewUrl || imageFailed) {
+    if (variant === 'detail' && fallbackClassName) {
+      return <pre className={fallbackClassName}>{reference}</pre>
+    }
+    return (
+      <span
+        className="viewed-image-preview viewed-image-preview--message is-loading"
+        aria-label={`Loading preview of ${attachmentName(reference)}`}
+      >
+        <span className="viewed-image-preview__placeholder" aria-hidden>
+          <Images />
+        </span>
+      </span>
+    )
+  }
+
+  return (
+    <div
+      className={`viewed-image-preview${variant === 'message' ? ' viewed-image-preview--message' : ''}`}
+    >
+      <button
+        type="button"
+        className="viewed-image-preview__open"
+        aria-label={`Open preview of ${preview.name}`}
+        onClick={() => setViewerOpen(true)}
+      >
+        <img
+          src={inlineSource}
+          alt={`Preview of ${preview.name}`}
+          draggable={false}
+          onError={() =>
+            preview.thumbnailUrl && !thumbnailFailed
+              ? setThumbnailFailed(true)
+              : setImageFailed(true)
+          }
+        />
+      </button>
+      {variant === 'detail' ? (
+        <span className="viewed-image-preview__name" title={reference}>
+          {reference}
+        </span>
+      ) : null}
+      {viewerOpen ? (
+        <MediaViewer
+          src={preview.previewUrl}
+          name={preview.name}
+          mediaType="image"
+          onReveal={variant === 'message' ? () => void revealPath(reference) : undefined}
+          onClose={() => setViewerOpen(false)}
+        />
+      ) : null}
+    </div>
+  )
+}
+
+const IMAGE_ATTACHMENT_RE = /\.(?:apng|avif|bmp|gif|ico|jpe?g|png|webp)$/i
+
+function isImageAttachment(reference: string): boolean {
+  return IMAGE_ATTACHMENT_RE.test(reference)
+}
+
+function attachmentName(reference: string): string {
+  return reference.split(/[\\/]/).filter(Boolean).at(-1) ?? reference
+}
+
 function activityStackLabel(items: Item[]): string {
   const onlyItem = items.length === 1 ? items[0] : undefined
   if (
@@ -1093,104 +1203,6 @@ function activityItemLabel(item: Item): string {
 
 function inlineActivityText(text: string | undefined): string {
   return text?.replace(/\s+/g, ' ').trim() ?? ''
-}
-
-function ViewedImagePreview({
-  reference,
-  active,
-  fallbackClassName,
-  variant = 'detail',
-}: {
-  reference: string
-  active: boolean
-  fallbackClassName?: string
-  variant?: 'detail' | 'message'
-}) {
-  const [preview, setPreview] = useState<PickedAttachment>()
-  const [viewerOpen, setViewerOpen] = useState(false)
-  const [thumbnailFailed, setThumbnailFailed] = useState(false)
-  const [imageFailed, setImageFailed] = useState(false)
-
-  useEffect(() => {
-    if (!active) return
-    let cancelled = false
-    void previewViewedImage(reference).then((result) => {
-      if (!cancelled) {
-        setPreview(result)
-        setThumbnailFailed(false)
-        setImageFailed(false)
-      }
-    })
-    return () => {
-      cancelled = true
-    }
-  }, [active, reference])
-
-  const inlineSource =
-    preview?.thumbnailUrl && !thumbnailFailed ? preview.thumbnailUrl : preview?.previewUrl
-  if (!preview || !inlineSource || !preview.previewUrl || imageFailed) {
-    if (variant === 'detail' && fallbackClassName) {
-      return <pre className={fallbackClassName}>{reference}</pre>
-    }
-    return (
-      <span
-        className="viewed-image-preview viewed-image-preview--message is-loading"
-        aria-label={`Loading preview of ${attachmentName(reference)}`}
-      >
-        <span className="viewed-image-preview__placeholder" aria-hidden>
-          <Images />
-        </span>
-      </span>
-    )
-  }
-
-  return (
-    <div
-      className={`viewed-image-preview${variant === 'message' ? ' viewed-image-preview--message' : ''}`}
-    >
-      <button
-        type="button"
-        className="viewed-image-preview__open"
-        aria-label={`Open preview of ${preview.name}`}
-        onClick={() => setViewerOpen(true)}
-      >
-        <img
-          src={inlineSource}
-          alt={`Preview of ${preview.name}`}
-          draggable={false}
-          onError={() =>
-            preview.thumbnailUrl && !thumbnailFailed
-              ? setThumbnailFailed(true)
-              : setImageFailed(true)
-          }
-        />
-      </button>
-      {variant === 'detail' ? (
-        <span className="viewed-image-preview__name" title={reference}>
-          {reference}
-        </span>
-      ) : null}
-      {viewerOpen ? (
-        <MediaViewer
-          src={preview.previewUrl}
-          name={preview.name}
-          mediaType="image"
-          onReveal={variant === 'message' ? () => void revealPath(reference) : undefined}
-          onClose={() => setViewerOpen(false)}
-        />
-      ) : null}
-    </div>
-  )
-}
-
-const IMAGE_ATTACHMENT_RE = /\.(?:apng|avif|bmp|gif|ico|jpe?g|png|webp)$/i
-
-function isImageAttachment(reference: string): boolean {
-  return IMAGE_ATTACHMENT_RE.test(reference)
-}
-
-function attachmentName(reference: string): string {
-  return reference.split(/[\\/]/).filter(Boolean).at(-1) ?? reference
 }
 
 function ResponseActions({

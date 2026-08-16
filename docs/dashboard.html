@@ -290,7 +290,7 @@
           <a href="#parked">Parked</a>
           <a href="./feature-inventory.html">Inventory</a>
         </nav>
-        <span class="meta">2026-08-15 main 54edfedb</span>
+        <span class="meta">2026-08-17 main 4fd7a00c</span>
       </div>
     </div>
 
@@ -319,9 +319,9 @@
             <small>design</small>
           </div>
           <div class="kpi">
-            <b>8</b>
+            <b>6</b>
             <span>items open before release</span>
-            <small>two of them are human decisions</small>
+            <small>design acceptance, distribution, and launch proof</small>
           </div>
         </div>
       </section>
@@ -334,7 +334,7 @@
         </p>
         <div class="lanes">
           <div class="lane l-done">
-            <header>Ready <span class="count">30</span></header>
+            <header>Ready <span class="count">32</span></header>
             <ul>
               <li>
                 <i class="tick">✓</i>
@@ -395,8 +395,8 @@
                 <span
                   >Review and safety
                   <span class="d"
-                    >per-hunk diff review, approvals, validated checkpoints, modal keyboard
-                    isolation, modes</span
+                    >per-hunk diff review, exact edit-block undo, approvals, validated checkpoints,
+                    modal keyboard isolation, modes</span
                   >
                 </span>
               </li>
@@ -569,9 +569,10 @@
                 <span
                   >Narration and tool lifecycles
                   <span class="d"
-                    >reasoning summaries stay readable; tools in one work batch share one stable
-                    live row even across empty provider reasoning, follow the current command, then
-                    settle into category summaries when visible reasoning or narration appears</span
+                    >adapter activity stays unique and ordered; each completed model reply has one
+                    full-turn Worked summary while the live timer restarts after assistant updates;
+                    commands stay summarized until opened, and fixed action rows do not resize the
+                    chat on hover</span
                   >
                 </span>
               </li>
@@ -710,6 +711,29 @@
                   >
                 </span>
               </li>
+              <li>
+                <i class="tick">✓</i>
+                <span
+                  >Packaged release client
+                  <span class="d"
+                    >NSIS packaging produces the installer, blockmap, and beta metadata; the About
+                    surface checks, downloads, and installs updates from the TasteCode feed. Public
+                    feed publication, signing, and version-to-version proof remain release
+                    tasks</span
+                  >
+                </span>
+              </li>
+              <li>
+                <i class="tick">✓</i>
+                <span
+                  >First-run and private diagnostics
+                  <span class="d"
+                    >the empty desktop guides users to one project and the three beta providers;
+                    bounded local logs can be revealed or copied only by the user after secrets,
+                    emails, project paths, and cross-platform home paths are scrubbed</span
+                  >
+                </span>
+              </li>
             </ul>
           </div>
 
@@ -731,21 +755,26 @@
                     review can pass; every new page section records one of the human-authored beta
                     layout families and exact case IDs, invalid or adjacent duplicate compositions
                     fail before Build, and Build plus Review must preserve the selected geometry;
-                    page validation rejects eyebrows, internal placeholders, overlong headings, and
-                    redundant Hero support copy; Brand limits typography to two approved families,
-                    while Page, Asset, Build, and Review require coherent card systems, meaningful
-                    brand-accent use, and real image acquisition when provider tools are available;
-                    they block ornamental SVG filler, divider-grid templates, colored card rails,
-                    unstyled controls, overflow, and headings beyond three lines; representative
-                    content stays out of page disclaimers and reaches the final Harness response as
-                    a publishing verification note; serialized hidden capture remains the review
-                    authority, waits for bounded animation, font, and image settlement, confines
-                    navigation and redirects to the preview origin, and verifies the final URL;
-                    negotiated ACP image prompts receive the screenshots, and shared browser storage
-                    and cache are cleared before the next capture; successful previews remain
-                    reachable until their owning thread closes or starts a replacement, and a
-                    completed queued Design turn stays idle even when its provider start promise
-                    resolves late</span
+                    132 generated-only direction references deterministically contribute one bounded
+                    geometry cue per family, while brand palettes supply optional dependency-free
+                    card, section, and page gradient recipes; each section records a purposeful
+                    motion trigger, timing, easing, and reduced-motion equivalent instead of
+                    inheriting one generic reveal; page validation rejects eyebrows, internal
+                    placeholders, overlong headings, and redundant Hero support copy; Brand limits
+                    typography to two approved families, while Page, Asset, Build, and Review
+                    require coherent card systems, meaningful brand-accent use, and real image
+                    acquisition when provider tools are available; they block ornamental SVG filler,
+                    divider-grid templates, colored card rails, unstyled controls, overflow, and
+                    headings beyond three lines; representative content stays out of page
+                    disclaimers and reaches the final Harness response as a publishing verification
+                    note; serialized hidden capture remains the review authority, scrolls through
+                    lazy content, audits the whole document, captures a bounded whole-page image per
+                    viewport, waits for animation, font, and image settlement, confines navigation
+                    and redirects to the preview origin, and verifies the final URL; negotiated ACP
+                    image prompts receive the screenshots, and shared browser storage and cache are
+                    cleared before the next capture; successful previews remain reachable until
+                    their owning thread closes or starts a replacement, and a completed queued
+                    Design turn stays idle even when its provider start promise resolves late</span
                   >
                 </span>
               </li>
@@ -753,49 +782,54 @@
           </div>
 
           <div class="lane l-todo">
-            <header>To do before beta <span class="count">8</span></header>
+            <header>To do before beta <span class="count">6</span></header>
             <ul>
               <li>
                 <i class="tick"></i>
                 <span
-                  >Product name and domain
-                  <span class="d">human decision, blocks everything visual</span>
+                  >Design Mode acceptance
+                  <span class="d"
+                    >ship-quality TasteCode landing page and provider/platform matrix</span
+                  >
                 </span>
               </li>
               <li>
                 <i class="tick"></i>
                 <span
-                  >Windows code signing <span class="d">human decision, weeks of lead time</span>
+                  >Signing and notarization
+                  <span class="d">Windows SmartScreen trust and packaged macOS proof</span>
                 </span>
               </li>
               <li>
                 <i class="tick"></i>
-                <span>Installer <span class="d">NSIS, no SmartScreen warning</span></span>
-              </li>
-              <li>
-                <i class="tick"></i>
-                <span>Auto-update with rollback</span>
-              </li>
-              <li>
-                <i class="tick"></i>
-                <span>Crash reporting, opt in</span>
-              </li>
-              <li>
-                <i class="tick"></i>
                 <span
-                  >Clean-VM install test
-                  <span class="d">fresh Windows to first agent answer in under five minutes</span>
+                  >Publish and prove updates
+                  <span class="d"
+                    >real feed, old-to-new install, relaunch, and rollback decision</span
+                  >
                 </span>
               </li>
               <li>
                 <i class="tick"></i>
-                <span>Landing page and docs</span>
+                <span
+                  >Crash intake decision
+                  <span class="d">manual private export or explicit opt-in remote reporting</span>
+                </span>
               </li>
               <li>
                 <i class="tick"></i>
                 <span
-                  >Onboarding hardening
-                  <span class="d">first-run flow covers exactly the three beta plans</span>
+                  >Clean packaged smoke matrix
+                  <span class="d">fresh Windows and macOS to first real provider answer</span>
+                </span>
+              </li>
+              <li>
+                <i class="tick"></i>
+                <span
+                  >Launch site and legal posture
+                  <span class="d"
+                    >downloads, support, privacy/terms, and source license decision</span
+                  >
                 </span>
               </li>
             </ul>
