@@ -133,7 +133,13 @@ import {
   type AvailableBackgroundModelSource,
 } from './background-model.js'
 
-type UserSubmission = { id: string; text: string; createdAt: number; queueId?: string }
+type UserSubmission = {
+  id: string
+  text: string
+  attachments: string[]
+  createdAt: number
+  queueId?: string
+}
 type QueuedTurnEntry = QueuedTurn & { options: TurnOptions; clientSubmissionId?: string }
 type QueueState = { items: QueuedTurn[]; canSteer: boolean }
 type PendingTurnStart = { acceptedAt: number; submission?: UserSubmission }
@@ -1403,7 +1409,7 @@ export class Orchestrator {
     if (clientSubmissionId) this.#assertFreshSubmissionId(threadId, clientSubmissionId)
     const submittedAt = Date.now()
     const submission = clientSubmissionId
-      ? { id: clientSubmissionId, text, createdAt: submittedAt }
+      ? { id: clientSubmissionId, text, attachments, createdAt: submittedAt }
       : undefined
     const queue = this.#queueEntries(threadId)
     if (
@@ -1511,6 +1517,7 @@ export class Orchestrator {
         this.#recordUserSubmission(threadId, activeTurnId, {
           id: item.clientSubmissionId,
           text: item.text,
+          attachments: item.attachments,
           createdAt: item.createdAt,
           queueId: item.id,
         })
@@ -1618,6 +1625,9 @@ export class Orchestrator {
 
   #recordUserSubmission(threadId: string, turnId: string, submission: UserSubmission): void {
     this.#serverOwnedUserTurns.add(userTurnKey(threadId, turnId))
+    const visibleAttachments = submission.attachments.filter(
+      (attachment) => !isDesignBriefAttachment(attachment),
+    )
     const event: DomainEvent = {
       type: 'item.completed',
       item: {
@@ -1627,6 +1637,7 @@ export class Orchestrator {
         role: 'user',
         status: 'completed',
         text: submission.text,
+        ...(visibleAttachments.length > 0 ? { attachments: visibleAttachments } : {}),
         createdAt: submission.createdAt,
       },
     }
@@ -1969,6 +1980,7 @@ export class Orchestrator {
           ? {
               id: next.clientSubmissionId,
               text: next.text,
+              attachments: next.attachments,
               createdAt: next.createdAt,
               queueId: next.id,
             }

@@ -205,9 +205,12 @@ describe('thread reducer', () => {
   })
 
   it('starts working locally before the server confirms a turn', () => {
-    const state = beginOptimisticTurn(emptyThread, 'resume this chat')
+    const state = beginOptimisticTurn(emptyThread, 'resume this chat', 'submission-with-image', 1, [
+      '/work/reference.png',
+    ])
 
     expect(state.items[0]?.text).toBe('resume this chat')
+    expect(state.items[0]?.attachments).toEqual(['/work/reference.png'])
     expect(state.running).toBe(true)
     expect(state.activeTurn?.id).toMatch(/^local-turn:/)
   })
