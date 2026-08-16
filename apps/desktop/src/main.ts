@@ -537,7 +537,7 @@ ipcMain.handle('harness:previewViewedImage', async (event, reference: unknown) =
   )
   if (!filePath) return undefined
   const attachment = pickedAttachment(filePath, attachmentPreviewSecret)
-  return attachment.mediaType === 'image' ? attachment : undefined
+  return attachment.mediaType ? attachment : undefined
 })
 
 ipcMain.handle('harness:revealPath', (event, value: unknown) => {
