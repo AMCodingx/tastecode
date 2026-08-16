@@ -4809,6 +4809,50 @@
   word-break: break-word;
 }
 
+.said__attachments {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 148px));
+  gap: 5px;
+  max-width: 301px;
+  margin: -2px -6px 7px;
+}
+
+.said__attachments:has(> :only-child) {
+  grid-template-columns: minmax(0, 301px);
+}
+
+.said__attachments .viewed-image-preview--message {
+  width: 100%;
+  margin: 0;
+}
+
+.said__attachments .viewed-image-preview__open,
+.said__attachments .viewed-image-preview--message.is-loading {
+  height: 118px;
+}
+
+.said__attachments > :only-child .viewed-image-preview__open,
+.said__attachments > .viewed-image-preview--message.is-loading:only-child {
+  height: 178px;
+}
+
+.viewed-image-preview__placeholder {
+  display: grid;
+  place-items: center;
+  width: 100%;
+  height: 100%;
+  background: var(--chrome-recessed);
+  border: 1px solid var(--chrome-border);
+  border-radius: var(--r-card);
+  box-shadow: var(--chrome-inset-shadow);
+  color: var(--text-3);
+}
+
+.viewed-image-preview--message.is-loading {
+  display: block;
+  opacity: 0.68;
+}
+
 /* Completed work folds into the same quiet narrative Codex uses: commentary
    and edit milestones remain readable, while raw operational noise stays out. */
 .thread__row > :is(.activity, .aux) {
@@ -5124,6 +5168,48 @@
   font-family: var(--font-mono);
   font-size: var(--t-sm);
   white-space: pre-wrap;
+}
+
+.viewed-image-preview {
+  width: min(320px, calc(100% - 21px));
+  margin: 7px 0 2px 21px;
+}
+
+.viewed-image-preview__open {
+  display: grid;
+  place-items: center;
+  width: 100%;
+  height: 180px;
+  padding: 0;
+  overflow: hidden;
+  background: var(--chrome-recessed);
+  border: 1px solid var(--chrome-border);
+  border-radius: var(--r-card);
+  box-shadow: var(--chrome-inset-shadow);
+  cursor: zoom-in;
+}
+
+.viewed-image-preview__open:focus-visible {
+  outline: 2px solid var(--text-2);
+  outline-offset: 2px;
+}
+
+.viewed-image-preview__open img {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+}
+
+.viewed-image-preview__name {
+  display: block;
+  margin-top: 5px;
+  overflow: hidden;
+  color: var(--text-3);
+  font-family: var(--font-mono);
+  font-size: var(--t-xs);
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .reply > .activity {
@@ -6699,6 +6785,70 @@
   white-space: nowrap;
 }
 
+.queue-row__media {
+  position: relative;
+  isolation: isolate;
+  display: grid;
+  width: 32px;
+  height: 32px;
+  flex: none;
+  padding: 0;
+  overflow: hidden;
+  place-items: center;
+  background: var(--chrome-recessed);
+  border: 1px solid var(--chrome-border);
+  border-radius: var(--r-md);
+  box-shadow: var(--chrome-inset-shadow);
+  color: var(--text-3);
+  cursor: pointer;
+}
+
+.queue-row__media:disabled {
+  opacity: 1;
+  cursor: default;
+}
+
+.queue-row__media:focus-visible {
+  outline: 2px solid var(--text-2);
+  outline-offset: 2px;
+}
+
+.queue-row__media-fallback {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  background:
+    linear-gradient(145deg, color-mix(in srgb, var(--surface-3) 42%, transparent), transparent 62%),
+    var(--chrome-recessed);
+}
+
+.queue-row__media img {
+  position: absolute;
+  z-index: 1;
+  inset: 0;
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.queue-row__media-play {
+  position: absolute;
+  z-index: 2;
+  bottom: 2px;
+  left: 2px;
+  display: grid;
+  width: 15px;
+  height: 15px;
+  padding-left: 1px;
+  place-items: center;
+  background: rgb(14 14 15 / 78%);
+  border: 1px solid rgb(255 255 255 / 12%);
+  border-radius: var(--r-sm);
+  color: rgb(250 250 250 / 92%);
+}
+
 .queue-row__steer,
 .queue-row__action {
   display: inline-flex;
@@ -6999,6 +7149,10 @@
 .attachment-preview__open:focus-visible {
   outline: 2px solid var(--text-2);
   outline-offset: 2px;
+}
+
+.attachment-preview__open:disabled {
+  cursor: default;
 }
 
 .attachment-preview.is-loading img {

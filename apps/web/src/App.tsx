@@ -2335,6 +2335,7 @@ export function App() {
           text,
           optimisticItemId,
           optimisticCreatedAt,
+          attachments,
         )
         const choice = selectedModelChoice
         if (!choice) {
@@ -2401,6 +2402,7 @@ export function App() {
           text,
           optimisticItemId,
           optimisticCreatedAt,
+          attachments,
         )
         threadStates.current.set(targetId, provisional)
         if (activeIdRef.current === targetId) setThread(provisional)
@@ -2423,7 +2425,13 @@ export function App() {
       const steering = submission === 'steer'
       const optimisticQueueId = wasRunning && !steering ? optimisticItemId : undefined
       if (!wasRunning && !optimisticAdded) {
-        const next = beginOptimisticTurn(before, text, optimisticItemId, optimisticCreatedAt)
+        const next = beginOptimisticTurn(
+          before,
+          text,
+          optimisticItemId,
+          optimisticCreatedAt,
+          attachments,
+        )
         optimisticTurnId = next.activeTurn?.id
         threadStates.current.set(threadId, next)
         if (threadId === activeIdRef.current) {
@@ -2431,7 +2439,13 @@ export function App() {
           setThreadRevealRequest((request) => request + 1)
         }
       } else if (wasRunning && steering) {
-        const next = appendUserMessage(before, text, optimisticItemId, optimisticCreatedAt)
+        const next = appendUserMessage(
+          before,
+          text,
+          optimisticItemId,
+          optimisticCreatedAt,
+          attachments,
+        )
         threadStates.current.set(threadId, next)
         if (threadId === activeIdRef.current) setThread(next)
       }
@@ -4096,7 +4110,13 @@ function preservePendingSubmissions(
       continue
     }
     if (submission.kind === 'queue') continue
-    next = appendUserMessage(next, submission.text, submission.id, submission.createdAt)
+    next = appendUserMessage(
+      next,
+      submission.text,
+      submission.id,
+      submission.createdAt,
+      submission.attachments,
+    )
     if (!next.running && submission.optimisticTurn) {
       next = { ...next, running: true, activeTurn: submission.optimisticTurn }
     }

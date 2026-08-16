@@ -531,6 +531,7 @@ export function appendUserMessage(
   text: string,
   id = createOptimisticMessageId(),
   createdAt = Date.now(),
+  attachments: string[] = [],
 ): ThreadState {
   state = settleLiveItems(state)
   return {
@@ -544,6 +545,7 @@ export function appendUserMessage(
         role: 'user',
         status: 'completed',
         text,
+        ...(attachments.length > 0 ? { attachments } : {}),
         createdAt,
       },
     ],
@@ -556,9 +558,10 @@ export function beginOptimisticTurn(
   text: string,
   itemId = createOptimisticMessageId(),
   createdAt = Date.now(),
+  attachments: string[] = [],
 ): ThreadState {
   return {
-    ...appendUserMessage(state, text, itemId, createdAt),
+    ...appendUserMessage(state, text, itemId, createdAt, attachments),
     running: true,
     activeTurn: { id: localId('local-turn:'), startedAt: createdAt },
     plan: [],
