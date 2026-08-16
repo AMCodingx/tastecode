@@ -585,7 +585,7 @@ describe('completed activity disclosure', () => {
       />,
     )
 
-    fireEvent.click(screen.getByRole('button', { name: 'Worked for 1s' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Viewed images' }))
 
     await waitFor(() =>
       expect(screen.getByRole('img', { name: 'Preview of uuid-layout.png' })).toBeTruthy(),
