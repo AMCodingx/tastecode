@@ -6017,6 +6017,12 @@
   font-variant-numeric: tabular-nums;
 }
 
+.diff__actions {
+  display: flex;
+  flex: none;
+  align-items: center;
+}
+
 .diff__review {
   flex: none;
   min-height: 28px;
@@ -6038,9 +6044,26 @@
   color: var(--text);
 }
 
+.diff__review:disabled {
+  cursor: default;
+  opacity: 0.55;
+}
+
+.diff__review:disabled:hover {
+  background: transparent;
+  color: var(--text-2);
+}
+
 .diff__review:focus-visible {
   outline: 1px solid var(--text-3);
   outline-offset: 1px;
+}
+
+.diff__undo-error {
+  margin: 0;
+  padding: 0 10px 7px 41px;
+  color: var(--error);
+  font-size: var(--t-xs);
 }
 
 .diff__file-list {

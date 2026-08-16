@@ -44,6 +44,25 @@ const apply = (events: DomainEvent[]) => events.reduce(reduce, emptyThread)
 afterEach(() => vi.unstubAllGlobals())
 
 describe('thread reducer', () => {
+  it('keeps the turn identity with the diff and clears both for the next turn', () => {
+    const shown = reduce(emptyThread, {
+      type: 'diff.updated',
+      turnId: 'turn-with-edits',
+      diff: 'diff --git a/file.txt b/file.txt',
+    })
+    expect(shown).toMatchObject({
+      diff: 'diff --git a/file.txt b/file.txt',
+      diffTurnId: 'turn-with-edits',
+    })
+
+    const next = reduce(shown, {
+      type: 'turn.started',
+      turn: { id: 'next-turn', threadId: 'thread-1', status: 'running', createdAt: 1 },
+    })
+    expect(next.diff).toBeUndefined()
+    expect(next.diffTurnId).toBeUndefined()
+  })
+
   it('holds generated questions until their exact request is answered', () => {
     const request = {
       id: 'brief-1',

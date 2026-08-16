@@ -37,6 +37,8 @@ const appRenders = vi.hoisted(() => vi.fn())
 const threadCallbacks = vi.hoisted(() => ({
   answerUserInput: undefined as
     ((id: string, answers: Record<string, string[]>) => void | Promise<void>) | undefined,
+  undoChanges: undefined as
+    ((threadId: string, turnId: string, expectedDiff: string) => Promise<void>) | undefined,
 }))
 const pickFolder = vi.hoisted(() => vi.fn())
 
@@ -109,12 +111,14 @@ vi.mock('./ui/Thread.js', () => ({
     running: boolean
     activeTurn?: { id: string; startedAt: number }
     onAnswerUserInput: (id: string, answers: Record<string, string[]>) => void | Promise<void>
+    onUndoChanges?: (threadId: string, turnId: string, expectedDiff: string) => Promise<void>
   }) => (
     <div
       data-testid="thread"
       data-started-at={props.activeTurn?.startedAt}
       ref={() => {
         threadCallbacks.answerUserInput = props.onAnswerUserInput
+        threadCallbacks.undoChanges = props.onUndoChanges
       }}
     >
       {props.items.map((base, index) => (
@@ -483,6 +487,21 @@ const workspaceTest = { projectsSnapshot: (running: boolean) => ({ projects: ser
 // prettier-ignore
 const { projectsSnapshot, renderWithDeferredProjectProbes, rpcCount, completeTurn, startTurn, submitTurn, waitForWorkspace, waitForInitialWorkspace, openNewSession, setConnectionState, serverProject } = workspaceTest
 describe('web client', () => {
+  it('routes edited-file undo through the exact thread, turn, and patch', async () => {
+    await openNewSession()
+    transport.request.mockClear()
+
+    await act(async () => {
+      await threadCallbacks.undoChanges?.('thread-1', 'turn-1', 'the exact diff')
+    })
+
+    expect(transport.request).toHaveBeenCalledWith('thread.undoTurnChanges', {
+      threadId: 'thread-1',
+      turnId: 'turn-1',
+      expectedDiff: 'the exact diff',
+    })
+  })
+
   it('persists curated model defaults only after the first catalog arrives', async () => {
     const request = transport.request.getMockImplementation()
     if (!request) throw new Error('missing request mock')
