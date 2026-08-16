@@ -91,6 +91,7 @@ function view(
       { item: Item; version: number; textUpdate: { kind: 'append'; text: string } }
     >
     itemVersion?: number
+    searching?: boolean
   } = {},
 ) {
   return (
