@@ -1,7 +1,8 @@
 # Licensing
 
-TasteCode is licensed under the Apache License 2.0. The complete license text is in the
-root [LICENSE](../LICENSE) file.
+TasteCode is licensed under the Apache License 2.0. The root
+[LICENSE](../LICENSE) file contains the SPDX identifier, copyright notice, and a link to
+the canonical terms.
 
 ## Copyright
 
@@ -13,7 +14,8 @@ through the Git history and [CREDITS.md](../CREDITS.md).
 Before publishing each desktop build:
 
 1. Generate and review the production dependency license inventory.
-2. Update [THIRD_PARTY_NOTICES.md](../THIRD_PARTY_NOTICES.md) when dependencies or required notices change.
+2. Update [THIRD_PARTY_NOTICES.md](../THIRD_PARTY_NOTICES.md) when dependencies or required
+   notices change.
 3. Bundle the root license and all required third-party license texts with the application.
 4. Review provider terms and trademarks separately from the source-code license.
 5. Publish release artifacts with SHA-256 checksums.
