@@ -847,7 +847,7 @@ function AuxDisclosure({ item, live }: { item: Item; live: boolean }) {
             {isImageView(item) && item.status === 'completed' ? (
               <ViewedImagePreview
                 reference={detail}
-                active={expanded}
+                active={disclosure.expanded}
                 fallbackClassName="aux__out"
               />
             ) : (
@@ -954,7 +954,7 @@ function ActivityStack({
                     isImageView(item) && item.status === 'completed' ? (
                       <ViewedImagePreview
                         reference={detail}
-                        active={expanded}
+                        active={disclosure.expanded}
                         fallbackClassName="activity__detail"
                       />
                     ) : (
