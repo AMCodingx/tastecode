@@ -230,12 +230,15 @@ export function Thread(props: {
       return
     }
     writtenScrollTop.current = undefined
-    // Any manual scroll hands control back to the user — from anchor mode
-    // too, not only from follow-end.
-    if (isAtBottom(el)) {
-      if (modeRef.current !== 'follow-end') setMode('follow-end')
-    } else if (modeRef.current !== 'free') {
-      setMode('free')
+    // Any manual move away from the exact end hands control back at once.
+    // isAtBottom intentionally has 80px of slack for starting a new turn,
+    // but that slack must not trap small upward gestures during streaming.
+    const nextMode = el.scrollHeight - el.scrollTop - el.clientHeight <= 1 ? 'follow-end' : 'free'
+    if (modeRef.current !== nextMode) {
+      // Update the ref before the next streamed chunk can run the layout
+      // effect and pull the viewport back to the end.
+      modeRef.current = nextMode
+      setMode(nextMode)
     }
   }, [])
 
@@ -795,7 +798,7 @@ const Row = memo(function Row({
  * tool stack, such as a design phase marker or an unknown provider item.
  */
 function AuxDisclosure({ item, live }: { item: Item; live: boolean }) {
-  const [expanded, setExpanded] = useState(false)
+  const disclosure = useDisclosure()
   const detail =
     item.type === 'command'
       ? activityDetail(item)
@@ -804,12 +807,15 @@ function AuxDisclosure({ item, live }: { item: Item; live: boolean }) {
         : (imageViewDetail(item) ?? item.text)
 
   return (
-    <div className={`aux aux--${item.type} ${live ? 'aux--live' : ''}`} data-expanded={expanded}>
+    <div
+      className={`aux aux--${item.type} ${live ? 'aux--live' : ''}`}
+      data-expanded={disclosure.expanded}
+    >
       <button
         type="button"
         className="aux__row"
-        aria-expanded={expanded}
-        onClick={() => setExpanded((current) => !current)}
+        aria-expanded={disclosure.expanded}
+        onClick={disclosure.toggle}
       >
         <span className="aux__glyph" aria-hidden>
           {glyph(item)}
@@ -828,12 +834,20 @@ function AuxDisclosure({ item, live }: { item: Item; live: boolean }) {
       </button>
       {/* Design markers have no output worth expanding — their text is the slug. */}
       {detail && !(item.type === 'tool_call' && designPhaseLabel(toolText(item))) ? (
-        <div className="aux__reveal" data-open={expanded} aria-hidden={!expanded} inert={!expanded}>
+        <div
+          className="aux__reveal"
+          data-open={disclosure.dataOpen}
+          aria-hidden={!disclosure.expanded}
+          inert={!disclosure.expanded}
+          onAnimationEnd={(event) => {
+            if (event.target === event.currentTarget) disclosure.finishClosing()
+          }}
+        >
           <div className="aux__reveal-clip">
             {isImageView(item) && item.status === 'completed' ? (
               <ViewedImagePreview
                 reference={detail}
-                active={expanded}
+                active={disclosure.expanded}
                 fallbackClassName="aux__out"
               />
             ) : (
@@ -854,6 +868,30 @@ function checkpointFor(item: Item, checkpoints: Checkpoint[]): Checkpoint | unde
   )
 }
 
+type DisclosurePhase = 'closed' | 'open' | 'closing'
+
+function useDisclosure() {
+  const [phase, setPhase] = useState<DisclosurePhase>('closed')
+  const expanded = phase === 'open'
+
+  const toggle = useCallback(() => {
+    const reduceMotion =
+      globalThis.matchMedia?.('(prefers-reduced-motion: reduce)').matches ?? false
+    setPhase((current) => (current === 'open' ? (reduceMotion ? 'closed' : 'closing') : 'open'))
+  }, [])
+
+  const finishClosing = useCallback(() => {
+    setPhase((current) => (current === 'closing' ? 'closed' : current))
+  }, [])
+
+  return {
+    expanded,
+    dataOpen: phase === 'open' ? 'true' : phase === 'closing' ? 'closing' : 'false',
+    toggle,
+    finishClosing,
+  } as const
+}
+
 function ActivityStack({
   activity,
   live,
@@ -867,20 +905,20 @@ function ActivityStack({
   const current = visibleActivity.at(-1)
   const label = live && current ? liveActivityLabel(current) : activityStackLabel(visibleActivity)
   const summaryItem = live ? current : visibleActivity[0]
-  const [expanded, setExpanded] = useState(false)
+  const disclosure = useDisclosure()
 
   if (!summaryItem) return null
 
   return (
     <div
       className={`activity${live ? ' activity--live' : ''}${settling ? ' is-settling' : ''}`}
-      data-expanded={expanded}
+      data-expanded={disclosure.expanded}
     >
       <button
         type="button"
         className="activity__summary"
-        aria-expanded={expanded}
-        onClick={() => setExpanded((current) => !current)}
+        aria-expanded={disclosure.expanded}
+        onClick={disclosure.toggle}
       >
         <span className="activity__glyph" aria-hidden>
           {glyph(summaryItem)}
@@ -892,9 +930,12 @@ function ActivityStack({
       </button>
       <div
         className="activity__reveal"
-        data-open={expanded}
-        aria-hidden={!expanded}
-        inert={!expanded}
+        data-open={disclosure.dataOpen}
+        aria-hidden={!disclosure.expanded}
+        inert={!disclosure.expanded}
+        onAnimationEnd={(event) => {
+          if (event.target === event.currentTarget) disclosure.finishClosing()
+        }}
       >
         <div className="activity__reveal-clip">
           <div className="activity__body">
@@ -913,7 +954,7 @@ function ActivityStack({
                     isImageView(item) && item.status === 'completed' ? (
                       <ViewedImagePreview
                         reference={detail}
-                        active={expanded}
+                        active={disclosure.expanded}
                         fallbackClassName="activity__detail"
                       />
                     ) : (
@@ -1376,6 +1417,8 @@ export function workedFor(ms: number): string {
 }
 
 function glyph(item: Item) {
+  if (isContextCompaction(item)) return <ArrowDownToLine size={13} />
+
   switch (item.type) {
     case 'command':
       return <SquareTerminal size={13} />

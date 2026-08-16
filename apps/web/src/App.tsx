@@ -2787,6 +2787,7 @@ export function App() {
       setRollbackOpen(false)
       activeIdRef.current = id
       setActiveId(id)
+      setComposerFocusRequest((request) => request + 1)
       setThreadRevealRequest((request) => request + 1)
       setActivePath(found?.project.path)
       const cached = threadStates.current.get(id)

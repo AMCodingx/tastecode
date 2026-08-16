@@ -123,7 +123,7 @@ describe('turn boundaries', () => {
     ).toBe(false)
   })
 
-  it('keeps chronological activity groups between assistant narration rows', () => {
+  it('collects activity around assistant narration into one disclosure', () => {
     const items: Item[] = [
       { ...item('user', 't1'), role: 'user', text: 'Fix it.' },
       { ...item('update-1', 't1'), role: 'assistant', text: 'I found the cause.' },
@@ -134,10 +134,7 @@ describe('turn boundaries', () => {
     ]
 
     expect(presentTurns(items).get('t1')).toMatchObject({
-      activityGroups: [
-        { items: [items[2]], firstIndex: 2 },
-        { items: [items[4]], firstIndex: 4 },
-      ],
+      activityGroups: [{ items: [items[2], items[4]], firstIndex: 2 }],
       responseText: 'Fixed.',
       finalAnswerIndex: 5,
       complete: true,
@@ -165,7 +162,7 @@ describe('turn boundaries', () => {
     ])
   })
 
-  it('restarts work timing after each assistant message', () => {
+  it('keeps the live timer reset while the completed disclosure uses total turn time', () => {
     const items: Item[] = [
       { ...item('user', 't1'), role: 'user', text: 'Fix it.', createdAt: 1_000 },
       { ...item('thinking', 't1'), type: 'reasoning', createdAt: 2_000 },
@@ -190,7 +187,7 @@ describe('turn boundaries', () => {
       t1: { startedAt: 1_000, completedAt: 14_000 },
     }).get('t1')
 
-    expect(presentation?.activityGroups.map(({ elapsedMs }) => elapsedMs)).toEqual([8_000])
+    expect(presentation?.activityGroups.map(({ elapsedMs }) => elapsedMs)).toEqual([13_000])
     expect(presentation?.workStartedAt).toBe(13_000)
   })
 
