@@ -94,8 +94,8 @@ export function assertPackagedNativeModules(
 export function loadPackagedNativeModules(): PackagedNativeModules {
   const require = createRequire(import.meta.url)
   const before = new Set(Object.keys(require.cache))
-  const pty = require('node-pty') as PtyModule
-  const keyring = require('@napi-rs/keyring') as KeyringModule
+  const pty: PtyModule = require('node-pty')
+  const keyring: KeyringModule = require('@napi-rs/keyring')
   const nativeBindings = Object.keys(require.cache).filter(
     (modulePath) => !before.has(modulePath) && path.extname(modulePath) === '.node',
   )

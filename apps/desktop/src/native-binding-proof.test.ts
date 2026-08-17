@@ -12,7 +12,7 @@ function fakePty() {
     resize,
     kill,
     module: {
-      spawn: vi.fn((_file: string, _args: string[], _options: unknown) => {
+      spawn: vi.fn((_file: string, _args: string[]) => {
         let onData: (data: string) => void = () => {}
         let onExit: (event: { exitCode: number }) => void = () => {}
         queueMicrotask(() => {
