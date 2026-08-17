@@ -92,17 +92,21 @@ export function assertPackagedNativeModules(
 }
 
 export function loadPackagedNativeModules(): PackagedNativeModules {
-  const require = createRequire(import.meta.url)
-  const before = new Set(Object.keys(require.cache))
-  const pty: PtyModule = require('node-pty')
-  const keyring: KeyringModule = require('@napi-rs/keyring')
-  const nativeBindings = Object.keys(require.cache).filter(
+  const desktopRequire = createRequire(import.meta.url)
+  // These bindings belong to the packaged server workspace. Resolve from its
+  // entry so pnpm's strict dependency layout is exercised exactly as it is by
+  // the real server instead of relying on accidental desktop-level hoisting.
+  const serverRequire = createRequire(desktopRequire.resolve('@harness/server'))
+  const before = new Set(Object.keys(serverRequire.cache))
+  const pty: PtyModule = serverRequire('node-pty')
+  const keyring: KeyringModule = serverRequire('@napi-rs/keyring')
+  const nativeBindings = Object.keys(serverRequire.cache).filter(
     (modulePath) => !before.has(modulePath) && path.extname(modulePath) === '.node',
   )
   return {
     pty,
     keyring,
-    moduleEntries: [require.resolve('node-pty'), require.resolve('@napi-rs/keyring')],
+    moduleEntries: [serverRequire.resolve('node-pty'), serverRequire.resolve('@napi-rs/keyring')],
     nativeBindings,
   }
 }
