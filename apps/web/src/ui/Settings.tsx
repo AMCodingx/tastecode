@@ -9,9 +9,12 @@ import {
   useState,
   useSyncExternalStore,
   type KeyboardEvent as ReactKeyboardEvent,
+  type ComponentProps,
+  type ComponentType,
   type ReactNode,
 } from 'react'
 import { createPortal } from 'react-dom'
+import { BackgroundModelSettingsSchema } from '@harness/contracts'
 import type {
   Account,
   BackgroundModelSettings as BackgroundModelSettingsState,
@@ -26,6 +29,7 @@ import type {
   ResultOf,
   SidebarSettings,
 } from '@harness/contracts'
+import { z } from 'zod'
 import {
   ArrowLeft,
   CircleAlert,
@@ -103,10 +107,12 @@ import { ProfileSettings } from './ProfileSettings.js'
 import type { ProfileIdentityPreferences } from '../profile-preferences.js'
 import { SourceIdentity } from './SourceIdentity.js'
 import { SettingsMeta, StateLabel } from './SettingsStatus.js'
+import { propertiesWhen } from '../properties-when.js'
 
 const InstallTerminal = lazy(() =>
   import('./InstallTerminal.js').then((module) => ({ default: module.InstallTerminal })),
 )
+type InstallTerminalView = ComponentType<ComponentProps<typeof InstallTerminal>>
 
 export type SettingsSection =
   | 'profile'
@@ -211,6 +217,7 @@ function SettingsComponent(props: {
   initialSection?: SettingsSection | undefined
   onReset: () => void
   onClose: () => void
+  installTerminalComponent?: InstallTerminalView | undefined
 }) {
   const [section, setSection] = useState<SettingsSection>(props.initialSection ?? 'providers')
 
@@ -448,10 +455,7 @@ function SettingsNavItem(props: {
   )
 }
 
-const CONNECTION_PRESETS: Record<
-  ModelConnectionPreset,
-  { label: string; transport: ModelTransport; baseUrl: string; placeholder: string }
-> = {
+const CONNECTION_PRESETS = {
   openai: {
     label: 'OpenAI API',
     transport: 'openai-responses',
@@ -488,7 +492,10 @@ const CONNECTION_PRESETS: Record<
     baseUrl: 'http://127.0.0.1:11434/v1',
     placeholder: 'model-id',
   },
-}
+} satisfies Record<
+  ModelConnectionPreset,
+  { label: string; transport: ModelTransport; baseUrl: string; placeholder: string }
+>
 
 type ProviderMap<T> = Partial<Record<ProviderId, T>>
 
@@ -500,6 +507,7 @@ export function ProviderSettings(props: {
   transport: Transport
   onConnectionsChanged: () => void
   onAccountChange: (provider: ProviderId, account: Account) => void
+  installTerminalComponent?: InstallTerminalView | undefined
 }) {
   type AuthReadState =
     | { phase: 'loading' }
@@ -699,6 +707,7 @@ export function ProviderSettings(props: {
           target={{ provider: status.id }}
           transport={props.transport}
           onInstalled={props.onConnectionsChanged}
+          InstallTerminalComponent={props.installTerminalComponent ?? InstallTerminal}
         />
       )
     }
@@ -732,6 +741,7 @@ export function ProviderSettings(props: {
           target={{ provider: status.id }}
           transport={props.transport}
           onSignedIn={() => void refreshAccount(status.id, true)}
+          InstallTerminalComponent={props.installTerminalComponent ?? InstallTerminal}
         />
       )
     }
@@ -943,14 +953,16 @@ function BackgroundModelSettings(props: { transport: Transport }) {
                 mode: 'manual',
                 target: {
                   provider: choice.source.provider,
-                  ...(choice.source.connectionId
-                    ? { connectionId: choice.source.connectionId }
-                    : {}),
-                  ...(choice.source.agent ? { agent: choice.source.agent } : {}),
+                  ...propertiesWhen(choice.source.connectionId, (includedValue) => ({
+                    connectionId: includedValue,
+                  })),
+                  ...propertiesWhen(choice.source.agent, (includedValue) => ({
+                    agent: includedValue,
+                  })),
                   model: choice.model.id,
-                  ...(choice.model.reasoningEfforts[0]
-                    ? { effort: choice.model.reasoningEfforts[0] }
-                    : {}),
+                  ...propertiesWhen(choice.model.reasoningEfforts[0], (includedValue) => ({
+                    effort: includedValue,
+                  })),
                 },
               })
             }}
@@ -987,13 +999,10 @@ function BackgroundModelSettings(props: { transport: Transport }) {
   )
 }
 
-function isBackgroundModelSettingsState(value: unknown): value is BackgroundModelSettingsState {
-  if (!value || typeof value !== 'object') return false
-  const candidate = value as Partial<BackgroundModelSettingsState>
-  return (
-    Array.isArray(candidate.sources) &&
-    (candidate.preference?.mode === 'automatic' || candidate.preference?.mode === 'manual')
-  )
+function isBackgroundModelSettingsState(
+  value: z.input<typeof BackgroundModelSettingsSchema>,
+): value is BackgroundModelSettingsState {
+  return BackgroundModelSettingsSchema.safeParse(value).success
 }
 
 function findBackgroundModel(sources: BackgroundModelSource[], target: BackgroundModelTarget) {
@@ -1013,7 +1022,7 @@ function backgroundModelValue(sourceId: string, modelId: string): string {
 
 function backgroundModelFromValue(sources: BackgroundModelSource[], value: string) {
   try {
-    const [sourceId, modelId] = JSON.parse(value) as [string, string]
+    const [sourceId, modelId] = z.tuple([z.string(), z.string()]).parse(JSON.parse(value))
     const source = sources.find((candidate) => candidate.id === sourceId)
     const model = source?.models.find((candidate) => candidate.id === modelId)
     return source && model ? { source, model } : undefined
@@ -1428,7 +1437,8 @@ function ResetConfirmation(props: { onCancel: () => void; onConfirm: () => void 
       panel.current.querySelectorAll<HTMLElement>(FOCUSABLE_SELECTOR),
     ).filter((element) => !element.hasAttribute('disabled'))
     if (focusable.length === 0) return
-    const current = focusable.indexOf(document.activeElement as HTMLElement)
+    const current =
+      document.activeElement instanceof HTMLElement ? focusable.indexOf(document.activeElement) : -1
     const next =
       current < 0
         ? event.shiftKey
@@ -1627,6 +1637,7 @@ function InstallableRow(props: {
   target: InstallTarget
   transport: Transport
   onInstalled: () => void
+  InstallTerminalComponent: InstallTerminalView
 }) {
   const key = installKey(props.target)
   const detailsId = useId()
@@ -1726,7 +1737,13 @@ function InstallableRow(props: {
       />
       {install ? (
         <div id={detailsId} className="provider-terminal" hidden={!showTerminal}>
-          {showTerminal ? <ProviderTerminal transport={props.transport} installKey={key} /> : null}
+          {showTerminal ? (
+            <ProviderTerminal
+              transport={props.transport}
+              installKey={key}
+              InstallTerminalComponent={props.InstallTerminalComponent}
+            />
+          ) : null}
         </div>
       ) : null}
     </>
@@ -1745,6 +1762,7 @@ function CliSignInRow(props: {
   target: InstallTarget
   transport: Transport
   onSignedIn: () => void
+  InstallTerminalComponent: InstallTerminalView
 }) {
   const key = loginKey(props.target)
   const detailsId = useId()
@@ -1870,17 +1888,27 @@ function CliSignInRow(props: {
       ) : null}
       {login ? (
         <div id={detailsId} className="provider-terminal" hidden={!showTerminal}>
-          {showTerminal ? <ProviderTerminal transport={props.transport} installKey={key} /> : null}
+          {showTerminal ? (
+            <ProviderTerminal
+              transport={props.transport}
+              installKey={key}
+              InstallTerminalComponent={props.InstallTerminalComponent}
+            />
+          ) : null}
         </div>
       ) : null}
     </>
   )
 }
 
-function ProviderTerminal(props: { transport: Transport; installKey: string }) {
+function ProviderTerminal(props: {
+  transport: Transport
+  installKey: string
+  InstallTerminalComponent: InstallTerminalView
+}) {
   return (
     <Suspense fallback={<div className="install-terminal" aria-label="Install terminal" />}>
-      <InstallTerminal {...props} />
+      <props.InstallTerminalComponent transport={props.transport} installKey={props.installKey} />
     </Suspense>
   )
 }

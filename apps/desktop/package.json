@@ -2,8 +2,8 @@
   "name": "@harness/desktop",
   "productName": "Taste Code",
   "description": "A local desktop workspace for coding agents.",
-  "author": "TasteCode",
-  "copyright": "Copyright © 2026 TasteCode",
+  "author": "Tasteskill Team",
+  "copyright": "made by @blueemi99 and @lexnlin on X :)",
   "version": "0.1.0-beta.1",
   "private": true,
   "type": "module",
@@ -19,7 +19,8 @@
   "dependencies": {
     "@harness/contracts": "workspace:*",
     "@harness/server": "workspace:*",
-    "electron-updater": "6.8.9"
+    "electron-updater": "6.8.9",
+    "zod": "4.4.3"
   },
   "devDependencies": {
     "@types/node": "^26.1.1",

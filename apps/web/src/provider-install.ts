@@ -1,5 +1,6 @@
 import type { ProviderId } from '@harness/contracts'
 import type { Transport } from './transport.js'
+import { propertiesWhen } from './properties-when.js'
 
 /**
  * Provider installs in flight, tracked outside React on purpose: an install
@@ -157,7 +158,7 @@ async function begin(
 
   const { terminalId } = await transport.request(method, {
     provider: target.provider,
-    ...(target.agent ? { agent: target.agent } : {}),
+    ...propertiesWhen(target.agent, (includedValue) => ({ agent: includedValue })),
     // Logins get a wide pty so the OAuth URL is printed on one line — the
     // URL detector depends on that. Installs render at a normal width.
     columns: method === 'providers.launch' ? LOGIN_COLUMNS : 100,
@@ -193,7 +194,7 @@ async function begin(
       ...current,
       log,
       lastLine: lastPrintableLine(log),
-      ...(openedAuthUrl ? { openedAuthUrl } : {}),
+      ...propertiesWhen(openedAuthUrl, (openedAuthUrl) => ({ openedAuthUrl })),
     })
     notify()
   })

@@ -8,9 +8,12 @@ import {
   useRef,
   useState,
   useSyncExternalStore,
+  type ComponentProps,
+  type ComponentType,
 } from 'react'
 import type { CSSProperties } from 'react'
 import { LoaderCircle } from 'lucide-react'
+import { ProviderIdSchema } from '@harness/contracts'
 import type {
   Account,
   ApprovalDecision,
@@ -24,10 +27,11 @@ import type {
   ResultOf,
   SidebarSettings,
 } from '@harness/contracts'
+import { z } from 'zod'
 import { isDesktop, isMacOS, pickFolder, setDesktopTheme } from './bridge.js'
 import { isEditableTarget, matchesShortcut, SHORTCUTS } from './shortcuts.js'
 import { warmHighlighter } from './ui/highlighter.js'
-import { isIndeterminateRequestError, Transport } from './transport.js'
+import { IndeterminateRequestErrorSchema, Transport } from './transport.js'
 import {
   activeTurnIsSearching,
   appendUserMessage,
@@ -111,6 +115,7 @@ import {
   type ThemePreference,
   type FontPreference,
 } from './theme.js'
+import { propertiesWhen } from './properties-when.js'
 
 const SERVER_BASE_URL = serverBaseUrl(import.meta.env.VITE_HARNESS_SERVER_URL)
 const SETUP_KEY = 'harness.provider'
@@ -130,6 +135,7 @@ const PUBLIC_BETA_PROVIDER_IDS = new Set<ProviderId>(['codex', 'claude-code', 'g
 /** Engines a custom model can be attached to — ACP agents and API
  *  connections carry their own roster concepts and stay out of this list. */
 const DIRECT_PROVIDER_IDS = PROVIDER_IDS.filter((id) => id !== 'acp' && id !== 'api' && id !== 'pi')
+const DIRECT_PROVIDER_ID_SET = new Set<ProviderId>(DIRECT_PROVIDER_IDS)
 /** Which named agent or custom harness source was chosen. */
 const AGENT_KEY = 'harness.acpAgent'
 const AGENT_NAME_KEY = 'harness.acpAgentName'
@@ -170,6 +176,55 @@ const WorkspacePanel = lazy(() =>
   })),
 )
 
+export type AppDependencies = {
+  createTransport: (url: string) => Transport
+  warmHighlighter: () => void
+  pickFolder: typeof pickFolder
+  isMacOS: typeof isMacOS
+  setDesktopTheme: typeof setDesktopTheme
+  canCaptureVoice: typeof canCaptureVoice
+  isDesktop: boolean
+}
+
+export type AppComponents = {
+  Thread: ComponentType<ComponentProps<typeof Thread>>
+  Sidebar: ComponentType<ComponentProps<typeof Sidebar>>
+  Composer: ComponentType<ComponentProps<typeof Composer>>
+  StageHeader: ComponentType<ComponentProps<typeof StageHeader>>
+  CommandPalette: ComponentType<ComponentProps<typeof CommandPalette>>
+  Settings: ComponentType<ComponentProps<typeof Settings>>
+  SessionSearchHost: ComponentType<ComponentProps<typeof SessionSearchHost>>
+  TerminalPane: ComponentType<ComponentProps<typeof TerminalPane>>
+}
+
+const DEFAULT_APP_DEPENDENCIES: AppDependencies = {
+  createTransport: (url) => new Transport(url),
+  warmHighlighter,
+  pickFolder,
+  isMacOS,
+  setDesktopTheme,
+  canCaptureVoice,
+  isDesktop,
+}
+
+const DEFAULT_APP_COMPONENTS: AppComponents = {
+  Thread,
+  Sidebar,
+  Composer,
+  StageHeader,
+  CommandPalette,
+  Settings,
+  SessionSearchHost,
+  TerminalPane,
+}
+
+export type AppProps = {
+  dependencies?: Partial<AppDependencies>
+  components?: Partial<AppComponents>
+}
+
+const LegacyProjectsSchema = z.array(z.object({ path: z.string(), name: z.string().optional() }))
+
 /**
  * Projects and sessions used to live here. The server owns them now, so this
  * only exists to hand what it finds over once and then get out of the way —
@@ -179,10 +234,10 @@ function takeLegacyProjects(): Array<{ path: string; name?: string }> {
   try {
     const raw = readSetting(PROJECTS_KEY)
     if (!raw) return []
-    const parsed = JSON.parse(raw) as Array<{ path?: string; name?: string }>
-    return parsed
-      .filter((entry): entry is { path: string; name?: string } => typeof entry.path === 'string')
-      .map(({ path, name }) => ({ path, ...(name ? { name } : {}) }))
+    return LegacyProjectsSchema.parse(JSON.parse(raw)).map(({ path, name }) => ({
+      path,
+      ...propertiesWhen(name, (name) => ({ name })),
+    }))
   } catch {
     return []
   }
@@ -194,6 +249,16 @@ type CustomModel = {
   displayName: string
 }
 
+const CustomModelSchema: z.ZodType<CustomModel> = z.object({
+  provider: ProviderIdSchema.refine((provider) => DIRECT_PROVIDER_ID_SET.has(provider)),
+  modelId: z.string().trim().min(1),
+  displayName: z
+    .string()
+    .catch('')
+    .transform((name) => name.trim()),
+})
+const CustomModelsInputSchema = z.array(z.unknown())
+
 type RecoverableDraft = { text: string; attachments: string[] }
 type PendingSubmission = RecoverableDraft & {
   id: string
@@ -204,9 +269,39 @@ type PendingSubmission = RecoverableDraft & {
   optimisticTurn?: NonNullable<ThreadState['activeTurn']>
   precedingTurnId?: string
 }
+type PendingThreadDeltaBatch = { events: ItemDeltaEvent[]; sequence?: number }
 
 type CatalogAvailability = 'loading' | 'ready' | 'failed'
 type AccountCheck = { provider: ProviderId; state: CatalogAvailability; account?: Account }
+
+type WorkspaceIdleProbe = {
+  inFlight: Promise<void> | undefined
+  pendingPath: string | undefined
+  idlePath: string | undefined
+  blockedPath: string | undefined
+  pendingStarts: Map<string, { path: string; tokens: number[] }>
+  submissionStarts: Map<string, { threadId: string; token: number }>
+  queuedStarts: Map<string, { threadId: string; token: number }>
+  claimedStarts: Set<string>
+  queueActions: Map<string, { threadId: string; count: number; pending: number; steers: number }>
+  unknownQueues: Set<string>
+  nextStart: number
+  revision: number
+  transportRevision: number
+  refreshedRevision: number
+  refreshedPath: string | undefined
+}
+
+type ShellStyle = CSSProperties & { '--rail-w': string }
+type WorkspaceLayoutStyle = CSSProperties & { '--workspace-panel-w': string }
+
+function shellStyle(width: number): ShellStyle {
+  return { '--rail-w': `${width}px` }
+}
+
+function workspaceLayoutStyle(width: number): WorkspaceLayoutStyle {
+  return { '--workspace-panel-w': `${width}px` }
+}
 
 function resolveSendAvailability(input: {
   catalog: CatalogAvailability
@@ -247,20 +342,11 @@ function readCustomModels(): CustomModel[] {
   try {
     const raw = readSetting(CUSTOM_MODELS_KEY)
     if (!raw) return []
-    const parsed = JSON.parse(raw) as unknown
-    if (!Array.isArray(parsed)) return []
-    const direct = new Set<string>(DIRECT_PROVIDER_IDS)
+    const entries = CustomModelsInputSchema.parse(JSON.parse(raw))
     const models: CustomModel[] = []
-    for (const entry of parsed) {
-      if (typeof entry !== 'object' || entry === null) continue
-      const candidate = entry as Record<string, unknown>
-      if (typeof candidate.provider !== 'string' || !direct.has(candidate.provider)) continue
-      if (typeof candidate.modelId !== 'string' || candidate.modelId.trim().length === 0) continue
-      models.push({
-        provider: candidate.provider as ProviderId,
-        modelId: candidate.modelId.trim(),
-        displayName: typeof candidate.displayName === 'string' ? candidate.displayName.trim() : '',
-      })
+    for (const entry of entries) {
+      const model = CustomModelSchema.safeParse(entry)
+      if (model.success) models.push(model.data)
     }
     return models
   } catch {
@@ -300,8 +386,13 @@ function latestSequence(
   return latest
 }
 
-export function App() {
-  const transport = useMemo(() => new Transport(SERVER_BASE_URL), [])
+export function App(props: AppProps = {}) {
+  const dependencies = { ...DEFAULT_APP_DEPENDENCIES, ...props.dependencies }
+  const components = { ...DEFAULT_APP_COMPONENTS, ...props.components }
+  const transport = useMemo(
+    () => dependencies.createTransport(SERVER_BASE_URL),
+    [dependencies.createTransport],
+  )
   // StrictMode replays effect cleanup against this same memoized instance.
   const usageController = useMemo(
     () => new UsageLimitsController((params) => transport.request('usage.summary', params)),
@@ -387,9 +478,7 @@ export function App() {
   const historyOwners = useRef(
     new Map<string, Array<{ seq: number | undefined; event: DomainEvent }>>(),
   )
-  const pendingThreadDeltas = useRef(
-    new Map<string, { events: ItemDeltaEvent[]; sequence?: number }>(),
-  )
+  const pendingThreadDeltas = useRef(new Map<string, PendingThreadDeltaBatch>())
   const queueStates = useRef(new Map<string, { items: QueuedTurn[]; canSteer: boolean }>())
   const localQueueRevisions = useRef(new Map<string, number>())
   const serverQueueRevisions = useRef(new Map<string, number>())
@@ -434,7 +523,7 @@ export function App() {
   const [catalogAvailability, setCatalogAvailability] = useState<CatalogAvailability>('loading')
   const [hiddenModels, setHiddenModels] = useState<Set<string>>(() => {
     try {
-      return new Set(JSON.parse(readSetting(HIDDEN_MODELS_KEY) ?? '[]') as string[])
+      return new Set(z.array(z.string()).parse(JSON.parse(readSetting(HIDDEN_MODELS_KEY) ?? '[]')))
     } catch {
       return new Set()
     }
@@ -532,7 +621,7 @@ export function App() {
     { id: string; title: string; branch: string } | undefined
   >()
   const [checkoutDeleteBusy, setCheckoutDeleteBusy] = useState(false)
-  const macOS = isMacOS()
+  const macOS = dependencies.isMacOS()
   const [themePreference, setThemePreference] = useState<ThemePreference>(readThemePreference)
   const [fontPreference, setFontPreference] = useState<FontPreference>(readFontPreference)
   const [accentPreference, setAccentPreference] = useState<AccentPreference>(readAccentPreference)
@@ -584,7 +673,9 @@ export function App() {
               provider,
               sourceName: providerName(provider, acpAgentName),
               mark: provider === 'acp' && acpAgent ? agentMark(acpAgent) : providerMark(provider),
-              ...(acpAgent ? { agent: { id: acpAgent, name: acpAgentName ?? acpAgent } } : {}),
+              ...propertiesWhen(acpAgent, (includedValue) => ({
+                agent: { id: includedValue, name: acpAgentName ?? includedValue },
+              })),
             },
             [],
             true,
@@ -677,7 +768,7 @@ export function App() {
 
   // Syntax grammars load in the background from the first frame, so the first
   // code block an agent produces is already coloured.
-  useEffect(warmHighlighter, [])
+  useEffect(dependencies.warmHighlighter, [dependencies.warmHighlighter])
 
   useEffect(() => {
     const checkConnection = () => void transport.ensureHealthy()
@@ -696,8 +787,8 @@ export function App() {
 
   useLayoutEffect(() => {
     applyTheme(theme)
-    void setDesktopTheme(themePreference)
-  }, [theme, themePreference])
+    void dependencies.setDesktopTheme(themePreference)
+  }, [dependencies.setDesktopTheme, theme, themePreference])
 
   useEffect(() => {
     writeSetting(THEME_KEY, themePreference)
@@ -803,8 +894,23 @@ export function App() {
   }, [])
   const projectsRef = useRef(projects)
   projectsRef.current = projects
-  // prettier-ignore
-  const workspaceIdleProbe = useRef({ inFlight: undefined as Promise<void> | undefined, pendingPath: undefined as string | undefined, idlePath: undefined as string | undefined, blockedPath: undefined as string | undefined, pendingStarts: new Map<string, { path: string; tokens: number[] }>(), submissionStarts: new Map<string, { threadId: string; token: number }>(), queuedStarts: new Map<string, { threadId: string; token: number }>(), claimedStarts: new Set<string>(), queueActions: new Map<string, { threadId: string; count: number; pending: number; steers: number }>(), unknownQueues: new Set<string>(), nextStart: 0, revision: 0, transportRevision: 0, refreshedRevision: -1, refreshedPath: undefined as string | undefined })
+  const workspaceIdleProbe = useRef<WorkspaceIdleProbe>({
+    inFlight: undefined,
+    pendingPath: undefined,
+    idlePath: undefined,
+    blockedPath: undefined,
+    pendingStarts: new Map(),
+    submissionStarts: new Map(),
+    queuedStarts: new Map(),
+    claimedStarts: new Set(),
+    queueActions: new Map(),
+    unknownQueues: new Set(),
+    nextStart: 0,
+    revision: 0,
+    transportRevision: 0,
+    refreshedRevision: -1,
+    refreshedPath: undefined,
+  })
   useEffect(() => {
     workspaceIdleProbe.current.revision += 1
   }, [activePath])
@@ -941,10 +1047,9 @@ export function App() {
             pendingDeltas.sequence = Math.max(pendingSequence ?? durableSequence, seq)
           }
         } else {
-          pendingThreadDeltas.current.set(threadId, {
-            events: [event],
-            ...(seq !== undefined && durableSequence !== undefined ? { sequence: seq } : {}),
-          })
+          const nextDeltas: PendingThreadDeltaBatch = { events: [event] }
+          if (seq !== undefined && durableSequence !== undefined) nextDeltas.sequence = seq
+          pendingThreadDeltas.current.set(threadId, nextDeltas)
         }
         liveFlush ??= requestAnimationFrame(flushLive)
         return
@@ -998,9 +1103,9 @@ export function App() {
               ...session,
               status,
               statusSince: status === session.status ? session.statusSince : Date.now(),
-              ...(event.type === 'turn.completed'
-                ? { unread: threadId !== activeIdRef.current }
-                : {}),
+              ...propertiesWhen(event.type === 'turn.completed', () => ({
+                unread: threadId !== activeIdRef.current,
+              })),
             }
           })
           return event.type === 'turn.started' && sidebarSettingsRef.current.mode === 'classic'
@@ -1149,9 +1254,10 @@ export function App() {
       if (cancelled) return
       setProviderStatuses(providers)
       setCatalogAvailability('ready')
+      const storedProvider = ProviderIdSchema.safeParse(readSetting(SETUP_KEY))
       if (
         !activeIdRef.current &&
-        !PUBLIC_BETA_PROVIDER_IDS.has(readSetting(SETUP_KEY) as ProviderId)
+        (!storedProvider.success || !PUBLIC_BETA_PROVIDER_IDS.has(storedProvider.data))
       ) {
         const fallback = providers.find(
           (status) =>
@@ -1377,7 +1483,7 @@ export function App() {
   }, [transport, catalogRequest])
 
   useEffect(() => {
-    if (!isDesktop || !canCaptureVoice() || selectedModelChoice?.agent) {
+    if (!dependencies.isDesktop || !dependencies.canCaptureVoice() || selectedModelChoice?.agent) {
       setVoiceAvailable(false)
       return
     }
@@ -1393,7 +1499,14 @@ export function App() {
     return () => {
       cancelled = true
     }
-  }, [transport, provider, account?.signedIn, selectedModelChoice?.agent])
+  }, [
+    dependencies.canCaptureVoice,
+    dependencies.isDesktop,
+    transport,
+    provider,
+    account?.signedIn,
+    selectedModelChoice?.agent,
+  ])
 
   useEffect(() => {
     let cancelled = false
@@ -1449,9 +1562,10 @@ export function App() {
     void transport
       .request('auth.status', {
         provider,
-        ...(provider === 'acp' && (selectedModelChoice?.agent?.id ?? acpAgent)
-          ? { agent: selectedModelChoice?.agent?.id ?? acpAgent }
-          : {}),
+        ...propertiesWhen(
+          provider === 'acp' && (selectedModelChoice?.agent?.id ?? acpAgent),
+          () => ({ agent: selectedModelChoice?.agent?.id ?? acpAgent }),
+        ),
       })
       .then((nextAccount) => {
         if (cancelled || revision !== accountRequestRevision.current) return
@@ -1484,14 +1598,16 @@ export function App() {
               id: session.id,
               title: session.title,
               provider: session.provider,
-              ...(session.agent ? { agent: session.agent } : {}),
+              ...propertiesWhen(session.agent, (includedValue) => ({ agent: includedValue })),
               createdAt: session.createdAt,
               statusSince: session.running ? Date.now() : session.createdAt,
               status,
               lifecycle: session.lifecycle ?? { state: 'active', keepActive: false },
               unread: session.unread ?? false,
               pinned: session.pinned ?? false,
-              ...(session.worktreeBranch ? { worktreeBranch: session.worktreeBranch } : {}),
+              ...propertiesWhen(session.worktreeBranch, (includedValue) => ({
+                worktreeBranch: includedValue,
+              })),
             }
           }),
           savedOrder,
@@ -1803,7 +1919,9 @@ export function App() {
     usageController.select(
       usageProviders.map((sourceProvider) => ({
         provider: sourceProvider,
-        ...(sourceProvider === provider && usageThreadId ? { threadId: usageThreadId } : {}),
+        ...propertiesWhen(sourceProvider === provider && usageThreadId, () => ({
+          threadId: usageThreadId,
+        })),
       })),
     )
   }, [usageController, usageThreadId, provider, usageProviders])
@@ -1899,8 +2017,8 @@ export function App() {
     const selections = readSourceSelections()
     const entry: SourceSelection = {
       modelKey: selectedModelChoice.key,
-      ...(selectedEffort ? { effort: selectedEffort } : {}),
-      ...(selectedServiceTier ? { serviceTier: selectedServiceTier } : {}),
+      ...propertiesWhen(selectedEffort, (includedValue) => ({ effort: includedValue })),
+      ...propertiesWhen(selectedServiceTier, (includedValue) => ({ serviceTier: includedValue })),
     }
     const current = selections[source]
     if (
@@ -2031,7 +2149,7 @@ export function App() {
   )
 
   const addProject = useCallback(async () => {
-    const path = await pickFolder()
+    const path = await dependencies.pickFolder()
     if (!path) return
     await transport.request('projects.add', { path })
     await refreshProjects()
@@ -2039,7 +2157,7 @@ export function App() {
     activeIdRef.current = undefined
     setActiveId(undefined)
     setThread(emptyThread)
-  }, [transport, refreshProjects])
+  }, [dependencies.pickFolder, transport, refreshProjects])
 
   const generateSessionTitle = useCallback(
     async (threadId: string, prompt: string, expectedTitle: string) => {
@@ -2079,12 +2197,16 @@ export function App() {
           provider: choice.provider,
           workspacePath: projectPath,
           approval: sessionApproval,
-          ...(choice.agent ? { agent: choice.agent.id } : {}),
-          ...(choice.connectionId ? { connectionId: choice.connectionId } : {}),
-          ...(choice.model.id ? { model: choice.model.id } : {}),
-          ...(selectedServiceTier ? { serviceTier: selectedServiceTier } : {}),
-          ...(selectedEffort ? { effort: selectedEffort } : {}),
-          ...(isolateSession ? { isolate: true } : {}),
+          ...propertiesWhen(choice.agent, (includedValue) => ({ agent: includedValue.id })),
+          ...propertiesWhen(choice.connectionId, (includedValue) => ({
+            connectionId: includedValue,
+          })),
+          ...propertiesWhen(choice.model.id, (includedValue) => ({ model: includedValue })),
+          ...propertiesWhen(selectedServiceTier, (includedValue) => ({
+            serviceTier: includedValue,
+          })),
+          ...propertiesWhen(selectedEffort, (includedValue) => ({ effort: includedValue })),
+          ...propertiesWhen(isolateSession, () => ({ isolate: true })),
         })
         const provisional = threadStates.current.get(provisionalId) ?? emptyThread
         threadStates.current.delete(provisionalId)
@@ -2114,7 +2236,9 @@ export function App() {
                             id: threadId,
                             title: canonicalTitle,
                             provider: choice.provider,
-                            ...(choice.agent ? { agent: choice.agent.id } : {}),
+                            ...propertiesWhen(choice.agent, (includedValue) => ({
+                              agent: includedValue.id,
+                            })),
                             createdAt: Date.now(),
                             statusSince: Date.now(),
                             status: 'starting',
@@ -2356,7 +2480,9 @@ export function App() {
                       id: provisionalId,
                       title: titleFrom(text),
                       provider: choice.provider,
-                      ...(choice.agent ? { agent: choice.agent.id } : {}),
+                      ...propertiesWhen(choice.agent, (includedValue) => ({
+                        agent: includedValue.id,
+                      })),
                       createdAt: Date.now(),
                       statusSince: Date.now(),
                       status: 'starting',
@@ -2459,6 +2585,7 @@ export function App() {
       rejectedDrafts.current.delete(threadId)
       if (rejectedDraftOwner.current === threadId) rejectedDraftOwner.current = undefined
       const pendingOptimisticTurn = optimisticState.activeTurn
+      const precedingTurn = wasRunning ? before.activeTurn : undefined
       const pendingSubmission: PendingSubmission = {
         id: optimisticItemId,
         text,
@@ -2467,7 +2594,9 @@ export function App() {
         kind: wasRunning ? (steering ? 'steer' : 'queue') : 'turn',
         accepted: false,
         indeterminate: false,
-        ...(wasRunning && before.activeTurn ? { precedingTurnId: before.activeTurn.id } : {}),
+        ...propertiesWhen(precedingTurn, (turn) => ({
+          precedingTurnId: turn.id,
+        })),
       }
       if (pendingOptimisticTurn && pendingOptimisticTurn.id === optimisticTurnId) {
         pendingSubmission.optimisticTurn = pendingOptimisticTurn
@@ -2516,10 +2645,12 @@ export function App() {
           threadId,
           text,
           clientSubmissionId: optimisticItemId,
-          ...(turnAttachments.length > 0 ? { attachments: turnAttachments } : {}),
-          ...(turnChoice?.model.id ? { model: turnChoice.model.id } : {}),
-          ...(turnChoice && selectedEffort ? { effort: selectedEffort } : {}),
-          ...(turnChoice && selectedServiceTier ? { serviceTier: selectedServiceTier } : {}),
+          ...propertiesWhen(turnAttachments.length > 0, () => ({ attachments: turnAttachments })),
+          ...propertiesWhen(turnChoice?.model.id, (includedValue) => ({ model: includedValue })),
+          ...propertiesWhen(turnChoice && selectedEffort, () => ({ effort: selectedEffort })),
+          ...propertiesWhen(turnChoice && selectedServiceTier, () => ({
+            serviceTier: selectedServiceTier,
+          })),
         })
         // A new chat can be stopped while thread.start is still resolving.
         // Preserve that intent, put sendTurn on the wire first, then interrupt
@@ -2578,7 +2709,7 @@ export function App() {
           }
         }
       } catch (error) {
-        if (isIndeterminateRequestError(error)) {
+        if (IndeterminateRequestErrorSchema.safeParse(error).success) {
           const pending = pendingSubmissions.current.get(threadId)?.get(optimisticItemId)
           if (pending) pending.indeterminate = true
           if (queuedActionId) settleQueueAction(queuedActionId, 'steer', true)
@@ -2691,7 +2822,7 @@ export function App() {
   )
 
   // prettier-ignore
-  const deleteQueuedTurn = useCallback((queuedTurnId: string) => { if (!activeId) return; holdQueueAction(queuedTurnId, activeId, 'delete'); const projectPath = findSession(projectsRef.current, activeId)?.project.path; void transport.request('thread.deleteQueuedTurn', { threadId: activeId, queuedTurnId }).then(() => { updateQueue(activeId, (items) => items.filter((item) => item.id !== queuedTurnId)); settleQueueAction(queuedTurnId, 'delete'); workspaceIdleProbe.current.unknownQueues.delete(activeId); releaseQueuedStart(queuedTurnId); refreshWorkspaceAfterCompletion(projectPath) }).catch((error) => { settleQueueAction(queuedTurnId, 'delete', isIndeterminateRequestError(error)); setNotice(error instanceof Error ? error.message : String(error)) }) }, [transport, activeId, updateQueue, releaseQueuedStart, refreshWorkspaceAfterCompletion, holdQueueAction, settleQueueAction])
+  const deleteQueuedTurn = useCallback((queuedTurnId: string) => { if (!activeId) return; holdQueueAction(queuedTurnId, activeId, 'delete'); const projectPath = findSession(projectsRef.current, activeId)?.project.path; void transport.request('thread.deleteQueuedTurn', { threadId: activeId, queuedTurnId }).then(() => { updateQueue(activeId, (items) => items.filter((item) => item.id !== queuedTurnId)); settleQueueAction(queuedTurnId, 'delete'); workspaceIdleProbe.current.unknownQueues.delete(activeId); releaseQueuedStart(queuedTurnId); refreshWorkspaceAfterCompletion(projectPath) }).catch((error) => { settleQueueAction(queuedTurnId, 'delete', IndeterminateRequestErrorSchema.safeParse(error).success); setNotice(error instanceof Error ? error.message : String(error)) }) }, [transport, activeId, updateQueue, releaseQueuedStart, refreshWorkspaceAfterCompletion, holdQueueAction, settleQueueAction])
 
   const moveQueuedTurn = useCallback(
     (queuedTurnId: string, direction: 'up' | 'down') => {
@@ -2708,7 +2839,7 @@ export function App() {
   )
 
   // prettier-ignore
-  const steerQueuedTurn = useCallback((queuedTurnId: string) => { if (!activeId) return; holdQueueAction(queuedTurnId, activeId, 'steer'); const projectPath = findSession(projectsRef.current, activeId)?.project.path; void transport.request('thread.steerQueuedTurn', { threadId: activeId, queuedTurnId }).then(() => { updateQueue(activeId, (items) => items.filter((item) => item.id !== queuedTurnId)); settleQueueAction(queuedTurnId, 'steer'); workspaceIdleProbe.current.unknownQueues.delete(activeId); releaseQueuedStart(queuedTurnId); refreshWorkspaceAfterCompletion(projectPath) }).catch((error) => { settleQueueAction(queuedTurnId, 'steer', isIndeterminateRequestError(error)); setNotice(error instanceof Error ? error.message : String(error)) }) }, [transport, activeId, updateQueue, releaseQueuedStart, refreshWorkspaceAfterCompletion, holdQueueAction, settleQueueAction])
+  const steerQueuedTurn = useCallback((queuedTurnId: string) => { if (!activeId) return; holdQueueAction(queuedTurnId, activeId, 'steer'); const projectPath = findSession(projectsRef.current, activeId)?.project.path; void transport.request('thread.steerQueuedTurn', { threadId: activeId, queuedTurnId }).then(() => { updateQueue(activeId, (items) => items.filter((item) => item.id !== queuedTurnId)); settleQueueAction(queuedTurnId, 'steer'); workspaceIdleProbe.current.unknownQueues.delete(activeId); releaseQueuedStart(queuedTurnId); refreshWorkspaceAfterCompletion(projectPath) }).catch((error) => { settleQueueAction(queuedTurnId, 'steer', IndeterminateRequestErrorSchema.safeParse(error).success); setNotice(error instanceof Error ? error.message : String(error)) }) }, [transport, activeId, updateQueue, releaseQueuedStart, refreshWorkspaceAfterCompletion, holdQueueAction, settleQueueAction])
 
   const selectProject = useCallback(
     (path: string) => {
@@ -3469,9 +3600,11 @@ export function App() {
             : 'idle'
   const sideChatStartOptions = useMemo<SideChatStartOptions>(
     () => ({
-      ...(selectedModelChoice?.model.id ? { model: selectedModelChoice.model.id } : {}),
-      ...(selectedEffort ? { effort: selectedEffort } : {}),
-      ...(selectedServiceTier ? { serviceTier: selectedServiceTier } : {}),
+      ...propertiesWhen(selectedModelChoice?.model.id, (includedValue) => ({
+        model: includedValue,
+      })),
+      ...propertiesWhen(selectedEffort, (includedValue) => ({ effort: includedValue })),
+      ...propertiesWhen(selectedServiceTier, (includedValue) => ({ serviceTier: includedValue })),
       approval: approval === 'auto-review' && !autoReviewSupported ? 'ask' : approval,
     }),
     [
@@ -3602,15 +3735,12 @@ export function App() {
   ])
 
   return (
-    <div
-      className={`shell ${collapsed ? 'is-narrow' : ''}`}
-      style={{ '--rail-w': `${railWidth}px` } as CSSProperties}
-    >
+    <div className={`shell ${collapsed ? 'is-narrow' : ''}`} style={shellStyle(railWidth)}>
       <TitleBar collapsed={collapsed} onToggleRail={toggleRail} />
-      {isDesktop ? <ZoomHud /> : null}
+      {dependencies.isDesktop ? <ZoomHud /> : null}
 
       <div className="shell__body">
-        <Sidebar
+        <components.Sidebar
           projects={projects}
           activeProjectPath={activePath}
           activeSessionId={surface === 'chat' ? activeId : undefined}
@@ -3645,7 +3775,7 @@ export function App() {
 
         <div
           className={`workspace-layout${workspacePanelOpen ? ' is-panel-open' : ''}${workspacePanelExpanded ? ' is-panel-expanded' : ''}`}
-          style={{ '--workspace-panel-w': `${workspacePanelWidth}px` } as CSSProperties}
+          style={workspaceLayoutStyle(workspacePanelWidth)}
         >
           <main className="stage">
             {surface === 'pull-requests' ? (
@@ -3654,7 +3784,7 @@ export function App() {
               </Suspense>
             ) : (
               <>
-                <StageHeader
+                <components.StageHeader
                   sessionId={active?.session.id}
                   title={active?.session.title}
                   pinned={active?.session.pinned ?? false}
@@ -3675,7 +3805,7 @@ export function App() {
                   className={`stage__body${activeId ? '' : ' is-new-session'}${active && terminalOpen ? ' has-terminal' : ''}`}
                 >
                   {activeId ? (
-                    <Thread
+                    <components.Thread
                       items={thread.items}
                       loading={loadingThreadId === activeId}
                       liveItems={thread.liveItems}
@@ -3715,7 +3845,7 @@ export function App() {
 
                   {active && terminalOpen ? (
                     <Suspense fallback={null}>
-                      <TerminalPane
+                      <components.TerminalPane
                         key={activeId}
                         transport={transport}
                         threadId={active.session.id}
@@ -3727,7 +3857,7 @@ export function App() {
                     </Suspense>
                   ) : null}
 
-                  <Composer
+                  <components.Composer
                     transport={transport}
                     provider={provider}
                     projects={projects}
@@ -3744,7 +3874,9 @@ export function App() {
                     approval={approval === 'auto-review' && !autoReviewSupported ? 'ask' : approval}
                     autoReviewSupported={autoReviewSupported}
                     attachmentsSupported={attachmentsSupported}
-                    voiceAvailable={isDesktop && provider === 'codex' && voiceAvailable}
+                    voiceAvailable={
+                      dependencies.isDesktop && provider === 'codex' && voiceAvailable
+                    }
                     disabled={stopping}
                     sendAvailability={sendAvailability}
                     running={visibleRunning}
@@ -3813,7 +3945,7 @@ export function App() {
       </div>
 
       {settingsOpen ? (
-        <Settings
+        <components.Settings
           initialSection={settingsSection}
           provider={provider}
           providerName={providerName(provider, acpAgentName)}
@@ -3846,14 +3978,14 @@ export function App() {
           showMacOSFontSmoothing={macOS}
           macOSFontSmoothing={macOSFontSmoothing}
           onMacOSFontSmoothingChange={setMacOSFontSmoothing}
-          showMacOSHaptics={isDesktop && macOS}
+          showMacOSHaptics={dependencies.isDesktop && macOS}
           onAccountChange={handleAccountChange}
           onReset={resetSettings}
           onClose={closeSettings}
         />
       ) : null}
 
-      {isDesktop &&
+      {dependencies.isDesktop &&
       projectsStatus === 'ready' &&
       projects.length === 0 &&
       !onboardingDismissed &&
@@ -3869,10 +4001,12 @@ export function App() {
         />
       ) : null}
 
-      {shortcutsOpen ? <ShortcutsDialog onClose={() => setShortcutsOpen(false)} /> : null}
+      {shortcutsOpen ? (
+        <ShortcutsDialog macOS={macOS} onClose={() => setShortcutsOpen(false)} />
+      ) : null}
 
       {paletteScope ? (
-        <CommandPalette
+        <components.CommandPalette
           commands={commands}
           scope={paletteScope}
           preferredCommandId={
@@ -3884,7 +4018,7 @@ export function App() {
         />
       ) : null}
 
-      <SessionSearchHost
+      <components.SessionSearchHost
         ref={sessionSearch}
         transport={transport}
         projects={projects}
@@ -4200,11 +4334,12 @@ function renameSession(projects: Project[], threadId: string, title: string): Pr
 }
 
 type SessionOrder = Record<string, string[]>
+const ProjectOrderSchema = z.array(z.string())
+const SessionOrderSchema = z.record(z.string(), z.array(z.string()))
 
 function loadProjectOrder(): string[] {
   try {
-    const parsed = JSON.parse(readSetting(PROJECT_ORDER_KEY) ?? '[]') as unknown
-    return Array.isArray(parsed) && parsed.every((path) => typeof path === 'string') ? parsed : []
+    return ProjectOrderSchema.parse(JSON.parse(readSetting(PROJECT_ORDER_KEY) ?? '[]'))
   } catch {
     return []
   }
@@ -4232,14 +4367,7 @@ function saveProjectOrder(projects: Project[]): void {
 
 function loadSessionOrder(): SessionOrder {
   try {
-    const parsed = JSON.parse(readSetting(SESSION_ORDER_KEY) ?? '{}') as unknown
-    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return {}
-    return Object.fromEntries(
-      Object.entries(parsed).filter(
-        (entry): entry is [string, string[]] =>
-          Array.isArray(entry[1]) && entry[1].every((id) => typeof id === 'string'),
-      ),
-    )
+    return SessionOrderSchema.parse(JSON.parse(readSetting(SESSION_ORDER_KEY) ?? '{}'))
   } catch {
     return {}
   }
@@ -4276,29 +4404,17 @@ function saveSessionOrder(projects: Project[]): void {
   writeSetting(SESSION_ORDER_KEY, serialized)
 }
 
-type SourceSelection = { modelKey: string; effort?: string; serviceTier?: string }
+const SourceSelectionSchema = z.object({
+  modelKey: z.string(),
+  effort: z.string().optional(),
+  serviceTier: z.string().optional(),
+})
+const SourceSelectionsSchema = z.record(z.string(), SourceSelectionSchema)
+type SourceSelection = z.infer<typeof SourceSelectionSchema>
 
 function readSourceSelections(): Record<string, SourceSelection> {
   try {
-    const parsed: unknown = JSON.parse(readSetting(MODEL_BY_SOURCE_KEY) ?? '{}')
-    if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) return {}
-    return Object.fromEntries(
-      Object.entries(parsed as Record<string, unknown>).flatMap(([source, value]) => {
-        if (typeof value !== 'object' || value === null) return []
-        const entry = value as Record<string, unknown>
-        if (typeof entry.modelKey !== 'string') return []
-        return [
-          [
-            source,
-            {
-              modelKey: entry.modelKey,
-              ...(typeof entry.effort === 'string' ? { effort: entry.effort } : {}),
-              ...(typeof entry.serviceTier === 'string' ? { serviceTier: entry.serviceTier } : {}),
-            },
-          ],
-        ]
-      }),
-    )
+    return SourceSelectionsSchema.parse(JSON.parse(readSetting(MODEL_BY_SOURCE_KEY) ?? '{}'))
   } catch {
     return {}
   }
@@ -4364,19 +4480,20 @@ function readStoredModelChoice(customModels: CustomModel[] = []): ModelChoice | 
   const key = canonical ? storedKey : modelChoiceKey(expectedSource, modelId)
 
   const effort = readSetting(EFFORT_KEY) ?? undefined
+  const agent = agentId && agentName ? { id: agentId, name: agentName } : undefined
   return {
     key,
     provider,
     sourceName: provider === 'api' ? 'API connection' : providerName(provider, agentName),
     mark: provider === 'acp' && agentId ? agentMark(agentId) : providerMark(provider),
-    ...(connectionId ? { connectionId } : {}),
-    ...(agentId && agentName ? { agent: { id: agentId, name: agentName } } : {}),
+    ...propertiesWhen(connectionId, (connectionId) => ({ connectionId })),
+    ...propertiesWhen(agent, (agent) => ({ agent })),
     model: {
       id: modelId,
       displayName: modelId || 'Provider default',
       isDefault: true,
       reasoningEfforts: effort ? [effort] : [],
-      ...(effort ? { defaultReasoningEffort: effort } : {}),
+      ...propertiesWhen(effort, (includedValue) => ({ defaultReasoningEffort: includedValue })),
       serviceTiers: [],
     },
   }

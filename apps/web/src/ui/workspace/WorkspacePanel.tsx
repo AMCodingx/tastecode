@@ -1,4 +1,14 @@
-import { lazy, Suspense, useCallback, useEffect, useRef, useState, type PointerEvent } from 'react'
+import {
+  lazy,
+  Suspense,
+  useCallback,
+  useEffect,
+  useRef,
+  useState,
+  type ComponentProps,
+  type ComponentType,
+  type PointerEvent,
+} from 'react'
 import {
   FileDiff,
   FolderOpen,
@@ -42,6 +52,20 @@ const WorkspaceFiles = lazy(() =>
 const WorkspaceSideChat = lazy(() =>
   import('./WorkspaceSideChat.js').then((module) => ({ default: module.WorkspaceSideChat })),
 )
+
+export type WorkspacePanelHaptics = {
+  enabled: typeof appHapticsEnabled
+  perform: typeof performAppHaptic
+  prepare: typeof prepareAppHaptics
+}
+
+export type WorkspacePanelTerminal = ComponentType<ComponentProps<typeof WorkspaceTerminal>>
+
+const defaultWorkspacePanelHaptics: WorkspacePanelHaptics = {
+  enabled: appHapticsEnabled,
+  perform: performAppHaptic,
+  prepare: prepareAppHaptics,
+}
 
 export type WorkspaceTool = 'review' | 'terminal' | 'browser' | 'files' | 'side-chat'
 
@@ -102,7 +126,10 @@ export function WorkspacePanel(props: {
   onClosed?: () => void
   onExpandedChange: (expanded: boolean) => void
   onWidthChange: (width: number) => void
+  haptics?: WorkspacePanelHaptics | undefined
+  terminalComponent?: WorkspacePanelTerminal | undefined
 }) {
+  const hapticServices = props.haptics ?? defaultWorkspacePanelHaptics
   const [tabs, setTabs] = useState<WorkspaceTab[]>([])
   const [activeId, setActiveId] = useState<string>()
   const [designPreview, setDesignPreview] = useState<BrowserNavigationRequest>()
@@ -229,7 +256,7 @@ export function WorkspacePanel(props: {
   const beginResize = (event: PointerEvent<HTMLDivElement>) => {
     if (props.expanded) return
     event.preventDefault()
-    prepareAppHaptics()
+    hapticServices.prepare()
     event.currentTarget.setPointerCapture(event.pointerId)
     resizeCleanup.current()
     const startX = event.clientX
@@ -238,7 +265,7 @@ export function WorkspacePanel(props: {
       event.currentTarget.closest<HTMLElement>('.workspace-layout')?.clientWidth ||
       window.innerWidth
     const maximum = Math.max(MIN_PANEL_WIDTH, layoutWidth - MIN_CHAT_WIDTH)
-    const haptics = appHapticsEnabled()
+    const haptics = hapticServices.enabled()
       ? new ResizeHaptics({
           startValue: startWidth,
           startTime: event.timeStamp,
@@ -259,7 +286,7 @@ export function WorkspacePanel(props: {
       })
       currentWidth = nextWidth
       props.onWidthChange(nextWidth)
-      if (feedback) performAppHaptic(feedback)
+      if (feedback) hapticServices.perform(feedback)
     }
     const cleanup = () => {
       if (!active) return
@@ -305,7 +332,7 @@ export function WorkspacePanel(props: {
         aria-orientation="vertical"
         onDoubleClick={() => props.onExpandedChange(true)}
         onPointerEnter={() => {
-          if (!props.expanded) prepareAppHaptics()
+          if (!props.expanded) hapticServices.prepare()
         }}
         onPointerDown={beginResize}
       />
@@ -409,6 +436,7 @@ export function WorkspacePanel(props: {
                   sideChatStartOptions={props.sideChatStartOptions}
                   sideChatPromptRequest={props.sideChatPromptRequest}
                   browserNavigation={tab.id === DESIGN_PREVIEW_TAB_ID ? designPreview : undefined}
+                  terminalComponent={props.terminalComponent}
                   onClose={() => closeTab(tab.id)}
                 />
               </Suspense>
@@ -435,6 +463,7 @@ function WorkspaceToolSurface(props: {
   sideChatStartOptions: SideChatStartOptions
   sideChatPromptRequest?: SideChatPromptRequest | undefined
   browserNavigation?: BrowserNavigationRequest | undefined
+  terminalComponent?: WorkspacePanelTerminal | undefined
   onClose: () => void
 }) {
   if (props.kind === 'review') {
@@ -449,8 +478,9 @@ function WorkspaceToolSurface(props: {
     )
   }
   if (props.kind === 'terminal') {
+    const TerminalComponent = props.terminalComponent ?? WorkspaceTerminal
     return (
-      <WorkspaceTerminal
+      <TerminalComponent
         active={props.active}
         transport={props.transport}
         threadId={props.threadId}
