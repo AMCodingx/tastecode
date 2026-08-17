@@ -15,8 +15,8 @@ const ROWS = [
 ] as const
 
 /** Every keyboard shortcut in one place, reachable from the command palette. */
-export function ShortcutsDialog(props: { onClose: () => void }) {
-  const macOS = isMacOS()
+export function ShortcutsDialog(props: { onClose: () => void; macOS?: boolean }) {
+  const macOS = props.macOS ?? isMacOS()
   const dialog = useDialogFocus<HTMLDivElement>(props.onClose)
 
   return (

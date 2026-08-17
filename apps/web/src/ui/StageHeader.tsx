@@ -1,5 +1,17 @@
 import { memo, useEffect, useRef, useState } from 'react'
-import { Ellipsis, GitBranch, PanelRightClose, PanelRightOpen, SquareTerminal } from 'lucide-react'
+import {
+  Archive,
+  Ellipsis,
+  FolderOpen,
+  GitBranch,
+  History,
+  PanelRightClose,
+  PanelRightOpen,
+  Pencil,
+  Pin,
+  PinOff,
+  SquareTerminal,
+} from 'lucide-react'
 import { isDesktop, revealPath } from '../bridge.js'
 import { Menu, MenuItem } from './Menu.js'
 
@@ -73,6 +85,9 @@ function StageHeaderComponent(props: {
               <>
                 <MenuItem
                   title={props.pinned ? 'Unpin chat' : 'Pin chat'}
+                  icon={
+                    props.pinned ? <PinOff size={14} aria-hidden /> : <Pin size={14} aria-hidden />
+                  }
                   onClick={() => {
                     props.onToggleSessionPin(props.sessionId!)
                     close()
@@ -80,6 +95,7 @@ function StageHeaderComponent(props: {
                 />
                 <MenuItem
                   title="Rename chat"
+                  icon={<Pencil size={14} aria-hidden />}
                   onClick={() => {
                     setRenaming(true)
                     close()
@@ -87,6 +103,7 @@ function StageHeaderComponent(props: {
                 />
                 <MenuItem
                   title="Archive chat"
+                  icon={<Archive size={14} aria-hidden />}
                   onClick={() => {
                     props.onArchiveSession(props.sessionId!)
                     close()
@@ -95,6 +112,7 @@ function StageHeaderComponent(props: {
                 {isDesktop && props.projectPath ? (
                   <MenuItem
                     title="Open in Explorer"
+                    icon={<FolderOpen size={14} aria-hidden />}
                     onClick={() => {
                       void revealPath(props.projectPath!)
                       close()
@@ -104,6 +122,7 @@ function StageHeaderComponent(props: {
                 {props.checkpointCount > 0 ? (
                   <MenuItem
                     title={`Checkpoint history (${props.checkpointCount})`}
+                    icon={<History size={14} aria-hidden />}
                     onClick={() => {
                       props.onOpenRollback()
                       close()
@@ -114,7 +133,7 @@ function StageHeaderComponent(props: {
                   <MenuItem
                     title="Isolated checkout"
                     detail={props.worktreeBranch}
-                    icon={<GitBranch size={13} aria-hidden />}
+                    icon={<GitBranch size={14} aria-hidden />}
                     disabled
                     onClick={() => {}}
                   />

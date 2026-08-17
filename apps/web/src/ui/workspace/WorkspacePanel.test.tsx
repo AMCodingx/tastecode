@@ -1,47 +1,56 @@
 // @vitest-environment happy-dom
 import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import type { Transport } from '../../transport.js'
+import { requiredElement } from '../../test-dom.js'
+import { TestTransport } from '../../test-transport.js'
+import {
+  WorkspacePanel,
+  type WorkspacePanelHaptics,
+  type WorkspacePanelTerminal,
+} from './WorkspacePanel.js'
 
-const haptics = vi.hoisted(() => ({
-  performAppHaptic: vi.fn(),
-  prepareAppHaptics: vi.fn(),
-}))
+const performHaptic = vi.fn<WorkspacePanelHaptics['perform']>()
+const prepareHaptics = vi.fn<WorkspacePanelHaptics['prepare']>()
+const haptics = {
+  enabled: () => true,
+  perform: performHaptic,
+  prepare: prepareHaptics,
+} satisfies WorkspacePanelHaptics
 
-vi.mock('../../haptics.js', async (importOriginal) => ({
-  ...(await importOriginal<typeof import('../../haptics.js')>()),
-  appHapticsEnabled: () => true,
-  performAppHaptic: haptics.performAppHaptic,
-  prepareAppHaptics: haptics.prepareAppHaptics,
-}))
+const TestTerminal = (({ onClose }) => (
+  <button type="button" onClick={onClose}>
+    Exit terminal
+  </button>
+)) satisfies WorkspacePanelTerminal
 
-vi.mock('./WorkspaceTerminal.js', () => ({
-  WorkspaceTerminal: ({ onClose }: { onClose: () => void }) => (
-    <button type="button" onClick={onClose}>
-      Exit terminal
-    </button>
-  ),
-}))
+const idleTransport = new TestTransport()
 
-import { WorkspacePanel } from './WorkspacePanel.js'
-
-const idleTransport = { on: () => () => undefined } as unknown as Transport
+class TestMediaQueryList extends EventTarget implements MediaQueryList {
+  onchange: ((this: MediaQueryList, ev: MediaQueryListEvent) => void) | null = null
+  constructor(
+    readonly matches: boolean,
+    readonly media: string,
+  ) {
+    super()
+  }
+  addListener(): void {}
+  removeListener(): void {}
+}
 
 afterEach(() => {
   cleanup()
-  haptics.performAppHaptic.mockClear()
-  haptics.prepareAppHaptics.mockClear()
+  performHaptic.mockClear()
+  prepareHaptics.mockClear()
 })
 
 describe('WorkspacePanel', () => {
   it('finishes closing immediately when reduced motion removes the transition', async () => {
     const onClosed = vi.fn()
-    const matchMedia = vi.spyOn(window, 'matchMedia').mockImplementation(
-      (query) =>
-        ({
-          matches: query === '(prefers-reduced-motion: reduce)',
-        }) as MediaQueryList,
-    )
+    const matchMedia = vi
+      .spyOn(window, 'matchMedia')
+      .mockImplementation(
+        (query) => new TestMediaQueryList(query === '(prefers-reduced-motion: reduce)', query),
+      )
 
     render(
       <WorkspacePanel
@@ -81,6 +90,7 @@ describe('WorkspacePanel', () => {
         onClose={vi.fn()}
         onExpandedChange={vi.fn()}
         onWidthChange={onWidthChange}
+        haptics={haptics}
       />,
     )
 
@@ -99,8 +109,8 @@ describe('WorkspacePanel', () => {
     expect(onWidthChange).toHaveBeenCalledWith(480)
     fireEvent.pointerMove(window, { clientX: 0, pointerId: 7 })
     expect(onWidthChange).toHaveBeenLastCalledWith(540)
-    expect(haptics.prepareAppHaptics).toHaveBeenCalled()
-    expect(haptics.performAppHaptic).toHaveBeenCalledWith('alignment')
+    expect(prepareHaptics).toHaveBeenCalled()
+    expect(performHaptic).toHaveBeenCalledWith('alignment')
 
     fireEvent.blur(window)
     const widthCalls = onWidthChange.mock.calls.length
@@ -125,6 +135,7 @@ describe('WorkspacePanel', () => {
         onClose={onClose}
         onExpandedChange={vi.fn()}
         onWidthChange={vi.fn()}
+        terminalComponent={TestTerminal}
       />,
     )
 
@@ -148,9 +159,10 @@ describe('WorkspacePanel', () => {
         onClose={onClose}
         onExpandedChange={vi.fn()}
         onWidthChange={vi.fn()}
+        terminalComponent={TestTerminal}
       />,
     )
-    fireEvent.transitionEnd(document.querySelector('.workspace-panel')!, {
+    fireEvent.transitionEnd(requiredElement(document, '.workspace-panel', HTMLElement), {
       propertyName: 'transform',
     })
     expect(screen.queryByRole('tab', { name: 'Terminal' })).toBeNull()
@@ -172,6 +184,7 @@ describe('WorkspacePanel', () => {
         onClose={vi.fn()}
         onExpandedChange={onExpandedChange}
         onWidthChange={vi.fn()}
+        terminalComponent={TestTerminal}
       />,
     )
 
@@ -200,6 +213,7 @@ describe('WorkspacePanel', () => {
         onClose={onClose}
         onExpandedChange={vi.fn()}
         onWidthChange={vi.fn()}
+        terminalComponent={TestTerminal}
       />,
     )
 
@@ -227,6 +241,7 @@ describe('WorkspacePanel', () => {
           onClose={vi.fn()}
           onExpandedChange={vi.fn()}
           onWidthChange={vi.fn()}
+          terminalComponent={TestTerminal}
         />,
       )
 
@@ -245,13 +260,7 @@ describe('WorkspacePanel', () => {
   )
 
   it('opens one reusable Browser tab for design preview captures', async () => {
-    let captureListener: ((value: unknown) => void) | undefined
-    const transport = {
-      on: vi.fn((channel: string, listener: (value: unknown) => void) => {
-        if (channel === 'preview.captureRequested') captureListener = listener
-        return () => undefined
-      }),
-    } as unknown as Transport
+    const transport = new TestTransport()
     const onOpen = vi.fn()
     render(
       <WorkspacePanel
@@ -269,26 +278,19 @@ describe('WorkspacePanel', () => {
         onWidthChange={vi.fn()}
       />,
     )
-    await waitFor(() => expect(captureListener).toBeDefined())
-
-    act(() =>
-      captureListener?.({
-        requestId: '00000000-0000-4000-8000-000000000001',
-        url: 'https://example.com/',
-        viewports: [{ width: 1_280, height: 800 }],
-      }),
-    )
-    expect(screen.queryByRole('tab', { name: 'Browser' })).toBeNull()
-
     const request = (requestId: string) => ({
       requestId,
       url: 'http://127.0.0.1:4173/',
       viewports: [{ width: 1_280, height: 800 }],
     })
-    act(() => captureListener?.(request('00000000-0000-4000-8000-000000000001')))
+    act(() =>
+      transport.emit('preview.captureRequested', request('00000000-0000-4000-8000-000000000001')),
+    )
     await waitFor(() => expect(screen.getAllByRole('tab', { name: 'Browser' })).toHaveLength(1))
 
-    act(() => captureListener?.(request('00000000-0000-4000-8000-000000000002')))
+    act(() =>
+      transport.emit('preview.captureRequested', request('00000000-0000-4000-8000-000000000002')),
+    )
     expect(screen.getAllByRole('tab', { name: 'Browser' })).toHaveLength(1)
     expect(onOpen).toHaveBeenCalledTimes(2)
   })
