@@ -10,6 +10,7 @@ The table below is generated from `licenses/direct-runtime-dependencies.json` an
 `pnpm licenses:verify`. Every shipped transitive dependency is also inspected by that command.
 
 <!-- BEGIN DIRECT RUNTIME DEPENDENCIES -->
+<!-- prettier-ignore -->
 | npm package | Use | Reviewed license | Source |
 | --- | --- | --- | --- |
 | `@anthropic-ai/claude-agent-sdk` | Claude Code adapter runtime | LicenseRef-Anthropic-Commercial-Terms | [source](https://github.com/anthropics/claude-agent-sdk-typescript) |

@@ -169,6 +169,7 @@ function escapeMarkdown(value) {
 
 export function renderDirectRuntimeTable(inventory) {
   const rows = [
+    '<!-- prettier-ignore -->',
     '| npm package | Use | Reviewed license | Source |',
     '| --- | --- | --- | --- |',
   ]
