@@ -155,6 +155,11 @@ export async function provePtyBinding(pty: PtyModule, platform = process.platfor
     if (timer) clearTimeout(timer)
     dataSubscription?.dispose()
     exitSubscription?.dispose()
+    try {
+      child.kill()
+    } catch {
+      // A naturally exited PTY may already have released its native handle.
+    }
   }
 }
 
