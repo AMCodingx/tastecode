@@ -1,7 +1,7 @@
 # TasteCode launch handoff
 
-Updated: 2026-08-17  
-Target launch: 2026-08-17 15:00 CEST / 21:00 China Standard Time  
+Updated: 2026-08-17
+Target launch: 2026-08-17 15:00 CEST / 21:00 China Standard Time
 GitHub is the authority for current commits, branches, pull requests, and release state.
 
 ## Stop conditions
