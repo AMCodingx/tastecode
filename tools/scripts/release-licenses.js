@@ -326,6 +326,7 @@ export async function auditInstalledProductionGraph(
   const errors = []
   const unresolvedOptional = []
   const packages = []
+  const licenseSections = []
   const visited = new Set()
   const queue = derivedDependencies.flatMap(({ name, origins }) =>
     origins.map((fromDirectory) => ({ name, fromDirectory, optional: false, direct: true })),
@@ -370,6 +371,20 @@ export async function auditInstalledProductionGraph(
       }
     }
 
+    const licenseTexts = []
+    for (const file of files) {
+      const filePath = file.startsWith('licenses/')
+        ? path.resolve(repositoryRoot, file)
+        : path.join(resolved.packageRoot, file)
+      const contents = await readFile(filePath, 'utf8')
+      if (contents.trim().length === 0) {
+        errors.push(`${name}@${version} has an empty license file: ${file}`)
+        continue
+      }
+      licenseTexts.push({ file, contents: contents.trim() })
+    }
+    licenseSections.push({ name, version, licenseTexts })
+
     packages.push({
       name,
       version,
@@ -409,15 +424,32 @@ export async function auditInstalledProductionGraph(
   packages.sort((left, right) =>
     `${left.name}@${left.version}`.localeCompare(`${right.name}@${right.version}`),
   )
+  licenseSections.sort((left, right) =>
+    `${left.name}@${left.version}`.localeCompare(`${right.name}@${right.version}`),
+  )
   if (errors.length > 0) throw new Error(errors.join('\n'))
   return {
-    schemaVersion: 1,
-    platform: process.platform,
-    architecture: process.arch,
-    packageCount: packages.length,
-    packages,
-    unresolvedOptional: [...new Set(unresolvedOptional)].sort(),
+    report: {
+      schemaVersion: 1,
+      platform: process.platform,
+      architecture: process.arch,
+      packageCount: packages.length,
+      packages,
+      unresolvedOptional: [...new Set(unresolvedOptional)].sort(),
+    },
+    licenseBundle: renderLicenseBundle(licenseSections),
   }
+}
+
+function renderLicenseBundle(sections) {
+  const output = ['TasteCode third-party license texts', '']
+  for (const { name, version, licenseTexts } of sections) {
+    output.push('='.repeat(80), `${name}@${version}`, '')
+    for (const { file, contents } of licenseTexts) {
+      output.push(`--- ${file} ---`, contents, '')
+    }
+  }
+  return `${output.join('\n').trimEnd()}\n`
 }
 
 export async function verifyReleaseLicenses(repositoryRoot, options = {}) {
@@ -426,8 +458,12 @@ export async function verifyReleaseLicenses(repositoryRoot, options = {}) {
   validateInventory(inventory, derived)
   await verifyDirectRuntimeTable(repositoryRoot, inventory)
   if (options.verifyProjectLicense !== false) await verifyProjectLicense(repositoryRoot)
-  const report = await auditInstalledProductionGraph(repositoryRoot, inventory, derived)
-  return { inventory, report }
+  const { report, licenseBundle } = await auditInstalledProductionGraph(
+    repositoryRoot,
+    inventory,
+    derived,
+  )
+  return { inventory, report, licenseBundle }
 }
 
 function argumentsFrom(argv) {
@@ -447,7 +483,10 @@ function argumentsFrom(argv) {
 async function main() {
   const options = argumentsFrom(process.argv.slice(2))
   const repositoryRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..')
-  const { report } = await verifyReleaseLicenses(repositoryRoot)
+  const { report, licenseBundle } = await verifyReleaseLicenses(repositoryRoot)
+  const releaseDirectory = path.join(repositoryRoot, 'release')
+  await mkdir(releaseDirectory, { recursive: true })
+  await writeFile(path.join(releaseDirectory, 'THIRD_PARTY_LICENSES.txt'), licenseBundle, 'utf8')
   const serialized = `${JSON.stringify(report, null, 2)}\n`
   if (options.output) {
     const outputPath = path.resolve(repositoryRoot, options.output)
