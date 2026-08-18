@@ -166,6 +166,7 @@ test('an exact reviewed exception can supply missing metadata and bundled licens
           license: 'MIT',
           allowMissingMetadata: true,
           bundledLicense: 'licenses/transitive-b-MIT.txt',
+          licenseSource: 'https://example.test/transitive-b-license',
         },
       ],
     }

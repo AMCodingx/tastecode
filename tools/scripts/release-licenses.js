@@ -153,6 +153,20 @@ function validateInventory(inventory, derivedDependencies) {
     ) {
       errors.push(`incomplete direct dependency inventory: ${entry.name}`)
     }
+    if (entry.bundledLicense && !entry.licenseSource) {
+      errors.push(`bundled license is missing its source: ${entry.name}`)
+    }
+  }
+
+  const reviewedExceptions = new Set()
+  for (const entry of inventory.reviewedTransitiveExceptions ?? []) {
+    const key = `${entry.name}@${entry.version ?? '*'}`
+    if (reviewedExceptions.has(key)) errors.push(`duplicate reviewed exception: ${key}`)
+    reviewedExceptions.add(key)
+    if (!entry.name || !entry.license) errors.push(`incomplete reviewed exception: ${key}`)
+    if (entry.bundledLicense && !entry.licenseSource) {
+      errors.push(`bundled license is missing its source: ${key}`)
+    }
   }
 
   const derived = new Set(derivedDependencies.map(({ name }) => name))
@@ -272,6 +286,9 @@ async function licenseFiles(packageRoot) {
 
 async function bundledLicenseFile(repositoryRoot, reviewed) {
   if (!reviewed?.bundledLicense) return undefined
+  if (!reviewed.licenseSource?.startsWith('https://')) {
+    throw new Error(`${reviewed.bundledLicense} has no HTTPS source`)
+  }
   const licensesRoot = path.resolve(repositoryRoot, 'licenses')
   const absolutePath = path.resolve(repositoryRoot, reviewed.bundledLicense)
   const relative = path.relative(licensesRoot, absolutePath)
