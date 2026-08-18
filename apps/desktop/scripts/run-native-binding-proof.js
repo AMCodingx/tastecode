@@ -30,7 +30,9 @@ function singleMacExecutable(directory) {
     .filter((entry) => entry.isFile())
     .map((entry) => path.join(directory, entry.name))
   if (candidates.length !== 1) {
-    throw new Error(`expected one packaged macOS executable in ${directory}, found ${candidates.length}`)
+    throw new Error(
+      `expected one packaged macOS executable in ${directory}, found ${candidates.length}`,
+    )
   }
   return candidates[0]
 }

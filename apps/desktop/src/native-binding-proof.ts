@@ -50,12 +50,17 @@ export interface PackagedNativeModules {
 
 function environment(): Record<string, string> {
   return Object.fromEntries(
-    Object.entries(process.env).filter((entry): entry is [string, string] => entry[1] !== undefined),
+    Object.entries(process.env).filter(
+      (entry): entry is [string, string] => entry[1] !== undefined,
+    ),
   )
 }
 
 function canonicalPath(pathname: string): string {
-  return pathname.replaceAll('\\', '/').replaceAll(/\/{2,}/g, '/').toLowerCase()
+  return pathname
+    .replaceAll('\\', '/')
+    .replaceAll(/\/{2,}/g, '/')
+    .toLowerCase()
 }
 
 function archiveRoot(proofFile: string): string | undefined {
@@ -82,7 +87,9 @@ export function assertPackagedNativeModules(
       throw new Error(`native module entry resolved outside the packaged application: ${entry}`)
     }
   }
-  const packagedBindings = modules.nativeBindings.filter((binding) => isInsideArchive(binding, archive))
+  const packagedBindings = modules.nativeBindings.filter((binding) =>
+    isInsideArchive(binding, archive),
+  )
   if (!packagedBindings.some((binding) => binding.toLowerCase().includes('node-pty'))) {
     throw new Error('the packaged node-pty native binding was not loaded')
   }
@@ -114,9 +121,7 @@ export function loadPackagedNativeModules(): PackagedNativeModules {
 export async function provePtyBinding(pty: PtyModule, platform = process.platform): Promise<void> {
   const shell = platform === 'win32' ? (process.env.ComSpec ?? 'cmd.exe') : '/bin/sh'
   const args =
-    platform === 'win32'
-      ? ['/d', '/s', '/c', `echo ${PTY_MARKER}`]
-      : ['-c', `printf ${PTY_MARKER}`]
+    platform === 'win32' ? ['/d', '/s', '/c', `echo ${PTY_MARKER}`] : ['-c', `printf ${PTY_MARKER}`]
   const child = pty.spawn(shell, args, {
     name: 'xterm-256color',
     cols: 80,
@@ -143,7 +148,8 @@ export async function provePtyBinding(pty: PtyModule, platform = process.platfor
     child.resize(100, 30)
     const result = await exit
     if (result.exitCode !== 0) throw new Error(`packaged PTY exited with code ${result.exitCode}`)
-    if (!output.includes(PTY_MARKER)) throw new Error('packaged PTY did not return its proof marker')
+    if (!output.includes(PTY_MARKER))
+      throw new Error('packaged PTY did not return its proof marker')
   } finally {
     if (timer) clearTimeout(timer)
     dataSubscription?.dispose()
@@ -199,7 +205,9 @@ if (isEntryPoint) {
   runNativeBindingProof()
     .then(() => process.stdout.write('packaged PTY and keyring proofs passed\n'))
     .catch((error) => {
-      process.stderr.write(`[native-proof] ${error instanceof Error ? error.message : String(error)}\n`)
+      process.stderr.write(
+        `[native-proof] ${error instanceof Error ? error.message : String(error)}\n`,
+      )
       process.exitCode = 1
     })
 }
