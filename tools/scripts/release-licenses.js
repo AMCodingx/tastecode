@@ -31,8 +31,8 @@ async function readJson(filePath) {
 }
 
 function normalizedLicense(value) {
-  if (typeof value === 'string') return value.trim().replaceAll(/\s+/g, ' ')
-  if (value && typeof value === 'object' && typeof value.type === 'string') {
+  if (value?.constructor === String) return value.trim().replaceAll(/\s+/g, ' ')
+  if (value?.constructor === Object && value.type?.constructor === String) {
     return value.type.trim().replaceAll(/\s+/g, ' ')
   }
   return undefined
