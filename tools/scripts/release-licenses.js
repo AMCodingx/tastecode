@@ -14,6 +14,7 @@ const STANDARD_LICENSES = new Set([
   'CC0-1.0',
   'ISC',
   'MIT',
+  'MPL-2.0',
   'OFL-1.1',
   'Python-2.0',
   'Unicode-3.0',
@@ -63,7 +64,9 @@ function isStandardLicenseExpression(expression) {
       expectsException = false
       continue
     }
-    if (!STANDARD_LICENSES.has(token)) return false
+    if (![...STANDARD_LICENSES].some((license) => license.toLowerCase() === token.toLowerCase())) {
+      return false
+    }
   }
   return !expectsException
 }
@@ -157,7 +160,8 @@ function validateInventory(inventory, derivedDependencies) {
     if (!entries.has(name)) errors.push(`direct runtime dependency is not inventoried: ${name}`)
   }
   for (const name of entries.keys()) {
-    if (!derived.has(name)) errors.push(`inventory entry is not a direct runtime dependency: ${name}`)
+    if (!derived.has(name))
+      errors.push(`inventory entry is not a direct runtime dependency: ${name}`)
   }
   if (errors.length > 0) throw new Error(errors.join('\n'))
   return entries
@@ -266,9 +270,23 @@ async function licenseFiles(packageRoot) {
   return matches.sort((left, right) => left.localeCompare(right))
 }
 
+async function bundledLicenseFile(repositoryRoot, reviewed) {
+  if (!reviewed?.bundledLicense) return undefined
+  const licensesRoot = path.resolve(repositoryRoot, 'licenses')
+  const absolutePath = path.resolve(repositoryRoot, reviewed.bundledLicense)
+  const relative = path.relative(licensesRoot, absolutePath)
+  if (relative === '..' || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative)) {
+    throw new Error(`${reviewed.bundledLicense} is outside the licenses directory`)
+  }
+  const contents = await readFile(absolutePath, 'utf8')
+  if (contents.trim().length < 100) throw new Error(`${reviewed.bundledLicense} is empty`)
+  return reviewed.bundledLicense.replaceAll(path.sep, '/')
+}
+
 function reviewedException(inventory, packageName, version) {
   return inventory.reviewedTransitiveExceptions?.find(
-    (entry) => entry.name === packageName && (entry.version === undefined || entry.version === version),
+    (entry) =>
+      entry.name === packageName && (entry.version === undefined || entry.version === version),
   )
 }
 
@@ -316,14 +334,23 @@ export async function auditInstalledProductionGraph(
     const metadataLicense = declaredLicense(packageJson)
     const files = await licenseFiles(resolved.packageRoot)
     const directEntry = directEntries.get(name)
+    const reviewed = directEntry ?? reviewedException(inventory, name, version)
 
     if (!metadataLicense) {
-      errors.push(`${name}@${version} has no package license metadata`)
+      if (!reviewed?.allowMissingMetadata) {
+        errors.push(`${name}@${version} has no package license metadata`)
+      }
     } else if (!metadataIsReviewed(directEntry, name, version, metadataLicense, inventory)) {
       errors.push(`${name}@${version} has unreviewed license metadata: ${metadataLicense}`)
     }
     if (files.length === 0) {
-      errors.push(`${name}@${version} does not ship a license, copying, or notice file`)
+      try {
+        const bundled = await bundledLicenseFile(repositoryRoot, reviewed)
+        if (bundled) files.push(bundled)
+        else errors.push(`${name}@${version} does not ship a license, copying, or notice file`)
+      } catch (error) {
+        errors.push(`${name}@${version}: ${error instanceof Error ? error.message : String(error)}`)
+      }
     }
 
     packages.push({
@@ -331,7 +358,7 @@ export async function auditInstalledProductionGraph(
       version,
       direct: Boolean(directEntry),
       declaredLicense: metadataLicense ?? null,
-      reviewedLicense: directEntry?.license ?? reviewedException(inventory, name, version)?.license ?? null,
+      reviewedLicense: reviewed?.license ?? null,
       licenseFiles: files,
     })
 
