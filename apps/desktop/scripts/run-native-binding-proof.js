@@ -37,10 +37,11 @@ function singleMacExecutable(directory) {
   return candidates[0]
 }
 
-const argument = process.argv[2]
-if (!argument) {
+const arguments_ = process.argv.slice(2).filter((argument) => argument !== '--')
+if (arguments_.length !== 1) {
   throw new Error('usage: pnpm --filter @harness/desktop verify:native-bindings -- <app-or-exe>')
 }
+const [argument] = arguments_
 const { executable, resources } = packagedPaths(argument)
 const archive = path.join(resources, 'app.asar')
 if (!existsSync(executable)) throw new Error(`packaged executable does not exist: ${executable}`)

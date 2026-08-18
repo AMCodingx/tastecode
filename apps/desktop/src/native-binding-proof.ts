@@ -107,14 +107,15 @@ export function loadPackagedNativeModules(): PackagedNativeModules {
   const before = new Set(Object.keys(serverRequire.cache))
   const pty: PtyModule = serverRequire('node-pty')
   const keyring: KeyringModule = serverRequire('@napi-rs/keyring')
-  const nativeBindings = Object.keys(serverRequire.cache).filter(
-    (modulePath) => !before.has(modulePath) && path.extname(modulePath) === '.node',
-  )
   return {
     pty,
     keyring,
     moduleEntries: [serverRequire.resolve('node-pty'), serverRequire.resolve('@napi-rs/keyring')],
-    nativeBindings,
+    get nativeBindings() {
+      return Object.keys(serverRequire.cache).filter(
+        (modulePath) => !before.has(modulePath) && path.extname(modulePath) === '.node',
+      )
+    },
   }
 }
 
@@ -192,8 +193,8 @@ export async function runNativeBindingProof(
     throw new Error('native proof is a Windows and macOS release gate')
   }
   const modules = options.modules ?? loadPackagedNativeModules()
-  assertPackagedNativeModules(proofFile, modules)
   await provePtyBinding(modules.pty)
+  assertPackagedNativeModules(proofFile, modules)
   proveKeyringBinding(modules.keyring)
 }
 
