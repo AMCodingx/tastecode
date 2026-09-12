@@ -2686,6 +2686,7 @@ export function App() {
 
   const send = useCallback(
     async (text: string, attachments: string[] = [], submission: 'queue' | 'steer' = 'queue') => {
+      const titlePrompt = text.trim() || attachments.map(basename).join(', ')
       // The composer clears itself the moment it hands the text over. Every
       // early bail below must put the words back — a toast is no substitute
       // for the paragraph someone just typed.
@@ -2781,7 +2782,7 @@ export function App() {
                   sessions: [
                     {
                       id: provisionalId,
-                      title: titleFrom(text),
+                      title: titleFrom(titlePrompt),
                       provider: choice.provider,
                       ...(choice.agent
                         ? {
@@ -2807,8 +2808,13 @@ export function App() {
         setActiveId(provisionalId)
         setThread(provisional)
         setThreadRevealRequest((request) => request + 1)
-        const promise = createSession(activePath, provisionalId, titleFrom(text), text)
-        pendingSession.current = { id: provisionalId, promise, title: titleFrom(text) }
+        const promise = createSession(
+          activePath,
+          provisionalId,
+          titleFrom(titlePrompt),
+          titlePrompt,
+        )
+        pendingSession.current = { id: provisionalId, promise, title: titleFrom(titlePrompt) }
         threadId = await promise
         interruptRequested = pendingInterruptThreadIds.current.delete(provisionalId)
         if (pendingSession.current?.id === provisionalId) pendingSession.current = undefined
@@ -2926,11 +2932,11 @@ export function App() {
       const existingSession = findSession(projects, threadId)?.session
       const untitled = !titledOnCreate && existingSession?.title === 'New session'
       if (untitled) {
-        const title = titleFrom(text)
+        const title = titleFrom(titlePrompt)
         setProjects((current) => promoteSession(renameSession(current, threadId, title), threadId))
         void transport
           .request('thread.rename', { threadId, title })
-          .then(() => generateSessionTitle(threadId, text, title))
+          .then(() => generateSessionTitle(threadId, titlePrompt, title))
           .catch(() => undefined)
       }
       const turnChoice =
