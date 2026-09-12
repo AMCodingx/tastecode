@@ -364,6 +364,7 @@ function QueuedMediaPreviewCard({ reference }: { reference: string }) {
           <MediaViewer
             src={preview.previewUrl}
             name={preview.name}
+            thumbnailSrc={inlineSource}
             mediaType={preview.mediaType}
             onReveal={() => void revealPath(reference)}
             onClose={() => setViewerOpen(false)}
@@ -520,6 +521,7 @@ function ComposerComponent(props: {
   const [viewingMedia, setViewingMedia] = useState<{
     src: string
     name: string
+    thumbnailSrc?: string | undefined
     mediaType: 'image' | 'video'
     localPath?: string
   }>()
@@ -1533,6 +1535,7 @@ function ComposerComponent(props: {
                               ? { localPath: attachment.path }
                               : {}),
                           })
+                            thumbnailSrc: attachmentThumbnailUrl(attachment),
                         }}
                         aria-label={
                           attachment.previewUrl
@@ -1923,6 +1926,7 @@ function ComposerComponent(props: {
                 ? () => {
                     if (viewingMedia.localPath) void revealPath(viewingMedia.localPath)
                   }
+            thumbnailSrc={viewingMedia.thumbnailSrc}
                 : undefined
             }
             onClose={() => setViewingMedia(undefined)}
