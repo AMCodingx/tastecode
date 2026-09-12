@@ -102,6 +102,7 @@ import { NoticePresence } from './ui/NoticePresence.js'
 import { LazyThread } from './ui/LazyThread.js'
 import { TitleBar } from './ui/TitleBar.js'
 import { ZoomHud } from './ui/ZoomHud.js'
+import { useDeferredArchiveQueue } from './ui/useDeferredArchiveQueue.js'
 import { serverBaseUrl } from './server-url.js'
 import { addDesignBriefing } from './design-agent/briefing.js'
 import { sourceSupportsAttachments } from './attachment-capability.js'
@@ -232,6 +233,9 @@ const PullRequestsView = lazy(() =>
   import('./ui/pull-requests/PullRequestsView.js').then((module) => ({
     default: module.PullRequestsView,
   })),
+)
+const ArchiveToast = lazy(() =>
+  import('./ui/ArchiveToast.js').then((module) => ({ default: module.ArchiveToast })),
 )
 type WorkspacePanelModule = typeof import('./ui/workspace/WorkspacePanel.js')
 type WorkspacePanelComponent = WorkspacePanelModule['WorkspacePanel']
@@ -697,6 +701,22 @@ export function App() {
   // session becoming durable keeps this key and preserves its live view.
   const [threadEntryKey, setThreadEntryKey] = useState(0)
   const [notice, setNotice] = useState<string | undefined>()
+  const [archiveToastDismissed, setArchiveToastDismissed] = useState(false)
+  const {
+    hiddenIds: archivingIds,
+    pendingIds: pendingArchives,
+    queue: enqueueArchive,
+    undo: undoQueuedArchives,
+  } = useDeferredArchiveQueue(10_000)
+  const archiveProjects = useMemo(() => {
+    if (archivingIds.length === 0) return projects
+    const hidden = new Set(archivingIds)
+    return projects.map((project) => ({
+      ...project,
+      sessions: project.sessions.filter((session) => !hidden.has(session.id)),
+    }))
+  }, [projects, archivingIds])
+
   const [checkpoints, setCheckpoints] = useState<Checkpoint[]>([])
   const [rollbackOpen, setRollbackOpen] = useState(false)
   const [rollbackInspection, setRollbackInspection] = useState<
@@ -3435,6 +3455,31 @@ export function App() {
     [transport, clearWorkspaceThread, refreshWorkspaceAfterCompletion],
   )
 
+  const queueArchive = useCallback(
+    (id: string, commit: () => Promise<void>) => {
+      setArchiveToastDismissed(false)
+      enqueueArchive(id, async () => {
+        try {
+          await commit()
+        } catch (error) {
+          setNotice(error instanceof Error ? error.message : String(error))
+          await refreshProjects().catch(() => undefined)
+        }
+      })
+      if (activeIdRef.current === id) {
+        activeIdRef.current = undefined
+        setActiveId(undefined)
+        setThread(emptyThread)
+      }
+    },
+    [enqueueArchive, refreshProjects],
+  )
+
+  const undoArchive = useCallback(() => {
+    const id = undoQueuedArchives()
+    if (id) void selectSession(id)
+  }, [selectSession, undoQueuedArchives])
+
   const archiveSession = useCallback(
     async (id: string) => {
       const found = findSession(projectsRef.current, id)
@@ -3449,11 +3494,13 @@ export function App() {
           })
           return false
         }
-        if (work.isolated) {
-          await transport.request('thread.close', { threadId: id })
-          await transport.request('thread.discardWorktree', { threadId: id })
-        }
-        await deleteSession(id)
+        queueArchive(id, async () => {
+          if (work.isolated) {
+            await transport.request('thread.close', { threadId: id })
+            await transport.request('thread.discardWorktree', { threadId: id })
+          }
+          await deleteSession(id)
+        })
         return true
       } catch (error) {
         setNotice(error instanceof Error ? error.message : String(error))
@@ -3461,19 +3508,19 @@ export function App() {
         return false
       }
     },
-    [transport, deleteSession, refreshProjects],
+    [transport, deleteSession, refreshProjects, queueArchive],
   )
 
   const discardAndArchive = useCallback(async () => {
     if (!checkoutDelete) return
     setCheckoutDeleteBusy(true)
     try {
-      await transport.request('thread.close', { threadId: checkoutDelete.id })
-      await transport.request('thread.discardWorktree', {
-        threadId: checkoutDelete.id,
-        force: true,
+      const id = checkoutDelete.id
+      queueArchive(id, async () => {
+        await transport.request('thread.close', { threadId: id })
+        await transport.request('thread.discardWorktree', { threadId: id, force: true })
+        await deleteSession(id)
       })
-      await deleteSession(checkoutDelete.id)
       setCheckoutDelete(undefined)
     } catch (error) {
       setNotice(error instanceof Error ? error.message : String(error))
@@ -3481,7 +3528,7 @@ export function App() {
     } finally {
       setCheckoutDeleteBusy(false)
     }
-  }, [transport, checkoutDelete, deleteSession, refreshProjects])
+  }, [transport, checkoutDelete, deleteSession, refreshProjects, queueArchive])
 
   const startNewChat = useCallback(() => {
     const currentProjects = projectsRef.current
@@ -4425,7 +4472,7 @@ export function App() {
 
       <div className="shell__body">
         <Sidebar
-          projects={projects}
+          projects={archiveProjects}
           activeProjectPath={activePath}
           activeSessionId={surface === 'chat' ? activeId : undefined}
           pullRequestsActive={surface === 'pull-requests'}
@@ -4811,6 +4858,20 @@ export function App() {
         onUpdated={refreshCatalog}
         suppressed={offline || Boolean(notice)}
       />
+      {pendingArchives.length > 0 ? (
+        <Suspense fallback={null}>
+          <ArchiveToast
+            count={pendingArchives.length}
+            visible={!archiveToastDismissed}
+            onView={() => {
+              const id = pendingArchives.at(-1)
+              if (id) void selectSession(id)
+            }}
+            onUndo={undoArchive}
+            onDismiss={() => setArchiveToastDismissed(true)}
+          />
+        </Suspense>
+      ) : null}
       <NoticePresence className="notice notice--offline" role="status" visible={offline}>
         <LoaderCircle className="spinner" size={12} aria-hidden />
         <span className="notice__text">Reconnecting to the server…</span>
