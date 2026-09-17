@@ -213,6 +213,7 @@ const CUSTOM_MODELS_KEY = 'harness.customModels.v1'
 /** Last model/effort/tier used per source, so returning to a provider
  *  restores the exact working setup instead of a best-guess translation. */
 const MODEL_BY_SOURCE_KEY = 'harness.modelBySource'
+const MODEL_BY_THREAD_PREFIX = 'harness.modelByThread:'
 const EMPTY_PALETTE_COMMANDS: PaletteCommand[] = []
 const HIDDEN_MODELS_KEY = 'harness.hiddenModels'
 const MODEL_VISIBILITY_VERSION_KEY = 'harness.modelVisibilityVersion'
@@ -646,6 +647,7 @@ export function App() {
   const [serviceTier, setServiceTier] = useState<string | undefined>(
     () => readSetting(SERVICE_TIER_KEY) ?? undefined,
   )
+  const pendingThreadModelSave = useRef<string | undefined>(undefined)
   const [approvalByProvider, setApprovalByProvider] = useState<ApprovalPreferences>(() =>
     readApprovalPreferences(provider),
   )
@@ -1780,7 +1782,9 @@ export function App() {
           ? preferredPool
           : visible
       const selections = readSourceSelections()
+      const threadSelection = readThreadModelSelection(activeIdRef.current)
       const storedSelection =
+        selectionPool.find((choice) => choice.key === threadSelection?.modelKey) ??
         selectionPool.find((choice) => choice.key === stored) ??
         selectionPool.find((choice) => choice.model.id === stored)
       const fallback = selectionPool.find((choice) => choice.model.isDefault) ?? selectionPool[0]
@@ -1800,7 +1804,10 @@ export function App() {
       const previous =
         modelsRef.current.find((choice) => choice.key === stored) ??
         modelsRef.current.find((choice) => choice.model.id === stored)
-      const remembered = selections[modelSource(selected)]
+      const remembered =
+        threadSelection?.modelKey === selected.key
+          ? threadSelection
+          : selections[modelSource(selected)]
       const remembersSelected = remembered?.modelKey === selected.key
       setModelId(selected.key)
       setProvider(selected.provider)
@@ -2365,6 +2372,24 @@ export function App() {
 
   usePersistedSettingChange(SERVICE_TIER_KEY, serviceTier)
 
+  // Save deliberate edits and the first setup of an existing chat. Catalog
+  // fallbacks must not replace a saved choice while its source is unavailable.
+  useEffect(() => {
+    if (
+      !activeId ||
+      pendingThreadModelSave.current !== activeId ||
+      !selectedModelChoice?.model.id ||
+      selectedModelChoice.key !== modelId
+    )
+      return
+    writeThreadModelSelection(activeId, {
+      modelKey: selectedModelChoice.key,
+      ...(selectedEffort ? { effort: selectedEffort } : {}),
+      ...(selectedServiceTier ? { serviceTier: selectedServiceTier } : {}),
+    })
+    pendingThreadModelSave.current = undefined
+  }, [activeId, modelId, selectedModelChoice, selectedEffort, selectedServiceTier])
+
   // Remember the active source's exact setup, so returning to a provider
   // restores what was last used there instead of a best-guess translation.
   useEffect(() => {
@@ -2413,7 +2438,7 @@ export function App() {
   // then restore the effort/tier that source was last used with — or translate
   // the current setup onto the new model's ladder.
   const commitModelChoice = useCallback(
-    (selected: ModelChoice) => {
+    (selected: ModelChoice, threadSelection?: SourceSelection) => {
       setModelId(selected.key)
       setProvider(selected.provider)
       setAcpAgent(selected.agent?.id)
@@ -2432,6 +2457,7 @@ export function App() {
       // effort and tier that were active then. Any other pick translates the
       // current effort onto the new model's ladder, as before.
       const remembered =
+        threadSelection ??
         readSourceSelections()[
           sourceKey({
             provider: selected.provider,
@@ -2516,10 +2542,20 @@ export function App() {
     (id: string) => {
       const selected = models.find((model) => model.key === id)
       if (!selected) return
+      pendingThreadModelSave.current = activeIdRef.current
       commitModelChoice(selected)
     },
     [models, commitModelChoice],
   )
+
+  const changeEffort = useCallback((value: string | undefined) => {
+    pendingThreadModelSave.current = activeIdRef.current
+    setEffort(value)
+  }, [])
+  const changeServiceTier = useCallback((value: string | undefined) => {
+    pendingThreadModelSave.current = activeIdRef.current
+    setServiceTier(value)
+  }, [])
 
   const addProjects = useCallback(
     async (paths: readonly string[]) => {
@@ -2609,6 +2645,11 @@ export function App() {
           ...(selectedEffort ? { effort: selectedEffort } : {}),
           ...(isolateSession ? { isolate: true } : {}),
         })
+        const savedSelection = readThreadModelSelection(provisionalId)
+        if (savedSelection) writeThreadModelSelection(threadId, savedSelection)
+        removeSetting(`${MODEL_BY_THREAD_PREFIX}${provisionalId}`)
+        if (pendingThreadModelSave.current === provisionalId)
+          pendingThreadModelSave.current = threadId
         const provisional = threadController.snapshot(provisionalId) ?? emptyThread
         threadController.discardSnapshot(provisionalId)
         threadController.update(threadId, provisional)
@@ -2671,6 +2712,7 @@ export function App() {
         return threadId
       } catch (error) {
         const path = releaseWorkspaceStart(provisionalId)
+        removeSetting(`${MODEL_BY_THREAD_PREFIX}${provisionalId}`)
         if (path) refreshWorkspaceAfterCompletion(path)
         threadController.discardSnapshot(provisionalId)
         setProjects((current) =>
@@ -2876,6 +2918,11 @@ export function App() {
           restoreDraft()
           return
         }
+        writeThreadModelSelection(provisionalId, {
+          modelKey: choice.key,
+          ...(selectedEffort ? { effort: selectedEffort } : {}),
+          ...(selectedServiceTier ? { serviceTier: selectedServiceTier } : {}),
+        })
         workspaceStartId = provisionalId
         workspaceStartToken = holdWorkspaceStart(provisionalId, activePath)
         optimisticTurnId = provisional.activeTurn?.id
@@ -3360,6 +3407,8 @@ export function App() {
   const selectSession = useCallback(
     async (id: string) => {
       setSurface('chat')
+      const threadSelection = readThreadModelSelection(id)
+      pendingThreadModelSave.current = threadSelection ? undefined : id
       const found = findSession(projectsRef.current, id)
       if (found?.session.provider) {
         const source = sourceKey({
@@ -3374,6 +3423,9 @@ export function App() {
           }) === source
         const rememberedModelKey = readSourceSelections()[source]?.modelKey
         const matchingChoice =
+          visibleModels.find(
+            (choice) => choice.key === threadSelection?.modelKey && matchesSource(choice),
+          ) ??
           (selectedModelChoice && matchesSource(selectedModelChoice)
             ? selectedModelChoice
             : undefined) ??
@@ -3382,7 +3434,10 @@ export function App() {
           ) ??
           visibleModels.find(matchesSource)
         if (matchingChoice) {
-          commitModelChoice(matchingChoice)
+          commitModelChoice(
+            matchingChoice,
+            threadSelection?.modelKey === matchingChoice.key ? threadSelection : undefined,
+          )
         } else {
           setProvider(found.session.provider)
           setAcpAgent(found.session.agent)
@@ -4814,8 +4869,8 @@ export function App() {
                       queuedTurns={queuedTurns}
                       canSteerQueue={canSteerQueue}
                       onModelChange={selectModel}
-                      onEffortChange={setEffort}
-                      onServiceTierChange={setServiceTier}
+                      onEffortChange={changeEffort}
+                      onServiceTierChange={changeServiceTier}
                       onApprovalChange={changeApproval}
                       onIsolateChange={setIsolateSession}
                       onDesignModeChange={setDesignMode}
@@ -5317,6 +5372,31 @@ type SourceSelection = {
   modelKey: string
   effort?: string
   serviceTier?: string
+}
+
+function readThreadModelSelection(threadId: string | undefined): SourceSelection | undefined {
+  if (!threadId) return undefined
+  try {
+    const value: unknown = JSON.parse(readSetting(`${MODEL_BY_THREAD_PREFIX}${threadId}`) ?? 'null')
+    if (
+      !isRecord(value) ||
+      typeof value['modelKey'] !== 'string' ||
+      (value['effort'] !== undefined && typeof value['effort'] !== 'string') ||
+      (value['serviceTier'] !== undefined && typeof value['serviceTier'] !== 'string')
+    )
+      return undefined
+    return {
+      modelKey: value['modelKey'],
+      ...(value['effort'] !== undefined ? { effort: value['effort'] } : {}),
+      ...(value['serviceTier'] !== undefined ? { serviceTier: value['serviceTier'] } : {}),
+    }
+  } catch {
+    return undefined
+  }
+}
+
+function writeThreadModelSelection(threadId: string, selection: SourceSelection): void {
+  writeSetting(`${MODEL_BY_THREAD_PREFIX}${threadId}`, JSON.stringify(selection))
 }
 
 type ApprovalPreferences = Partial<Record<ProviderId, ApprovalMode>>
