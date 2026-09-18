@@ -7,6 +7,19 @@ import { runCli } from '@harness/proc/cli'
 
 const PTY_MARKER = 'TASTECODE_NATIVE_PTY_OK'
 const CREDENTIAL_SERVICE = 'TasteCode Native Binding Proof'
+const RELEASE_PROOF_PLATFORMS: readonly NodeJS.Platform[] = ['win32', 'darwin', 'linux']
+
+// The Linux Secret Service belongs to the desktop session, not to the package.
+// Without a session bus the keyring fails for a reason the build did not cause.
+export function assertKeyringHost(
+  platform: NodeJS.Platform = process.platform,
+  env: NodeJS.ProcessEnv = process.env,
+): void {
+  if (platform !== 'linux' || env['DBUS_SESSION_BUS_ADDRESS']) return
+  throw new Error(
+    'packaged keyring proof needs a Secret Service: run it in a desktop session or under dbus-run-session',
+  )
+}
 
 interface Disposable {
   dispose(): void
@@ -254,8 +267,8 @@ export async function runNativeBindingProof(
   if (!process.versions.electron || process.env.ELECTRON_RUN_AS_NODE !== '1') {
     throw new Error('native proof must run through the packaged Electron executable in Node mode')
   }
-  if (process.platform !== 'win32' && process.platform !== 'darwin') {
-    throw new Error('native proof is a Windows and macOS release gate')
+  if (!RELEASE_PROOF_PLATFORMS.includes(process.platform)) {
+    throw new Error(`native proof is not a release gate on ${process.platform}`)
   }
   const modules = options.modules ?? (await loadPackagedNativeModules())
   assertPackagedDesignReferences(proofFile, modules.designEntry)
@@ -268,6 +281,7 @@ export async function runNativeBindingProof(
   }
   await provePtyBinding(modules.pty)
   assertPackagedNativeModules(proofFile, modules)
+  assertKeyringHost()
   proveKeyringBinding(modules.keyring)
 }
 

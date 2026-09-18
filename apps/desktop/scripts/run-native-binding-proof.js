@@ -2,27 +2,26 @@ import { existsSync, readdirSync } from 'node:fs'
 import path from 'node:path'
 import { spawnSync } from 'node:child_process'
 
+// Windows and Linux both keep the executable next to `resources`; only the
+// macOS bundle nests them.
 function packagedPaths(argument) {
   const supplied = path.resolve(argument)
-  if (process.platform === 'win32') {
+  if (process.platform !== 'darwin') {
     return {
       executable: supplied,
       resources: path.join(path.dirname(supplied), 'resources'),
     }
   }
-  if (process.platform === 'darwin') {
-    const app = supplied.endsWith('.app')
-      ? supplied
-      : path.resolve(path.dirname(supplied), '..', '..')
-    const executable = supplied.endsWith('.app')
-      ? singleMacExecutable(path.join(app, 'Contents', 'MacOS'))
-      : supplied
-    return {
-      executable,
-      resources: path.join(app, 'Contents', 'Resources'),
-    }
+  const app = supplied.endsWith('.app')
+    ? supplied
+    : path.resolve(path.dirname(supplied), '..', '..')
+  const executable = supplied.endsWith('.app')
+    ? singleMacExecutable(path.join(app, 'Contents', 'MacOS'))
+    : supplied
+  return {
+    executable,
+    resources: path.join(app, 'Contents', 'Resources'),
   }
-  throw new Error('packaged native proof is supported only on Windows and macOS')
 }
 
 function singleMacExecutable(directory) {

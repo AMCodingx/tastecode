@@ -3,6 +3,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import {
+  assertKeyringHost,
   assertPackagedDesignReferences,
   assertPackagedNativeModules,
   proveKeyringBinding,
@@ -88,6 +89,15 @@ describe('packaged native binding proof', () => {
         ],
       }),
     ).not.toThrow()
+  })
+
+  it('requires a Linux session bus before the keyring round trip', () => {
+    expect(() => assertKeyringHost('linux', {})).toThrow('Secret Service')
+    expect(assertKeyringHost('linux', { DBUS_SESSION_BUS_ADDRESS: 'unix:path=/tmp/bus' })).toBe(
+      undefined,
+    )
+    expect(assertKeyringHost('win32', {})).toBe(undefined)
+    expect(assertKeyringHost('darwin', {})).toBe(undefined)
   })
 
   it('spawns, resizes, and observes a clean PTY exit', async () => {
