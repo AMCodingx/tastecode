@@ -64,6 +64,9 @@ jobs:
           - os: macos-15
             platform: macos
             label: macos-arm64
+          - os: ubuntu-24.04
+            platform: linux
+            label: linux-x64
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
@@ -85,6 +88,16 @@ jobs:
       - run: pnpm build
       - name: Build preload
         run: pnpm --filter @harness/desktop exec node scripts/build-preload.js
+      # The packaged keyring proof round-trips a credential through the OS store.
+      # A headless runner has no Secret Service until one is started here.
+      - name: Start a Secret Service for the packaged keyring proof
+        if: matrix.platform == 'linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes gnome-keyring
+          eval "$(dbus-launch --sh-syntax)"
+          echo "" | gnome-keyring-daemon --unlock --components=secrets --daemonize
+          echo "DBUS_SESSION_BUS_ADDRESS=$DBUS_SESSION_BUS_ADDRESS" >> "$GITHUB_ENV"
       - name: Build fresh unsigned package and prove licenses, feed, native bindings, and containers
         run: node tools/scripts/verify-release-assets.js --package release/proof-${{ matrix.label }} ${{ matrix.platform }}
       - name: Stage the exact verified platform assets
@@ -125,7 +138,11 @@ jobs:
         with:
           name: release-macos-arm64-${{ github.run_id }}-${{ github.run_attempt }}-${{ inputs.approved_sha }}
           path: release/final
-      - name: Verify both platform manifests, provenance, and hashes
+      - uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # v5.0.0
+        with:
+          name: release-linux-x64-${{ github.run_id }}-${{ github.run_attempt }}-${{ inputs.approved_sha }}
+          path: release/final
+      - name: Verify every platform manifest, provenance, and hashes
         run: node tools/scripts/verify-release-assets.js release/final all
       - name: Upload or resume the exact draft without replacing assets
         env:

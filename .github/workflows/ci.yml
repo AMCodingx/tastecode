@@ -11,11 +11,11 @@ concurrency:
 
 jobs:
   check:
-    # When manually requested, check both platforms in one run.
+    # When manually requested, check every shipped platform in one run.
     strategy:
       fail-fast: false
       matrix:
-        os: [windows-latest, macos-latest]
+        os: [windows-latest, macos-latest, ubuntu-latest]
 
     runs-on: ${{ matrix.os }}
 

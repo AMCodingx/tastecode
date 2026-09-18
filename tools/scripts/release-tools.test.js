@@ -928,6 +928,24 @@ test('workflow is manual, pinned, read-only by default, and has one optional wri
     "github.ref == 'refs/heads/main' && inputs.approved_sha == github.sha",
   )
   assert.deepEqual(writer.needs, ['verify-input', 'package'])
+  // A new platform in the manifest is only shipped once the pipeline packages
+  // it and the writer collects it, so bind both to the same source of truth.
+  assert.deepEqual(
+    workflow.jobs.package.strategy.matrix.include.map((entry) => entry.platform).sort(),
+    [...platformsFor('all')].sort(),
+  )
+  for (const entry of workflow.jobs.package.strategy.matrix.include) {
+    assert.equal(entry.label, platformConfig(entry.platform).label)
+  }
+  assert.deepEqual(
+    writer.steps
+      .filter((step) => step.uses?.startsWith('actions/download-artifact@'))
+      .map((step) => step.with.name.replace(/^release-(.*?)-\$\{\{.*$/, '$1'))
+      .sort(),
+    platformsFor('all')
+      .map((platform) => platformConfig(platform).label)
+      .sort(),
+  )
   assert.equal(
     writer.steps.filter((step) => step.run?.includes('upload-draft-release.js')).length,
     1,
