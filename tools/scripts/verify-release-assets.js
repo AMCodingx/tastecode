@@ -195,7 +195,8 @@ async function verifyLinuxContainers(directory, detail, config) {
     if ((await hashFile(executable)) !== (await hashFile(path.join(root, detail.executableName))))
       throw new Error('AppImage executable does not match the unpacked application')
   } finally {
-    await rm(extracted, { recursive: true, force: true })
+    // A temporary directory that resists removal must never replace the proof failure.
+    await rm(extracted, { recursive: true, force: true }).catch(() => undefined)
   }
 }
 
