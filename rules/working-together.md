@@ -123,7 +123,7 @@ Worth knowing before you are surprised by them.
   Blueemi has write access, which covers everything except bypassing review. Full admin
   would require moving the repo to an organization — worth doing before open-sourcing
   anyway.
-- **CI runs Windows and macOS.** Both must be green. A platform-specific change must be
-  _run_ on both, not just reviewed.
+- **CI runs Windows, macOS and Linux.** All three must be green. A platform-specific change
+  must be _run_ on the affected ones, not just reviewed.
 - **Everything in the repo is English** — code, comments, commits, issues, PRs. Chat between
   the humans is whatever they like.

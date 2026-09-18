@@ -33,7 +33,7 @@ and resolving conflicts without rewriting published history. Do not un-park a pr
 - **Everything in the repo is English** — code, comments, commit messages, PR text, issues.
   The humans chat in German and English; none of that reaches the repo.
 - **Never commit a secret**, including in fixtures and examples.
-- **Never write a `.sh` script.** Node/TypeScript only — we are a Windows + macOS team.
+- **Never write a `.sh` script.** Node/TypeScript only — we ship Windows, macOS and Linux.
 - **Never assume POSIX paths.** Use `node:path`.
 - **Stay on the current branch unless the user explicitly asks otherwise.** Do not create a
   branch or worktree, or switch branches, as a routine setup step.

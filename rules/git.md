@@ -90,7 +90,7 @@ the bypass after the human responsible for the work has explicitly approved it.
 Run locally before merge: typecheck · lint + format · unit tests · desktop build.
 Record the commands and results in the PR body.
 
-GitHub Actions are manual to preserve included minutes. Do not start the Windows/macOS
+GitHub Actions are manual to preserve included minutes. Do not start the Windows/macOS/Linux
 matrix unless Leon explicitly asks for it.
 
 Platform-specific code must be run locally on the affected OS before release, not merely

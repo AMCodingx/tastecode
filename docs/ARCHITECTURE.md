@@ -52,8 +52,8 @@ to a TypeScript client).
 
 ## Desktop shell: Electron
 
-**The primary desktop client is Electron on macOS and Windows.** One Chromium renderer gives
-both platforms the same layout, text and motion implementation. Tauri and other system-webview
+**The primary desktop client is Electron on macOS, Windows and Linux.** One Chromium renderer
+gives every platform the same layout, text and motion implementation. Tauri and other system-webview
 shells are smaller, but their Chromium/WebKit split would make visual parity a permanent
 cross-platform problem.
 
@@ -71,6 +71,28 @@ _Rejected:_ Tauri/Wails/Neutralino use divergent operating-system webviews · se
 and WinUI clients create two permanent UI implementations · a web-only primary cannot own the
 native terminal, filesystem and credential-store surface. The Rust + GPUI rewrite is preserved
 on `archive/rust-rewrite-2026-08-15`; it is not part of `main`.
+
+### Linux ships one AppImage
+
+**Linux distribution is a single x64 AppImage, described by the same platform table as Windows
+and macOS.** `tools/scripts/release-manifest.js` holds one row per platform — artifact
+extensions, updater metadata name, packaging flags, block-map shape — and the packaging proof,
+staging, checksums and pipeline all derive from it, so a fourth platform is one row plus its
+container proof.
+
+AppImage is the only Linux format `electron-updater` can replace in place, which keeps in-app
+updates identical across platforms. Two of its conventions differ and live in that table: it
+names artifacts `x86_64` rather than `x64`, and it embeds its block map inside the image
+instead of writing one beside it.
+
+_Rejected:_ `.deb` and `.rpm` cannot auto-update, and would split the updater into a
+maintained and an unmaintained path · Snap and Flatpak add store review and a confinement
+model that conflicts with spawning the user's own provider CLIs and PTY · shipping several
+formats at once multiplies the release proof without reaching more users.
+
+Credentials use the freedesktop Secret Service through the same `@napi-rs/keyring` binding as
+Keychain and Credential Manager. It is a desktop-session service rather than a property of the
+package, so the release proof requires a session bus instead of skipping the check.
 
 ### Embedded browser previews
 
@@ -476,3 +498,4 @@ registry entry, which is deliberately a good first outside contribution.
 | 2026-09-08 | Added checkpoint reachability and checkout guards, explicit history maintenance, provider controls, task-state ownership, bounded leases and local Electron performance gates. |
 | 2026-09-15 | Added authenticated repository and upload image previews, isolated SVG rendering, lazy loading, and byte-bounded caches for pull-request Markdown.                             |
 | 2026-09-15 | Dropped the Claude Agent SDK's bundled per-platform CLI from the dependency graph and the desktop package; the adapter always spawns the user's `claude`.                      |
+| 2026-09-18 | Added Linux x64 as a shipped platform: one AppImage, a data-driven release platform table, and Linux packaging proof in the pipeline.                                          |

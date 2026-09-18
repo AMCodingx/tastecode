@@ -4,8 +4,8 @@
 
 > A local desktop workspace for AI coding agents, with Design Mode built in.
 
-**Status: public beta (`0.1.0-beta.6`).** TasteCode currently supports Windows x64 and
-macOS Apple Silicon. Expect beta rough edges and report them through
+**Status: public beta (`0.1.0-beta.6`).** TasteCode supports Windows x64, macOS Apple
+Silicon, and Linux x64. Expect beta rough edges and report them through
 [GitHub Issues](https://github.com/Leonxlnx/tastecode/issues).
 
 ## What TasteCode does
@@ -32,15 +32,20 @@ pretending every provider supports the same features.
 - [Download for macOS Apple Silicon (.dmg)](https://github.com/Leonxlnx/tastecode/releases/download/v0.1.0-beta.6/TasteCode-0.1.0-beta.6-mac-arm64.dmg)
 - [Release notes, checksums, and all versions](https://github.com/Leonxlnx/tastecode/releases)
 
+Linux x64 ships as an AppImage from the next release. Until then, run it from source with
+`pnpm dev`, or package it locally with
+`pnpm --filter @harness/desktop exec electron-builder --linux AppImage --x64`.
+
 The Windows beta is unsigned and may show a SmartScreen warning. The macOS beta is
 Developer ID signed and notarized. Beta 5 and earlier need one manual installation of
 beta 6 to switch to GitHub in-app updates. See [release details](docs/RELEASING.md).
 
 ## Requirements
 
-- Windows 10/11 x64 or macOS on Apple Silicon
+- Windows 10/11 x64, macOS on Apple Silicon, or Linux x64
 - at least one supported provider CLI installed and signed in
 - Git for project checkpoints and worktree features
+- on Linux, a running Secret Service (GNOME Keyring, KWallet) for stored credentials
 
 For local development, install Node 24 LTS and pnpm, then run:
 

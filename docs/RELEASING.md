@@ -28,9 +28,15 @@ Apple notarization, Gatekeeper acceptance, native bindings, and three fresh-data
 Both primary downloads and the macOS ZIP returned HTTP 200. The two obsolete unsigned
 beta 1 draft releases were removed; beta 6 is the only release and tag.
 
-Never replace published files or change the tag. Subsequent releases must stage both
-platforms together before publication, because GitHub-connected macOS clients would
-otherwise discover a release without matching metadata.
+Never replace published files or change the tag. Subsequent releases must stage every
+platform together before publication, because GitHub-connected clients all discover the
+same release and would otherwise find it without matching metadata.
+
+Linux ships one x64 AppImage. It is the only Linux format electron-updater can update in
+place, so the app updates itself the same way it does on Windows and macOS. AppImage names
+itself `x86_64` rather than `x64` and carries its block map inside the image instead of
+beside it; `tools/scripts/release-manifest.js` holds both facts, and every other script
+derives its expectations from that table.
 
 [Direct Windows download](https://github.com/Leonxlnx/tastecode/releases/download/v0.1.0-beta.6/TasteCode-0.1.0-beta.6-win-x64.exe)
 works without a GitHub login and can be used on the landing page.
@@ -38,8 +44,8 @@ works without a GitHub login and can be used on the landing page.
 1. Finish the intended merges, choose a version higher than every distributed build, and
    merge the version change. `0.1.0-beta.6` is already published. Do not reuse
    a version or replace files in a published release.
-2. Pin the final clean `main` commit. Build Windows and macOS from that same commit and
-   configuration. Set `APPROVED_SHA` and `EVENT_SHA` to its full SHA and `EVENT_REF` to
+2. Pin the final clean `main` commit. Build Windows, macOS and Linux from that same commit
+   and configuration. Set `APPROVED_SHA` and `EVENT_SHA` to its full SHA and `EVENT_REF` to
    `refs/heads/main`, then run `node tools/scripts/verify-release-input.js`.
 3. Run `pnpm lint`, `pnpm typecheck`, `pnpm test`, `pnpm build`, and `pnpm licenses:verify`.
    Package with `--publish never`. The existing manual **Release artifact proof** workflow
@@ -48,11 +54,14 @@ works without a GitHub login and can be used on the landing page.
 4. Verify native bindings, packaged resources, install/start behavior, and signing on the
    target OS. macOS auto-update requires a signed app and a ZIP as well as the DMG.
    Run the Windows installer proof only on its isolated runner; never install/uninstall a
-   test package over an active developer installation.
+   test package over an active developer installation. The Linux keyring proof needs a
+   running Secret Service: on a headless runner start one with `dbus-launch` plus
+   `gnome-keyring-daemon --unlock --components=secrets --daemonize`, as the workflow does.
 5. Generate each platform's checksums/provenance with
-   `node tools/scripts/release-checksums.js <output-directory> <windows|macos>`, then use
-   `stage-release-assets.js` to copy its exact assets into a new directory. Combine both
-   staged directories and run `node tools/scripts/verify-release-assets.js <combined-directory>`.
+   `node tools/scripts/release-checksums.js <output-directory> <windows|macos|linux>`, then
+   use `stage-release-assets.js` to copy its exact assets into a new directory. Combine the
+   staged directories and run
+   `node tools/scripts/verify-release-assets.js <combined-directory>`.
 6. There must be one draft for the version. A preparation draft is an empty reservation,
    not a source approval. Before upload, explicitly align its target to the approved SHA,
    its title to `Taste Code <version> — packaging proof`, and its body to
@@ -67,8 +76,8 @@ works without a GitHub login and can be used on the landing page.
    Windows-only beta while the matching macOS metadata and ZIP are absent: both clients
    discover the same release. Public publication is the point at which apps see it.
 
-GitHub metadata is named **`latest.yml`** for Windows and **`latest-mac.yml`** for macOS,
-including beta releases. The pinned updater selects the beta tag and falls back to those
+GitHub metadata is named **`latest.yml`** for Windows, **`latest-mac.yml`** for macOS, and
+**`latest-linux.yml`** for Linux, including beta releases. The pinned updater selects the beta tag and falls back to those
 files inside that tag. The packager generates them; do not handwrite hashes or rename them
 to the generic provider's `beta.yml`. Upload the installers/ZIP, blockmaps, metadata,
 checksums and provenance together. Builder debug output and unpacked app directories are

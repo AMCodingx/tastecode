@@ -2,7 +2,7 @@
 
 ## Cross-platform — non-negotiable
 
-These are what silently break a two-OS team.
+These are what silently break a three-OS team.
 
 - **Line endings:** enforced by `.gitattributes`. Never set `core.autocrlf true`.
 - **Paths:** always `node:path`. Never concatenate with `/` or `\`. Never assume a POSIX shell.
@@ -14,8 +14,8 @@ These are what silently break a two-OS team.
 - **Path length:** Windows caps at 260 chars. Keep nesting shallow — worktrees plus
   `node_modules` eat the budget fast.
 - **Symlinks:** don't commit them. Windows needs Developer Mode or admin.
-- If behavior differs between Windows and macOS, document it **at the code**, not later by
-  the other person discovering it.
+- If behavior differs between Windows, macOS and Linux, document it **at the code**, not later
+  by the other person discovering it.
 
 ## Style
 

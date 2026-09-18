@@ -10,7 +10,7 @@ clear.
 - Keep repository content and commits in English.
 - Start from the current target branch and work on a focused branch.
 - Never commit credentials, tokens, private source, generated secrets, or machine-specific paths.
-- Use Node-based tooling instead of shell scripts so Windows and macOS remain first-class.
+- Use Node-based tooling instead of shell scripts so Windows, macOS and Linux stay first-class.
 
 ## Development
 
