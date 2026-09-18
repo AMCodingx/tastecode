@@ -7,9 +7,35 @@ import { JSON_SCHEMA, load } from 'js-yaml'
 
 export const repositoryRoot = fileURLToPath(new URL('../../', import.meta.url))
 export const desktopDirectory = path.join(repositoryRoot, 'apps', 'desktop')
+// One row per shipped platform. Everything downstream — asset names, updater
+// metadata, packaging flags and the proof gates — is derived from this table.
 const platforms = {
-  windows: { os: 'win', arch: 'x64', label: 'windows-x64', extensions: ['exe'] },
-  macos: { os: 'mac', arch: 'arm64', label: 'macos-arm64', extensions: ['zip', 'dmg'] },
+  windows: {
+    os: 'win',
+    arch: 'x64',
+    artifactArch: 'x64',
+    sidecarBlockmap: true,
+    label: 'windows-x64',
+    extensions: ['exe'],
+    nodePlatform: 'win32',
+    builderKey: 'win',
+    builderTargets: ['nsis'],
+    builderArgs: [],
+    metadataSuffix: '',
+  },
+  macos: {
+    os: 'mac',
+    arch: 'arm64',
+    artifactArch: 'arm64',
+    sidecarBlockmap: true,
+    label: 'macos-arm64',
+    extensions: ['zip', 'dmg'],
+    nodePlatform: 'darwin',
+    builderKey: 'mac',
+    builderTargets: ['dmg', 'zip'],
+    builderArgs: ['--config.mac.notarize=false'],
+    metadataSuffix: '-mac',
+  },
 }
 
 export function assertAssetName(name) {
@@ -60,20 +86,17 @@ export function createReleaseConfig(packageJson) {
   const updaterChannel = undefined
   const channel = 'latest'
   if (typeof build.artifactName !== 'string') throw new Error('Configure an explicit artifactName')
-  for (const [platform, required] of [
-    ['win', ['nsis']],
-    ['mac', ['dmg', 'zip']],
-  ]) {
+  for (const { builderKey, builderTargets } of Object.values(platforms)) {
     for (const key of ['publish', 'artifactName', 'detectUpdateChannel']) {
-      if (build[platform]?.[key] !== undefined)
+      if (build[builderKey]?.[key] !== undefined)
         throw new Error(`Release proof does not support a per-platform ${key} override`)
     }
-    const targets = [build[platform]?.target]
+    const targets = [build[builderKey]?.target]
       .flat()
       .map((target) => (typeof target === 'string' ? target : target?.target))
-    if (required.some((target) => !targets.includes(target))) {
+    if (builderTargets.some((target) => !targets.includes(target))) {
       throw new Error(
-        `Release proof requires the configured ${platform} targets: ${required.join(', ')}`,
+        `Release proof requires the configured ${builderKey} targets: ${builderTargets.join(', ')}`,
       )
     }
   }
@@ -93,7 +116,7 @@ export function createReleaseConfig(packageJson) {
   }
   for (const [platform, detail] of Object.entries(platforms)) {
     const artifacts = detail.extensions.map((ext) => {
-      const values = { version, productName, name, os: detail.os, arch: detail.arch, ext }
+      const values = { version, productName, name, os: detail.os, arch: detail.artifactArch, ext }
       return assertAssetName(
         build.artifactName.replace(/\$\{([^}]+)\}/g, (_, key) => {
           if (!Object.hasOwn(values, key))
@@ -106,7 +129,8 @@ export function createReleaseConfig(packageJson) {
       ...detail,
       artifacts,
       primaryArtifact: artifacts[0],
-      metadata: `${channel}${platform === 'macos' ? '-mac' : ''}.yml`,
+      executableName: assertAssetName(build[detail.builderKey]?.executableName ?? productName),
+      metadata: `${channel}${detail.metadataSuffix}.yml`,
       checksums: `SHA256SUMS-${detail.label}.txt`,
       provenance: `PROVENANCE-${detail.label}.json`,
     }
@@ -137,7 +161,10 @@ export function platformConfig(platform, config = releaseConfig) {
 
 export function releasePayloadAssets(platform, config = releaseConfig) {
   const detail = platformConfig(platform, config)
-  return [...detail.artifacts.flatMap((name) => [name, `${name}.blockmap`]), detail.metadata].sort()
+  const artifacts = detail.sidecarBlockmap
+    ? detail.artifacts.flatMap((name) => [name, `${name}.blockmap`])
+    : detail.artifacts
+  return [...artifacts, detail.metadata].sort()
 }
 
 export function checksumPayloadAssets(platform, config = releaseConfig) {

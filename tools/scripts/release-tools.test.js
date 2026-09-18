@@ -25,6 +25,7 @@ import {
   hashFile,
   parseMetadata,
   platformConfig,
+  platformsFor,
   releaseAssets,
   releaseConfig,
   releasePayloadAssets,
@@ -53,7 +54,7 @@ async function temporary(t) {
 
 async function fixture(t, { platform = 'all', config = releaseConfig } = {}) {
   const directory = await temporary(t)
-  for (const current of platform === 'all' ? ['windows', 'macos'] : [platform]) {
+  for (const current of platformsFor(platform)) {
     const detail = platformConfig(current, config)
     for (const name of releasePayloadAssets(current, config).filter(
       (name) => name !== detail.metadata,
@@ -220,7 +221,9 @@ test('version, channel, product, and artifact names come from package config', a
   assert.equal(config.tag, 'v2.3.4')
   assert.equal(config.prerelease, false)
   assert.equal(config.platforms.macos.metadata, 'latest-mac.yml')
+  assert.equal(config.platforms.windows.metadata, 'latest.yml')
   assert.equal(config.platforms.windows.primaryArtifact, 'Example App-2.3.4-win-x64.exe')
+  assert.equal(config.platforms.macos.executableName, 'Example App')
   const directory = await fixture(t, { config })
   assert.deepEqual(
     await verifyReleaseDirectory(directory, { approvedSha, config }),

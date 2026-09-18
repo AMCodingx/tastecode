@@ -152,30 +152,35 @@ export function assertInstallerProofHost(env = process.env) {
     )
 }
 
-export async function verifyPackageContainers(directory, platform, config = releaseConfig) {
-  await verifyReleasePayload(directory, platform, config)
-  const detail = platformConfig(platform, config)
-  if (platform === 'macos') {
-    if (process.platform !== 'darwin' || process.arch !== detail.arch)
-      throw new Error('macOS proof must run on Apple Silicon macOS')
-    const app = path.join(directory, 'mac-arm64', `${config.productName}.app`)
-    await verifyPackagedResources(path.join(app, 'Contents', 'Resources'), config)
-    run(process.execPath, [
-      path.join(desktopDirectory, 'scripts', 'run-native-binding-proof.js'),
-      app,
-    ])
-    run('/usr/bin/hdiutil', [
-      'verify',
-      path.join(
-        directory,
-        detail.artifacts.find((name) => name.endsWith('.dmg')),
-      ),
-    ])
-    run('/usr/bin/unzip', ['-t', path.join(directory, detail.primaryArtifact)])
-    return
-  }
-  if (process.platform !== 'win32' || process.arch !== detail.arch)
-    throw new Error('Windows proof must run on Windows x64')
+export function assertProofHost(detail) {
+  if (process.platform !== detail.nodePlatform || process.arch !== detail.arch)
+    throw new Error(
+      `Package proof must run on ${detail.nodePlatform} ${detail.arch}, not ${process.platform} ${process.arch}`,
+    )
+}
+
+function proveNativeBindings(executable) {
+  run(process.execPath, [
+    path.join(desktopDirectory, 'scripts', 'run-native-binding-proof.js'),
+    executable,
+  ])
+}
+
+async function verifyMacContainers(directory, detail, config) {
+  const app = path.join(directory, `mac-${detail.arch}`, `${config.productName}.app`)
+  await verifyPackagedResources(path.join(app, 'Contents', 'Resources'), config)
+  proveNativeBindings(app)
+  run('/usr/bin/hdiutil', [
+    'verify',
+    path.join(
+      directory,
+      detail.artifacts.find((name) => name.endsWith('.dmg')),
+    ),
+  ])
+  run('/usr/bin/unzip', ['-t', path.join(directory, detail.primaryArtifact)])
+}
+
+async function verifyWindowsContainers(directory, detail, config) {
   // NSIS also writes product registry entries and shortcuts outside /D. Never run its smoke
   // test on a developer machine or self-hosted runner with an existing installation.
   assertInstallerProofHost()
@@ -183,10 +188,7 @@ export async function verifyPackageContainers(directory, platform, config = rele
   await verifyPackagedResources(path.join(unpacked, 'resources'), config)
   const executables = (await readdir(unpacked)).filter((name) => name.endsWith('.exe'))
   if (executables.length !== 1) throw new Error('Expected one unpacked Windows app executable')
-  run(process.execPath, [
-    path.join(desktopDirectory, 'scripts', 'run-native-binding-proof.js'),
-    path.join(unpacked, executables[0]),
-  ])
+  proveNativeBindings(path.join(unpacked, executables[0]))
   const temporary = await mkdtemp(path.join(os.tmpdir(), 'release-install-proof-'))
   const installation = path.join(temporary, 'app')
   const failures = []
@@ -221,14 +223,22 @@ export async function verifyPackageContainers(directory, platform, config = rele
   if (failures.length) throw new AggregateError(failures, 'Windows install proof or cleanup failed')
 }
 
+const containerProofs = {
+  windows: verifyWindowsContainers,
+  macos: verifyMacContainers,
+}
+
+export async function verifyPackageContainers(directory, platform, config = releaseConfig) {
+  await verifyReleasePayload(directory, platform, config)
+  const detail = platformConfig(platform, config)
+  assertProofHost(detail)
+  await containerProofs[platform](directory, detail, config)
+}
+
 export async function buildPackageProof(directory, platform) {
   const approvedSha = verifyReleaseCheckout()
   const detail = platformConfig(platform)
-  if (
-    (platform === 'windows' ? 'win32' : 'darwin') !== process.platform ||
-    detail.arch !== process.arch
-  )
-    throw new Error('Package proof must run on the target operating system and architecture')
+  assertProofHost(detail)
   // Refuse stale output. The license command writes its existing shared report under release/.
   await mkdir(directory)
   const requireDesktop = createRequire(path.join(desktopDirectory, 'package.json'))
@@ -237,15 +247,14 @@ export async function buildPackageProof(directory, platform) {
     if (/^(?:CSC_|WIN_CSC_|APPLE_)/.test(name) && name !== 'CSC_IDENTITY_AUTO_DISCOVERY')
       delete env[name]
   }
-  const targets =
-    platform === 'windows'
-      ? ['--win', 'nsis', '--x64']
-      : ['--mac', 'dmg', 'zip', '--arm64', '--config.mac.notarize=false']
   run(
     process.execPath,
     [
       requireDesktop.resolve('electron-builder/cli.js'),
-      ...targets,
+      `--${detail.builderKey}`,
+      ...detail.builderTargets,
+      `--${detail.arch}`,
+      ...detail.builderArgs,
       '--publish',
       'never',
       `--config.directories.output=${directory}`,
