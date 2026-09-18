@@ -347,7 +347,7 @@ export function startServer(
       case 'pullRequests.setup': {
         const p = parseParams(method, params)
         const { githubSetupCommand } = await import('./pull-requests.js')
-        const command = githubSetupCommand(p.action)
+        const command = await githubSetupCommand(p.action)
         return {
           terminalId:
             p.action === 'install'

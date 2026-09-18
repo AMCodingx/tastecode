@@ -45,15 +45,30 @@ const PULL_REQUEST_TEXT_COLLATOR = new Intl.Collator(undefined, { sensitivity: '
 
 export type GitHubSetupAction = 'install' | 'login'
 
+// Linux has no single package manager, so the command follows the one the machine
+// has. All stay interactive: the user approves the sudo install in the terminal.
+const LINUX_GITHUB_CLI_INSTALLS: ReadonlyArray<readonly [string, string]> = [
+  ['apt-get', 'sudo apt-get update && sudo apt-get install gh'],
+  ['dnf', 'sudo dnf install gh'],
+  ['pacman', 'sudo pacman -S --needed github-cli'],
+  ['zypper', 'sudo zypper install gh'],
+]
+
 /** Fixed server-owned commands keep PR setup interactive without exposing a shell RPC. */
-export function githubSetupCommand(
+export async function githubSetupCommand(
   action: GitHubSetupAction,
   platform: NodeJS.Platform = process.platform,
-): string {
+  hasCommand: (command: string) => Promise<boolean> = isInstalled,
+): Promise<string> {
   if (action === 'login') return 'gh auth login'
   if (platform === 'darwin') return 'brew install gh'
   if (platform === 'win32') return 'winget install --id GitHub.cli'
-  throw new Error('GitHub CLI installation is not scripted on this platform')
+  if (platform !== 'linux')
+    throw new Error('GitHub CLI installation is not scripted on this platform')
+  for (const [manager, command] of LINUX_GITHUB_CLI_INSTALLS) {
+    if (await hasCommand(manager)) return command
+  }
+  throw new Error('No supported Linux package manager was found to install the GitHub CLI')
 }
 
 type GhRunOptions = {

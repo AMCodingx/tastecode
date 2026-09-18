@@ -34,11 +34,32 @@ const historicalDraft = pullRequest({
 })
 
 describe('GitHub CLI setup commands', () => {
-  it('uses the official platform install command and fixed login command', () => {
-    expect(githubSetupCommand('install', 'darwin')).toBe('brew install gh')
-    expect(githubSetupCommand('install', 'win32')).toBe('winget install --id GitHub.cli')
-    expect(githubSetupCommand('login', 'linux')).toBe('gh auth login')
-    expect(() => githubSetupCommand('install', 'linux')).toThrow(/not scripted/)
+  const never = () => Promise.resolve(false)
+  const only = (available: string) => (command: string) => Promise.resolve(command === available)
+
+  it('uses the official platform install command and fixed login command', async () => {
+    await expect(githubSetupCommand('install', 'darwin')).resolves.toBe('brew install gh')
+    await expect(githubSetupCommand('install', 'win32')).resolves.toBe(
+      'winget install --id GitHub.cli',
+    )
+    await expect(githubSetupCommand('login', 'linux')).resolves.toBe('gh auth login')
+  })
+
+  it('picks the Linux command from the package manager the machine actually has', async () => {
+    await expect(githubSetupCommand('install', 'linux', only('dnf'))).resolves.toBe(
+      'sudo dnf install gh',
+    )
+    await expect(githubSetupCommand('install', 'linux', only('pacman'))).resolves.toBe(
+      'sudo pacman -S --needed github-cli',
+    )
+    await expect(githubSetupCommand('install', 'linux', only('apt-get'))).resolves.toBe(
+      'sudo apt-get update && sudo apt-get install gh',
+    )
+    await expect(githubSetupCommand('install', 'linux', never)).rejects.toThrow(/package manager/)
+  })
+
+  it('refuses to guess an install command on an unsupported platform', async () => {
+    await expect(githubSetupCommand('install', 'freebsd')).rejects.toThrow(/not scripted/)
   })
 })
 
