@@ -180,6 +180,25 @@ async function verifyMacContainers(directory, detail, config) {
   run('/usr/bin/unzip', ['-t', path.join(directory, detail.primaryArtifact)])
 }
 
+// AppImage has no installer step: the download is the application, so proving the
+// image carries the same executable replaces the NSIS install/uninstall round trip.
+async function verifyLinuxContainers(directory, detail, config) {
+  const unpacked = path.join(directory, 'linux-unpacked')
+  await verifyPackagedResources(path.join(unpacked, 'resources'), config)
+  const executable = path.join(unpacked, detail.executableName)
+  proveNativeBindings(executable)
+  const extracted = await mkdtemp(path.join(os.tmpdir(), 'release-appimage-proof-'))
+  try {
+    run(path.join(directory, detail.primaryArtifact), ['--appimage-extract'], { cwd: extracted })
+    const root = path.join(extracted, 'squashfs-root')
+    await verifyPackagedResources(path.join(root, 'resources'), config)
+    if ((await hashFile(executable)) !== (await hashFile(path.join(root, detail.executableName))))
+      throw new Error('AppImage executable does not match the unpacked application')
+  } finally {
+    await rm(extracted, { recursive: true, force: true })
+  }
+}
+
 async function verifyWindowsContainers(directory, detail, config) {
   // NSIS also writes product registry entries and shortcuts outside /D. Never run its smoke
   // test on a developer machine or self-hosted runner with an existing installation.
@@ -226,6 +245,7 @@ async function verifyWindowsContainers(directory, detail, config) {
 const containerProofs = {
   windows: verifyWindowsContainers,
   macos: verifyMacContainers,
+  linux: verifyLinuxContainers,
 }
 
 export async function verifyPackageContainers(directory, platform, config = releaseConfig) {
@@ -274,7 +294,7 @@ if (isMain(import.meta.url)) {
   if (first === '--package' || first === '--containers') {
     if (!second || !third)
       throw new Error(
-        'Usage: node verify-release-assets.js <--package|--containers> <directory> <windows|macos>',
+        'Usage: node verify-release-assets.js <--package|--containers> <directory> <windows|macos|linux>',
       )
     if (first === '--package') await buildPackageProof(path.resolve(second), third)
     else await verifyPackageContainers(path.resolve(second), third)

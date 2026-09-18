@@ -36,6 +36,20 @@ const platforms = {
     builderArgs: ['--config.mac.notarize=false'],
     metadataSuffix: '-mac',
   },
+  linux: {
+    os: 'linux',
+    arch: 'x64',
+    // AppImage names itself after the kernel architecture and embeds its block map.
+    artifactArch: 'x86_64',
+    sidecarBlockmap: false,
+    label: 'linux-x64',
+    extensions: ['AppImage'],
+    nodePlatform: 'linux',
+    builderKey: 'linux',
+    builderTargets: ['AppImage'],
+    builderArgs: [],
+    metadataSuffix: '-linux',
+  },
 }
 
 export function assertAssetName(name) {

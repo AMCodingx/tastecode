@@ -134,6 +134,26 @@
       "allowToChangeInstallationDirectory": true,
       "deleteAppDataOnUninstall": false
     },
+    "linux": {
+      "target": [
+        {
+          "target": "AppImage",
+          "arch": [
+            "x64"
+          ]
+        }
+      ],
+      "executableName": "tastecode",
+      "icon": "assets/tastecode-app-icon.png",
+      "category": "Development",
+      "syncDesktopName": true,
+      "desktop": {
+        "entry": {
+          "StartupWMClass": "taste-code"
+        }
+      },
+      "synopsis": "A local desktop workspace for coding agents."
+    },
     "dmg": {
       "format": "UDZO"
     },

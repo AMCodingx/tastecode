@@ -221,8 +221,11 @@ test('version, channel, product, and artifact names come from package config', a
   assert.equal(config.tag, 'v2.3.4')
   assert.equal(config.prerelease, false)
   assert.equal(config.platforms.macos.metadata, 'latest-mac.yml')
+  assert.equal(config.platforms.linux.metadata, 'latest-linux.yml')
   assert.equal(config.platforms.windows.metadata, 'latest.yml')
   assert.equal(config.platforms.windows.primaryArtifact, 'Example App-2.3.4-win-x64.exe')
+  assert.equal(config.platforms.linux.primaryArtifact, 'Example App-2.3.4-linux-x86_64.AppImage')
+  assert.equal(config.platforms.linux.executableName, 'tastecode')
   assert.equal(config.platforms.macos.executableName, 'Example App')
   const directory = await fixture(t, { config })
   assert.deepEqual(
@@ -264,7 +267,7 @@ test('unsafe cross-platform filenames are rejected', () => {
   assert.equal(assertAssetName('Example App-1.0.0+1.exe'), 'Example App-1.0.0+1.exe')
 })
 
-test('public GitHub updates resolve beta metadata and downloads on Windows and macOS', async (t) => {
+test('public GitHub updates resolve beta metadata and downloads on every platform', async (t) => {
   const desktop = createRequire(path.join(desktopDirectory, 'package.json'))
   const updater = createRequire(desktop.resolve('electron-updater'))
   const { GitHubProvider } = updater('./providers/GitHubProvider.js')
@@ -273,6 +276,7 @@ test('public GitHub updates resolve beta metadata and downloads on Windows and m
   for (const [platform, target] of [
     ['win32', 'windows'],
     ['darwin', 'macos'],
+    ['linux', 'linux'],
   ]) {
     const detail = platformConfig(target)
     const requests = []
